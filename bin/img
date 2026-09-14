@@ -1,0 +1,393 @@
+#!/usr/bin/env python3
+"""
+img — Claude's image toolbelt. Stock photos (Pexels) and generation (Gemini).
+
+    img stock "chicken tikka masala" [-n 5] [--orientation landscape] [--out DIR] [--page 2]
+    img gen "prompt" [--style plateful-menu] [--quality menu|hero|pro|draft] [--aspect 4:3] [--ref photo.jpg] [--out FILE]
+    img styles                       # list style presets
+    img info FILE...                 # dimensions + sidecar metadata
+
+Keys come from ~/.config/claude-tools/env (PEXELS_API_KEY, GEMINI_API_KEY). The
+key values are read here and never printed. Every downloaded/generated image gets
+a sidecar <name>.json recording where it came from (photographer, Pexels URL,
+prompt, model) so credit and provenance are never lost.
+
+Output defaults to ~/.cache/claude-tools/img/<slug>/ and every path printed is
+absolute, so the caller can Read the files to review them.
+"""
+
+import argparse
+import base64
+import json
+import os
+import re
+import struct
+import sys
+import time
+from pathlib import Path
+
+import requests
+
+ENV_FILE = Path(os.environ.get("CLAUDE_TOOLS_ENV", Path.home() / ".config/claude-tools/env"))
+STYLES_FILE = Path.home() / ".config/claude-tools/img-styles.json"
+OUT_ROOT = Path(os.environ.get("IMG_OUT_ROOT", Path.home() / ".cache/claude-tools/img"))
+
+PEXELS_SEARCH = "https://api.pexels.com/v1/search"
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+
+# Which model for which job. Prices are paid-tier per image (Sept 2026).
+#   draft  — throwaway: exploring prompts/styles, checking composition.
+#   menu   — DEFAULT. Menu items, about/gallery shots. Plateful serves 800px
+#            medium variants so 1K is all the pixels that will ever be shown.
+#   hero   — full-width banners (Plateful hero = 1200w): needs 2K.
+#   pro    — anything with text/logos, a paying client's hero, or when flash
+#            has missed the brief twice. ~2x the price; don't default to it.
+QUALITY = {
+    "draft": {"model": "gemini-3.1-flash-lite-image", "size": "1K", "usd": 0.034},
+    "menu":  {"model": "gemini-3.1-flash-image",      "size": "1K", "usd": 0.067},
+    "hero":  {"model": "gemini-3.1-flash-image",      "size": "2K", "usd": 0.101},
+    "pro":   {"model": "gemini-3-pro-image",          "size": "2K", "usd": 0.134},
+}
+GEMINI_MODEL = os.environ.get("IMG_GEN_MODEL")  # explicit override beats --quality
+
+# Pexels src sizes. large2x = 1880w, comfortably under Plateful's 2000px original cap.
+PEXELS_SIZES = ("original", "large2x", "large", "medium", "small", "portrait", "landscape", "tiny")
+
+
+# ---------------------------------------------------------------- helpers
+
+def die(msg, code=1):
+    print(f"img: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def load_keys():
+    """Parse the toolbelt env file. Values stay in memory only."""
+    keys = {}
+    if not ENV_FILE.exists():
+        return keys
+    for line in ENV_FILE.read_text().splitlines():
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        keys[k.strip()] = v.strip()
+    return keys
+
+
+def need_key(name):
+    val = load_keys().get(name)
+    if not val:
+        die(f"{name} is not set. Ask Taylor to run: ~/.config/claude-tools/setenv.sh {name}")
+    return val
+
+
+def slugify(text, limit=48):
+    s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return s[:limit] or "img"
+
+
+def out_dir(base, slug):
+    d = Path(base) if base else OUT_ROOT / slug
+    d.mkdir(parents=True, exist_ok=True)
+    return d.resolve()
+
+
+def image_size(path):
+    """Width/height for PNG, JPEG, WebP without Pillow. Returns (w, h) or None."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(32)
+            if head[:8] == b"\x89PNG\r\n\x1a\n":
+                w, h = struct.unpack(">II", head[16:24])
+                return w, h
+            if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+                chunk = head[12:16]
+                if chunk == b"VP8X":
+                    f.seek(24)
+                    b = f.read(6)
+                    return (int.from_bytes(b[0:3], "little") + 1, int.from_bytes(b[3:6], "little") + 1)
+                if chunk == b"VP8 ":
+                    f.seek(26)
+                    b = f.read(4)
+                    return (struct.unpack("<H", b[0:2])[0] & 0x3FFF, struct.unpack("<H", b[2:4])[0] & 0x3FFF)
+                if chunk == b"VP8L":
+                    f.seek(21)
+                    b = f.read(4)
+                    bits = int.from_bytes(b, "little")
+                    return ((bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1)
+            if head[:2] == b"\xff\xd8":
+                f.seek(2)
+                while True:
+                    marker = f.read(2)
+                    if len(marker) < 2 or marker[0] != 0xFF:
+                        return None
+                    if marker[1] in (0xC0, 0xC1, 0xC2):
+                        f.read(3)
+                        h, w = struct.unpack(">HH", f.read(4))
+                        return w, h
+                    seg_len = struct.unpack(">H", f.read(2))[0]
+                    f.seek(seg_len - 2, 1)
+    except OSError:
+        return None
+    return None
+
+
+def write_sidecar(path, meta):
+    Path(str(path.with_suffix("")) + ".json").write_text(json.dumps(meta, indent=2))
+
+
+def default_styles():
+    return {
+        "plateful-menu": (
+            "Professional restaurant menu food photography. Single plated dish, "
+            "shot from a 45-degree angle, soft natural window light from the left, "
+            "neutral matte ceramic plate on a light oak table, shallow depth of "
+            "field, appetizing and realistic, no text, no hands, no utensils in frame."
+        ),
+        "plateful-hero": (
+            "Wide editorial restaurant photograph, warm inviting interior or a "
+            "spread of dishes on a table, soft natural light, realistic, no text."
+        ),
+        "plain": "",
+    }
+
+
+def load_styles():
+    styles = default_styles()
+    if STYLES_FILE.exists():
+        try:
+            styles.update(json.loads(STYLES_FILE.read_text()))
+        except json.JSONDecodeError as e:
+            die(f"{STYLES_FILE} is not valid JSON: {e}")
+    return styles
+
+
+# ---------------------------------------------------------------- stock
+
+def cmd_stock(args):
+    key = need_key("PEXELS_API_KEY")
+    params = {"query": args.query, "per_page": args.n, "page": args.page}
+    if args.orientation:
+        params["orientation"] = args.orientation
+    if args.color:
+        params["color"] = args.color
+    r = requests.get(PEXELS_SEARCH, headers={"Authorization": key}, params=params, timeout=30)
+    if r.status_code != 200:
+        die(f"Pexels search failed: HTTP {r.status_code} {r.text[:200]}")
+    data = r.json()
+    photos = data.get("photos", [])
+    if not photos:
+        print(f"No Pexels results for {args.query!r}.")
+        return
+
+    dest = out_dir(args.out, slugify(args.query))
+    print(f"{data.get('total_results', '?')} results for {args.query!r}; page {args.page}; saving {len(photos)} to {dest}\n")
+    for i, p in enumerate(photos, 1):
+        url = p["src"][args.size]
+        ext = ".jpg" if ".jpeg" in url or ".jpg" in url else ".jpg"
+        name = f"{slugify(args.query, 32)}-{p['id']}{ext}"
+        path = dest / name
+        if not path.exists():
+            img = requests.get(url, timeout=60)
+            if img.status_code != 200:
+                print(f"  [{i}] download failed for id {p['id']}")
+                continue
+            path.write_bytes(img.content)
+        meta = {
+            "source": "pexels",
+            "pexels_id": p["id"],
+            "pexels_url": p["url"],
+            "photographer": p.get("photographer"),
+            "photographer_url": p.get("photographer_url"),
+            "alt": p.get("alt"),
+            "size_variant": args.size,
+            "original_width": p.get("width"),
+            "original_height": p.get("height"),
+            "query": args.query,
+            "license": "Pexels License — free for commercial use, no attribution required (credit appreciated)",
+        }
+        write_sidecar(path, meta)
+        wh = image_size(path)
+        dims = f"{wh[0]}x{wh[1]}" if wh else "?"
+        print(f"  [{i}] {path}")
+        print(f"      {dims}  by {p.get('photographer')}  — {p.get('alt') or '(no alt)'}")
+    if data.get("next_page"):
+        print(f"\nMore available: re-run with --page {args.page + 1}")
+
+
+# ---------------------------------------------------------------- gen
+
+def cmd_gen(args):
+    key = need_key("GEMINI_API_KEY")
+    styles = load_styles()
+    if args.style not in styles:
+        die(f"unknown style {args.style!r}; run `img styles`")
+    style_text = styles[args.style]
+    prompt = f"{style_text}\n\nSubject: {args.prompt}".strip() if style_text else args.prompt
+    if args.aspect:
+        prompt += f"\n\nAspect ratio {args.aspect}."
+
+    parts = [{"text": prompt}]
+    for ref in args.ref or []:
+        rp = Path(ref)
+        if not rp.exists():
+            die(f"reference image not found: {ref}")
+        mime = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp"}.get(
+            rp.suffix.lower().lstrip("."), "image/jpeg")
+        parts.append({"inlineData": {"mimeType": mime, "data": base64.b64encode(rp.read_bytes()).decode()}})
+
+    q = QUALITY[args.quality]
+    model = GEMINI_MODEL or q["model"]
+    body = {"contents": [{"parts": parts}], "generationConfig": {"responseModalities": ["IMAGE"]}}
+    body["generationConfig"]["imageConfig"] = {"imageSize": q["size"]}
+    if args.aspect:
+        body["generationConfig"]["imageConfig"]["aspectRatio"] = args.aspect
+
+    dest_dir = out_dir(args.out_dir, slugify(args.prompt))
+    made = []
+    for i in range(args.n):
+        r = requests.post(GEMINI_URL.format(model=model), headers={"x-goog-api-key": key},
+                          json=body, timeout=180)
+        if r.status_code != 200:
+            die(f"Gemini generate failed: HTTP {r.status_code} {r.text[:300]}")
+        resp = r.json()
+        img_b64 = None
+        mime = "image/png"
+        for cand in resp.get("candidates", []):
+            for part in cand.get("content", {}).get("parts", []):
+                if "inlineData" in part:
+                    img_b64 = part["inlineData"]["data"]
+                    mime = part["inlineData"].get("mimeType", mime)
+                    break
+            if img_b64:
+                break
+        if not img_b64:
+            die(f"Gemini returned no image. Response: {json.dumps(resp)[:400]}")
+        ext = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}.get(mime, ".png")
+        if args.out and args.n == 1:
+            path = Path(args.out).resolve()
+            path.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            path = dest_dir / f"{slugify(args.prompt, 32)}-{stamp}-{i + 1}{ext}"
+        path.write_bytes(base64.b64decode(img_b64))
+        write_sidecar(path, {
+            "source": "generated",
+            "model": model,
+            "quality": args.quality,
+            "size": q["size"],
+            "est_cost_usd": q["usd"],
+            "style": args.style,
+            "prompt": args.prompt,
+            "full_prompt": prompt,
+            "aspect": args.aspect,
+            "refs": [str(Path(r_).resolve()) for r_ in (args.ref or [])],
+            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        })
+        wh = image_size(path)
+        dims = f"{wh[0]}x{wh[1]}" if wh else "?"
+        print(f"  [{i + 1}] {path}  {dims}")
+        made.append(path)
+    print(f"  ({model}, {q['size']}, ~${q['usd'] * args.n:.2f})")
+    return made
+
+
+# ---------------------------------------------------------------- misc
+
+def cmd_styles(_args):
+    for name, text in load_styles().items():
+        print(f"{name}\n    {text or '(no style text — prompt used verbatim)'}\n")
+    print(f"Add or override presets in {STYLES_FILE} (JSON object of name -> prompt text).")
+
+
+def cmd_doctor(_args):
+    """Report whether each key is present and accepted, without printing values."""
+    keys = load_keys()
+    print(f"env file: {ENV_FILE}  ({'exists' if ENV_FILE.exists() else 'MISSING'})")
+    for name, ping in (("PEXELS_API_KEY", _ping_pexels), ("GEMINI_API_KEY", _ping_gemini)):
+        v = keys.get(name)
+        if not v:
+            print(f"  {name}: not set")
+            continue
+        shape = f"len={len(v)}"
+        if v[:1] in "\"'" or v[-1:] in "\"'":
+            shape += " HAS-QUOTES"
+        if any(c.isspace() for c in v):
+            shape += " HAS-WHITESPACE"
+        print(f"  {name}: set ({shape}) → {ping(v)}")
+
+
+def _ping_pexels(key):
+    r = requests.get(PEXELS_SEARCH, headers={"Authorization": key}, params={"query": f"ping{int(time.time())}", "per_page": 1}, timeout=15)  # unique: defeats CDN cache
+    return "OK" if r.status_code == 200 else f"HTTP {r.status_code} {r.json().get('message', '') if r.headers.get('content-type','').startswith('application/json') else ''}"
+
+
+def _ping_gemini(key):
+    r = requests.get("https://generativelanguage.googleapis.com/v1beta/models", headers={"x-goog-api-key": key},
+                     params={"pageSize": 1}, timeout=15)
+    return "OK" if r.status_code == 200 else f"HTTP {r.status_code}"
+
+
+def cmd_info(args):
+    for f in args.files:
+        p = Path(f)
+        if not p.exists():
+            print(f"{f}: missing")
+            continue
+        wh = image_size(p)
+        dims = f"{wh[0]}x{wh[1]}" if wh else "unknown format"
+        print(f"{p.resolve()}  {dims}  {p.stat().st_size // 1024} KB")
+        side = Path(str(p.with_suffix("")) + ".json")
+        if side.exists():
+            meta = json.loads(side.read_text())
+            src = meta.get("source")
+            if src == "pexels":
+                print(f"    pexels #{meta['pexels_id']} by {meta.get('photographer')} — {meta.get('pexels_url')}")
+            elif src == "generated":
+                print(f"    generated by {meta.get('model')} ({meta.get('quality')}/{meta.get('size')}) [{meta.get('style')}]: {meta.get('prompt')}")
+
+
+# ---------------------------------------------------------------- main
+
+def main():
+    ap = argparse.ArgumentParser(prog="img", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    s = sub.add_parser("stock", help="search + download Pexels photos")
+    s.add_argument("query")
+    s.add_argument("-n", type=int, default=5, help="how many (max 80)")
+    s.add_argument("--page", type=int, default=1)
+    s.add_argument("--orientation", choices=["landscape", "portrait", "square"])
+    s.add_argument("--color", help="e.g. red, orange, or a hex like 8b4513")
+    s.add_argument("--size", choices=PEXELS_SIZES, default="large2x")
+    s.add_argument("--out", help="directory (default ~/.cache/claude-tools/img/<query-slug>/)")
+    s.set_defaults(fn=cmd_stock)
+
+    g = sub.add_parser("gen", help="generate an image with Gemini")
+    g.add_argument("prompt")
+    g.add_argument("--style", default="plain", help="preset name (see `img styles`)")
+    g.add_argument("--quality", choices=list(QUALITY), default="menu",
+                   help="draft (lite, 3¢) | menu (flash 1K, 7¢, default) | hero (flash 2K, 10¢) | pro (2K, 13¢)")
+    g.add_argument("--aspect", help="1:1, 3:4, 4:3, 9:16, 16:9")
+    g.add_argument("--ref", action="append", help="reference image(s) to guide the generation")
+    g.add_argument("-n", type=int, default=1, help="variations to generate")
+    g.add_argument("--out", help="exact output file (only with -n 1)")
+    g.add_argument("--out-dir", help="directory for multiple outputs")
+    g.set_defaults(fn=cmd_gen)
+
+    st = sub.add_parser("styles", help="list style presets")
+    st.set_defaults(fn=cmd_styles)
+
+    d = sub.add_parser("doctor", help="check keys are present and accepted (never prints them)")
+    d.set_defaults(fn=cmd_doctor)
+
+    inf = sub.add_parser("info", help="dimensions + provenance for image files")
+    inf.add_argument("files", nargs="+")
+    inf.set_defaults(fn=cmd_info)
+
+    args = ap.parse_args()
+    args.fn(args)
+
+
+if __name__ == "__main__":
+    main()

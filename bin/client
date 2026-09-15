@@ -26,8 +26,11 @@ HERE = Path(__file__).resolve().parent.parent
 TEMPLATES = HERE / "templates" / "client"
 CLIENTS_DIR = Path(os.environ.get("CLIENTS_DIR", "~/projects/clients")).expanduser()
 
-DANGEROUS = ("Bash(python3 -c:*)", "Bash(python:*)", "Bash(cat:*)", "Bash(cp:*)", "Bash(mv:*)",
-             "Bash(bash:*)", "Bash(sh:*)", "Bash(curl:*)", "Bash(wget:*)", "Bash(env:*)", "Read", "Bash")
+DANGEROUS = ("Bash(python3 -c:*)", "Bash(python:*)", "Bash(cat:*)", "Bash(cp:*)", "Bash(mv:*)", "Bash(ls:*)",
+             "Bash(head:*)", "Bash(wc:*)", "Bash(grep:*)", "Bash(python3 -m json.tool:*)", "Bash(magick:*)",
+             "Bash(magick *)", "Bash(identify *)", "Bash(bash:*)", "Bash(sh:*)", "Bash(curl:*)", "Bash(wget:*)",
+             "Bash(env:*)", "Read", "Bash", "Edit", "Write")
+REQUIRED_DENY = ("Bash(* /home/*)", "Bash(*~/*)", "Bash(*../*)", "Bash(*$HOME*)")
 
 
 def die(msg, code=1):
@@ -69,9 +72,14 @@ def render_claude_md(meta):
     md = md.replace("{{PLATEFUL_BULLET}}", bullet).replace("{{PLATEFUL_SECTION}}", section)
     for k in ("name", "slug", "plateful", "live_url"):
         md = md.replace("{{" + k.upper() + "}}", meta.get(k) or "")
-    if meta.get("live_url"):
-        md = md.replace("then confirm the live URL serves the change (curl it)",
-                        f"then confirm the live URL ({meta['live_url']}) serves the change (curl it)")
+    tools = ["`git -C repos/<name>`", "`img`", "`site`"] + (["`pf`"] if meta.get("plateful") else [])
+    md = md.replace("{{TOOLS}}", ", ".join(tools))
+    if meta.get("live_url") and not meta.get("plateful"):
+        check = f"`curl -sI {meta['live_url']}` is allowed; wait a minute for Pages to deploy first"
+    else:
+        check = ("the allowlist gains a curl rule for a site's URL when `site new` creates it; "
+                 "until then verify the push landed with `git -C repos/<name> log -1` and say so")
+    md = md.replace("{{LIVE_CHECK}}", check)
     return md
 
 
@@ -106,6 +114,8 @@ def cmd_new(a):
     meta = {"slug": a.slug, "name": a.name or old.get("name") or a.slug,
             "plateful": a.plateful or old.get("plateful"),
             "live_url": a.live_url or old.get("live_url")}
+    if meta["plateful"] and not meta["live_url"]:
+        meta["live_url"] = f"https://{meta['plateful']}.plateful.fyi/"   # their public site
     stamp(ws, meta)
     print(f"{'restamped' if stamped else 'created'} {ws}")
     print(f"  repos: {', '.join(repos_of(ws)) or '(none yet — site new <slug> from inside it, or clone into repos/)'}")
@@ -148,6 +158,10 @@ def cmd_doctor(a):
             bad = [r for r in allow if r in DANGEROUS]
             if bad:
                 print(f"  FAIL unbounded rules in allowlist: {', '.join(bad)}"); ok = False
+            deny = json.loads(settings.read_text()).get("permissions", {}).get("deny", [])
+            missing = [r for r in REQUIRED_DENY if r not in deny]
+            if missing:
+                print(f"  FAIL missing path denies: {', '.join(missing)}  (client new {ws.name} --restamp)"); ok = False
             if "{" in json.dumps(allow):
                 print("  FAIL unrendered placeholder in allowlist"); ok = False
         for r in repos_of(ws):

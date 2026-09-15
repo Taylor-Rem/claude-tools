@@ -247,9 +247,11 @@ def cmd_keys_create(c, a):
     keys[save] = plain
     TOOLBELT.parent.mkdir(parents=True, exist_ok=True)
     tmp = TOOLBELT.with_suffix(".tmp")
-    tmp.write_text("# Claude toolbelt keys. Managed by setenv.sh — values never echoed.\n"
-                   + "".join(f"{k}={v}\n" for k, v in sorted(keys.items())))
-    os.chmod(tmp, 0o600)
+    body = ("# Claude toolbelt keys. Managed by setenv.sh — values never echoed.\n"
+            + "".join(f"{k}={v}\n" for k, v in sorted(keys.items())))
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)   # private from the first byte
+    with os.fdopen(fd, "w") as fh:
+        fh.write(body)
     tmp.replace(TOOLBELT)
     k = r["key"]
     print(f"minted key '{k.get('name')}' (id {k.get('id')}) for {a.restaurant} scopes={k.get('scopes')} -> saved as {save} in the toolbelt")

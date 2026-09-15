@@ -7,12 +7,17 @@ restaurant reachable with `pf`. The workspace's CLAUDE.md and
 .claude/settings.json are the permission boundary; this tool writes them from
 templates/client/ in the claude-tools repo.
 
-  client new <slug> --name "Name" [--plateful SUB] [--live-url URL] [--restamp]
+  client new <slug> --name "Name" [--plateful SUB] [--live-url URL] [--shared-key] [--restamp]
   client ls
   client doctor [slug]
   client snippet <slug>          # the config.json project entry to paste
 
-CLIENTS_DIR overrides ~/projects/clients. No keys needed.
+Each client runs on its own Anthropic Console workspace + key,
+ANTHROPIC_KEY_<SLUG> in the toolbelt (`client new` prints the setenv.sh step
+and puts the `auth` line in the config.json entry). --shared-key skips that:
+the relay's defaults.client_auth (the shared workspace) pays instead.
+
+CLIENTS_DIR overrides ~/projects/clients. No keys needed (it only checks names).
 """
 
 import argparse
@@ -30,7 +35,25 @@ DANGEROUS = ("Bash(python3 -c:*)", "Bash(python:*)", "Bash(cat:*)", "Bash(cp:*)"
              "Bash(head:*)", "Bash(wc:*)", "Bash(grep:*)", "Bash(python3 -m json.tool:*)", "Bash(magick:*)",
              "Bash(magick *)", "Bash(identify *)", "Bash(bash:*)", "Bash(sh:*)", "Bash(curl:*)", "Bash(wget:*)",
              "Bash(env:*)", "Read", "Bash", "Edit", "Write")
-REQUIRED_DENY = ("Bash(* /home/*)", "Bash(*~/*)", "Bash(*../*)", "Bash(*$HOME*)")
+REQUIRED_DENY = ("Bash(* /home/*)", "Bash(*~/*)", "Bash(*../*)", "Bash(*$HOME*)",
+                 "Bash(*$ANTHROPIC*)", "Bash(*$GEMINI*)", "Bash(*_API_KEY*)")   # the run's own keys stay out of commands
+TOOLBELT = Path(os.environ.get("CLAUDE_TOOLS_ENV", "~/.config/claude-tools/env")).expanduser()
+
+
+def key_name(slug):
+    """The toolbelt key name for a client's Anthropic Console workspace."""
+    return "ANTHROPIC_KEY_" + slug.upper().replace("-", "_")
+
+
+def toolbelt_has(name):
+    """Whether a key is set in the toolbelt. Names only; values are never read into anything that prints."""
+    if not TOOLBELT.exists():
+        return False
+    for line in TOOLBELT.read_text().splitlines():
+        k, _, v = line.partition("=")
+        if k.strip() == name and v.strip():
+            return True
+    return False
 
 
 def die(msg, code=1):
@@ -101,6 +124,8 @@ def snippet(slug, meta):
     if meta.get("live_url"):
         entry["live_url"] = meta["live_url"]
     entry["agent"] = {"model": "opus"}
+    if meta.get("auth"):
+        entry["agent"]["auth"] = meta["auth"]
     return json.dumps({slug: entry}, indent=2)[1:-1].strip()
 
 
@@ -113,7 +138,8 @@ def cmd_new(a):
     old = read_meta(ws) if stamped else {}
     meta = {"slug": a.slug, "name": a.name or old.get("name") or a.slug,
             "plateful": a.plateful or old.get("plateful"),
-            "live_url": a.live_url or old.get("live_url")}
+            "live_url": a.live_url or old.get("live_url"),
+            "auth": None if a.shared_key else (old.get("auth") or key_name(a.slug))}
     if meta["plateful"] and not meta["live_url"]:
         meta["live_url"] = f"https://{meta['plateful']}.plateful.fyi/"   # their public site
     stamp(ws, meta)
@@ -123,9 +149,18 @@ def cmd_new(a):
         print(f"  plateful: {meta['plateful']} (needs PLATEFUL_KEY_{meta['plateful'].upper().replace('-', '_')} "
               f"in the toolbelt: pf keys create -r {meta['plateful']} --name relay "
               f"--scopes menu:read,menu:write,media:write,orders:read --save ...)")
+    if meta["auth"]:
+        state = "already in the toolbelt" if toolbelt_has(meta["auth"]) else "NOT in the toolbelt yet"
+        print(f"\nAnthropic key ({state}): in console.anthropic.com make a workspace relay-{a.slug} with a "
+              f"monthly spend limit, create one API key in it, then\n"
+              f"  ~/.config/claude-tools/setenv.sh {meta['auth']}\n"
+              f"  (until it exists every message from this client fails and you're notified; "
+              f"your own messages here run on your plan)")
+    else:
+        print("\nAnthropic key: none of its own — the relay's defaults.client_auth (shared workspace) pays")
     print("\nconfig.json project entry:\n")
     print("  " + snippet(a.slug, meta).replace("\n", "\n  "))
-    print("\nthen a sender line with \"projects\": [\"" + a.slug + "\"], and ./relay.py check")
+    print("\nthen a sender line with \"projects\": [\"" + a.slug + "\"], ./relay.py check and ./doctor.py")
 
 
 def cmd_ls(a):
@@ -179,6 +214,11 @@ def cmd_doctor(a):
                 probs.append("no CLAUDE.md")
             print(f"  repo {r}: {'ok' if not probs else 'WARN ' + '; '.join(probs)}")
             ok = ok and not probs
+        m = read_meta(ws)
+        if m.get("auth"):
+            print(f"  key {m['auth']}: {'set' if toolbelt_has(m['auth']) else 'NOT SET — setenv.sh ' + m['auth'] + ' (client messages fail until then)'}")
+        elif m:
+            print("  key: none of its own (relay defaults.client_auth pays)")
         stray = [p.name for p in (ws / "incoming").iterdir() if p.name != ".keep"] if (ws / "incoming").is_dir() else []
         if stray:
             print(f"  note: {len(stray)} file(s) left in incoming/")
@@ -199,6 +239,7 @@ def main():
     n = sub.add_parser("new", help="create (or --restamp) a client workspace")
     n.add_argument("slug"); n.add_argument("--name"); n.add_argument("--plateful", metavar="SUBDOMAIN")
     n.add_argument("--live-url"); n.add_argument("--restamp", action="store_true")
+    n.add_argument("--shared-key", action="store_true", help="no key of its own: the relay's defaults.client_auth pays")
     n.set_defaults(fn=cmd_new)
     sub.add_parser("ls", help="list client workspaces").set_defaults(fn=cmd_ls)
     d = sub.add_parser("doctor", help="check workspaces are stamped and repos are pushable")

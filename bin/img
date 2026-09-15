@@ -7,8 +7,12 @@ img — Claude's image toolbelt. Stock photos (Pexels) and generation (Gemini).
     img styles                       # list style presets
     img info FILE...                 # dimensions + sidecar metadata
 
-Keys come from ~/.config/claude-tools/env (PEXELS_API_KEY, GEMINI_API_KEY). The
-key values are read here and never printed. Every downloaded/generated image gets
+Keys: the environment first (a non-empty $GEMINI_API_KEY / $PEXELS_API_KEY —
+the relay sets a per-client key this way), then ~/.config/claude-tools/env. The
+key values are read here and never printed. When the environment supplies the
+key, $GEMINI_API_KEY_NAME (set by the relay) says which toolbelt key that was,
+so the ledger line records who paid by *name*: billed_to "gemini:<key name>".
+Every downloaded/generated image gets
 a sidecar <name>.json recording where it came from (photographer, Pexels URL,
 prompt, model) so credit and provenance are never lost.
 
@@ -92,8 +96,21 @@ def load_keys():
     return keys
 
 
+def key_source(name):
+    """Where the key named `name` comes from, without touching its value:
+    ("env", <toolbelt key name>) when the environment supplies it, ("file", name)
+    when the toolbelt file does, or (None, name) when it is set nowhere."""
+    if os.environ.get(name):
+        return "env", os.environ.get(name + "_NAME") or name
+    if load_keys().get(name):
+        return "file", name
+    return None, name
+
+
 def need_key(name):
-    val = load_keys().get(name)
+    """The key value. Environment wins (a per-client key passed in by the
+    relay), then the toolbelt file. Never printed."""
+    val = os.environ.get(name) or load_keys().get(name)
     if not val:
         die(f"{name} is not set. Ask Taylor to run: ~/.config/claude-tools/setenv.sh {name}")
     return val
@@ -237,6 +254,7 @@ def cmd_stock(args):
 
 def cmd_gen(args):
     key = need_key("GEMINI_API_KEY")
+    _, key_name = key_source("GEMINI_API_KEY")   # who pays, by name only
     styles = load_styles()
     if args.style not in styles:
         die(f"unknown style {args.style!r}; run `img styles`")
@@ -295,6 +313,7 @@ def cmd_gen(args):
             "quality": args.quality,
             "size": q["size"],
             "est_cost_usd": q["usd"],
+            "billed_to": f"gemini:{key_name}",
             "style": args.style,
             "prompt": args.prompt,
             "full_prompt": prompt,
@@ -309,7 +328,7 @@ def cmd_gen(args):
                 "model": model,
                 "quality": args.quality,
                 "cost_usd": q["usd"],
-                "billed_to": "gemini:GEMINI_API_KEY",
+                "billed_to": f"gemini:{key_name}",
                 "project": os.environ.get("PF_RESTAURANT") or os.getcwd(),
                 "path": str(path),
             })
@@ -317,7 +336,7 @@ def cmd_gen(args):
         dims = f"{wh[0]}x{wh[1]}" if wh else "?"
         print(f"  [{i + 1}] {path}  {dims}")
         made.append(path)
-    print(f"  ({model}, {q['size']}, ~${q['usd'] * args.n:.2f})")
+    print(f"  ({model}, {q['size']}, ~${q['usd'] * args.n:.2f}, billed to {key_name})")
     return made
 
 
@@ -334,11 +353,12 @@ def cmd_doctor(_args):
     keys = load_keys()
     print(f"env file: {ENV_FILE}  ({'exists' if ENV_FILE.exists() else 'MISSING'})")
     for name, ping in (("PEXELS_API_KEY", _ping_pexels), ("GEMINI_API_KEY", _ping_gemini)):
-        v = keys.get(name)
+        src, key_name = key_source(name)
+        v = os.environ.get(name) if src == "env" else keys.get(name)
         if not v:
-            print(f"  {name}: not set")
+            print(f"  {name}: not set (neither in the environment nor the env file)")
             continue
-        shape = f"len={len(v)}"
+        shape = f"from {'environment as ' + key_name if src == 'env' else 'env file'}, len={len(v)}"
         if v[:1] in "\"'" or v[-1:] in "\"'":
             shape += " HAS-QUOTES"
         if any(c.isspace() for c in v):

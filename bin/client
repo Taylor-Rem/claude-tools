@@ -216,7 +216,7 @@ def cmd_doctor(a):
             ok = ok and not probs
         m = read_meta(ws)
         if m.get("auth"):
-            print(f"  key {m['auth']}: {'set' if toolbelt_has(m['auth']) else 'NOT SET — setenv.sh ' + m['auth'] + ' (client messages fail until then)'}")
+            print(f"  key {m['auth']}: {'set' if toolbelt_has(m['auth']) else 'NOT SET — setenv.sh ' + m['auth'] + ' (runs on the plan while config.json has allow_plan: true; otherwise client messages fail)'}")
         elif m:
             print("  key: none of its own (relay defaults.client_auth pays)")
         stray = [p.name for p in (ws / "incoming").iterdir() if p.name != ".keep"] if (ws / "incoming").is_dir() else []

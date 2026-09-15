@@ -1,0 +1,396 @@
+#!/usr/bin/env python3
+"""todo — Taylor's todo list (~/projects/TAYLOR-TODO.md) in the terminal and on the web.
+
+The file stays where every session writes it. A tiny git repo whose git-dir
+lives beside it (~/projects/.todo-git, work tree ~/projects, everything but
+that one file excluded) mirrors it to a PRIVATE GitHub repo; a systemd user
+timer runs `todo sync` every two minutes so local edits go up and ticks made
+on the web come down. The web page is a static file on GitHub Pages (a PUBLIC
+repo holding only the page) that reads and writes the private file through the
+GitHub API with a fine-grained token Taylor pastes once in the browser.
+
+  todo ls [--all]              open items by section, numbered
+  todo done <n> [<n>...]       tick item(s) by number from `todo ls`
+  todo add "text" [--section N]   a new item (default: section 4, Later)
+  todo sync                    local edits up, web ticks down (the timer's job)
+  todo init                    one time: the private data repo, the timer
+  todo site push               publish todo-site/index.html to the Pages repo
+  todo open                    print the page URL
+  todo doctor
+
+Config, by name only (values never printed):
+  GITHUB_TOKEN  in ~/.config/claude-tools/env — passed to gh as GH_TOKEN when
+                present; otherwise gh's own login. Pushes use SSH.
+  TODO_FILE     the markdown file (default ~/projects/TAYLOR-TODO.md)
+  TODO_OWNER    GitHub owner for both repos (default: gh's logged-in user)
+  TODO_DATA_REPO / TODO_SITE_REPO   default taylor-todo (private) / todo (public)
+"""
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from datetime import date
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent.parent
+SITE_DIR = HERE / "todo-site"
+UNITS_DIR = HERE / "systemd"
+TOOLBELT = Path(os.environ.get("CLAUDE_TOOLS_ENV", "~/.config/claude-tools/env")).expanduser()
+
+TODO_FILE = Path(os.environ.get("TODO_FILE", "~/projects/TAYLOR-TODO.md")).expanduser()
+WORK_TREE = TODO_FILE.parent
+GIT_DIR = WORK_TREE / ".todo-git"
+DATA_REPO = os.environ.get("TODO_DATA_REPO", "taylor-todo")
+SITE_REPO = os.environ.get("TODO_SITE_REPO", "todo")
+BRANCH = "main"
+
+ITEM = re.compile(r"^- \[( |x|X)\] (.*)$")
+SECTION = re.compile(r"^## (.*)$")
+BOLD = re.compile(r"\*\*(.+?)\*\*")
+
+
+# --- helpers ---------------------------------------------------------------
+
+def die(msg, code=2):
+    print(f"todo: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def toolbelt():
+    env = {}
+    if TOOLBELT.exists():
+        for line in TOOLBELT.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, _, v = line.partition("=")
+                env[k.strip()] = v.strip().strip('"').strip("'")
+    return env
+
+
+def gh_env():
+    env = dict(os.environ)
+    tok = toolbelt().get("GITHUB_TOKEN")
+    if tok:
+        env["GH_TOKEN"] = tok
+    return env
+
+
+def gh(*args, check=True, capture=True):
+    r = subprocess.run(["gh", *args], env=gh_env(), text=True, capture_output=capture)
+    if check and r.returncode:
+        die(f"gh {' '.join(args[:2])} failed: {(r.stderr or r.stdout).strip()}")
+    return r
+
+
+def owner():
+    o = os.environ.get("TODO_OWNER")
+    if o:
+        return o
+    r = gh("api", "user", "--jq", ".login", check=False)
+    if r.returncode:
+        die("not logged in to GitHub: `gh auth login`, or setenv.sh GITHUB_TOKEN")
+    return r.stdout.strip()
+
+
+def git(*args, check=True, capture=True, quiet=False):
+    """git against the side-car repo. Never touches anything but TODO_FILE."""
+    cmd = ["git", f"--git-dir={GIT_DIR}", f"--work-tree={WORK_TREE}", *args]
+    r = subprocess.run(cmd, text=True, capture_output=capture,
+                       env=dict(os.environ, GIT_EDITOR="true", GIT_TERMINAL_PROMPT="0"))
+    if check and r.returncode:
+        die(f"git {args[0]}: {(r.stderr or r.stdout).strip()}")
+    return r
+
+
+def repo_ready():
+    return (GIT_DIR / "HEAD").exists()
+
+
+def site_url(o=None):
+    o = (o or owner()).lower()
+    return f"https://{o}.github.io/{SITE_REPO}/"
+
+
+# --- the file --------------------------------------------------------------
+
+def parse(text):
+    """-> [{name, items: [{n, line, done, title}]}] ; n counts across sections.
+    An item is `- [ ]`/`- [x]` at column 0 plus its indented continuation lines;
+    the title is its first **bold** run (which may wrap), else the first line."""
+    sections, cur, n = [], None, 0
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        m = SECTION.match(line)
+        if m:
+            cur = {"name": m.group(1).strip(), "items": []}
+            sections.append(cur)
+            continue
+        m = ITEM.match(line)
+        if m and cur is not None:
+            n += 1
+            body = [m.group(2).strip()]
+            j = i + 1
+            while j < len(lines) and (lines[j].startswith("  ") or (not lines[j].strip() and j + 1 < len(lines) and lines[j + 1].startswith("  "))):
+                body.append(lines[j].strip())
+                j += 1
+            joined = " ".join(b for b in body if b)
+            b = BOLD.search(joined)
+            title = (b.group(1) if b else body[0])[:110]
+            cur["items"].append({"n": n, "line": i, "done": m.group(1) != " ", "title": title})
+    return sections
+
+
+def cmd_ls(args):
+    text = TODO_FILE.read_text()
+    open_n = 0
+    for s in parse(text):
+        items = [it for it in s["items"] if args.all or not it["done"]]
+        if not items:
+            continue
+        print(f"\n{s['name']}")
+        for it in items:
+            mark = "x" if it["done"] else " "
+            open_n += not it["done"]
+            print(f"  [{mark}] {it['n']:>2}  {it['title']}")
+    print(f"\n{open_n} open · {TODO_FILE}")
+
+
+def cmd_done(args):
+    text = TODO_FILE.read_text()
+    lines = text.splitlines(keepends=True)
+    by_n = {it["n"]: it for s in parse(text) for it in s["items"]}
+    for n in args.n:
+        it = by_n.get(n)
+        if not it:
+            die(f"no item {n} (see `todo ls`)")
+        if it["done"]:
+            print(f"already done: {it['title']}")
+            continue
+        lines[it["line"]] = lines[it["line"]].replace("- [ ]", "- [x]", 1)
+        print(f"done: {it['title']}")
+    TODO_FILE.write_text("".join(lines))
+    if repo_ready():
+        cmd_sync(argparse.Namespace(quiet=True))
+
+
+def cmd_add(args):
+    text = TODO_FILE.read_text()
+    lines = text.splitlines(keepends=True)
+    sections = parse(text)
+    if not sections:
+        die("no '## ' sections in the file")
+    idx = (args.section or len(sections)) - 1
+    if not 0 <= idx < len(sections):
+        die(f"--section must be 1..{len(sections)}")
+    # insert after the section's last item (or its header), before the next header
+    start = next(i for i, l in enumerate(lines) if SECTION.match(l) and SECTION.match(l).group(1).strip() == sections[idx]["name"])
+    end = next((i for i in range(start + 1, len(lines)) if SECTION.match(lines[i])), len(lines))
+    at = end
+    while at > start + 1 and not lines[at - 1].strip():
+        at -= 1
+    who = args.by or "Taylor"
+    entry = f"- [ ] **{args.text.strip().rstrip('.')}.** _({who}, {date.today().isoformat()})_\n"
+    if at == start + 1 and lines[start].endswith("\n") and not (len(lines) > start + 1 and not lines[start + 1].strip()):
+        entry = "\n" + entry            # a blank line under the header, like the other sections
+    lines.insert(at, entry)
+    TODO_FILE.write_text("".join(lines))
+    print(f"added to {sections[idx]['name']}: {args.text.strip()}")
+    if repo_ready():
+        cmd_sync(argparse.Namespace(quiet=True))
+
+
+# --- git sync --------------------------------------------------------------
+
+def cmd_sync(args):
+    if not repo_ready():
+        die("no data repo yet: run `todo init`")
+    if not TODO_FILE.exists():
+        die(f"{TODO_FILE} is missing")
+    q = getattr(args, "quiet", False)
+    git("add", "--", str(TODO_FILE))
+    if git("diff", "--cached", "--quiet", check=False).returncode:
+        git("commit", "-q", "-m", "todo: local edit")
+        if not q:
+            print("committed local edit")
+    r = git("fetch", "-q", "origin", BRANCH, check=False)
+    if r.returncode:
+        die(f"fetch failed (offline?): {r.stderr.strip()}", 1)
+    local = git("rev-parse", "HEAD").stdout.strip()
+    remote = git("rev-parse", f"origin/{BRANCH}").stdout.strip()
+    if local == remote:
+        if not q:
+            print("in sync")
+        return
+    if git("merge-base", "--is-ancestor", remote, local, check=False).returncode == 0:
+        git("push", "-q", "origin", f"HEAD:{BRANCH}")
+        if not q:
+            print("pushed")
+        return
+    if git("merge-base", "--is-ancestor", local, remote, check=False).returncode == 0:
+        git("merge", "-q", "--ff-only", f"origin/{BRANCH}")
+        if not q:
+            print("pulled web changes")
+        return
+    # both moved: replay local on top of the web's version; on a clash the local line wins
+    r = git("rebase", f"origin/{BRANCH}", check=False)
+    if r.returncode:
+        git("checkout", "--theirs", "--", str(TODO_FILE), check=False)
+        git("add", "--", str(TODO_FILE))
+        r2 = git("rebase", "--continue", check=False)
+        if r2.returncode:
+            git("rebase", "--abort", check=False)
+            die("rebase clash I couldn't settle; local file kept, will retry next tick", 1)
+        print("merged: local edit and a web tick touched the same line; local kept")
+    git("push", "-q", "origin", f"HEAD:{BRANCH}")
+    if not q:
+        print("merged and pushed")
+
+
+def cmd_init(args):
+    o = owner()
+    if not TODO_FILE.exists():
+        die(f"{TODO_FILE} doesn't exist")
+    full = f"{o}/{DATA_REPO}"
+    if gh("repo", "view", full, "--json", "name", check=False).returncode:
+        gh("repo", "create", full, "--private", "--description", "Taylor's todo list (synced from ~/projects/TAYLOR-TODO.md)")
+        print(f"created private repo {full}")
+    else:
+        vis = gh("repo", "view", full, "--json", "visibility", "--jq", ".visibility").stdout.strip()
+        if vis.upper() != "PRIVATE":
+            die(f"{full} exists but is {vis}; the todo has client names in it — make it private first")
+    if not repo_ready():
+        git("init", "-q", "-b", BRANCH)
+        (GIT_DIR / "info").mkdir(exist_ok=True)
+        (GIT_DIR / "info" / "exclude").write_text(f"*\n!/{TODO_FILE.name}\n")
+        git("config", "core.worktree", str(WORK_TREE))
+        git("config", "user.name", "todo sync")
+        git("config", "user.email", "todo@localhost")
+        git("remote", "add", "origin", f"git@github.com:{full}.git")
+        print(f"side-car repo at {GIT_DIR} (tracks only {TODO_FILE.name})")
+    r = git("fetch", "-q", "origin", BRANCH, check=False)
+    if r.returncode == 0 and git("rev-parse", "-q", "--verify", "HEAD", check=False).returncode:
+        # remote has history, we have none: adopt it, then commit the local version on top
+        git("reset", "-q", "--soft", f"origin/{BRANCH}")
+    git("add", "--", str(TODO_FILE))
+    if git("diff", "--cached", "--quiet", check=False).returncode or git("rev-parse", "-q", "--verify", "HEAD", check=False).returncode:
+        git("commit", "-q", "-m", "todo: sync from the laptop")
+    git("push", "-q", "-u", "origin", f"HEAD:{BRANCH}")
+    print(f"pushed {TODO_FILE.name} to {full}")
+    install_timer()
+    print("next: `todo site push` to publish the page, then create the browser token (todo doctor lists the steps)")
+
+
+def install_timer():
+    user_units = Path.home() / ".config/systemd/user"
+    user_units.mkdir(parents=True, exist_ok=True)
+    for name in ("todo-sync.service", "todo-sync.timer"):
+        src = UNITS_DIR / name
+        if not src.exists():
+            die(f"missing {src}")
+        dst = user_units / name
+        if dst.is_symlink() or dst.exists():
+            dst.unlink()
+        dst.symlink_to(src)
+    r = subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True, text=True)
+    if r.returncode:
+        print(f"note: systemctl --user daemon-reload failed ({r.stderr.strip()}); enable the timer by hand")
+        return
+    subprocess.run(["systemctl", "--user", "enable", "--now", "todo-sync.timer"], capture_output=True, text=True)
+    print("timer: todo-sync.timer every 2 minutes (systemctl --user status todo-sync.timer)")
+
+
+# --- the page --------------------------------------------------------------
+
+def cmd_site(args):
+    if args.action != "push":
+        die("site: only `push`")
+    o = owner()
+    full = f"{o}/{SITE_REPO}"
+    page = SITE_DIR / "index.html"
+    if not page.exists():
+        die(f"missing {page}")
+    if gh("repo", "view", full, "--json", "name", check=False).returncode:
+        gh("repo", "create", full, "--public", "--description", "A checklist page for TAYLOR-TODO.md (data lives in a private repo)")
+        print(f"created public repo {full}")
+    with tempfile.TemporaryDirectory() as tmp:
+        clone = Path(tmp) / "site"
+        r = subprocess.run(["git", "clone", "-q", "--depth", "1", f"git@github.com:{full}.git", str(clone)],
+                           capture_output=True, text=True, env=dict(os.environ, GIT_TERMINAL_PROMPT="0"))
+        if r.returncode:                    # empty repo: clone fails, so start one
+            clone.mkdir()
+            subprocess.run(["git", "init", "-q", "-b", BRANCH], cwd=clone, check=True)
+            subprocess.run(["git", "remote", "add", "origin", f"git@github.com:{full}.git"], cwd=clone, check=True)
+        for f in SITE_DIR.iterdir():
+            if f.is_file():
+                shutil.copy(f, clone / f.name)
+        (clone / ".nojekyll").write_text("")
+        (clone / "README.md").write_text(
+            f"# todo\n\nThe page at {site_url(o)} — a checklist view of a markdown todo file that lives "
+            f"in a private repo. This repo holds only the page; it has no data in it.\n"
+            f"Source of truth: `claude-tools/todo-site/`, published with `todo site push`.\n")
+        subprocess.run(["git", "add", "-A"], cwd=clone, check=True)
+        if subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=clone).returncode == 0 and \
+                subprocess.run(["git", "rev-parse", "-q", "--verify", "HEAD"], cwd=clone, capture_output=True).returncode == 0:
+            print("page unchanged")
+        else:
+            subprocess.run(["git", "-c", "user.name=todo", "-c", "user.email=todo@localhost", "commit", "-q", "-m",
+                            "publish todo page"], cwd=clone, check=True)
+            subprocess.run(["git", "push", "-q", "origin", f"HEAD:{BRANCH}"], cwd=clone, check=True)
+            print(f"pushed page to {full}")
+    r = gh("api", f"repos/{full}/pages", check=False)
+    if r.returncode:
+        r = gh("api", "-X", "POST", f"repos/{full}/pages", "-f", f"source[branch]={BRANCH}", "-f", "source[path]=/", check=False)
+        if r.returncode:
+            die(f"couldn't enable Pages: {(r.stderr or r.stdout).strip()} — Settings → Pages → branch main")
+        print("Pages turned on (first build takes a minute)")
+    print(site_url(o))
+
+
+def cmd_open(args):
+    print(site_url())
+
+
+def cmd_doctor(args):
+    o = owner()
+    ok = lambda c: "[  ok  ]" if c else "[ FAIL ]"
+    print(f"{ok(TODO_FILE.exists())} {TODO_FILE}")
+    print(f"{ok(repo_ready())} side-car repo {GIT_DIR}" + ("" if repo_ready() else " — run `todo init`"))
+    data = gh("repo", "view", f"{o}/{DATA_REPO}", "--json", "visibility", "--jq", ".visibility", check=False)
+    print(f"{ok(data.returncode == 0 and data.stdout.strip().upper() == 'PRIVATE')} data repo {o}/{DATA_REPO} is private")
+    if repo_ready():
+        r = git("fetch", "-q", "origin", BRANCH, check=False)
+        head = git("rev-parse", "HEAD", check=False).stdout.strip()
+        rem = git("rev-parse", f"origin/{BRANCH}", check=False).stdout.strip()
+        print(f"{ok(r.returncode == 0)} fetch from origin" + (f"; {'in sync' if head == rem else 'differs — todo sync'}" if r.returncode == 0 else ""))
+    t = subprocess.run(["systemctl", "--user", "is-active", "todo-sync.timer"], capture_output=True, text=True).stdout.strip()
+    print(f"{ok(t == 'active')} todo-sync.timer {t or 'not installed'}")
+    site = gh("api", f"repos/{o}/{SITE_REPO}/pages", "--jq", ".html_url", check=False)
+    print(f"{ok(site.returncode == 0)} Pages site " + (site.stdout.strip() if site.returncode == 0 else "not published — `todo site push`"))
+    print("\nBrowser token (one time, in the browser, never in a repo):")
+    print("  github.com/settings/personal-access-tokens/new → Repository access: Only select → "
+          f"{DATA_REPO}; Permissions → Contents: Read and write; expiry 1 year → Generate,")
+    print(f"  then open {site_url(o)} and paste it. It stays in that browser's localStorage.")
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="todo", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("ls"); p.add_argument("--all", action="store_true"); p.set_defaults(fn=cmd_ls)
+    p = sub.add_parser("done"); p.add_argument("n", type=int, nargs="+"); p.set_defaults(fn=cmd_done)
+    p = sub.add_parser("add"); p.add_argument("text"); p.add_argument("--section", type=int); p.add_argument("--by"); p.set_defaults(fn=cmd_add)
+    p = sub.add_parser("sync"); p.add_argument("--quiet", action="store_true"); p.set_defaults(fn=cmd_sync)
+    p = sub.add_parser("init"); p.set_defaults(fn=cmd_init)
+    p = sub.add_parser("site"); p.add_argument("action", choices=["push"]); p.set_defaults(fn=cmd_site)
+    p = sub.add_parser("open"); p.set_defaults(fn=cmd_open)
+    p = sub.add_parser("doctor"); p.set_defaults(fn=cmd_doctor)
+    args = ap.parse_args()
+    args.fn(args)
+
+
+if __name__ == "__main__":
+    main()

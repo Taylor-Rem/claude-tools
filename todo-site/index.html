@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Taylor's todo</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%98%91%EF%B8%8F%3C/text%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #f7f6f2; --panel: #ffffff; --ink: #1d1d1b; --muted: #6b6a66; --line: #e4e2dc;
+    --accent: #2f6fed; --accent-ink: #ffffff; --done: #9a9891; --danger: #b3261e; --warn-bg: #fff4d6;
+    --shadow: 0 1px 2px rgba(0,0,0,.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #141416; --panel: #1e1e21; --ink: #ececea; --muted: #9c9b97; --line: #2d2d31;
+      --accent: #6d9cff; --accent-ink: #0d1a33; --done: #6a6965; --danger: #ff7b72; --warn-bg: #3a2f12;
+      --shadow: none;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #141416; --panel: #1e1e21; --ink: #ececea; --muted: #9c9b97; --line: #2d2d31;
+    --accent: #6d9cff; --accent-ink: #0d1a33; --done: #6a6965; --danger: #ff7b72; --warn-bg: #3a2f12;
+    --shadow: none;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 760px; margin: 0 auto; padding: 20px 16px 80px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; margin-bottom: 8px; }
+  h1 { font-size: 22px; margin: 0; }
+  .count { color: var(--muted); font-size: 14px; }
+  .tools { margin-left: auto; display: flex; gap: 10px; align-items: center; font-size: 14px; color: var(--muted); }
+  .tools label { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+  button {
+    font: inherit; font-size: 14px; border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+    border-radius: 8px; padding: 6px 12px; cursor: pointer;
+  }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+  button:disabled { opacity: .5; cursor: default; }
+  .status { font-size: 13px; color: var(--muted); min-height: 20px; margin: 0 0 12px; }
+  .status.err { color: var(--danger); }
+  section { margin: 18px 0 26px; }
+  h2 { font-size: 15px; margin: 0 0 8px; color: var(--muted); font-weight: 600; letter-spacing: .01em; }
+  h2 .n { font-weight: 400; }
+  ul { list-style: none; margin: 0; padding: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); }
+  li { border-top: 1px solid var(--line); }
+  li:first-child { border-top: 0; }
+  .row { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; }
+  .row input[type=checkbox] { width: 20px; height: 20px; margin: 3px 0 0; flex: none; accent-color: var(--accent); cursor: pointer; }
+  .text { flex: 1; min-width: 0; cursor: pointer; }
+  .title { font-weight: 600; }
+  li.done .title { color: var(--done); text-decoration: line-through; font-weight: 500; }
+  .meta { color: var(--muted); font-size: 13px; }
+  .body { display: none; margin: 6px 0 0; font-size: 14.5px; color: var(--ink); overflow-wrap: anywhere; }
+  li.open .body { display: block; }
+  .body p { margin: 0 0 8px; }
+  .body ul { border: 0; box-shadow: none; background: none; border-radius: 0; padding-left: 18px; list-style: disc; }
+  .body ul li { border: 0; padding: 0; margin: 2px 0; }
+  code { font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: color-mix(in srgb, var(--ink) 8%, transparent); padding: 1px 5px; border-radius: 5px; }
+  a { color: var(--accent); }
+  li.pending .row { opacity: .55; }
+  .add { display: flex; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--line); }
+  .add input { flex: 1; min-width: 0; font: inherit; font-size: 14px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 8px; padding: 6px 10px; }
+  .setup { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px; margin: 20px 0; }
+  .setup h2 { color: var(--ink); font-size: 17px; }
+  .setup ol { padding-left: 20px; margin: 8px 0 14px; }
+  .setup li { border: 0; margin: 4px 0; }
+  .setup input { width: 100%; font: inherit; font-size: 14px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 8px; padding: 8px 10px; margin: 6px 0 10px; }
+  .setup details { margin-top: 10px; font-size: 14px; color: var(--muted); }
+  .setup details input { margin: 4px 0 8px; }
+  .hint { font-size: 13px; color: var(--muted); }
+  .footer { margin-top: 30px; font-size: 13px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 6px 16px; }
+  .footer a { color: var(--muted); }
+  .hidden { display: none !important; }
+  .notice { background: var(--warn-bg); border-radius: 10px; padding: 10px 14px; font-size: 14px; margin: 0 0 14px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Taylor's todo</h1>
+    <span class="count" id="count"></span>
+    <div class="tools" id="tools">
+      <label><input type="checkbox" id="showDone"> show done</label>
+      <button id="refresh" title="reload from GitHub">↻</button>
+    </div>
+  </header>
+  <p class="status" id="status"></p>
+
+  <div class="setup hidden" id="setup">
+    <h2>Connect to the todo file</h2>
+    <p class="hint">The list lives in a private GitHub repo. This page reads and ticks it with a token that stays in this browser only (localStorage); nothing goes anywhere but api.github.com.</p>
+    <ol>
+      <li>Open <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">github.com/settings/personal-access-tokens/new</a>.</li>
+      <li>Repository access → <b>Only select repositories</b> → <code id="repoName"></code>.</li>
+      <li>Permissions → Repository → <b>Contents: Read and write</b>. Expiry: a year. Generate.</li>
+      <li>Paste it here.</li>
+    </ol>
+    <input id="token" type="password" placeholder="github_pat_…" autocomplete="off" spellcheck="false">
+    <button class="primary" id="save">Connect</button>
+    <details>
+      <summary>Different repo or file</summary>
+      <label>Repo (owner/name)<input id="repoIn" placeholder="Taylor-Rem/taylor-todo"></label>
+      <label>Path<input id="pathIn" placeholder="TAYLOR-TODO.md"></label>
+    </details>
+  </div>
+
+  <div id="list"></div>
+
+  <div class="footer" id="footer"></div>
+</main>
+
+<script>
+(() => {
+  const DEFAULTS = { repo: 'Taylor-Rem/taylor-todo', path: 'TAYLOR-TODO.md', branch: 'main' };
+  const LS = { token: 'todo.token', repo: 'todo.repo', path: 'todo.path', showDone: 'todo.showDone', open: 'todo.open' };
+  const $ = (id) => document.getElementById(id);
+  // localStorage when the browser allows it; otherwise the tab remembers until it closes
+  const mem = new Map();
+  const ls = {
+    get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : v; } catch { return mem.has(k) ? mem.get(k) : d; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch { mem.set(k, v); } },
+    del(k) { try { localStorage.removeItem(k); } catch {} mem.delete(k); },
+  };
+
+  let doc = { text: '', sha: null };     // the file as last fetched
+  let model = null;                       // parsed sections
+  let busy = false;
+  let openIds = new Set((ls.get(LS.open, '') || '').split('|').filter(Boolean));
+
+  const cfg = () => ({ token: ls.get(LS.token, ''), repo: ls.get(LS.repo, DEFAULTS.repo), path: ls.get(LS.path, DEFAULTS.path) });
+
+  // ---- GitHub -------------------------------------------------------------
+  const utf8ToB64 = (s) => { const b = new TextEncoder().encode(s); let bin = ''; b.forEach((c) => (bin += String.fromCharCode(c))); return btoa(bin); };
+  const b64ToUtf8 = (b64) => { const bin = atob(b64.replace(/\n/g, '')); const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0)); return new TextDecoder().decode(bytes); };
+
+  async function gh(method, url, body) {
+    const { token } = cfg();
+    const r = await fetch(url, {
+      method, headers: {
+        Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28', ...(body ? { 'Content-Type': 'application/json' } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined, cache: 'no-store',
+    });
+    if (!r.ok) {
+      let msg = `${r.status}`;
+      try { msg += ' ' + (await r.json()).message; } catch {}
+      const e = new Error(msg); e.status = r.status; throw e;
+    }
+    return r.json();
+  }
+
+  async function load() {
+    const { repo, path } = cfg();
+    const j = await gh('GET', `https://api.github.com/repos/${repo}/contents/${encodeURIComponent(path).replace(/%2F/g, '/')}?ref=${DEFAULTS.branch}&t=${Date.now()}`);
+    doc = { text: b64ToUtf8(j.content), sha: j.sha };
+    model = parse(doc.text);
+    render();
+    setStatus(`synced ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`);
+  }
+
+  async function save(newText, message) {
+    const { repo, path } = cfg();
+    const j = await gh('PUT', `https://api.github.com/repos/${repo}/contents/${encodeURIComponent(path).replace(/%2F/g, '/')}`, {
+      message, content: utf8ToB64(newText), sha: doc.sha, branch: DEFAULTS.branch,
+    });
+    doc = { text: newText, sha: j.content.sha };
+    model = parse(doc.text);
+  }
+
+  // ---- markdown ----------------------------------------------------------
+  const ITEM = /^- \[( |x|X)\] (.*)$/;
+  const SECTION = /^## (.*)$/;
+
+  function parse(text) {
+    const lines = text.split('\n');
+    const sections = [];
+    let cur = null, id = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const sm = line.match(SECTION);
+      if (sm) { cur = { name: sm[1].trim(), items: [], line: i }; sections.push(cur); continue; }
+      const im = line.match(ITEM);
+      if (im && cur) {
+        const body = [im[2]];
+        let j = i + 1;
+        while (j < lines.length && (lines[j].startsWith('  ') || (!lines[j].trim() && j + 1 < lines.length && lines[j + 1].startsWith('  ')))) {
+          body.push(lines[j]); j++;
+        }
+        const joined = body.map((b) => b.trim()).join(' ');
+        const bm = joined.match(/\*\*(.+?)\*\*/);
+        const title = bm ? bm[1] : joined.slice(0, 120);
+        let rest = bm ? joined.slice(bm.index + bm[0].length) : joined;
+        const who = rest.match(/_\(([^)]*)\)_\s*$/);
+        if (who) rest = rest.slice(0, who.index);
+        id++;
+        cur.items.push({ id: `${cur.name}::${title}`.slice(0, 200), line: i, raw: line, done: im[1] !== ' ', title, rest: rest.trim(), who: who ? who[1] : '', bodyLines: body.slice(1), endLine: j });
+        i = j - 1;
+      }
+    }
+    return sections;
+  }
+
+  const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  function inline(s) {
+    // code first so nothing inside it gets touched
+    const codes = [];
+    s = esc(s).replace(/`([^`]+)`/g, (_, c) => { codes.push(c); return ` ${codes.length - 1} `; });
+    s = s.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/~~(.+?)~~/g, '<s>$1</s>')
+      .replace(/(^|[\s(])_([^_]+)_(?=[\s).,;:]|$)/g, '$1<i>$2</i>')
+      .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+      .replace(/(^|[\s(])((?:https?:\/\/|www\.)[^\s<)]+)/g, (m, pre, u) => `${pre}<a href="${u.startsWith('http') ? u : 'https://' + u}" target="_blank" rel="noopener">${u}</a>`);
+    return s.replace(/ (\d+) /g, (_, i) => `<code>${codes[i]}</code>`);
+  }
+  function bodyHtml(item) {
+    // the item's own text (after the bold title), then its continuation as paragraphs / sub-bullets
+    const paras = [];
+    let buf = [];
+    const flush = () => { if (buf.length) { paras.push({ p: buf.join(' ') }); buf = []; } };
+    if (item.rest) buf.push(item.rest);
+    // item.rest already includes the wrapped continuation text, so only nested bullets need separate handling
+    const bullets = item.bodyLines.filter((l) => /^\s{2,}[-*] /.test(l)).map((l) => l.replace(/^\s+[-*] /, ''));
+    flush();
+    let html = paras.map((x) => `<p>${inline(x.p)}</p>`).join('');
+    if (bullets.length) {
+      // remove bullet text from the paragraph copy so it isn't shown twice
+      html = `<p>${inline(item.rest.split(/\s[-*] /)[0])}</p><ul>${bullets.map((b) => `<li>${inline(b)}</li>`).join('')}</ul>`;
+    }
+    if (item.who) html += `<p class="meta">${inline(item.who)}</p>`;
+    return html;
+  }
+
+  // ---- render ------------------------------------------------------------
+  function setStatus(msg, err) { const s = $('status'); s.textContent = msg; s.className = 'status' + (err ? ' err' : ''); }
+
+  function render() {
+    const showDone = $('showDone').checked;
+    const list = $('list');
+    list.innerHTML = '';
+    let open = 0, total = 0;
+    for (const s of model) {
+      const items = s.items.filter((it) => showDone || !it.done);
+      open += s.items.filter((it) => !it.done).length; total += s.items.length;
+      const sec = document.createElement('section');
+      const h = document.createElement('h2');
+      const n = s.items.filter((it) => !it.done).length;
+      h.innerHTML = `${esc(s.name)} <span class="n">· ${n} open</span>`;
+      sec.appendChild(h);
+      const ul = document.createElement('ul');
+      for (const it of items) {
+        const li = document.createElement('li');
+        li.className = (it.done ? 'done' : '') + (openIds.has(it.id) ? ' open' : '');
+        li.dataset.id = it.id;
+        const row = document.createElement('div'); row.className = 'row';
+        const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = it.done; cb.title = it.done ? 'reopen' : 'done';
+        cb.addEventListener('change', () => toggle(it, cb, li));
+        const text = document.createElement('div'); text.className = 'text';
+        text.innerHTML = `<div class="title">${inline(it.title)}</div><div class="body">${bodyHtml(it)}</div>`;
+        text.addEventListener('click', (e) => {
+          if (e.target.closest('a')) return;
+          li.classList.toggle('open');
+          if (li.classList.contains('open')) openIds.add(it.id); else openIds.delete(it.id);
+          ls.set(LS.open, [...openIds].join('|'));
+        });
+        row.append(cb, text); li.appendChild(row); ul.appendChild(li);
+      }
+      if (!items.length) {
+        const li = document.createElement('li'); li.innerHTML = '<div class="row"><span class="meta">nothing open here</span></div>'; ul.appendChild(li);
+      }
+      const add = document.createElement('li'); add.className = 'addrow';
+      add.innerHTML = `<form class="add"><input placeholder="add to this section…" maxlength="300"><button type="submit">Add</button></form>`;
+      add.querySelector('form').addEventListener('submit', (e) => { e.preventDefault(); const inp = add.querySelector('input'); if (inp.value.trim()) addItem(s, inp.value.trim(), inp); });
+      ul.appendChild(add);
+      sec.appendChild(ul); list.appendChild(sec);
+    }
+    $('count').textContent = `${open} open of ${total}`;
+    const { repo, path } = cfg();
+    $('footer').innerHTML = `<a href="https://github.com/${esc(repo)}/blob/${DEFAULTS.branch}/${esc(path)}" target="_blank" rel="noopener">${esc(repo)}/${esc(path)}</a>` +
+      `<span>ticks are commits; the laptop pulls them within two minutes</span><a href="#" id="forget">disconnect</a>`;
+    $('forget').addEventListener('click', (e) => { e.preventDefault(); ls.del(LS.token); location.reload(); });
+  }
+
+  // ---- edits -------------------------------------------------------------
+  function withRetry(fn) {
+    // one retry on a stale sha: reload, then re-apply against the fresh text
+    return async () => {
+      try { await fn(); } catch (e) {
+        if (e.status === 409 || e.status === 422) { await load(); await fn(); } else throw e;
+      }
+    };
+  }
+
+  async function toggle(it, cb, li) {
+    if (busy) { cb.checked = it.done; return; }
+    busy = true; li.classList.add('pending'); setStatus('saving…');
+    const want = cb.checked;
+    try {
+      await withRetry(async () => {
+        const lines = doc.text.split('\n');
+        // find by exact line text, not index, so a concurrent edit elsewhere doesn't tick the wrong item
+        let idx = lines[it.line] === it.raw ? it.line : lines.findIndex((l) => l === it.raw);
+        if (idx < 0) throw new Error("that item changed on disk since the page loaded; reloaded, try again");
+        lines[idx] = lines[idx].replace(/^- \[[ xX]\]/, want ? '- [x]' : '- [ ]');
+        await save(lines.join('\n'), `${want ? 'done' : 'reopen'}: ${it.title.slice(0, 60)}`);
+      })();
+      render(); setStatus(`${want ? 'done' : 'reopened'}: ${it.title.slice(0, 60)}`);
+    } catch (e) {
+      cb.checked = it.done; li.classList.remove('pending'); fail(e);
+    } finally { busy = false; }
+  }
+
+  async function addItem(section, text, input) {
+    if (busy) return;
+    busy = true; input.disabled = true; setStatus('adding…');
+    try {
+      await withRetry(async () => {
+        const lines = doc.text.split('\n');
+        const start = lines.findIndex((l, i) => i >= 0 && SECTION.test(l) && l.match(SECTION)[1].trim() === section.name);
+        if (start < 0) throw new Error('section vanished; reloaded');
+        let end = lines.findIndex((l, i) => i > start && SECTION.test(l)); if (end < 0) end = lines.length;
+        let at = end;
+        while (at > start + 1 && !lines[at - 1].trim()) at--;
+        const today = new Date(); const d = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+        const entry = `- [ ] **${text.replace(/\.$/, '')}.** _(Taylor, ${d})_`;
+        const ins = at === start + 1 ? ['', entry] : [entry];
+        lines.splice(at, 0, ...ins);
+        await save(lines.join('\n'), `add: ${text.slice(0, 60)}`);
+      })();
+      input.value = ''; render(); setStatus(`added: ${text.slice(0, 60)}`);
+    } catch (e) { fail(e); } finally { busy = false; input.disabled = false; }
+  }
+
+  function fail(e) {
+    if (e.status === 401) { setStatus('token rejected — paste a fresh one', true); ls.del(LS.token); showSetup(); return; }
+    if (e.status === 404) { setStatus(`not found: check the repo/path and that the token can read ${cfg().repo}`, true); showSetup(); return; }
+    setStatus(String(e.message || e), true);
+  }
+
+  // ---- setup -------------------------------------------------------------
+  function showSetup() {
+    $('setup').classList.remove('hidden'); $('list').innerHTML = ''; $('count').textContent = '';
+    $('repoName').textContent = cfg().repo.split('/')[1] || cfg().repo;
+    $('repoIn').value = cfg().repo; $('pathIn').value = cfg().path;
+    $('token').focus();
+  }
+  $('save').addEventListener('click', async () => {
+    const t = $('token').value.trim();
+    if (!t) { setStatus('paste the token first', true); return; }
+    ls.set(LS.token, t);
+    const r = $('repoIn').value.trim(), p = $('pathIn').value.trim();
+    if (r) ls.set(LS.repo, r); if (p) ls.set(LS.path, p);
+    $('token').value = '';
+    $('setup').classList.add('hidden');
+    await start();
+  });
+  $('token').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('save').click(); });
+  $('showDone').checked = ls.get(LS.showDone, '0') === '1';
+  $('showDone').addEventListener('change', () => { ls.set(LS.showDone, $('showDone').checked ? '1' : '0'); if (model) render(); });
+  $('refresh').addEventListener('click', () => start());
+
+  async function start() {
+    if (!cfg().token) { showSetup(); return; }
+    setStatus('loading…');
+    try { await load(); } catch (e) { fail(e); }
+  }
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && cfg().token && !busy) load().catch(() => {}); });
+  setInterval(() => { if (!document.hidden && cfg().token && !busy) load().catch(() => {}); }, 60000);
+  start();
+})();
+</script>
+</body>
+</html>

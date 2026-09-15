@@ -1,0 +1,9 @@
+[Unit]
+Description=todo: sync ~/projects/TAYLOR-TODO.md with its private GitHub repo
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/todo sync --quiet
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+StandardOutput=append:%h/.local/state/claude-tools/todo-sync.log
+StandardError=append:%h/.local/state/claude-tools/todo-sync.log

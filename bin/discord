@@ -1,0 +1,174 @@
+#!/usr/bin/env python3
+"""
+discord — read-only window onto the Discord servers the relay bot is in.
+
+  discord ls                      servers and their text channels (id, name, last activity)
+  discord read <#name|id> [-n N]  the last N messages in a channel, oldest first (default 30)
+                                  [--before <message id>] to page back, [--json] for rows
+  discord doctor                  is the token there, can we reach the API
+
+Reads DISCORD_BOT_TOKEN from the environment or ~/.config/claude-tools/env; the
+value is never printed. Only reads: no sending, no reacting, no state. Made so
+chat rooms (sms-relay `chat` projects) can look at the other channels of a
+server without the relay pushing every message into every prompt.
+"""
+
+import argparse
+import json
+import os
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+import requests
+
+ENV_FILE = Path(os.environ.get("CLAUDE_TOOLS_ENV", Path.home() / ".config/claude-tools/env"))
+API = "https://discord.com/api/v10"
+TEXT_TYPES = {0: "text", 5: "announcements", 15: "forum", 11: "thread", 12: "thread"}
+
+
+def die(msg, code=1):
+    print(f"discord: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def load_keys():
+    keys = {}
+    if not ENV_FILE.exists():
+        return keys
+    for line in ENV_FILE.read_text().splitlines():
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        keys[k.strip()] = v.strip()
+    return keys
+
+
+def need_token():
+    val = os.environ.get("DISCORD_BOT_TOKEN") or load_keys().get("DISCORD_BOT_TOKEN")
+    if not val:
+        die("DISCORD_BOT_TOKEN is not set. Ask Taylor to run: ~/.config/claude-tools/setenv.sh DISCORD_BOT_TOKEN")
+    return val
+
+
+def call(path, **params):
+    r = requests.get(API + path, headers={"Authorization": f"Bot {need_token()}"}, params=params, timeout=30)
+    if r.status_code == 403:
+        die(f"no access to {path} (HTTP 403)")
+    if r.status_code == 404:
+        die(f"not found: {path}")
+    if r.status_code != 200:
+        die(f"GET {path}: HTTP {r.status_code} {r.text[:200]}")
+    return r.json()
+
+
+def snowflake_time(sid):
+    try:
+        ms = (int(sid) >> 22) + 1420070400000
+        return datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def ago(dt):
+    if not dt:
+        return "-"
+    s = int((datetime.now(timezone.utc) - dt).total_seconds())
+    for unit, n in (("d", 86400), ("h", 3600), ("m", 60)):
+        if s >= n:
+            return f"{s // n}{unit} ago"
+    return "just now"
+
+
+def guild_channels():
+    """[(guild, [channel, ...])] for text-like channels the bot can see."""
+    out = []
+    for g in call("/users/@me/guilds"):
+        chans = call(f"/guilds/{g['id']}/channels")
+        cats = {c["id"]: c["name"] for c in chans if c["type"] == 4}
+        texts = [c for c in chans if c["type"] in TEXT_TYPES]
+        texts.sort(key=lambda c: (cats.get(c.get("parent_id"), ""), c.get("position", 0)))
+        for c in texts:
+            c["_category"] = cats.get(c.get("parent_id"), "")
+        out.append((g, texts))
+    return out
+
+
+def resolve(ref):
+    """'#memes', 'memes' or a numeric id -> channel dict."""
+    ref = ref.strip()
+    if ref.isdigit():
+        return call(f"/channels/{ref}")
+    name = ref.lstrip("#").lower()
+    hits = [c for _, chans in guild_channels() for c in chans if c["name"].lower() == name]
+    if not hits:
+        die(f"no channel named #{name}; try `discord ls`")
+    if len(hits) > 1:
+        die(f"#{name} exists in more than one server; use the id: " + ", ".join(c["id"] for c in hits))
+    return hits[0]
+
+
+def cmd_ls(args):
+    for g, chans in guild_channels():
+        print(f"{g['name']}  [{g['id']}]")
+        for c in chans:
+            last = ago(snowflake_time(c.get("last_message_id")))
+            cat = f"{c['_category']} / " if c["_category"] else ""
+            print(f"  #{c['name']:<20} {c['id']}  {cat}{TEXT_TYPES[c['type']]:<13} last: {last}")
+
+
+def cmd_read(args):
+    c = resolve(args.channel)
+    params = {"limit": max(1, min(args.n, 100))}
+    if args.before:
+        params["before"] = args.before
+    msgs = call(f"/channels/{c['id']}/messages", **params)
+    rows = []
+    for m in reversed(msgs):
+        a = m.get("author") or {}
+        who = a.get("global_name") or a.get("username") or "?"
+        text = (m.get("content") or "").strip()
+        if m.get("attachments"):
+            text = (text + " " + " ".join(f"[attachment: {x.get('filename')}]" for x in m["attachments"])).strip()
+        if m.get("embeds") and not text:
+            text = "[embed]"
+        ts = m.get("timestamp", "")[:16].replace("T", " ")
+        rows.append({"id": m["id"], "ts": ts, "who": who, "user": a.get("username", ""), "text": text})
+    if args.json:
+        print(json.dumps(rows, ensure_ascii=False, indent=1))
+        return
+    print(f"#{c.get('name', c['id'])} — last {len(rows)} messages, oldest first")
+    for r in rows:
+        print(f"[{r['ts']}] {r['who']}: {r['text']}")
+    if rows:
+        print(f"(page back with --before {rows[0]['id']})")
+
+
+def cmd_doctor(args):
+    src = "env" if os.environ.get("DISCORD_BOT_TOKEN") else ("file" if load_keys().get("DISCORD_BOT_TOKEN") else None)
+    print(f"token: {'found in ' + src if src else 'MISSING'}")
+    if not src:
+        sys.exit(1)
+    me = call("/users/@me")
+    print(f"bot: @{me.get('username')} [{me.get('id')}]")
+    for g, chans in guild_channels():
+        print(f"server: {g['name']} — {len(chans)} text channels")
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="discord", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("ls", help="servers and channels").set_defaults(fn=cmd_ls)
+    r = sub.add_parser("read", help="last messages in a channel")
+    r.add_argument("channel", help="#name or channel id")
+    r.add_argument("-n", type=int, default=30, help="how many (max 100)")
+    r.add_argument("--before", default="", help="message id to page back from")
+    r.add_argument("--json", action="store_true")
+    r.set_defaults(fn=cmd_read)
+    sub.add_parser("doctor", help="token + API check").set_defaults(fn=cmd_doctor)
+    args = ap.parse_args()
+    args.fn(args)
+
+
+if __name__ == "__main__":
+    main()

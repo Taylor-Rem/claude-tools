@@ -1,0 +1,646 @@
+#!/usr/bin/env python3
+"""site — client websites on GitHub Pages, run from inside a client workspace.
+
+A client site is one command: a public repo under our GitHub org from the
+template in claude-tools/templates/site/, cloned into ./repos/<name>, Pages
+turned on, the live URL written back into the workspace (.client.json +
+allowlist via `client new --restamp`). Exit is one command too.
+
+  site new <name> [--tagline "…"] [--primary] [--no-wait] [--dry-run]
+  site ls                              # repos in ./repos with their Pages URLs
+  site domain <name> [example.com] [--https]   # CNAME + Pages + the DNS lines  (SITE_ADMIN=1)
+  site transfer <name> <github-user> [--keep]  # hand the repo to the client   (SITE_ADMIN=1)
+  site template push                   # mirror templates/site to <org>/site-template
+  site doctor                          # auth, org, template, and each repo's Pages
+
+new / ls / domain / transfer run only inside a client workspace (a directory
+with .client.json; `client new <slug>` makes one) and only touch ./repos/.
+domain and transfer are Taylor's work: they refuse unless SITE_ADMIN=1 is in
+the environment, which a client session's allowlist can't set.
+
+Config, by name, never printed:
+  GITHUB_TOKEN   in ~/.config/claude-tools/env — passed to gh as GH_TOKEN; when
+                 absent, gh's own login (`gh auth login`) is used.
+  SITE_ORG       the GitHub owner repos are created under (env, or a line in
+                 the same file: `setenv.sh SITE_ORG`). No default: refuses.
+  SITE_TEMPLATE_REPO  name of the mirrored template repo (default site-template).
+"""
+
+import argparse
+import datetime
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent.parent
+TEMPLATE_DIR = HERE / "templates" / "site"
+ENV_FILE = Path(os.environ.get("CLAUDE_TOOLS_ENV", Path.home() / ".config/claude-tools/env"))
+CLIENT_BIN = HERE / "bin" / "client"
+NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+DOMAIN_RE = re.compile(r"^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$")
+PAGES_IPS = ("185.199.108.153", "185.199.109.153", "185.199.110.153", "185.199.111.153")
+FILLED_FILES = ("CLAUDE.md", "README.md", ".claude/settings.json")   # files that carry the live URL
+DRY = False
+
+
+# ---------------------------------------------------------------- helpers
+
+def die(msg, code=1):
+    print(f"site: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def say(msg=""):
+    print(msg, flush=True)
+
+
+def read_env():
+    """Parse the toolbelt env file. Values stay in memory only."""
+    keys = {}
+    if not ENV_FILE.exists():
+        return keys
+    for line in ENV_FILE.read_text().splitlines():
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        keys[k.strip()] = v.strip()
+    return keys
+
+
+def token_source():
+    """('GITHUB_TOKEN', value) from the toolbelt, else ('gh login', None)."""
+    val = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if val:
+        return "GH_TOKEN from the environment", val
+    val = read_env().get("GITHUB_TOKEN")
+    if val:
+        return "GITHUB_TOKEN from the toolbelt", val
+    return "gh's own login (no GITHUB_TOKEN in the toolbelt)", None
+
+
+def gh_env():
+    env = dict(os.environ)
+    env["GH_PROMPT_DISABLED"] = "1"
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GH_NO_UPDATE_NOTIFIER"] = "1"
+    _, tok = token_source()
+    if tok:
+        env["GH_TOKEN"] = tok
+    return env
+
+
+def gh(*args, check=True, stdin=None, quiet=False):
+    """Run gh; returns (returncode, stdout, stderr). Never echoes the token."""
+    cmd = ["gh", *args]
+    if DRY:
+        say("  would run: " + " ".join(cmd))
+        return 0, "", ""
+    r = subprocess.run(cmd, capture_output=True, text=True, env=gh_env(), input=stdin)
+    if check and r.returncode != 0:
+        if not quiet:
+            die(f"gh {' '.join(args[:3])} failed: {r.stderr.strip() or r.stdout.strip()}")
+    return r.returncode, r.stdout.strip(), r.stderr.strip()
+
+
+def gh_json(*args, default=None):
+    code, out, _ = gh(*args, check=False)
+    if code != 0 or not out:
+        return default
+    try:
+        return json.loads(out)
+    except ValueError:
+        return default
+
+
+def git(repo, *args, check=True):
+    cmd = ["git", "-C", str(repo), *args]
+    if DRY:
+        say("  would run: " + " ".join(cmd))
+        return 0, ""
+    r = subprocess.run(cmd, capture_output=True, text=True, env=gh_env())
+    if check and r.returncode != 0:
+        die(f"git {' '.join(args[:2])} failed in {repo}: {r.stderr.strip() or r.stdout.strip()}")
+    return r.returncode, r.stdout.strip()
+
+
+def owner():
+    o = os.environ.get("SITE_ORG") or read_env().get("SITE_ORG")
+    if not o:
+        die("SITE_ORG is not set: the GitHub org (or user) repos are created under. "
+            "Taylor sets it once with ~/.config/claude-tools/setenv.sh SITE_ORG "
+            "(the org is TAYLOR-TODO §1); for a dry run, SITE_ORG=Taylor-Rem site …")
+    if not re.match(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}$", o):
+        die(f"SITE_ORG {o!r} is not a valid GitHub owner name")
+    return o
+
+
+def template_repo():
+    return os.environ.get("SITE_TEMPLATE_REPO", "site-template")
+
+
+def workspace():
+    """The client workspace is the cwd: must hold .client.json."""
+    ws = Path.cwd()
+    p = ws / ".client.json"
+    if not p.exists():
+        die("not in a client workspace (no .client.json here). Run this from "
+            "~/projects/clients/<slug>; `client new <slug> --name …` makes one.")
+    try:
+        meta = json.loads(p.read_text())
+    except ValueError as exc:
+        die(f".client.json is not valid JSON: {exc}")
+    if not meta.get("slug"):
+        die(".client.json has no slug; run client new <slug> --restamp")
+    return ws, meta
+
+
+def repos_of(ws):
+    d = ws / "repos"
+    return sorted(r.name for r in d.iterdir() if (r / ".git").exists()) if d.is_dir() else []
+
+
+def repo_dir(ws, name):
+    if not NAME_RE.match(name):
+        die(f"{name!r} is not a valid site name (lowercase letters, digits, dashes)")
+    d = ws / "repos" / name
+    if not (d / ".git").exists():
+        die(f"no repo at repos/{name} (site ls shows what exists)")
+    return d
+
+
+def remote_slug(repo):
+    """'owner/name' from the origin remote, or None."""
+    code, url = git(repo, "remote", "get-url", "origin", check=False)
+    if code != 0:
+        return None
+    m = re.search(r"github\.com[:/]([^/]+)/([^/.]+?)(?:\.git)?/?$", url)
+    return f"{m.group(1)}/{m.group(2)}" if m else None
+
+
+def pages_info(slug):
+    """The Pages object for owner/name, or None (not enabled / no access)."""
+    return gh_json("api", f"repos/{slug}/pages")
+
+
+def pages_url(o, name):
+    return f"https://{o.lower()}.github.io/{name}/"
+
+
+def require_admin(what):
+    if os.environ.get("SITE_ADMIN") != "1":
+        die(f"{what} is Taylor's work (an account or DNS change). Run it as "
+            f"`SITE_ADMIN=1 site {what} …` from an owner session; a client session "
+            f"can't. Reply to the client that this needs Taylor and FORWARD-TO-TAYLOR it.")
+
+
+def write_meta(ws, meta):
+    (ws / ".client.json").write_text(json.dumps(meta, indent=2) + "\n")
+
+
+def restamp(ws, meta):
+    """Re-run `client new <slug> --restamp` so CLAUDE.md and the allowlist follow
+    .client.json (the curl rules for live_url live there)."""
+    client = CLIENT_BIN if CLIENT_BIN.exists() else shutil.which("client")
+    if not client:
+        say("  note: `client` not found; run `client new "
+            f"{meta['slug']} --restamp` yourself so the allowlist gains the curl rules")
+        return
+    cmd = [str(client), "new", meta["slug"], "--restamp"]
+    if DRY:
+        say("  would run: " + " ".join(cmd))
+        return
+    env = dict(os.environ)
+    env.setdefault("CLIENTS_DIR", str(ws.parent))
+    r = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    if r.returncode != 0:
+        say(f"  WARN restamp failed: {r.stderr.strip() or r.stdout.strip()}")
+    else:
+        say(f"  restamped workspace (CLAUDE.md + allowlist now know {meta.get('live_url') or 'no live URL'})")
+
+
+def set_live_url(ws, meta, url, force=False):
+    """live_url is the one URL the allowlist lets a session curl. Take it when
+    it's empty or still the Plateful default; otherwise only with --primary."""
+    cur = meta.get("live_url") or ""
+    if cur and not force and not cur.endswith(".plateful.fyi/") and cur != url:
+        say(f"  live_url stays {cur} (use --primary to make {url} the one the "
+            f"allowlist can curl; multi-site allowlists are a `client` follow-up)")
+        return False
+    meta["live_url"] = url
+    if not DRY:
+        write_meta(ws, meta)
+    say(f"  .client.json live_url = {url}")
+    return True
+
+
+def fill(text, values):
+    for k, v in values.items():
+        text = text.replace("{{" + k + "}}", v)
+    return text
+
+
+def http_status(url, timeout=10):
+    req = urllib.request.Request(url, method="GET", headers={"User-Agent": "claude-tools site", "Cache-Control": "no-cache"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, r.read(4096).decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        return exc.code, ""
+    except (urllib.error.URLError, OSError):
+        return 0, ""
+
+
+def wait_live(url, marker, seconds=240):
+    """Poll until the live URL serves `marker` (or `seconds` pass)."""
+    say(f"  waiting for Pages to publish {url} (up to {seconds // 60} min; --no-wait skips)")
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        code, body = http_status(url)
+        if code == 200 and (not marker or marker in body):
+            return True
+        time.sleep(10)
+    return False
+
+
+# ---------------------------------------------------------------- commands
+
+def cmd_new(a):
+    global DRY
+    DRY = a.dry_run
+    ws, meta = workspace()
+    name = a.name
+    if not NAME_RE.match(name):
+        die(f"{name!r} is not a valid site name: lowercase letters, digits and dashes, "
+            f"e.g. {meta['slug']}-site")
+    o = owner()
+    slug = f"{o}/{name}"
+    dest = ws / "repos" / name
+    if dest.exists():
+        die(f"repos/{name} already exists")
+    if not TEMPLATE_DIR.is_dir():
+        die(f"template missing at {TEMPLATE_DIR}")
+    src, _ = token_source()
+    say(f"site new {name} for {meta['name']} ({meta['slug']}) under {o}, auth: {src}")
+
+    code, _, err = gh("repo", "view", slug, "--json", "name", check=False)
+    if code == 0 and not DRY:
+        die(f"{slug} already exists on GitHub; pick another name or clone it into repos/{name}")
+    url = pages_url(o, name)
+    values = {
+        "NAME": meta["name"], "REPO": name, "URL": url, "OWNER": o,
+        "YEAR": str(datetime.date.today().year),
+        "TAGLINE": a.tagline or f"A short line about what {meta['name']} does.",
+    }
+    if DRY:
+        say(f"  would create public repo {slug} from {TEMPLATE_DIR}")
+        say(f"  would clone it to repos/{name}, fill {', '.join(f'{{{{{k}}}}}' for k in values)}")
+        say(f"  would enable Pages from main:/ and expect {url}")
+        set_live_url(ws, meta, url, a.primary)
+        restamp(ws, meta)
+        say("dry run: nothing created")
+        return
+
+    # 1. the repo
+    desc = f"Website for {meta['name']}"
+    gh("repo", "create", slug, "--public", "--description", desc, "--disable-wiki")
+    say(f"  created https://github.com/{slug}")
+
+    # 2. the files, from the local template, placeholders filled before the first commit
+    (ws / "repos").mkdir(exist_ok=True)
+    shutil.copytree(TEMPLATE_DIR, dest, symlinks=False)
+    unfilled = []
+    for p in dest.rglob("*"):
+        if not p.is_file() or ".git" in p.parts[len(dest.parts):][:1]:
+            continue
+        try:
+            text = p.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        if "{{" in text:
+            text = fill(text, values)
+            p.write_text(text, encoding="utf-8")
+            if "{{" in text:
+                unfilled.append(str(p.relative_to(dest)))
+    if unfilled:
+        say(f"  WARN unfilled placeholders in: {', '.join(unfilled)}")
+
+    # 3. push
+    git(dest, "init", "-q", "-b", "main")
+    git(dest, "add", "-A")
+    git(dest, "-c", "user.name=Patch (claude-tools site)", "-c", "user.email=noreply@anthropic.com",
+        "commit", "-q", "-m", f"New site for {meta['name']} from the site template")
+    git(dest, "remote", "add", "origin", f"git@github.com:{slug}.git")
+    git(dest, "push", "-q", "-u", "origin", "main")
+    say(f"  pushed repos/{name} (main)")
+
+    # 4. Pages from main:/
+    code, out, err = gh("api", "-X", "POST", f"repos/{slug}/pages", "--input", "-",
+                        stdin=json.dumps({"source": {"branch": "main", "path": "/"}}), check=False)
+    if code != 0 and "already" not in (out + err).lower():
+        say(f"  WARN could not enable Pages: {err or out}. Enable it in the repo's Settings → Pages "
+            f"(main, root) or run: gh api -X POST repos/{slug}/pages --input - <<< "
+            f"'{{\"source\":{{\"branch\":\"main\",\"path\":\"/\"}}}}'")
+    info = pages_info(slug) or {}
+    if info.get("html_url") and info["html_url"].rstrip("/") + "/" != url:
+        say(f"  WARN Pages reports {info['html_url']}, files were filled with {url}")
+        url = info["html_url"].rstrip("/") + "/"
+    say(f"  Pages on: {url}")
+
+    # 5. the workspace
+    set_live_url(ws, meta, url, a.primary)
+    restamp(ws, meta)
+
+    # 6. is it up?
+    live = wait_live(url, meta["name"]) if not a.no_wait else False
+    say()
+    say(f"repo:  https://github.com/{slug}")
+    say(f"local: repos/{name}  (git -C repos/{name} …; its CLAUDE.md is the site manual)")
+    say(f"live:  {url}  {'— serving' if live else '— not serving yet; Pages usually takes 1–3 minutes'}")
+    say(f"next:  edit the REPLACE-ME placeholders in repos/{name}/index.html, push, curl -s {url}")
+    if meta.get("live_url") == url:
+        say(f"       config.json (if the project entry lists live_url): client snippet {meta['slug']}")
+
+
+def cmd_ls(a):
+    ws, meta = workspace()
+    names = repos_of(ws)
+    if not names:
+        say("no repos in ./repos yet (site new <name>)")
+        return
+    for n in names:
+        d = ws / "repos" / n
+        slug = remote_slug(d) or "-"
+        info = pages_info(slug) if slug != "-" else None
+        if info:
+            live = info.get("html_url") or "-"
+            extra = []
+            if info.get("cname"):
+                extra.append(f"domain={info['cname']}" + (" https" if info.get("https_enforced") else " http-only"))
+            if info.get("status") and info["status"] != "built":
+                extra.append(f"status={info['status']}")
+        else:
+            live, extra = "(Pages off or no access)", []
+        same = lambda u: re.sub(r"^https?://", "", (u or "").rstrip("/"))
+        star = " *" if meta.get("live_url") and same(live) == same(meta["live_url"]) else ""
+        say(f"{n:<24} {slug:<32} {live}{star}  {' '.join(extra)}")
+    if meta.get("live_url"):
+        say(f"\n* = live_url in .client.json (the URL the allowlist can curl): {meta['live_url']}")
+
+
+def cmd_domain(a):
+    require_admin("domain")
+    ws, meta = workspace()
+    d = repo_dir(ws, a.name)
+    slug = remote_slug(d)
+    if not slug:
+        die(f"repos/{a.name} has no GitHub remote")
+    o = slug.split("/")[0]
+    if not a.domain:
+        info = pages_info(slug)
+        if not info:
+            die(f"Pages is not enabled for {slug}")
+        say(f"{slug}: {info.get('html_url')}")
+        say(f"  custom domain: {info.get('cname') or '(none)'}")
+        say(f"  https enforced: {info.get('https_enforced')}")
+        say(f"  domain state: {info.get('protected_domain_state') or '-'}, build status: {info.get('status')}")
+        if a.https:
+            gh("api", "-X", "PUT", f"repos/{slug}/pages", "--input", "-", stdin=json.dumps({"https_enforced": True}))
+            say("  https enforced: True (set now)")
+        return
+    domain = a.domain.lower().strip().rstrip("/")
+    domain = re.sub(r"^https?://", "", domain)
+    if not DOMAIN_RE.match(domain):
+        die(f"{domain!r} doesn't look like a domain")
+    old_info = pages_info(slug) or {}
+    old_url = (old_info.get("html_url") or pages_url(o, a.name)).rstrip("/") + "/"
+    new_url = f"https://{domain}/"
+
+    # the repo: CNAME + the live URL in the manual/allowlist
+    (d / "CNAME").write_text(domain + "\n")
+    for f in FILLED_FILES:
+        p = d / f
+        if p.exists() and old_url in p.read_text():
+            p.write_text(p.read_text().replace(old_url, new_url))
+    git(d, "add", "CNAME", *[f for f in FILLED_FILES if (d / f).exists()])
+    code, status = git(d, "status", "--porcelain", "--untracked-files=no", check=False)
+    if status.strip():
+        git(d, "-c", "user.name=Patch (claude-tools site)", "-c", "user.email=noreply@anthropic.com",
+            "commit", "-q", "-m", f"Point the site at {domain}")
+        git(d, "push", "-q")
+        say(f"  committed CNAME and pushed")
+
+    # GitHub Pages
+    gh("api", "-X", "PUT", f"repos/{slug}/pages", "--input", "-", stdin=json.dumps({"cname": domain}))
+    say(f"  Pages custom domain set to {domain}")
+    if a.https:
+        code, out, err = gh("api", "-X", "PUT", f"repos/{slug}/pages", "--input", "-",
+                            stdin=json.dumps({"https_enforced": True}), check=False)
+        say("  https enforced" if code == 0 else
+            f"  https not enforced yet ({(err or out).splitlines()[-1] if (err or out) else 'certificate pending'}); "
+            f"re-run `SITE_ADMIN=1 site domain {a.name} --https` once DNS has propagated")
+
+    # the workspace
+    set_live_url(ws, meta, new_url, force=True)
+    restamp(ws, meta)
+
+    # what to tell the registrar
+    apex = domain if domain.count(".") == 1 else None
+    target = f"{o.lower()}.github.io"
+    say(f"\nDNS records to add at the registrar for {domain}:")
+    if apex:
+        for ip in PAGES_IPS:
+            say(f"  A      @      {ip}")
+        say(f"  CNAME  www    {target}")
+    else:
+        sub = domain.split(".", 1)[0]
+        say(f"  CNAME  {sub:<6} {target}")
+        say(f"  (and, if the bare domain should redirect here, A records for @ → {', '.join(PAGES_IPS)})")
+    say(f"\nThen: wait for DNS (minutes to a day), `SITE_ADMIN=1 site domain {a.name}` shows the state, "
+        f"and `--https` turns on Enforce HTTPS once GitHub has the certificate. Live URL is now {new_url}.")
+
+
+def cmd_transfer(a):
+    require_admin("transfer")
+    ws, meta = workspace()
+    d = repo_dir(ws, a.name)
+    slug = remote_slug(d)
+    if not slug:
+        die(f"repos/{a.name} has no GitHub remote")
+    if not re.match(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}$", a.user):
+        die(f"{a.user!r} is not a valid GitHub user/org name")
+    if not gh_json("api", f"users/{a.user}"):
+        die(f"GitHub has no account named {a.user}")
+    _, dirty = git(d, "status", "--porcelain", check=False)
+    _, unpushed = git(d, "log", "--oneline", "@{u}..", check=False)
+    if dirty.strip() or unpushed.strip():
+        die(f"repos/{a.name} has {'uncommitted changes' if dirty.strip() else 'unpushed commits'}; "
+            f"commit and push first so the client gets everything")
+    info = pages_info(slug) or {}
+    code, out, err = gh("api", "-X", "POST", f"repos/{slug}/transfer", "--input", "-",
+                        stdin=json.dumps({"new_owner": a.user}), check=False)
+    if code != 0:
+        die(f"transfer refused: {err or out}")
+    name = slug.split("/")[1]
+    say(f"transfer of {slug} to {a.user} requested.")
+    say(f"  GitHub emails {a.user}; they accept within 24 hours, then the repo is https://github.com/{a.user}/{name}")
+    say(f"  Pages will publish at https://{a.user.lower()}.github.io/{name}/ from their Settings → Pages (main, root)"
+        + (f"; their custom domain {info['cname']} keeps working once DNS `www` (or the subdomain) points at "
+           f"{a.user.lower()}.github.io — the A records don't change" if info.get("cname") else ""))
+    say(f"  we lose write access when they accept, so this workspace stops managing it.")
+    old_url = (info.get("html_url") or "").rstrip("/") + "/" if info.get("html_url") else None
+    if meta.get("live_url") and old_url and meta["live_url"].rstrip("/") + "/" == old_url:
+        meta["live_url"] = None
+        write_meta(ws, meta)
+        restamp(ws, meta)
+    if a.keep:
+        say(f"  repos/{a.name} kept (--keep); remove it once they've accepted")
+    else:
+        shutil.rmtree(d)
+        say(f"  removed repos/{a.name} from the workspace (everything is on GitHub; the relay no longer sees it)")
+
+
+def cmd_template(a):
+    if a.action != "push":
+        die("site template push is the only template action")
+    o = owner()
+    slug = f"{o}/{template_repo()}"
+    if not TEMPLATE_DIR.is_dir():
+        die(f"template missing at {TEMPLATE_DIR}")
+    _, sha = git(HERE, "rev-parse", "--short", "HEAD", check=False)
+    code, _, _ = gh("repo", "view", slug, "--json", "name", check=False)
+    if code != 0:
+        gh("repo", "create", slug, "--public", "--disable-wiki", "--disable-issues",
+           "--description", "Template for client sites made by `site new` (claude-tools)")
+        say(f"  created https://github.com/{slug}")
+    with tempfile.TemporaryDirectory(prefix="site-template-") as tmp:
+        work = Path(tmp) / "repo"
+        code, _, err = gh("repo", "clone", slug, str(work), "--", "-q", check=False)
+        if code != 0:
+            die(f"clone failed: {err}")
+        for p in list(work.iterdir()):
+            if p.name != ".git":
+                shutil.rmtree(p) if p.is_dir() else p.unlink()
+        shutil.copytree(TEMPLATE_DIR, work, dirs_exist_ok=True)
+        (work / "TEMPLATE.md").write_text(
+            f"# site-template\n\nThe files `site new` copies for a new client site, mirrored from "
+            f"`claude-tools/templates/site/` (commit {sha or '?'}). The `{{{{NAME}}}}`-style placeholders are "
+            f"filled at creation; edit the source in claude-tools, then `site template push`.\n")
+        git(work, "add", "-A")
+        _, status = git(work, "status", "--porcelain", check=False)
+        if not status.strip():
+            say(f"{slug} already matches templates/site")
+        else:
+            _, branch = git(work, "rev-parse", "--abbrev-ref", "HEAD", check=False)
+            git(work, "-c", "user.name=Patch (claude-tools site)", "-c", "user.email=noreply@anthropic.com",
+                "commit", "-q", "-m", f"Sync from claude-tools templates/site ({sha or 'local'})")
+            git(work, "push", "-q", "-u", "origin", branch if branch not in ("", "HEAD") else "main")
+            say(f"  pushed templates/site to {slug}")
+    gh("api", "-X", "PATCH", f"repos/{slug}", "--input", "-", stdin=json.dumps({"is_template": True}))
+    say(f"  https://github.com/{slug} is a template repo")
+
+
+def cmd_doctor(a):
+    ok = True
+
+    def fail(msg):
+        nonlocal ok
+        ok = False
+        say(f"  FAIL {msg}")
+
+    say("== auth")
+    src, _ = token_source()
+    say(f"  token: {src}")
+    if not shutil.which("gh"):
+        fail("gh is not installed")
+    else:
+        code, login, err = gh("api", "user", "--jq", ".login", check=False)
+        if code == 0:
+            say(f"  gh authenticates as {login}")
+        else:
+            fail(f"gh cannot authenticate: {err.splitlines()[-1] if err else 'unknown'} (gh auth login, or setenv.sh GITHUB_TOKEN)")
+    say("== owner")
+    o = os.environ.get("SITE_ORG") or read_env().get("SITE_ORG")
+    if not o:
+        fail("SITE_ORG unset (setenv.sh SITE_ORG once the org exists; TAYLOR-TODO §1)")
+    else:
+        kind = "org" if gh_json("api", f"orgs/{o}") else ("user" if gh_json("api", f"users/{o}") else None)
+        if kind:
+            say(f"  SITE_ORG={o} ({kind})")
+            tslug = f"{o}/{template_repo()}"
+            code, _, _ = gh("repo", "view", tslug, "--json", "name", check=False)
+            say(f"  template mirror {tslug}: {'present' if code == 0 else 'absent (site template push)'}")
+        else:
+            fail(f"SITE_ORG={o} is not reachable on GitHub")
+    say("== template")
+    if TEMPLATE_DIR.is_dir():
+        found = set()
+        for p in TEMPLATE_DIR.rglob("*"):
+            if p.is_file():
+                try:
+                    found |= set(re.findall(r"{{([A-Z_]+)}}", p.read_text(encoding="utf-8")))
+                except UnicodeDecodeError:
+                    pass
+        say(f"  {TEMPLATE_DIR}: placeholders {', '.join(sorted(found))}")
+        unknown = found - {"NAME", "REPO", "URL", "OWNER", "YEAR", "TAGLINE"}
+        if unknown:
+            fail(f"placeholders `site new` doesn't fill: {', '.join(sorted(unknown))}")
+    else:
+        fail(f"no template at {TEMPLATE_DIR}")
+    say(f"  client tool: {CLIENT_BIN if CLIENT_BIN.exists() else shutil.which('client') or 'MISSING'}")
+    if (Path.cwd() / ".client.json").exists():
+        ws, meta = workspace()
+        say(f"== workspace {meta['slug']} ({meta['name']}) live_url={meta.get('live_url') or '-'}")
+        for n in repos_of(ws):
+            d = ws / "repos" / n
+            slug = remote_slug(d)
+            info = pages_info(slug) if slug else None
+            if not slug:
+                fail(f"repos/{n}: no GitHub remote")
+            elif not info:
+                say(f"  repos/{n}: {slug}, Pages off or not visible")
+            else:
+                st = info.get("status") or "?"
+                say(f"  repos/{n}: {slug} → {info.get('html_url')} [{st}]"
+                    + (f" domain={info['cname']}" if info.get("cname") else ""))
+                if st == "errored":
+                    fail(f"repos/{n}: Pages build errored (gh run list -R {slug})")
+    else:
+        say("== not in a client workspace (cd ~/projects/clients/<slug> for per-repo checks)")
+    sys.exit(0 if ok else 1)
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="site", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    n = sub.add_parser("new", help="create a site: repo from the template, Pages on, URL into the workspace")
+    n.add_argument("name", help="repo name, e.g. <slug>-site")
+    n.add_argument("--tagline", help="one line under the name on the home page")
+    n.add_argument("--primary", action="store_true", help="make this the workspace's live_url even if one is set")
+    n.add_argument("--no-wait", action="store_true", help="don't wait for the first Pages build")
+    n.add_argument("--dry-run", action="store_true", help="check everything and print the plan; create nothing")
+    n.set_defaults(fn=cmd_new)
+    sub.add_parser("ls", help="repos in ./repos with their Pages URLs").set_defaults(fn=cmd_ls)
+    d = sub.add_parser("domain", help="custom domain for a site (SITE_ADMIN=1); no domain = show status")
+    d.add_argument("name"); d.add_argument("domain", nargs="?")
+    d.add_argument("--https", action="store_true", help="enforce HTTPS (works once GitHub has the certificate)")
+    d.set_defaults(fn=cmd_domain)
+    t = sub.add_parser("transfer", help="hand a repo to the client's GitHub account (SITE_ADMIN=1)")
+    t.add_argument("name"); t.add_argument("user")
+    t.add_argument("--keep", action="store_true", help="keep the local clone in repos/")
+    t.set_defaults(fn=cmd_transfer)
+    tp = sub.add_parser("template", help="`site template push` mirrors templates/site to <org>/site-template")
+    tp.add_argument("action", choices=["push"]); tp.set_defaults(fn=cmd_template)
+    sub.add_parser("doctor", help="check auth, org, template, and this workspace's sites").set_defaults(fn=cmd_doctor)
+    a = ap.parse_args()
+    a.fn(a)
+
+
+if __name__ == "__main__":
+    main()

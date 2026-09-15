@@ -1,0 +1,233 @@
+/* ==========================================================================
+   {{NAME}} — the site's only stylesheet
+   Colors and fonts are the tokens in :root below. Change the look there,
+   not scattered through the file.
+   ========================================================================== */
+
+:root {
+  /* Color — warm off-white ground, dark ink, one accent */
+  --bg: #faf8f4;
+  --bg-raised: #ffffff;
+  --bg-line: #e6e1d8;
+  --ink: #1d1b17;
+  --ink-dim: #6b665c;
+  --accent: #b4532a;       /* links, highlights, buttons */
+  --accent-dim: #8f3f1e;   /* hover */
+
+  /* Type — system fonts, so nothing loads from a third party */
+  --font-display: Georgia, "Times New Roman", serif;
+  --font-body: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+
+  /* Rhythm */
+  --space: 1rem;
+  --space-lg: 2.5rem;
+  --space-xl: 5rem;
+  --measure: 40rem;
+  --page-pad: clamp(1.25rem, 5vw, 3rem);
+}
+
+/* --------------------------------------------------------------------------
+   Base
+   -------------------------------------------------------------------------- */
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 1.05rem;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3 {
+  font-family: var(--font-display);
+  font-weight: 400;
+  line-height: 1.15;
+}
+
+h2 { font-size: clamp(1.6rem, 4vw, 2.2rem); margin-bottom: var(--space-lg); }
+h3 { font-size: 1.15rem; margin-bottom: 0.5rem; }
+
+p { max-width: var(--measure); }
+p + p { margin-top: var(--space); }
+
+a { color: var(--accent); text-underline-offset: 3px; }
+a:hover { color: var(--accent-dim); }
+
+img, svg { max-width: 100%; display: block; }
+
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+}
+
+/* --------------------------------------------------------------------------
+   Header / nav
+   -------------------------------------------------------------------------- */
+
+.site-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space);
+  padding: 1.25rem var(--page-pad);
+  border-bottom: 1px solid var(--bg-line);
+  background: var(--bg-raised);
+}
+
+.wordmark {
+  font-family: var(--font-display);
+  font-size: 1.3rem;
+  text-decoration: none;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.site-nav { display: flex; flex-wrap: wrap; gap: 0.25rem 1.5rem; }
+
+.site-nav a {
+  font-size: 0.9rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  text-decoration: none;
+  color: var(--ink-dim);
+}
+
+.site-nav a:hover { color: var(--ink); }
+.site-nav a[aria-current="page"] { color: var(--accent); }
+
+/* --------------------------------------------------------------------------
+   Hero
+   -------------------------------------------------------------------------- */
+
+.hero {
+  padding: var(--space-xl) var(--page-pad);
+  text-align: center;
+  border-bottom: 1px solid var(--bg-line);
+}
+
+.hero-title { font-size: clamp(2.4rem, 8vw, 4.5rem); }
+
+.hero-tagline {
+  margin: 1.25rem auto 0;
+  font-size: clamp(1.05rem, 2.2vw, 1.3rem);
+  color: var(--ink-dim);
+}
+
+.page-hero { padding: var(--space-lg) var(--page-pad); }
+.page-hero .hero-title { font-size: clamp(1.8rem, 6vw, 3rem); }
+
+/* --------------------------------------------------------------------------
+   Sections
+   -------------------------------------------------------------------------- */
+
+.section {
+  padding: var(--space-xl) var(--page-pad);
+  border-bottom: 1px solid var(--bg-line);
+}
+
+.section-inner { max-width: 64rem; margin: 0 auto; }
+
+.kicker {
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 0.5rem;
+}
+
+.lede { font-size: 1.2rem; }
+.muted { color: var(--ink-dim); }
+
+.about-grid {
+  display: grid;
+  gap: var(--space-lg);
+  align-items: center;
+}
+@media (min-width: 720px) {
+  .about-grid { grid-template-columns: 1fr 1.2fr; }
+}
+
+.about-photo img {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  border-radius: 4px;
+}
+
+.button-row { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: var(--space-lg); }
+
+.button {
+  display: inline-block;
+  padding: 0.65rem 1.2rem;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  text-decoration: none;
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+.button:hover { background: var(--accent); color: var(--bg-raised); }
+
+/* Details: address / hours / contact cards */
+.details-grid {
+  display: grid;
+  gap: var(--space-lg);
+}
+@media (min-width: 720px) {
+  .details-grid { grid-template-columns: repeat(3, 1fr); }
+}
+.details-grid address { font-style: normal; }
+.details-grid ul { list-style: none; }
+
+/* Photo gallery */
+.photo-grid {
+  list-style: none;
+  display: grid;
+  gap: var(--space);
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+}
+.photo-grid img {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  border-radius: 4px;
+}
+
+/* --------------------------------------------------------------------------
+   Footer
+   -------------------------------------------------------------------------- */
+
+.site-footer {
+  padding: var(--space-lg) var(--page-pad);
+  text-align: center;
+  color: var(--ink-dim);
+  font-size: 0.9rem;
+}
+
+.footer-links {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.5rem 1.5rem;
+  margin-bottom: var(--space);
+}
+
+/* --------------------------------------------------------------------------
+   Motion — only when JS has run and the visitor allows motion.
+   With JS off (or reduced motion on) nothing is ever hidden.
+   -------------------------------------------------------------------------- */
+
+.js-motion .reveal {
+  opacity: 0;
+  transform: translateY(12px);
+  transition: opacity 0.6s ease, transform 0.6s ease;
+}
+.js-motion .reveal.is-visible { opacity: 1; transform: none; }

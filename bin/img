@@ -12,6 +12,11 @@ key values are read here and never printed. Every downloaded/generated image get
 a sidecar <name>.json recording where it came from (photographer, Pexels URL,
 prompt, model) so credit and provenance are never lost.
 
+Every generated image is also a billable event: `img gen` appends one JSON line
+per image to the ledger (~/.local/state/claude-tools/ledger.jsonl, or $IMG_LEDGER,
+or --ledger PATH; --no-ledger to skip) with the estimated cost and the project it
+was for ($PF_RESTAURANT, else the cwd). The relay's `./relay.py costs` reads it.
+
 Output defaults to ~/.cache/claude-tools/img/<slug>/ and every path printed is
 absolute, so the caller can Read the files to review them.
 """
@@ -31,6 +36,7 @@ import requests
 ENV_FILE = Path(os.environ.get("CLAUDE_TOOLS_ENV", Path.home() / ".config/claude-tools/env"))
 STYLES_FILE = Path.home() / ".config/claude-tools/img-styles.json"
 OUT_ROOT = Path(os.environ.get("IMG_OUT_ROOT", Path.home() / ".cache/claude-tools/img"))
+LEDGER = Path(os.environ.get("IMG_LEDGER", Path.home() / ".local/state/claude-tools/ledger.jsonl"))
 
 PEXELS_SEARCH = "https://api.pexels.com/v1/search"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -55,6 +61,18 @@ PEXELS_SIZES = ("original", "large2x", "large", "medium", "small", "portrait", "
 
 
 # ---------------------------------------------------------------- helpers
+
+def ledger_append(path, event):
+    """One JSON line per billable image. Best effort: a ledger problem never
+    fails the generation that already happened."""
+    try:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a") as f:
+            f.write(json.dumps(event) + "\n")
+    except OSError as exc:
+        print(f"img: ledger write failed ({exc})", file=sys.stderr)
+
 
 def die(msg, code=1):
     print(f"img: {msg}", file=sys.stderr)
@@ -284,6 +302,17 @@ def cmd_gen(args):
             "refs": [str(Path(r_).resolve()) for r_ in (args.ref or [])],
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         })
+        if not args.no_ledger:
+            ledger_append(args.ledger, {
+                "ts": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()),
+                "kind": "image",
+                "model": model,
+                "quality": args.quality,
+                "cost_usd": q["usd"],
+                "billed_to": "gemini:GEMINI_API_KEY",
+                "project": os.environ.get("PF_RESTAURANT") or os.getcwd(),
+                "path": str(path),
+            })
         wh = image_size(path)
         dims = f"{wh[0]}x{wh[1]}" if wh else "?"
         print(f"  [{i + 1}] {path}  {dims}")
@@ -373,6 +402,8 @@ def main():
     g.add_argument("-n", type=int, default=1, help="variations to generate")
     g.add_argument("--out", help="exact output file (only with -n 1)")
     g.add_argument("--out-dir", help="directory for multiple outputs")
+    g.add_argument("--ledger", default=str(LEDGER), help=f"cost ledger to append to (default {LEDGER})")
+    g.add_argument("--no-ledger", action="store_true", help="don't record this generation's cost")
     g.set_defaults(fn=cmd_gen)
 
     st = sub.add_parser("styles", help="list style presets")

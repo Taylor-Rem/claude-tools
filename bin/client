@@ -1,0 +1,199 @@
+#!/usr/bin/env python3
+"""client — stamp and inspect client workspaces (~/projects/clients/<slug>).
+
+A client workspace is where the relay runs Claude for one client: their git
+repos under repos/, texted photos in incoming/, optionally a Plateful
+restaurant reachable with `pf`. The workspace's CLAUDE.md and
+.claude/settings.json are the permission boundary; this tool writes them from
+templates/client/ in the claude-tools repo.
+
+  client new <slug> --name "Name" [--plateful SUB] [--live-url URL] [--restamp]
+  client ls
+  client doctor [slug]
+  client snippet <slug>          # the config.json project entry to paste
+
+CLIENTS_DIR overrides ~/projects/clients. No keys needed.
+"""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent.parent
+TEMPLATES = HERE / "templates" / "client"
+CLIENTS_DIR = Path(os.environ.get("CLIENTS_DIR", "~/projects/clients")).expanduser()
+
+DANGEROUS = ("Bash(python3 -c:*)", "Bash(python:*)", "Bash(cat:*)", "Bash(cp:*)", "Bash(mv:*)",
+             "Bash(bash:*)", "Bash(sh:*)", "Bash(curl:*)", "Bash(wget:*)", "Bash(env:*)", "Read", "Bash")
+
+
+def die(msg, code=1):
+    print(f"client: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def repos_of(ws):
+    d = ws / "repos"
+    return sorted(r.name for r in d.iterdir() if (r / ".git").exists()) if d.is_dir() else []
+
+
+def read_meta(ws):
+    p = ws / ".client.json"
+    return json.loads(p.read_text()) if p.exists() else {}
+
+
+def render_settings(meta):
+    tpl = json.loads((TEMPLATES / "settings.json").read_text())
+    rules = tpl.pop("_rules")
+    allow = list(tpl["permissions"]["allow"]) + rules["repos"]
+    if meta.get("plateful"):
+        allow += rules["plateful"]
+    if meta.get("live_url"):
+        url = meta["live_url"].rstrip("/")
+        allow += [r.format(url=url) for r in rules["live_url"]]
+    tpl["permissions"]["allow"] = allow
+    return json.dumps(tpl, indent=2) + "\n"
+
+
+def render_claude_md(meta):
+    md = (TEMPLATES / "CLAUDE.md").read_text()
+    if meta.get("plateful"):
+        bullet = (f"- Their restaurant **{meta['name']}** on Plateful (`{meta['plateful']}`), "
+                  f"reachable with `pf` (see below).\n")
+        section = (TEMPLATES / "PLATEFUL.md").read_text()
+    else:
+        bullet, section = "", ""
+    md = md.replace("{{PLATEFUL_BULLET}}", bullet).replace("{{PLATEFUL_SECTION}}", section)
+    for k in ("name", "slug", "plateful", "live_url"):
+        md = md.replace("{{" + k.upper() + "}}", meta.get(k) or "")
+    if meta.get("live_url"):
+        md = md.replace("then confirm the live URL serves the change (curl it)",
+                        f"then confirm the live URL ({meta['live_url']}) serves the change (curl it)")
+    return md
+
+
+def stamp(ws, meta):
+    ws.mkdir(parents=True, exist_ok=True)
+    (ws / "repos").mkdir(exist_ok=True)
+    (ws / "incoming").mkdir(exist_ok=True)
+    (ws / "incoming" / ".keep").touch()
+    (ws / ".claude").mkdir(exist_ok=True)
+    (ws / "CLAUDE.md").write_text(render_claude_md(meta))
+    (ws / ".claude" / "settings.json").write_text(render_settings(meta))
+    (ws / ".client.json").write_text(json.dumps(meta, indent=2) + "\n")
+
+
+def snippet(slug, meta):
+    entry = {"type": "client", "name": meta["name"]}
+    if meta.get("plateful"):
+        entry["plateful"] = meta["plateful"]
+    if meta.get("live_url"):
+        entry["live_url"] = meta["live_url"]
+    entry["agent"] = {"model": "opus"}
+    return json.dumps({slug: entry}, indent=2)[1:-1].strip()
+
+
+def cmd_new(a):
+    ws = CLIENTS_DIR / a.slug
+    stamped = (ws / "CLAUDE.md").exists()
+    if stamped and not a.restamp:
+        die(f"{ws} already exists; use --restamp to rewrite CLAUDE.md and the allowlist "
+            f"(repos/ and incoming/ are never touched)")
+    old = read_meta(ws) if stamped else {}
+    meta = {"slug": a.slug, "name": a.name or old.get("name") or a.slug,
+            "plateful": a.plateful or old.get("plateful"),
+            "live_url": a.live_url or old.get("live_url")}
+    stamp(ws, meta)
+    print(f"{'restamped' if stamped else 'created'} {ws}")
+    print(f"  repos: {', '.join(repos_of(ws)) or '(none yet — site new <slug> from inside it, or clone into repos/)'}")
+    if meta["plateful"]:
+        print(f"  plateful: {meta['plateful']} (needs PLATEFUL_KEY_{meta['plateful'].upper().replace('-', '_')} "
+              f"in the toolbelt: pf keys create -r {meta['plateful']} --name relay "
+              f"--scopes menu:read,menu:write,media:write,orders:read --save ...)")
+    print("\nconfig.json project entry:\n")
+    print("  " + snippet(a.slug, meta).replace("\n", "\n  "))
+    print("\nthen a sender line with \"projects\": [\"" + a.slug + "\"], and ./relay.py check")
+
+
+def cmd_ls(a):
+    if not CLIENTS_DIR.is_dir():
+        die(f"{CLIENTS_DIR} does not exist")
+    for ws in sorted(CLIENTS_DIR.iterdir()):
+        if not ws.is_dir() or ws.name.startswith("."):
+            continue
+        m = read_meta(ws)
+        flags = []
+        if m.get("plateful"):
+            flags.append(f"plateful={m['plateful']}")
+        if m.get("live_url"):
+            flags.append(m["live_url"])
+        print(f"{ws.name:<16} {m.get('name', '?'):<24} repos={','.join(repos_of(ws)) or '-'}  {' '.join(flags)}")
+
+
+def cmd_doctor(a):
+    ok = True
+    targets = [CLIENTS_DIR / a.slug] if a.slug else [d for d in sorted(CLIENTS_DIR.iterdir())
+                                                     if d.is_dir() and not d.name.startswith(".")]
+    for ws in targets:
+        print(f"== {ws.name}")
+        for f in ("CLAUDE.md", ".claude/settings.json", ".client.json"):
+            if not (ws / f).exists():
+                print(f"  FAIL missing {f}  (client new {ws.name} --restamp)"); ok = False
+        settings = ws / ".claude" / "settings.json"
+        if settings.exists():
+            allow = json.loads(settings.read_text()).get("permissions", {}).get("allow", [])
+            bad = [r for r in allow if r in DANGEROUS]
+            if bad:
+                print(f"  FAIL unbounded rules in allowlist: {', '.join(bad)}"); ok = False
+            if "{" in json.dumps(allow):
+                print("  FAIL unrendered placeholder in allowlist"); ok = False
+        for r in repos_of(ws):
+            d = ws / "repos" / r
+            remote = subprocess.run(["git", "-C", str(d), "remote", "get-url", "origin"],
+                                    capture_output=True, text=True).stdout.strip()
+            branch = subprocess.run(["git", "-C", str(d), "rev-parse", "--abbrev-ref", "HEAD"],
+                                    capture_output=True, text=True).stdout.strip()
+            probs = []
+            if not remote.startswith("git@"):
+                probs.append(f"remote is not SSH ({remote or 'none'})")
+            if branch != "main":
+                probs.append(f"on {branch}, not main")
+            if not (d / "CLAUDE.md").exists():
+                probs.append("no CLAUDE.md")
+            print(f"  repo {r}: {'ok' if not probs else 'WARN ' + '; '.join(probs)}")
+            ok = ok and not probs
+        stray = [p.name for p in (ws / "incoming").iterdir() if p.name != ".keep"] if (ws / "incoming").is_dir() else []
+        if stray:
+            print(f"  note: {len(stray)} file(s) left in incoming/")
+    sys.exit(0 if ok else 1)
+
+
+def cmd_snippet(a):
+    ws = CLIENTS_DIR / a.slug
+    m = read_meta(ws)
+    if not m:
+        die(f"{ws} is not a stamped client workspace")
+    print(snippet(a.slug, m))
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="client", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    n = sub.add_parser("new", help="create (or --restamp) a client workspace")
+    n.add_argument("slug"); n.add_argument("--name"); n.add_argument("--plateful", metavar="SUBDOMAIN")
+    n.add_argument("--live-url"); n.add_argument("--restamp", action="store_true")
+    n.set_defaults(fn=cmd_new)
+    sub.add_parser("ls", help="list client workspaces").set_defaults(fn=cmd_ls)
+    d = sub.add_parser("doctor", help="check workspaces are stamped and repos are pushable")
+    d.add_argument("slug", nargs="?"); d.set_defaults(fn=cmd_doctor)
+    s = sub.add_parser("snippet", help="print the config.json entry for a client")
+    s.add_argument("slug"); s.set_defaults(fn=cmd_snippet)
+    a = ap.parse_args()
+    a.fn(a)
+
+
+if __name__ == "__main__":
+    main()

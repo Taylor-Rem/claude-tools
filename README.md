@@ -8,6 +8,8 @@ them, so Claude can use a service without ever seeing the credential.
 |---|---|
 | `bin/pf` | [Plateful](https://plateful.fyi) operator API: menu, photos, availability, orders, restaurant-scoped key minting. `PF_RESTAURANT=x` pins it to one restaurant's key and refuses to fall back to the platform key. |
 | `bin/img` | Images: `img stock` (Pexels search + download), `img gen` (Gemini image generation, with style presets like `--style plateful-menu`), `img info`, `img doctor`. Every image gets a JSON sidecar recording its provenance. |
+| `bin/client` | Client workspaces (`~/projects/clients/<slug>`): `client new <slug> --name "Name" [--plateful SUB] [--live-url URL]` stamps CLAUDE.md + the permission allowlist from `templates/client/` and prints the `config.json` entry; `client ls`, `client doctor`, `client snippet`. `--restamp` rewrites the two files after a template change (repos/ and incoming/ untouched). No keys. |
+| `templates/client/` | What `client new` stamps: `CLAUDE.md` (client voice, sites, photos, what's Taylor's work), `PLATEFUL.md` (appended when the client has a restaurant), `settings.json` (base allow/deny plus `_rules` added per feature: repos, plateful, live_url). Edit here, then `client new <slug> --restamp`. |
 | `setenv.sh` | Fills the key file without echoing values: `setenv.sh` walks the known keys, `setenv.sh SOME_KEY` adds one, `setenv.sh --list` shows which are set. |
 
 ## Install

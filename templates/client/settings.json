@@ -1,0 +1,88 @@
+{
+  "model": "opus",
+  "permissions": {
+    "allow": [
+      "Read(./**)",
+      "Edit(./**)",
+      "Write(./**)",
+      "Glob",
+      "Grep",
+      "Bash(ls:*)",
+      "Bash(head:*)",
+      "Bash(wc:*)",
+      "Bash(grep:*)",
+      "Bash(file incoming/*)",
+      "Bash(rm incoming/*)",
+      "Bash(mv incoming/*)",
+      "Bash(python3 -m json.tool:*)",
+      "Bash(img:*)",
+      "Bash(site:*)"
+    ],
+    "deny": [
+      "Bash(git -C repos/* push *--force*)",
+      "Bash(git -C repos/* push *-f*)",
+      "Bash(git -C repos/* push *:*)",
+      "Bash(git -C repos/* reset --hard*)",
+      "Bash(git -C repos/* config *)",
+      "Bash(git -C repos/* clean*)",
+      "Bash(git -C repos/* branch -D*)",
+      "Bash(git -C repos/* remote *)",
+      "Bash(git push*)",
+      "Bash(git config*)",
+      "Bash(rm -rf:*)",
+      "Bash(python3 -c:*)",
+      "Bash(python -c:*)",
+      "Bash(bash:*)",
+      "Bash(sh:*)",
+      "Bash(env:*)",
+      "Bash(cat /home/*)",
+      "Bash(pf keys:*)",
+      "Read(~/.config/**)",
+      "Read(~/.ssh/**)",
+      "Read(~/.claude/**)",
+      "Read(~/.claude.json)",
+      "Read(~/projects/sms-relay/**)",
+      "Read(~/projects/plateful/**)",
+      "Read(~/projects/claude-tools/**)",
+      "Read(~/projects/rem-portfolio/**)",
+      "Read(~/projects/rooms/**)"
+    ]
+  },
+  "_rules": {
+    "repos": [
+      "Bash(git -C repos/* status*)",
+      "Bash(git -C repos/* log*)",
+      "Bash(git -C repos/* diff*)",
+      "Bash(git -C repos/* show*)",
+      "Bash(git -C repos/* add *)",
+      "Bash(git -C repos/* commit *)",
+      "Bash(git -C repos/* push)",
+      "Bash(git -C repos/* push origin main)",
+      "Bash(git -C repos/* pull)",
+      "Bash(git -C repos/* pull origin main)",
+      "Bash(git -C repos/* revert HEAD*)",
+      "Bash(git -C repos/* checkout -- *)",
+      "Bash(git -C repos/* rev-parse*)",
+      "Bash(git -C repos/* mv *)",
+      "Bash(git -C repos/* rm *)",
+      "Bash(gh run list*)",
+      "Bash(gh run view*)",
+      "Bash(magick *)",
+      "Bash(identify *)",
+      "Bash(mkdir repos/*)",
+      "Bash(cp incoming/*)",
+      "Bash(mv incoming/*)",
+      "Bash(mv repos/*)",
+      "Bash(rm repos/*)",
+      "Bash(python3 -m http.server*)"
+    ],
+    "plateful": [
+      "Bash(pf:*)"
+    ],
+    "live_url": [
+      "Bash(curl -s {url}*)",
+      "Bash(curl -sI {url}*)",
+      "Bash(curl -s -o /dev/null -w * {url}*)"
+    ]
+  }
+}

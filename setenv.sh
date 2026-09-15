@@ -26,6 +26,7 @@ KNOWN_KEYS=(
   PLATEFUL_API_KEY      # pf (platform key; PLATEFUL_KEY_<SUB> are minted by `pf keys create`)
   TELEGRAM_BOT_TOKEN    # sms-relay
   DISCORD_BOT_TOKEN     # sms-relay
+  GITHUB_TOKEN          # site (repo create/pages); gh honours it as GH_TOKEN
 )
 
 mkdir -p "$(dirname "$ENV_FILE")"

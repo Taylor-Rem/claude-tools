@@ -59,9 +59,11 @@ client workspace one level up, so git takes the form
 `git -C repos/{{REPO}} …`; never `cd` into the repo first (that is always
 blocked). After any requested change, without waiting to be asked:
 
-1. Check your work mechanically: if you touched HTML, confirm the tags you
-   edited are balanced and the surrounding content is intact. You cannot see
-   a page render, so don't claim it looks good; say what changed.
+1. Look at your work: `shot repos/{{REPO}}/<page>.html` (add `--mobile` for
+   the phone layout) renders the page from disk and saves a picture under
+   `shots/`; open it with Read. For anything to do with layout or style, also
+   run `shot check repos/{{REPO}}/<page>.html`. Fix what's off before you
+   push. If you touched HTML, also confirm the tags you edited are balanced.
 2. Commit on `main` with a short plain-English message
    (`git -C repos/{{REPO}} add -A && git -C repos/{{REPO}} commit -m "…"`).
 3. Push: `git -C repos/{{REPO}} push`. GitHub Pages publishes from `main`,

@@ -95,7 +95,7 @@ def render_claude_md(meta):
     md = md.replace("{{PLATEFUL_BULLET}}", bullet).replace("{{PLATEFUL_SECTION}}", section)
     for k in ("name", "slug", "plateful", "live_url"):
         md = md.replace("{{" + k.upper() + "}}", meta.get(k) or "")
-    tools = ["`git -C repos/<name>`", "`img`", "`site`"] + (["`pf`"] if meta.get("plateful") else [])
+    tools = ["`git -C repos/<name>`", "`img`", "`site`", "`shot`"] + (["`pf`"] if meta.get("plateful") else [])
     md = md.replace("{{TOOLS}}", ", ".join(tools))
     if meta.get("live_url") and not meta.get("plateful"):
         check = f"`curl -sI {meta['live_url']}` is allowed; wait a minute for Pages to deploy first"

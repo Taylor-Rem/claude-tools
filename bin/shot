@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# shot — headless browser for Claude (screenshots, QA checks, computed CSS).
+# The real code is lib/shot.mjs; this resolves the ~/.local/bin symlink.
+exec node "$(dirname "$(readlink -f "$0")")/../lib/shot.mjs" "$@"

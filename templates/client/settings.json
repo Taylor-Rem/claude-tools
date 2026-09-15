@@ -21,7 +21,8 @@
       "Bash(mv incoming/*)",
       "Bash(python3 -m json.tool repos/*)",
       "Bash(img *)",
-      "Bash(site *)"
+      "Bash(site *)",
+      "Bash(shot *)"
     ],
     "deny": [
       "Bash(* /home/*)",
@@ -74,7 +75,8 @@
       "Read(~/projects/rooms/**)",
       "Bash(cat *)",
       "Bash(cp *)",
-      "Bash(mv repos/* incoming/*)"
+      "Bash(mv repos/* incoming/*)",
+      "mcp__playwright"
     ]
   },
   "_rules": {

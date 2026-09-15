@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{NAME}}</title>
+  <!-- REPLACE-ME: one sentence about {{NAME}} for search results. -->
+  <meta name="description" content="{{NAME}} — {{TAGLINE}}">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <header class="site-header">
+    <a class="wordmark" href="index.html">{{NAME}}</a>
+    <nav class="site-nav" aria-label="Site">
+      <a href="index.html" aria-current="page">Home</a>
+      <a href="photos.html">Photos</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero">
+      <h1 class="hero-title">{{NAME}}</h1>
+      <!-- REPLACE-ME: placeholder tagline — swap for the client's own line. -->
+      <p class="hero-tagline">{{TAGLINE}}</p>
+    </section>
+
+    <section class="section" id="about">
+      <div class="section-inner reveal">
+        <div class="about-grid">
+          <!-- Main photo. To set it, put a JPG in images/ and change the
+               src and alt here (see CLAUDE.md, "How to add a photo"). Until
+               there is one, this figure shows a plain placeholder. -->
+          <figure class="about-photo">
+            <svg viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg" role="img"
+                 aria-label="Placeholder for a photo of {{NAME}}">
+              <rect width="400" height="400" fill="#e6e1d8"/>
+              <circle cx="200" cy="160" r="60" fill="#faf8f4"/>
+              <path d="M80 340 Q200 220 320 340 Z" fill="#faf8f4"/>
+            </svg>
+          </figure>
+          <div class="about-text">
+            <p class="kicker">About</p>
+            <h2>Who we are</h2>
+            <!-- REPLACE-ME: placeholder text. Get the real story from the
+                 client: what they do, where, since when. Two short paragraphs
+                 is plenty. Keep the voice plain; no hype. -->
+            <p class="lede">This paragraph is placeholder text for {{NAME}}. It
+            should say, in a sentence or two, what they do and who it's for.</p>
+            <p class="muted">A second short paragraph can go here: how it
+            started, what makes it theirs. Delete it if there's nothing to say.</p>
+            <div class="button-row">
+              <a class="button" href="photos.html">See photos</a>
+              <a class="button" href="#details">Find us</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="details">
+      <div class="section-inner reveal">
+        <p class="kicker">Details</p>
+        <h2>Find us</h2>
+        <!-- REPLACE-ME: every line below is a placeholder. Ask the client for
+             the real address, hours and contact details; delete any card
+             they don't want shown. -->
+        <div class="details-grid">
+          <div>
+            <h3>Where</h3>
+            <address>
+              123 Example Street<br>
+              Somewhere, ST 00000
+            </address>
+          </div>
+          <div>
+            <h3>Hours</h3>
+            <ul>
+              <li>Mon–Fri: 9am–5pm</li>
+              <li>Sat: 10am–2pm</li>
+              <li>Sun: closed</li>
+            </ul>
+          </div>
+          <div>
+            <h3>Contact</h3>
+            <ul>
+              <li><a href="mailto:hello@example.com">hello@example.com</a></li>
+              <li><a href="tel:+10000000000">(000) 000-0000</a></li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <!-- REPLACE-ME: the client's real social links; delete the ones they don't use. -->
+    <ul class="footer-links">
+      <li><a href="https://instagram.com/">Instagram</a></li>
+      <li><a href="https://facebook.com/">Facebook</a></li>
+    </ul>
+    <p class="copyright">&copy; {{YEAR}} {{NAME}}</p>
+  </footer>
+
+  <script src="js/main.js"></script>
+</body>
+</html>

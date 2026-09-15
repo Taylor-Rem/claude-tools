@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Photos — {{NAME}}</title>
+  <meta name="description" content="Photos from {{NAME}}.">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <header class="site-header">
+    <a class="wordmark" href="index.html">{{NAME}}</a>
+    <nav class="site-nav" aria-label="Site">
+      <a href="index.html">Home</a>
+      <a href="photos.html" aria-current="page">Photos</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero page-hero">
+      <h1 class="hero-title">Photos</h1>
+    </section>
+
+    <section class="section">
+      <div class="section-inner reveal">
+        <p class="kicker">Gallery</p>
+        <h2>Pictures</h2>
+
+        <!-- Each photo is one <li>. To add one, put the JPG in images/, copy a
+             whole <li>…</li> block, and change the src and alt. See CLAUDE.md,
+             "How to add a photo". Delete the "coming soon" line once there is
+             at least one photo. -->
+        <p class="muted" id="no-photos">Photos coming soon.</p>
+        <ul class="photo-grid">
+          <!--
+          <li>
+            <a href="images/example.jpg">
+              <img src="images/example.jpg" width="1200" height="1200" loading="lazy"
+                   alt="A short plain description of what is in the photo.">
+            </a>
+          </li>
+          -->
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <!-- Keep this footer identical to the one in index.html. -->
+    <ul class="footer-links">
+      <li><a href="https://instagram.com/">Instagram</a></li>
+      <li><a href="https://facebook.com/">Facebook</a></li>
+    </ul>
+    <p class="copyright">&copy; {{YEAR}} {{NAME}}</p>
+  </footer>
+
+  <script src="js/main.js"></script>
+</body>
+</html>

@@ -24,8 +24,9 @@ how to change it, and how to check a change is live.
   **every page**.
 - `images/` holds the photos. `_headers` and `_redirects` are read by the
   host, not served: `_headers` makes every page `no-cache` (so nobody ever
-  sees a stale page) and `_redirects` holds the www → bare-domain rule.
-  Leave both alone unless a page moves.
+  sees a stale page); `_redirects` is for a page that moved. Leave both
+  alone otherwise. With a custom domain every page carries a canonical
+  link to the bare domain (www serves the same site).
 - **No trackers, no analytics, no cookie banners, no home-built forms or
   checkout.** Anything that stores visitor information is Taylor's work.
 - Placeholder content is marked with `REPLACE-ME` comments. Placeholders
@@ -96,6 +97,6 @@ the committed tree of this repo's `main` (direct upload; no build, no
 Cloudflare-side git connection). The repo is on GitHub under `{{OWNER}}`
 and stays the record; the host is a mirror of it. A custom domain is
 `SITE_ADMIN=1 site domain {{REPO}} example.com` from the workspace (adds
-the domain to the project, writes the www → apex rule into `_redirects`,
-prints the two DNS lines for the registrar). Handing the repo to the
+the domain to the project, puts canonical links on every page, prints the
+two DNS lines for the registrar). Handing the repo to the
 client at the end is `site transfer {{REPO}} <their-github-user>`.

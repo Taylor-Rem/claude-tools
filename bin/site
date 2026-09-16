@@ -714,7 +714,7 @@ def cmd_ls(a):
 
 def cf_domain(ws, meta, d, name, entry, a):
     """Custom domain for a Cloudflare site: apex + www on the Pages project,
-    a www -> apex redirect in the repo, and the two records for the registrar.
+    canonical links in the repo, and the two records for the registrar.
     Cloudflare validates once the records resolve and issues the certificate
     itself; `site domain <name>` (no domain) shows where that's at."""
     project = entry["project"]
@@ -742,15 +742,19 @@ def cf_domain(ws, meta, d, name, entry, a):
             say(f"  added {dm} to {project}")
     new_url = f"https://{domain}/"
 
-    # the repo: www -> apex, and the live URL in the manual/allowlist
+    # the repo: canonical links to the bare domain (Pages can't redirect one
+    # host to another from _redirects, so www serves the same site), and the
+    # live URL in the manual/allowlist
     changed = []
     if apex:
-        rp = d / "_redirects"
-        rule = f"https://www.{domain}/* https://{domain}/:splat 301"
-        text = rp.read_text() if rp.exists() else "# One rule per line: from  to  status. Cloudflare Pages reads this file.\n"
-        if rule not in text:
-            rp.write_text(text.rstrip("\n") + "\n" + rule + "\n")
-            changed.append("_redirects")
+        for page in sorted(d.glob("*.html")):
+            text = page.read_text()
+            if 'rel="canonical"' in text or page.name == "404.html" or "<head>" not in text:
+                continue
+            path = "" if page.name == "index.html" else page.name[:-5]
+            text = text.replace("<head>", f'<head>\n  <link rel="canonical" href="{new_url}{path}">', 1)
+            page.write_text(text)
+            changed.append(page.name)
     old_url = meta.get("live_url") or f"https://{project}.pages.dev/"
     for f in FILLED_FILES:
         p = d / f
@@ -779,7 +783,9 @@ def cf_domain(ws, meta, d, name, entry, a):
     else:
         say(f"  CNAME  {domain.split('.', 1)[0]:<6} {target}")
     say(f"\nCloudflare checks the records itself (minutes once DNS has propagated), then issues the "
-        f"certificate; `SITE_ADMIN=1 site domain {name}` shows the state. Live URL is now {new_url}.")
+        f"certificate; `SITE_ADMIN=1 site domain {name}` shows the state. Live URL is now {new_url}."
+        + (f"\nwww.{domain} serves the same site (Pages can't redirect hosts); every page now carries a "
+           f"canonical link to {new_url}, which is what search engines go by." if apex else ""))
 
 
 def cmd_domain(a):

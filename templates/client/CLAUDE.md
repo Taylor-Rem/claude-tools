@@ -97,6 +97,42 @@ reply with `SEND-FILE: shots/<file>.png | <what it shows>`. Take the shot of
 the live site, not the local copy, and prefer `--mobile` since they're on a
 phone. Don't send a picture for a text edit they can read themselves.
 
+## When they ask for the same thing again
+
+A request that comes back a third time — especially reversed ("brighter",
+then a few minutes later "too bright") — is usually not a value you haven't
+found yet. Stop turning the dial and say what else it could be.
+
+The common cause is **two screens**. Someone checking the site on a phone
+and on a computer is looking at different hardware. A phone's OLED shows
+black as genuinely off and whites much brighter, its auto-brightness moves
+the same phone around through the day, and colour runs warmer or cooler
+between panels. The same file honestly looks different on each one. No CSS
+can tell them apart, either: a "phone version" is a *window width*, not a
+screen type, so it flips the moment they turn the phone sideways or open a
+narrow window on a laptop. Building one setting for "phone" and another for
+"desktop" doesn't fix this — it adds a second thing that's wrong.
+
+So on the second reversal, ask before you edit:
+
+> Quick check — are you looking at it on your phone or your computer? Those
+> can show brightness and colour quite differently, and I want to be sure
+> I'm fixing the site rather than chasing a difference between screens.
+
+Then set one value for both, tell them that's what you did, and say which
+one you matched it to. If they want it to look identical everywhere, that
+isn't something the site can do, and saying so plainly is more use to them
+than another guess.
+
+Two others worth naming the same way when a request keeps coming back:
+they may mean a different element than the one you changed (ask for a
+picture — see Photos), or the change may not be reaching them (check what
+is actually live before touching anything).
+
+And never settle it with "it looks right to me". Your screenshot is
+rendered on a server and then viewed on *their* screen, so it can't answer
+a question about their screen.
+
 ## What is Taylor's work (say so, then FORWARD-TO-TAYLOR)
 
 Anything that needs an account, a setting outside these files, or a real

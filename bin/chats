@@ -6,6 +6,7 @@ chats — read the relay's conversations, with the pictures people sent.
     chats --from smith -n 100          # just Smith
     chats --project bleu-grave         # just one project
     chats --photos                     # only exchanges that came with a picture
+    chats serve [--lan]                # a live page that keeps up on its own
     chats ls                           # the same thing as text in the terminal
     chats doctor                       # is anything set up wrong?
 
@@ -181,17 +182,13 @@ document.addEventListener('click',function(e){
 """
 
 
-def render(rows, cfg, relay, title):
+def render_body(rows, cfg, photo_src=None):
+    """The conversation itself. photo_src(path, archived) -> an <img src>; the
+    default embeds the bytes so the file stands alone, while `serve` hands back
+    a URL instead so a live page isn't re-encoding every picture each poll."""
+    photo_src = photo_src or (lambda p, archived: data_uri(p))
     bot = cfg.get("bot_name", "bot")
-    parts = [
-        "<!doctype html><html lang=en><meta charset=utf-8>",
-        '<meta name=viewport content="width=device-width,initial-scale=1">',
-        f"<title>{html.escape(title)}</title>",
-        f"<style>{CSS}</style><body><div class=wrap>",
-        f"<h1>{html.escape(title)}</h1>",
-        f'<div class=sub>{len(rows)} exchange(s) · built {datetime.now():%a %b %d, %H:%M} '
-        "· tap a picture to enlarge</div>",
-    ]
+    parts = []
     if not rows:
         parts.append("<div class=empty>Nothing matched.</div>")
     day = None
@@ -209,7 +206,7 @@ def render(rows, cfg, relay, title):
         meta = f"{who} → {html.escape(pname)} · {html.escape(r.get('transport') or '?')} · {t:%H:%M}"
         shots = []
         for p, archived in r.get("_photos", []):
-            uri = data_uri(p)
+            uri = photo_src(p, archived)
             if not uri:
                 shots.append(f'<span class=gone>[{html.escape(p.name)} — too big to embed]</span>')
                 continue
@@ -227,8 +224,162 @@ def render(rows, cfg, relay, title):
         reply = r.get("reply") or "(no reply)"
         parts.append(f'<div class="x you{"" if ok else " failed"}"><div class=meta>{html.escape(tag)}</div>'
                      f"<div class=bub>{html.escape(reply)}</div></div>")
-    parts.append(f"</div><script>{JS}</script>")
     return "\n".join(parts)
+
+
+LIVE_JS = """
+// Poll for new messages and swap the conversation in place. Full reloads would
+// lose your scroll position every few seconds, which makes a live view useless
+// while you're reading back through something.
+(function(){
+  var sig=document.body.dataset.sig, feed=document.getElementById('feed'),
+      dot=document.getElementById('dot'), miss=0;
+  function pinned(){
+    return window.innerHeight+window.scrollY >= document.body.scrollHeight-120;
+  }
+  function tick(){
+    fetch('state'+location.search,{cache:'no-store'})
+      .then(function(r){return r.json()})
+      .then(function(s){
+        miss=0; dot.className='live';
+        if(s.sig===sig) return;
+        sig=s.sig;
+        var bottom=pinned();
+        return fetch('body'+location.search,{cache:'no-store'})
+          .then(function(r){return r.text()})
+          .then(function(h){
+            feed.innerHTML=h;
+            document.getElementById('count').textContent=s.count+' exchange(s)';
+            if(bottom) window.scrollTo(0,document.body.scrollHeight);
+          });
+      })
+      .catch(function(){ if(++miss>2) dot.className='dead'; });
+  }
+  setInterval(tick,3000); tick();
+  window.scrollTo(0,document.body.scrollHeight);
+})();
+"""
+
+LIVE_CSS = """
+.bar{display:flex;align-items:center;gap:8px;margin-bottom:24px;color:var(--dim);font-size:.85rem}
+#dot{width:8px;height:8px;border-radius:50%;background:var(--dim);flex:none}
+#dot.live{background:#2f9e44}
+#dot.dead{background:var(--bad)}
+"""
+
+
+def render_page(rows, cfg, title, live=False, photo_src=None, sig=""):
+    head = [
+        "<!doctype html><html lang=en><meta charset=utf-8>",
+        '<meta name=viewport content="width=device-width,initial-scale=1">',
+        f"<title>{html.escape(title)}</title>",
+        f"<style>{CSS}{LIVE_CSS if live else ''}</style>",
+        f'<body data-sig="{html.escape(sig)}"><div class=wrap>',
+        f"<h1>{html.escape(title)}</h1>",
+    ]
+    if live:
+        head.append('<div class=bar><span id=dot></span><span id=count>'
+                    f"{len(rows)} exchange(s)</span><span>· live, updates on its own "
+                    "· tap a picture to enlarge</span></div>")
+    else:
+        head.append(f'<div class=sub>{len(rows)} exchange(s) · built '
+                    f"{datetime.now():%a %b %d, %H:%M} · tap a picture to enlarge</div>")
+    body = render_body(rows, cfg, photo_src)
+    tail = f"</div><script>{JS}{LIVE_JS if live else ''}</script>"
+    return "\n".join(head) + f'\n<div id=feed>{body}</div>\n' + tail
+
+
+# ---- live server -------------------------------------------------------------
+
+def serve(args, cfg):
+    """A local web view that keeps up with the conversation on its own."""
+    import http.server
+    import secrets
+    import socket
+    import urllib.parse
+
+    state = state_dir(args.relay) / "messages.jsonl"
+    photos = {}                       # id -> path, so a URL can never name a file we didn't choose
+
+    def snapshot():
+        rows = load_rows(args.relay)
+        for r in rows:
+            r["_photos"] = photo_paths(args.relay, r)
+        return select(rows, args, cfg)
+
+    def src(path, archived):
+        pid = str(len(photos)) if path not in photos.values() else \
+            next(k for k, v in photos.items() if v == path)
+        photos[pid] = path
+        return f"photo/{pid}"
+
+    def signature():
+        try:
+            st = state.stat()
+            return f"{st.st_size}-{st.st_mtime_ns}"
+        except OSError:
+            return "none"
+
+    host = "0.0.0.0" if args.lan else "127.0.0.1"
+    token = secrets.token_urlsafe(6) if args.lan else ""
+    bits = [b for b in (args.sender, args.project) if b]
+    title = "Relay chats" + (" — " + ", ".join(bits) if bits else "")
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def _send(self, body, ctype="text/html; charset=utf-8", code=200):
+            if isinstance(body, str):
+                body = body.encode()
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            parsed = urllib.parse.urlparse(self.path)
+            query = urllib.parse.parse_qs(parsed.query)
+            if token and query.get("k", [""])[0] != token:
+                return self._send("not found", "text/plain", 404)
+            path = parsed.path.strip("/")
+            if path.startswith("photo/"):
+                p = photos.get(path.split("/", 1)[1])
+                if not p or not Path(p).is_file():
+                    return self._send("not found", "text/plain", 404)
+                mime = mimetypes.guess_type(Path(p).name)[0] or "image/jpeg"
+                return self._send(Path(p).read_bytes(), mime)
+            rows = snapshot()
+            if path == "state":
+                return self._send(json.dumps({"sig": signature(), "count": len(rows)}),
+                                  "application/json")
+            if path == "body":
+                return self._send(render_body(rows, cfg, src))
+            if path in ("", "index.html"):
+                return self._send(render_page(rows, cfg, title, live=True,
+                                              photo_src=src, sig=signature()))
+            return self._send("not found", "text/plain", 404)
+
+        def log_message(self, *a):                       # not a web server; stay quiet
+            pass
+
+    srv = http.server.ThreadingHTTPServer((host, args.port), Handler)
+    q = f"?k={token}" if token else ""
+    print(f"live at  http://127.0.0.1:{args.port}/{q}")
+    if args.lan:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            print(f"         http://{s.getsockname()[0]}:{args.port}/{q}   (this network)")
+            s.close()
+        except OSError:
+            pass
+        print("         open to your network — the token in the URL is what keeps it yours")
+    print("Ctrl-C to stop")
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        print()
+    return 0
 
 
 # ---- terminal ----------------------------------------------------------------
@@ -284,18 +435,24 @@ def doctor(relay, cfg):
 def main():
     ap = argparse.ArgumentParser(prog="chats", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("command", nargs="?", default="html", choices=["html", "ls", "doctor"])
+    ap.add_argument("command", nargs="?", default="html",
+                    choices=["html", "serve", "ls", "doctor"])
     ap.add_argument("--from", dest="sender", help="only this person (name or sender key)")
     ap.add_argument("--project", help="only this project (key or name)")
     ap.add_argument("-n", "--number", type=int, default=40, help="how many exchanges (0 = all)")
     ap.add_argument("--photos", action="store_true", help="only exchanges that came with a picture")
     ap.add_argument("--out", type=Path, help="write the HTML here instead of the cache dir")
     ap.add_argument("--relay", type=Path, default=RELAY, help="relay checkout (default: ~/projects/sms-relay)")
+    ap.add_argument("--port", type=int, default=8778, help="serve: port (default 8778)")
+    ap.add_argument("--lan", action="store_true",
+                    help="serve: reachable from other devices on this network, behind a token")
     args = ap.parse_args()
 
     cfg = load_config(args.relay)
     if args.command == "doctor":
         return doctor(args.relay, cfg)
+    if args.command == "serve":
+        return serve(args, cfg)
 
     rows = load_rows(args.relay)
     for r in rows:
@@ -317,7 +474,7 @@ def main():
         slug = re.sub(r"[^a-z0-9]+", "-", "-".join(bits).lower()).strip("-") or "all"
         out = OUT_DIR / f"chats-{slug}-{datetime.now():%Y%m%d-%H%M%S}.html"
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(render(rows, cfg, args.relay, title))
+    out.write_text(render_page(rows, cfg, title))
     pics = sum(len(r.get("_photos", [])) for r in rows)
     print(f"{len(rows)} exchange(s), {pics} picture(s)")
     print(out.resolve())

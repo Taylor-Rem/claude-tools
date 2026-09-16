@@ -22,6 +22,7 @@
       "Bash(python3 -m json.tool repos/*)",
       "Bash(img *)",
       "Bash(site *)",
+      "Bash(newsletter *)",
       "Bash(shot *)"
     ],
     "deny": [

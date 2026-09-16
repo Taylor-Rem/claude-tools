@@ -27,8 +27,11 @@ how to change it, and how to check a change is live.
   sees a stale page); `_redirects` is for a page that moved. Leave both
   alone otherwise. With a custom domain every page carries a canonical
   link to the bare domain (www serves the same site).
-- **No trackers, no analytics, no cookie banners, no home-built forms or
-  checkout.** Anything that stores visitor information is Taylor's work.
+- **No trackers, no analytics, no cookie banners, no checkout.** The only
+  forms allowed are the ones that post to patchlamp.com (`newsletter form`
+  prints the sign-up box; contact/booking forms follow the workspace
+  `PLAYBOOK.md`) — nothing on this site ever stores visitor information
+  itself.
 - Placeholder content is marked with `REPLACE-ME` comments. Placeholders
   must look like placeholders; never invent facts, prices, hours, or quotes.
 
@@ -53,7 +56,7 @@ how to change it, and how to check a change is live.
   to the footer list in every page, or as a `.button` in the section it
   belongs to. Linking out is always fine; embedding third-party code is not,
   except a plain `<iframe>` embed from a service the client already uses
-  (a map, a player, a list-provider signup form).
+  (a map, a player).
 
 ## Every change goes live — deploy check
 

@@ -1,0 +1,295 @@
+#!/usr/bin/env python3
+"""newsletter — a client's mailing list, run from inside a client workspace.
+
+The list lives on patchlamp.com (one Resend segment per project under the
+platform account — an "ours" capability, plan 03). The site's sign-up box
+posts to patchlamp.com; this tool is how Patch sets it up, reads it and
+sends to it. No client account, nothing to buy.
+
+  newsletter setup [--contact EMAIL]   # register this project's list (idempotent); prints the form URL
+  newsletter form [--thanks TEXT]      # the sign-up partial to paste into the site (footer of every page)
+  newsletter status                    # is it set up, how many on the list, the form URL
+  newsletter subscribers [--json]      # everyone on the list
+  newsletter send SUBJECT FILE.md      # one issue to everyone (markdown; unsubscribe link added)
+  newsletter forms [--form NAME] [-n 20]   # what people posted to contact/booking forms on the site
+  newsletter doctor
+
+Runs only inside a client workspace (a directory with .client.json); the
+project slug comes from there, never from an argument. Talks to
+patchlamp.com's /internal/relay/projects/<slug>/… with the relay's shared
+secret, so the Resend key never leaves the server. Every `send` writes one
+line to the toolbelt ledger (~/.local/state/claude-tools/ledger.jsonl, kind
+"newsletter") and the relay charges it to the client's usage like a photo.
+
+Config, by name, never printed:
+  PATCHLAMP_RELAY_SHARED_SECRET   ~/.config/claude-tools/env
+  PATCHLAMP_URL                   optional; default https://patchlamp.com
+"""
+
+import argparse
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+ENV_FILE = Path(os.environ.get("CLAUDE_TOOLS_ENV", Path.home() / ".config/claude-tools/env"))
+LEDGER = Path(os.environ.get("IMG_LEDGER", Path.home() / ".local/state/claude-tools/ledger.jsonl"))
+RESEND_USD_PER_EMAIL = 0.0004      # Resend list price: $20 / 50,000 emails (Sept 2026); the free 3k/mo makes the real cost $0 for a long time
+
+
+def die(msg, code=1):
+    print(f"newsletter: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def read_env():
+    keys = {}
+    if ENV_FILE.exists():
+        for line in ENV_FILE.read_text().splitlines():
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                keys[k.strip()] = v.strip()
+    return keys
+
+
+def base_url():
+    return (os.environ.get("PATCHLAMP_URL") or read_env().get("PATCHLAMP_URL") or "https://patchlamp.com").rstrip("/")
+
+
+def secret():
+    val = os.environ.get("PATCHLAMP_RELAY_SHARED_SECRET") or read_env().get("PATCHLAMP_RELAY_SHARED_SECRET")
+    if not val:
+        die("PATCHLAMP_RELAY_SHARED_SECRET is not in the toolbelt; this needs Taylor (setenv.sh)")
+    return val
+
+
+def workspace():
+    ws = Path.cwd()
+    p = ws / ".client.json"
+    if not p.exists():
+        die("not in a client workspace (no .client.json here); run from ~/projects/clients/<slug>")
+    try:
+        meta = json.loads(p.read_text())
+    except ValueError as exc:
+        die(f".client.json is not valid JSON: {exc}")
+    if not meta.get("slug"):
+        die(".client.json has no slug")
+    return ws, meta
+
+
+def api(method, path, body=None, ok=(200,)):
+    url = f"{base_url()}/internal/relay/projects{path}"
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method, headers={
+        "Authorization": f"Bearer {secret()}", "Accept": "application/json",
+        "Content-Type": "application/json", "User-Agent": "claude-tools newsletter",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return r.status, json.loads(r.read().decode() or "{}")
+    except urllib.error.HTTPError as exc:
+        try:
+            payload = json.loads(exc.read().decode())
+        except ValueError:
+            payload = {}
+        if exc.code in ok:
+            return exc.code, payload
+        msg = payload.get("error") or payload.get("message") or f"HTTP {exc.code}"
+        if exc.code == 404 and "no such project" in str(msg):
+            die("this project isn't registered on patchlamp.com yet: run `newsletter setup` first")
+        die(f"{method} {path}: {msg}")
+    except (urllib.error.URLError, OSError) as exc:
+        die(f"patchlamp.com unreachable: {exc}")
+
+
+def form_url(meta):
+    return f"{base_url()}/f/{meta['slug']}/newsletter"
+
+
+# ---------------------------------------------------------------- commands
+
+def cmd_setup(a):
+    ws, meta = workspace()
+    body = {"name": meta["name"], "live_url": meta.get("live_url") or None}
+    contact = a.contact or meta.get("contact_email")
+    if contact:
+        body["contact_email"] = contact
+    _, res = api("PUT", f"/{meta['slug']}", body)
+    if a.contact and meta.get("contact_email") != a.contact:
+        meta["contact_email"] = a.contact
+        (ws / ".client.json").write_text(json.dumps(meta, indent=2) + "\n")
+    p = res["project"]
+    print(f"{p['name']} ({p['slug']}) is registered on patchlamp.com")
+    print(f"  site:     {p.get('live_url') or '(no live_url yet — site new / site domain sets it)'}")
+    print(f"  contact:  {p.get('contact_email') or '(none — form posts have nowhere to go; newsletter setup --contact EMAIL)'}")
+    print(f"  sign-up form posts to: {form_url(meta)}")
+    print("next: `newsletter form` prints the box to paste into the site; commit, push, site publish.")
+
+
+PARTIAL = """<!-- Newsletter sign-up (Patchlamp). Posts to patchlamp.com, which keeps the
+     list; nothing is stored on this site. The `website` field is a honeypot —
+     leave it hidden and empty. After a sign-up the page reloads with
+     ?subscribed=1#signup and the thanks line shows; with JavaScript off the
+     box still works, the thanks line just doesn't appear. -->
+<form class="signup" id="signup" action="{url}" method="post">
+  <label for="signup-email">{label}</label>
+  <div class="signup-row">
+    <input id="signup-email" name="email" type="email" required autocomplete="email" placeholder="you@example.com">
+    <button type="submit">{button}</button>
+  </div>
+  <input name="website" type="text" tabindex="-1" autocomplete="off" aria-hidden="true" style="position:absolute;left:-9999px">
+  <p class="signup-thanks" hidden>{thanks}</p>
+  <p class="signup-sorry" hidden>That didn't go through — please try again in a bit.</p>
+  <script>
+    (function () {{
+      var f = document.getElementById("signup");
+      if (location.search.indexOf("subscribed=1") !== -1) {{
+        f.querySelector(".signup-thanks").hidden = false;
+        f.querySelector(".signup-row").hidden = true;
+        f.querySelector("label").hidden = true;
+      }} else if (location.search.indexOf("subscribed=0") !== -1) {{
+        f.querySelector(".signup-sorry").hidden = false;
+      }}
+    }})();
+  </script>
+</form>
+"""
+
+CSS_HINT = """/* Sign-up box (paste into css/style.css and adjust to the site's tokens) */
+.signup { max-width: 26rem; margin: 0 auto; }
+.signup label { display: block; margin-bottom: .5rem; }
+.signup-row { display: flex; gap: .5rem; }
+.signup-row input { flex: 1; min-width: 0; padding: .6rem .8rem; }
+.signup-row button { padding: .6rem 1rem; }
+.signup-thanks, .signup-sorry { margin: 0; }
+"""
+
+
+def cmd_form(a):
+    _, meta = workspace()
+    print(PARTIAL.format(url=form_url(meta), label=a.label, button=a.button, thanks=a.thanks))
+    if a.css:
+        print(CSS_HINT)
+
+
+def cmd_status(a):
+    _, meta = workspace()
+    _, res = api("GET", f"/{meta['slug']}")
+    p = res["project"]
+    print(f"{p['name']} ({p['slug']}): {'list set up' if p['newsletter'] else 'registered, no sign-ups yet'}")
+    print(f"  site: {p.get('live_url') or '-'}   contact: {p.get('contact_email') or '-'}")
+    print(f"  sign-up form posts to: {form_url(meta)}")
+    if p["newsletter"]:
+        _, subs = api("GET", f"/{meta['slug']}/newsletter/subscribers")
+        print(f"  on the list: {len(subs['subscribers'])}   unsubscribed: {subs['unsubscribed']}")
+
+
+def cmd_subscribers(a):
+    _, meta = workspace()
+    _, res = api("GET", f"/{meta['slug']}/newsletter/subscribers")
+    subs = res["subscribers"]
+    if a.json:
+        print(json.dumps(subs, indent=2))
+        return
+    if not subs:
+        print(f"nobody on {meta['name']}'s list yet (form: {form_url(meta)})")
+        return
+    for s in subs:
+        print(f"{s['email']:<40} {(s.get('created_at') or '')[:10]}")
+    print(f"{len(subs)} on the list; {res['unsubscribed']} unsubscribed")
+
+
+def cmd_send(a):
+    ws, meta = workspace()
+    path = Path(a.file)
+    if not path.is_file():
+        die(f"no such file: {a.file}")
+    md = path.read_text().strip()
+    if not md:
+        die("the issue is empty")
+    _, res = api("POST", f"/{meta['slug']}/newsletter/send", {"subject": a.subject, "markdown": md})
+    n = int(res.get("recipients") or 0)
+    print(f"sent \"{a.subject}\" to {n} subscriber{'s' if n != 1 else ''} as {res.get('from')} (broadcast {res.get('broadcast_id')})")
+    cost = round(n * RESEND_USD_PER_EMAIL, 4)
+    try:
+        LEDGER.parent.mkdir(parents=True, exist_ok=True)
+        with open(LEDGER, "a") as f:
+            f.write(json.dumps({
+                "ts": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()),
+                "kind": "newsletter", "model": "resend", "cost_usd": cost,
+                "billed_to": "resend:RESEND_API_KEY", "project": str(ws),
+                "ref": f"resend:{res.get('broadcast_id')}", "recipients": n, "subject": a.subject,
+            }) + "\n")
+    except OSError as exc:
+        print(f"newsletter: ledger write failed ({exc})", file=sys.stderr)
+
+
+def cmd_forms(a):
+    _, meta = workspace()
+    q = {"limit": a.number}
+    if a.form:
+        q["form"] = a.form
+    _, res = api("GET", f"/{meta['slug']}/forms?" + urllib.parse.urlencode(q))
+    rows = res["submissions"]
+    if not rows:
+        print("no form posts yet" + (f" for '{a.form}'" if a.form else ""))
+        return
+    for r in rows:
+        print(f"#{r['id']}  {r['at'][:16].replace('T', ' ')}  {r['form']}")
+        for k, v in r["fields"].items():
+            v = v.replace("\n", " ")
+            print(f"    {k}: {v[:200]}{'…' if len(v) > 200 else ''}")
+
+
+def cmd_doctor(a):
+    ok = True
+    print(f"patchlamp: {base_url()}")
+    if not (os.environ.get("PATCHLAMP_RELAY_SHARED_SECRET") or read_env().get("PATCHLAMP_RELAY_SHARED_SECRET")):
+        print("  FAIL no PATCHLAMP_RELAY_SHARED_SECRET in the toolbelt"); ok = False
+    if (Path.cwd() / ".client.json").exists():
+        _, meta = workspace()
+        code, res = api("GET", f"/{meta['slug']}", ok=(200, 404))
+        if code == 404:
+            print(f"  {meta['slug']}: not registered (newsletter setup)")
+        else:
+            p = res["project"]
+            print(f"  {meta['slug']}: registered; list {'set up' if p['newsletter'] else 'not started'}; form {form_url(meta)}")
+    else:
+        print("  not in a client workspace (per-project checks skipped)")
+    sys.exit(0 if ok else 1)
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="newsletter", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    s = sub.add_parser("setup", help="register this project's list on patchlamp.com (safe to re-run)")
+    s.add_argument("--contact", help="where contact/booking form posts are emailed (stored in .client.json)")
+    s.set_defaults(fn=cmd_setup)
+    f = sub.add_parser("form", help="print the sign-up box to paste into the site")
+    f.add_argument("--label", default="Get news, shows and releases by email")
+    f.add_argument("--button", default="Sign up")
+    f.add_argument("--thanks", default="You're on the list. Check your inbox.")
+    f.add_argument("--css", action="store_true", help="also print starter CSS for the box")
+    f.set_defaults(fn=cmd_form)
+    sub.add_parser("status", help="set up? how many? the form URL").set_defaults(fn=cmd_status)
+    ls = sub.add_parser("subscribers", help="everyone on the list")
+    ls.add_argument("--json", action="store_true")
+    ls.set_defaults(fn=cmd_subscribers)
+    sd = sub.add_parser("send", help="one issue to everyone on the list")
+    sd.add_argument("subject"); sd.add_argument("file", help="markdown file with the issue")
+    sd.set_defaults(fn=cmd_send)
+    fm = sub.add_parser("forms", help="what people posted to the site's contact/booking forms")
+    fm.add_argument("--form", help="only this form name")
+    fm.add_argument("-n", "--number", type=int, default=20)
+    fm.set_defaults(fn=cmd_forms)
+    sub.add_parser("doctor", help="secret present, project registered").set_defaults(fn=cmd_doctor)
+    a = ap.parse_args()
+    a.fn(a)
+
+
+if __name__ == "__main__":
+    main()

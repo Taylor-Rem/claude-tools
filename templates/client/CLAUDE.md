@@ -88,7 +88,10 @@ reports console errors and failed requests on every run.
 
 The loop for any visible change: shot the local folder (`--mobile` too if
 layout is involved), Read the picture, fix what's off, push, wait for Pages,
-shot the live URL, Read it again. For styling work run `shot check` and
+shot the live URL, Read it again. **Embedded players (YouTube, Spotify,
+Bandcamp, Apple Music) show as blank boxes in a local shot** — they refuse
+to load from a loopback origin. That's not a bug to debug: check the embed
+`src` is right, push, and judge the player on the live URL only. For styling work run `shot check` and
 `shot css` on the thing you changed; don't guess at what a rule did. Delete
 old pictures now and then with `shot clean`.
 
@@ -96,6 +99,25 @@ When the change is something they'd want to see, send the picture: end your
 reply with `SEND-FILE: shots/<file>.png | <what it shows>`. Take the shot of
 the live site, not the local copy, and prefer `--mobile` since they're on a
 phone. Don't send a picture for a text edit they can read themselves.
+
+### Looking things up
+
+`shot` reaches **any public web page** from here, not just this client's
+site, and it is the only web access you have (no curl, no WebFetch, no
+search). When you need a fact from the open web — a streaming link, an
+album id for an embed, the exact title of a release, a venue's address —
+fetch the page and read it rather than asking the client to paste it:
+
+    shot text https://<url> --selector main                          # the words on any page
+    shot html https://<url> --selector 'meta[name="bc-page-properties"]'   # Bandcamp: album/track id for an embed
+    shot html https://open.spotify.com/album/<id> --selector 'meta[property="og:title"]'   # confirm a release
+    shot html https://<url> --selector 'a[href*="music.apple.com"]'  # links on a page that point somewhere
+
+Search engines don't work this way (they captcha a headless browser), so
+start from a page you already know — the band's Bandcamp, Spotify or
+Apple Music profile, the venue's own site — and follow links from there.
+Ask the client only for what genuinely isn't public: a login, a photo they
+haven't posted, which of two things they meant.
 
 ## When they ask for the same thing again
 
@@ -140,7 +162,7 @@ backend: a domain or DNS change, a mailing-list provider, a store, a login,
 a form that emails someone, payments, hours/address/menu-structure changes
 on Plateful, refunds, customer data, redesigns. Tell them plainly it needs
 Taylor and end your reply with a line `FORWARD-TO-TAYLOR: <the ask>`.
-
+{{NOTES}}
 ## Sending something back
 
 Your whole reply is the message they get. To attach a file (a photo you

@@ -12,6 +12,11 @@ templates/client/ in the claude-tools repo.
   client doctor [slug]
   client snippet <slug>          # the config.json project entry to paste
 
+Per-client facts that must survive a --restamp (who decides what, standing
+instructions, anything Taylor said about this one client) go in the
+workspace's NOTES.md; `client new` folds it into CLAUDE.md under "Notes for
+this client" every time it stamps, and never writes to NOTES.md itself.
+
 Each client runs on its own Anthropic Console workspace + key,
 ANTHROPIC_KEY_<SLUG> in the toolbelt (`client new` prints the setenv.sh step
 and puts the `auth` line in the config.json entry). --shared-key skips that:
@@ -84,7 +89,7 @@ def render_settings(meta):
     return json.dumps(tpl, indent=2) + "\n"
 
 
-def render_claude_md(meta):
+def render_claude_md(meta, notes=""):
     md = (TEMPLATES / "CLAUDE.md").read_text()
     if meta.get("plateful"):
         bullet = (f"- Their restaurant **{meta['name']}** on Plateful (`{meta['plateful']}`), "
@@ -103,6 +108,11 @@ def render_claude_md(meta):
         check = ("the allowlist gains a curl rule for a site's URL when `site new` creates it; "
                  "until then verify the push landed with `git -C repos/<name> log -1` and say so")
     md = md.replace("{{LIVE_CHECK}}", check)
+    block = ""
+    if notes.strip():
+        block = ("\n## Notes for this client (from `NOTES.md`; these win over the general rules above)\n\n"
+                 + notes.strip() + "\n")
+    md = md.replace("{{NOTES}}", block)
     return md
 
 
@@ -112,7 +122,9 @@ def stamp(ws, meta):
     (ws / "incoming").mkdir(exist_ok=True)
     (ws / "incoming" / ".keep").touch()
     (ws / ".claude").mkdir(exist_ok=True)
-    (ws / "CLAUDE.md").write_text(render_claude_md(meta))
+    notes_file = ws / "NOTES.md"
+    notes = notes_file.read_text() if notes_file.exists() else ""
+    (ws / "CLAUDE.md").write_text(render_claude_md(meta, notes))
     (ws / ".claude" / "settings.json").write_text(render_settings(meta))
     (ws / ".client.json").write_text(json.dumps(meta, indent=2) + "\n")
 

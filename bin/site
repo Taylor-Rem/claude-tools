@@ -10,6 +10,7 @@ allowlist via `client new --restamp`). Exit is one command too.
   site ls                              # repos in ./repos with their Pages URLs
   site domain <name> [example.com] [--https]   # CNAME + Pages + the DNS lines  (SITE_ADMIN=1)
   site transfer <name> <github-user> [--keep]  # hand the repo to the client   (SITE_ADMIN=1)
+  site stamp <name>                    # new build id into version.json + every page (Pages cache-buster)
   site template push                   # mirror templates/site to <org>/site-template
   site doctor                          # auth, org, template, and each repo's Pages
 
@@ -368,6 +369,42 @@ def cmd_new(a):
         say(f"       config.json (if the project entry lists live_url): client snippet {meta['slug']}")
 
 
+def cmd_stamp(a):
+    """Stamp a new build id into version.json, every page's freshness check
+    and the css/js cache-busters — the body of the site's own tools/stamp,
+    run from the toolbelt so a client session can use it without an allow
+    rule for an in-repo script (which the session could rewrite). Workspace-
+    only, and the repo must be one of ./repos/*; no other path is touched."""
+    import re
+    from datetime import datetime, timezone
+    ws, _ = workspace()
+    name = Path(a.name).name                         # "repos/x", "x/", "../x" all collapse to "x"
+    d = (ws / "repos" / name).resolve()
+    if not d.is_dir() or (ws / "repos").resolve() not in d.parents:
+        die(f"{a.name!r} is not a repo under ./repos (site ls shows them)")
+    if not (d / ".git").exists():
+        die(f"repos/{name} is not a git repo")
+    pages = sorted(d.glob("*.html"))
+    if not pages:
+        die(f"repos/{name} has no *.html at its root; nothing to stamp")
+    build = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    (d / "version.json").write_text('{"build": "%s"}\n' % build)
+    touched = 0
+    for page in pages:
+        text = page.read_text()
+        new = re.sub(r'var BUILD = "[^"]*";', f'var BUILD = "{build}";', text)
+        new = re.sub(r'css/style\.css\?v=[^"]*', f'css/style.css?v={build}', new)
+        new = re.sub(r'js/main\.js\?v=[^"]*', f'js/main.js?v={build}', new)
+        if new != text:
+            page.write_text(new)
+            touched += 1
+    say(f"stamped build {build} into repos/{name}: version.json + {touched} of {len(pages)} pages")
+    if a.commit:
+        subprocess.run(["git", "-C", str(d), "add", "-A"], check=True)
+        r = subprocess.run(["git", "-C", str(d), "commit", "-m", a.commit], capture_output=True, text=True)
+        say(r.stdout.strip().splitlines()[0] if r.returncode == 0 and r.stdout.strip() else (r.stderr.strip() or "nothing to commit"))
+
+
 def cmd_ls(a):
     ws, meta = workspace()
     names = repos_of(ws)
@@ -627,6 +664,10 @@ def main():
     n.add_argument("--dry-run", action="store_true", help="check everything and print the plan; create nothing")
     n.set_defaults(fn=cmd_new)
     sub.add_parser("ls", help="repos in ./repos with their Pages URLs").set_defaults(fn=cmd_ls)
+    st = sub.add_parser("stamp", help="new build id into version.json + every page's cache-buster (run before committing)")
+    st.add_argument("name", help="repo name under ./repos")
+    st.add_argument("--commit", metavar="MSG", help="git add -A && git commit -m MSG in that repo afterwards")
+    st.set_defaults(fn=cmd_stamp)
     d = sub.add_parser("domain", help="custom domain for a site (SITE_ADMIN=1); no domain = show status")
     d.add_argument("name"); d.add_argument("domain", nargs="?")
     d.add_argument("--https", action="store_true", help="enforce HTTPS (works once GitHub has the certificate)")

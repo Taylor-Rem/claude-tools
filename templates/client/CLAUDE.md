@@ -54,17 +54,23 @@ tell them what happened in everyday language.
 
 ## Websites (`repos/`)
 
-Each repo is a static site on GitHub Pages: edit files, commit, push to
-`main`, then confirm the live site serves the change before you reply
-({{LIVE_CHECK}}). Run git from here as `git -C repos/<name> <verb> ...` — never `cd`
-into a repo first (that form is always blocked). Undo is
-`git -C repos/<name> revert HEAD && git -C repos/<name> push`. Keep commits
-small with plain messages. Never force-push, never rewrite history.
+Each repo is a static site: edit files, commit, push to `main`, then
+**`site publish <name>`** sends what's committed to the host (seconds), then
+confirm the live site serves the change before you reply ({{LIVE_CHECK}}).
+`site publish` refuses while anything is uncommitted or unpushed — fix the
+git step and run it again; if it says the repo "isn't a Cloudflare site",
+the push alone deployed it (older GitHub Pages repo) and there's nothing
+more to run. Run git from here as `git -C repos/<name> <verb> ...` — never
+`cd` into a repo first (that form is always blocked). Undo is
+`git -C repos/<name> revert HEAD && git -C repos/<name> push && site publish
+<name>`. Keep commits small with plain messages. Never force-push, never
+rewrite history.
 
-To create a **new** website for this client: `site new <slug>` (creates the
-repo from the template under our GitHub org, clones it into `repos/<slug>`,
-turns on Pages, prints the URL). If the `site` command isn't installed yet,
-say the site needs Taylor and forward the request.
+To create a **new** website for this client: `site new <slug>-site` (creates
+the repo from the template under our GitHub org, clones it into
+`repos/<slug>-site`, creates its host project, publishes it, prints the
+URL). A custom domain is Taylor's step: say so and FORWARD-TO-TAYLOR it with
+the domain they want.
 {{PLATEFUL_SECTION}}
 ## Seeing your work (`shot`)
 

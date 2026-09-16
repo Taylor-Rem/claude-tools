@@ -1,0 +1,19 @@
+# Cloudflare Pages reads this file (it is not served). One block per path
+# pattern; the headers under it apply to every match.
+#
+# Pages: no-cache means "keep a copy, but ask before using it" — an unchanged
+# page is a 304 with no body, a changed page is fetched fresh, always. A site
+# page is a few KB, so there is nothing to save by caching it, and a client
+# seeing a ten-minute-old page is the single most expensive thing that can
+# happen (GitHub Pages did exactly that with max-age=600 and no way to change
+# it). CSS and JS are no-cache too: there is no build step, so no hashed
+# filenames, so no safe way to cache them longer. Images are renamed when they
+# change, so they may live a week (the `!` line drops the /* value first —
+# Pages merges matching blocks instead of replacing them).
+/*
+  Cache-Control: no-cache
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+/images/*
+  ! Cache-Control
+  Cache-Control: public, max-age=604800

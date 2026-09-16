@@ -1,29 +1,38 @@
 #!/usr/bin/env python3
-"""site — client websites on GitHub Pages, run from inside a client workspace.
+"""site — client websites, run from inside a client workspace.
 
-A client site is one command: a public repo under our GitHub org from the
-template in claude-tools/templates/site/, cloned into ./repos/<name>, Pages
-turned on, the live URL written back into the workspace (.client.json +
-allowlist via `client new --restamp`). Exit is one command too.
+A client site is a public repo under our GitHub org (from the template in
+claude-tools/templates/site/, cloned into ./repos/<name>) — the repo is the
+record and what the client gets on exit — served by **Cloudflare Pages**:
+one Pages project per site, created by API, content pushed by direct upload
+(`site publish`) after every push. No build, no shared deploy, nothing to
+click per client; a custom domain is one API call plus two DNS lines. The
+older GitHub Pages path is still here behind `--gh-pages` / for repos made
+before 2026-09-16 and goes away once Bleu Grave has moved.
 
-  site new <name> [--tagline "…"] [--primary] [--no-wait] [--dry-run]
-  site ls                              # repos in ./repos with their Pages URLs
-  site domain <name> [example.com] [--https]   # CNAME + Pages + the DNS lines  (SITE_ADMIN=1)
-  site transfer <name> <github-user> [--keep]  # hand the repo to the client   (SITE_ADMIN=1)
-  site stamp <name>                    # new build id into version.json + every page (Pages cache-buster)
+  site new <name> [--tagline "…"] [--primary] [--no-wait] [--dry-run] [--gh-pages]
+  site publish [<name>] [--dry-run]    # HEAD of ./repos/<name> -> its Pages project (must be committed + pushed)
+  site ls                              # repos in ./repos with where they're served
+  site domain <name> [example.com]     # custom domain on the project + the DNS lines   (SITE_ADMIN=1)
+  site adopt <name> [--project P]      # register an existing repo as a Cloudflare site   (SITE_ADMIN=1)
+  site transfer <name> <github-user> [--keep]  # hand the repo to the client             (SITE_ADMIN=1)
+  site stamp <name>                    # (GitHub Pages only) build id into version.json + every page
   site template push                   # mirror templates/site to <org>/site-template
-  site doctor                          # auth, org, template, and each repo's Pages
+  site doctor                          # auth, org, template, Cloudflare, and each repo
 
-new / ls / domain / transfer run only inside a client workspace (a directory
-with .client.json; `client new <slug>` makes one) and only touch ./repos/.
-domain and transfer are Taylor's work: they refuse unless SITE_ADMIN=1 is in
-the environment, which a client session's allowlist can't set.
+Everything but `template` and `doctor` runs only inside a client workspace
+(a directory with .client.json; `client new <slug>` makes one) and only
+touches ./repos/. Which Pages project a workspace may publish to is
+recorded in ~/.config/claude-tools/sites.json by `site new` / `site adopt`
+— outside the workspace, so a client session can't point itself at another
+client's project. domain, adopt and transfer are Taylor's work: they refuse
+unless SITE_ADMIN=1 is in the environment, which a client session can't set.
 
 Config, by name, never printed:
-  GITHUB_TOKEN   in ~/.config/claude-tools/env — passed to gh as GH_TOKEN; when
-                 absent, gh's own login (`gh auth login`) is used.
-  SITE_ORG       the GitHub owner repos are created under (env, or a line in
-                 the same file: `setenv.sh SITE_ORG`). No default: refuses.
+  CLOUDFLARE_API_TOKEN   ~/.config/claude-tools/env — Account: Cloudflare Pages Edit
+  CLOUDFLARE_ACCOUNT_ID  same file. Both required for new/publish/domain.
+  GITHUB_TOKEN   passed to gh as GH_TOKEN; when absent, gh's own login is used.
+  SITE_ORG       the GitHub owner repos are created under (`setenv.sh SITE_ORG`).
   SITE_TEMPLATE_REPO  name of the mirrored template repo (default site-template).
 """
 
@@ -48,6 +57,11 @@ NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 DOMAIN_RE = re.compile(r"^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$")
 PAGES_IPS = ("185.199.108.153", "185.199.109.153", "185.199.110.153", "185.199.111.153")
 FILLED_FILES = ("CLAUDE.md", "README.md", ".claude/settings.json")   # files that carry the live URL
+CF_API = "https://api.cloudflare.com/client/v4"
+REGISTRY = ENV_FILE.parent / "sites.json"          # slug -> repo -> {host, project, domains}; not in any workspace
+WRANGLER = HERE / "node_modules" / ".bin" / "wrangler"
+NON_SITE = {"CLAUDE.md", "README.md", ".claude", "tools", ".gitignore", ".nojekyll",
+            "CNAME", ".github", "version.json", "shots"}   # in the repo, not on the site
 DRY = False
 
 
@@ -270,6 +284,151 @@ def wait_live(url, marker, seconds=240):
     return False
 
 
+# ---------------------------------------------------------------- cloudflare
+
+def cf_creds(required=True):
+    """(token, account_id) from the toolbelt. Values stay in memory."""
+    env = read_env()
+    tok = os.environ.get("CLOUDFLARE_API_TOKEN") or env.get("CLOUDFLARE_API_TOKEN")
+    acct = os.environ.get("CLOUDFLARE_ACCOUNT_ID") or env.get("CLOUDFLARE_ACCOUNT_ID")
+    if required and not (tok and acct):
+        die("CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are needed in the toolbelt "
+            "(~/.config/claude-tools/setenv.sh <NAME>; TAYLOR-TODO §1 hosting step 0)")
+    return tok, acct
+
+
+def cf_api(method, path, body=None, ok404=False):
+    """One Cloudflare API call. Returns the `result`; dies on an error unless
+    ok404 and the thing isn't there (then None)."""
+    tok, acct = cf_creds()
+    url = f"{CF_API}/accounts/{acct}{path}"
+    if DRY and method != "GET":
+        say(f"  would {method} {path}" + (f" {json.dumps(body)}" if body else ""))
+        return {}
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method,
+                                 headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json",
+                                          "User-Agent": "claude-tools site"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            payload = json.loads(r.read().decode())
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404 and ok404:
+            return None
+        try:
+            errs = json.loads(exc.read().decode()).get("errors", [])
+            msg = "; ".join(f"{e.get('code')}: {e.get('message')}" for e in errs) or f"HTTP {exc.code}"
+        except ValueError:
+            msg = f"HTTP {exc.code}"
+        die(f"Cloudflare {method} {path}: {msg}")
+    except (urllib.error.URLError, OSError) as exc:
+        die(f"Cloudflare {method} {path}: {exc}")
+    if not payload.get("success"):
+        die(f"Cloudflare {method} {path}: {payload.get('errors')}")
+    return payload.get("result")
+
+
+def cf_project(name):
+    return cf_api("GET", f"/pages/projects/{name}", ok404=True)
+
+
+def cf_ensure_project(name):
+    """The Pages project for a site, created on first use. Production branch
+    `main`, no source (direct upload)."""
+    p = cf_project(name)
+    if p:
+        return p
+    p = cf_api("POST", "/pages/projects", {"name": name, "production_branch": "main"})
+    say(f"  created Pages project {name} -> https://{name}.pages.dev")
+    return p or {"name": name, "subdomain": f"{name}.pages.dev"}
+
+
+def cf_domains(project):
+    return cf_api("GET", f"/pages/projects/{project}/domains") or []
+
+
+def registry_load():
+    if not REGISTRY.exists():
+        return {}
+    try:
+        return json.loads(REGISTRY.read_text())
+    except ValueError:
+        die(f"{REGISTRY} is not valid JSON")
+
+
+def registry_save(reg):
+    REGISTRY.parent.mkdir(parents=True, exist_ok=True)
+    tmp = REGISTRY.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(reg, indent=2, sort_keys=True) + "\n")
+    tmp.replace(REGISTRY)
+
+
+def site_entry(meta, name):
+    """The registry row for this workspace's repo, or None (= GitHub Pages / unknown)."""
+    return registry_load().get(meta["slug"], {}).get(name)
+
+
+def site_register(meta, name, project, domains=None):
+    reg = registry_load()
+    row = reg.setdefault(meta["slug"], {}).setdefault(name, {})
+    row.update({"host": "cloudflare", "project": project})
+    if domains is not None:
+        row["domains"] = domains
+    if not DRY:
+        registry_save(reg)
+    return row
+
+
+def wrangler(*args, env_extra=None):
+    """Run wrangler from claude-tools' node_modules with the Cloudflare creds in
+    its environment (never on the command line). Returns (code, output)."""
+    if not WRANGLER.exists():
+        die(f"wrangler is not installed at {WRANGLER}; run claude-tools/install.sh (npm install)")
+    tok, acct = cf_creds()
+    env = dict(os.environ)
+    env.update({"CLOUDFLARE_API_TOKEN": tok, "CLOUDFLARE_ACCOUNT_ID": acct,
+                "WRANGLER_SEND_METRICS": "false", "CI": "1", "NO_COLOR": "1"})
+    env.update(env_extra or {})
+    cmd = [str(WRANGLER), *args]
+    if DRY:
+        say("  would run: wrangler " + " ".join(args))
+        return 0, ""
+    r = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=str(HERE))
+    return r.returncode, (r.stdout + "\n" + r.stderr).strip()
+
+
+def export_tree(repo, dest):
+    """The committed tree of HEAD, minus the files that are about the repo
+    rather than on the site. The working copy is never published: what's
+    served is exactly what's in git."""
+    archive = subprocess.run(["git", "-C", str(repo), "archive", "--format=tar", "HEAD"],
+                             capture_output=True)
+    if archive.returncode != 0:
+        die(f"git archive failed: {archive.stderr.decode().strip()}")
+    subprocess.run(["tar", "-x", "-C", str(dest)], input=archive.stdout, check=True)
+    for name in NON_SITE:
+        p = dest / name
+        if p.is_dir():
+            shutil.rmtree(p)
+        elif p.exists():
+            p.unlink()
+    n = sum(1 for p in dest.rglob("*") if p.is_file())
+    if not (dest / "index.html").exists():
+        die("the repo has no index.html at its root; nothing to publish")
+    if not (dest / "404.html").exists():
+        say("  WARN no 404.html: Pages will answer every missing path with index.html (200); copy the template's")
+    return n
+
+
+def curl_header(url, name):
+    req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "claude-tools site"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return r.headers.get(name)
+    except (urllib.error.URLError, OSError):
+        return None
+
+
 # ---------------------------------------------------------------- commands
 
 def cmd_new(a):
@@ -293,7 +452,15 @@ def cmd_new(a):
     code, _, err = gh("repo", "view", slug, "--json", "name", check=False)
     if code == 0 and not DRY:
         die(f"{slug} already exists on GitHub; pick another name or clone it into repos/{name}")
-    url = pages_url(o, name)
+    cloudflare = not a.gh_pages
+    if cloudflare:
+        cf_creds()                                   # fail before creating anything
+        if cf_project(name):
+            die(f"a Pages project named {name} already exists on Cloudflare; pick another name")
+        for s_, repos in registry_load().items():
+            if name in repos:
+                die(f"{name} is already registered to workspace {s_}")
+    url = f"https://{name}.pages.dev/" if cloudflare else pages_url(o, name)
     values = {
         "NAME": meta["name"], "REPO": name, "URL": url, "OWNER": o,
         "YEAR": str(datetime.date.today().year),
@@ -302,7 +469,10 @@ def cmd_new(a):
     if DRY:
         say(f"  would create public repo {slug} from {TEMPLATE_DIR}")
         say(f"  would clone it to repos/{name}, fill {', '.join(f'{{{{{k}}}}}' for k in values)}")
-        say(f"  would enable Pages from main:/ and expect {url}")
+        if cloudflare:
+            say(f"  would create Cloudflare Pages project {name}, register it, publish, and expect {url}")
+        else:
+            say(f"  would enable GitHub Pages from main:/ and expect {url}")
         set_live_url(ws, meta, url, a.primary)
         restamp(ws, meta)
         say("dry run: nothing created")
@@ -341,32 +511,134 @@ def cmd_new(a):
     git(dest, "push", "-q", "-u", "origin", "main")
     say(f"  pushed repos/{name} (main)")
 
-    # 4. Pages from main:/
-    code, out, err = gh("api", "-X", "POST", f"repos/{slug}/pages", "--input", "-",
-                        stdin=json.dumps({"source": {"branch": "main", "path": "/"}}), check=False)
-    if code != 0 and "already" not in (out + err).lower():
-        say(f"  WARN could not enable Pages: {err or out}. Enable it in the repo's Settings → Pages "
-            f"(main, root) or run: gh api -X POST repos/{slug}/pages --input - <<< "
-            f"'{{\"source\":{{\"branch\":\"main\",\"path\":\"/\"}}}}'")
-    info = pages_info(slug) or {}
-    if info.get("html_url") and info["html_url"].rstrip("/") + "/" != url:
-        say(f"  WARN Pages reports {info['html_url']}, files were filled with {url}")
-        url = info["html_url"].rstrip("/") + "/"
-    say(f"  Pages on: {url}")
+    # 4. the host
+    if cloudflare:
+        cf_ensure_project(name)
+        site_register(meta, name, name)
+        say(f"  registered {meta['slug']}/{name} -> Pages project {name}")
+    else:
+        code, out, err = gh("api", "-X", "POST", f"repos/{slug}/pages", "--input", "-",
+                            stdin=json.dumps({"source": {"branch": "main", "path": "/"}}), check=False)
+        if code != 0 and "already" not in (out + err).lower():
+            say(f"  WARN could not enable Pages: {err or out}. Enable it in the repo's Settings → Pages "
+                f"(main, root) or run: gh api -X POST repos/{slug}/pages --input - <<< "
+                f"'{{\"source\":{{\"branch\":\"main\",\"path\":\"/\"}}}}'")
+        info = pages_info(slug) or {}
+        if info.get("html_url") and info["html_url"].rstrip("/") + "/" != url:
+            say(f"  WARN Pages reports {info['html_url']}, files were filled with {url}")
+            url = info["html_url"].rstrip("/") + "/"
+        say(f"  GitHub Pages on: {url}")
 
     # 5. the workspace
     set_live_url(ws, meta, url, a.primary)
     restamp(ws, meta)
 
-    # 6. is it up?
-    live = wait_live(url, meta["name"]) if not a.no_wait else False
+    # 6. publish / is it up?
+    if cloudflare:
+        cmd_publish(argparse.Namespace(name=name, dry_run=False))
+        live = True
+    else:
+        live = wait_live(url, meta["name"]) if not a.no_wait else False
     say()
     say(f"repo:  https://github.com/{slug}")
     say(f"local: repos/{name}  (git -C repos/{name} …; its CLAUDE.md is the site manual)")
     say(f"live:  {url}  {'— serving' if live else '— not serving yet; Pages usually takes 1–3 minutes'}")
-    say(f"next:  edit the REPLACE-ME placeholders in repos/{name}/index.html, push, curl -s {url}")
+    say(f"next:  edit the REPLACE-ME placeholders in repos/{name}/index.html, commit, push"
+        + (f", site publish {name}" if cloudflare else "") + f", then shot {url}")
     if meta.get("live_url") == url:
         say(f"       config.json (if the project entry lists live_url): client snippet {meta['slug']}")
+
+
+def cmd_publish(a):
+    """HEAD of ./repos/<name> -> its Cloudflare Pages project, by direct upload.
+    The repo must be committed and pushed: the repo is the record, Pages is a
+    mirror of it, and a client session's `git push` is what makes the change
+    theirs. Which project is this repo's comes from the registry, never from
+    an argument."""
+    global DRY
+    DRY = a.dry_run
+    ws, meta = workspace()
+    names = repos_of(ws)
+    name = a.name or (names[0] if len(names) == 1 else None)
+    if not name:
+        die("which site? site publish <name> (site ls shows them)")
+    d = repo_dir(ws, name)
+    entry = site_entry(meta, name)
+    if not entry or entry.get("host") != "cloudflare":
+        die(f"repos/{name} isn't a Cloudflare site in the registry. GitHub Pages repos deploy on push "
+            f"(nothing to run); to move one: SITE_ADMIN=1 site adopt {name} from an owner session.")
+    project = entry["project"]
+
+    _, dirty = git(d, "status", "--porcelain", "--untracked-files=no", check=False)
+    if dirty.strip():
+        die(f"repos/{name} has uncommitted changes; commit (and push) first — what's published is HEAD")
+    _, branch = git(d, "rev-parse", "--abbrev-ref", "HEAD", check=False)
+    if branch != "main":
+        die(f"repos/{name} is on {branch!r}; publish from main")
+    _, unpushed = git(d, "log", "--oneline", "@{u}..", check=False)
+    if unpushed.strip():
+        die(f"repos/{name} has unpushed commits; git -C repos/{name} push first, then publish")
+    _, sha = git(d, "rev-parse", "--short", "HEAD", check=False)
+    _, subject = git(d, "log", "-1", "--format=%s", check=False)
+
+    cf_ensure_project(project)
+    with tempfile.TemporaryDirectory(prefix=f"site-publish-{name}-") as tmp:
+        out = Path(tmp) / "site"
+        out.mkdir()
+        n = export_tree(d, out)
+        say(f"publishing repos/{name} @ {sha} ({n} files) -> {project}")
+        code, log = wrangler("pages", "deploy", str(out), "--project-name", project, "--branch", "main",
+                             "--commit-hash", sha, "--commit-message", subject[:200], "--commit-dirty=false")
+    if DRY:
+        say("dry run: nothing published")
+        return
+    if code != 0:
+        tail = "\n".join(log.splitlines()[-8:])
+        die(f"wrangler pages deploy failed:\n{tail}")
+    m = re.search(r"https://[a-z0-9.-]+\.pages\.dev", log)
+    preview = m.group(0) if m else None
+    prod = f"https://{project}.pages.dev/"
+    live = None
+    for dom in entry.get("domains") or []:
+        if not dom.startswith("www."):
+            live = f"https://{dom}/"
+            break
+    # is it serving? (direct uploads are live in seconds)
+    up = wait_live(prod, "", seconds=90)
+    cc = curl_header(prod, "Cache-Control") if up else None
+    say(f"  deployment: {preview or '?'}")
+    say(f"  production: {prod} {'— serving' if up else '— not serving yet (check in a minute)'}"
+        + (f"  Cache-Control: {cc}" if cc else ""))
+    if cc and "no-cache" not in cc and "max-age=0" not in cc:
+        say("  WARN HTML is cacheable: copy templates/site/_headers into the repo root")
+    if live:
+        say(f"  live:       {live}  (custom domain; the same deployment)")
+    say(f"published {name} @ {sha}: {subject}")
+
+
+def cmd_adopt(a):
+    """Register an existing repo (made for GitHub Pages) as a Cloudflare site
+    and create its project. Doesn't touch DNS or GitHub Pages: publish, look,
+    `site domain`, and only then flip the records."""
+    require_admin("adopt")
+    global DRY
+    DRY = a.dry_run
+    ws, meta = workspace()
+    d = repo_dir(ws, a.name)
+    project = a.project or a.name
+    if not NAME_RE.match(project) or len(project) > 58:
+        die(f"{project!r} isn't a valid Pages project name")
+    existing = site_entry(meta, a.name)
+    if existing and existing.get("project") not in (None, project):
+        die(f"repos/{a.name} is already registered as project {existing['project']}")
+    for slug, repos in registry_load().items():
+        for rname, row in repos.items():
+            if row.get("project") == project and (slug, rname) != (meta["slug"], a.name):
+                die(f"project {project} already belongs to {slug}/{rname}")
+    cf_ensure_project(project)
+    row = site_register(meta, a.name, project)
+    say(f"registered {meta['slug']}/{a.name} -> Cloudflare Pages project {project} ({REGISTRY})")
+    say(f"next: site publish {a.name}; then SITE_ADMIN=1 site domain {a.name} <domain>")
 
 
 def cmd_stamp(a):
@@ -414,6 +686,15 @@ def cmd_ls(a):
     for n in names:
         d = ws / "repos" / n
         slug = remote_slug(d) or "-"
+        entry = site_entry(meta, n)
+        if entry and entry.get("host") == "cloudflare":
+            proj = entry["project"]
+            live = f"https://{entry['domains'][0]}/" if entry.get("domains") else f"https://{proj}.pages.dev/"
+            extra = [f"cloudflare:{proj}"] + [f"domain={x}" for x in entry.get("domains") or []]
+            same = lambda u: re.sub(r"^https?://", "", (u or "").rstrip("/"))
+            star = " *" if meta.get("live_url") and same(live) == same(meta["live_url"]) else ""
+            say(f"{n:<24} {slug:<32} {live}{star}  {' '.join(extra)}")
+            continue
         info = pages_info(slug) if slug != "-" else None
         if info:
             live = info.get("html_url") or "-"
@@ -431,10 +712,84 @@ def cmd_ls(a):
         say(f"\n* = live_url in .client.json (the URL the allowlist can curl): {meta['live_url']}")
 
 
+def cf_domain(ws, meta, d, name, entry, a):
+    """Custom domain for a Cloudflare site: apex + www on the Pages project,
+    a www -> apex redirect in the repo, and the two records for the registrar.
+    Cloudflare validates once the records resolve and issues the certificate
+    itself; `site domain <name>` (no domain) shows where that's at."""
+    project = entry["project"]
+    if not a.domain:
+        doms = cf_domains(project)
+        say(f"{name}: Pages project {project} -> https://{project}.pages.dev/")
+        if not doms:
+            say("  custom domains: (none)")
+        for dm in doms:
+            cert = (dm.get("certificate_authority") or "") and dm.get("status")
+            say(f"  {dm['name']:<32} domain {dm.get('status')}, validation {dm.get('validation_data', {}).get('status', '-')}, "
+                f"certificate {dm.get('certificate_authority') or '-'}")
+        return
+    domain = re.sub(r"^https?://", "", a.domain.lower().strip().rstrip("/"))
+    if not DOMAIN_RE.match(domain):
+        die(f"{domain!r} doesn't look like a domain")
+    apex = domain.count(".") == 1
+    wanted = [domain, f"www.{domain}"] if apex else [domain]
+    have = {dm["name"] for dm in cf_domains(project)}
+    for dm in wanted:
+        if dm in have:
+            say(f"  {dm} already on {project}")
+        else:
+            cf_api("POST", f"/pages/projects/{project}/domains", {"name": dm})
+            say(f"  added {dm} to {project}")
+    new_url = f"https://{domain}/"
+
+    # the repo: www -> apex, and the live URL in the manual/allowlist
+    changed = []
+    if apex:
+        rp = d / "_redirects"
+        rule = f"https://www.{domain}/* https://{domain}/:splat 301"
+        text = rp.read_text() if rp.exists() else "# One rule per line: from  to  status. Cloudflare Pages reads this file.\n"
+        if rule not in text:
+            rp.write_text(text.rstrip("\n") + "\n" + rule + "\n")
+            changed.append("_redirects")
+    old_url = meta.get("live_url") or f"https://{project}.pages.dev/"
+    for f in FILLED_FILES:
+        p = d / f
+        if p.exists() and old_url in p.read_text() and old_url != new_url:
+            p.write_text(p.read_text().replace(old_url, new_url))
+            changed.append(f)
+    if changed and not DRY:
+        git(d, "add", *changed)
+        git(d, "-c", "user.name=Patch (claude-tools site)", "-c", "user.email=noreply@anthropic.com",
+            "commit", "-q", "-m", f"Point the site at {domain}")
+        git(d, "push", "-q")
+        say(f"  committed {', '.join(changed)} and pushed")
+
+    site_register(meta, name, project, wanted)
+    set_live_url(ws, meta, new_url, force=True)
+    restamp(ws, meta)
+    if changed and not DRY:
+        cmd_publish(argparse.Namespace(name=name, dry_run=False))
+
+    target = f"{project}.pages.dev"
+    say(f"\nDNS records at the registrar for {domain} (replace any A/CNAME already there for these names):")
+    if apex:
+        say(f"  ALIAS  @      {target}     (Porkbun: ALIAS; elsewhere ANAME/'CNAME flattening'; "
+            f"if the registrar can't, move the nameservers to Cloudflare)")
+        say(f"  CNAME  www    {target}")
+    else:
+        say(f"  CNAME  {domain.split('.', 1)[0]:<6} {target}")
+    say(f"\nCloudflare checks the records itself (minutes once DNS has propagated), then issues the "
+        f"certificate; `SITE_ADMIN=1 site domain {name}` shows the state. Live URL is now {new_url}.")
+
+
 def cmd_domain(a):
     require_admin("domain")
     ws, meta = workspace()
     d = repo_dir(ws, a.name)
+    entry = site_entry(meta, a.name)
+    if entry and entry.get("host") == "cloudflare":
+        cf_domain(ws, meta, d, a.name, entry, a)
+        return
     slug = remote_slug(d)
     if not slug:
         die(f"repos/{a.name} has no GitHub remote")
@@ -631,12 +986,43 @@ def cmd_doctor(a):
     else:
         fail(f"no template at {TEMPLATE_DIR}")
     say(f"  client tool: {CLIENT_BIN if CLIENT_BIN.exists() else shutil.which('client') or 'MISSING'}")
+    say("== cloudflare")
+    tok, acct = cf_creds(required=False)
+    if not (tok and acct):
+        fail("CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID missing from the toolbelt (setenv.sh; TAYLOR-TODO §1)")
+    else:
+        try:
+            projects = cf_api("GET", "/pages/projects") or []
+            say(f"  token ok; {len(projects)} Pages project(s): {', '.join(p['name'] for p in projects) or '-'}")
+        except SystemExit:
+            fail("Cloudflare token or account id is refused (see the line above)")
+        say(f"  wrangler: {'present' if WRANGLER.exists() else 'MISSING (claude-tools/install.sh)'}")
+        say(f"  registry: {REGISTRY} ({sum(len(v) for v in registry_load().values())} site(s))")
     if (Path.cwd() / ".client.json").exists():
         ws, meta = workspace()
         say(f"== workspace {meta['slug']} ({meta['name']}) live_url={meta.get('live_url') or '-'}")
         for n in repos_of(ws):
             d = ws / "repos" / n
             slug = remote_slug(d)
+            entry = site_entry(meta, n)
+            if entry and entry.get("host") == "cloudflare":
+                proj = entry["project"]
+                p = cf_project(proj) if tok else None
+                if not p:
+                    fail(f"repos/{n}: registered as Pages project {proj} but Cloudflare has no such project")
+                    continue
+                dep = (p.get("latest_deployment") or {})
+                url = f"https://{proj}.pages.dev/"
+                cc = curl_header(url, "Cache-Control")
+                say(f"  repos/{n}: {slug} -> {url} last publish {(dep.get('created_on') or '-')[:19]} "
+                    f"Cache-Control: {cc or '-'}")
+                if cc and "no-cache" not in cc and "max-age=0" not in cc:
+                    fail(f"repos/{n}: HTML is cacheable (copy templates/site/_headers into the repo root)")
+                for dm in cf_domains(proj):
+                    ok_ = dm.get("status") == "active"
+                    (say if ok_ else fail)(f"  repos/{n}: domain {dm['name']} {dm.get('status')}"
+                                           + ("" if ok_ else " (DNS records not pointing here yet?)"))
+                continue
             info = pages_info(slug) if slug else None
             if not slug:
                 fail(f"repos/{n}: no GitHub remote")
@@ -656,15 +1042,24 @@ def cmd_doctor(a):
 def main():
     ap = argparse.ArgumentParser(prog="site", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    n = sub.add_parser("new", help="create a site: repo from the template, Pages on, URL into the workspace")
+    n = sub.add_parser("new", help="create a site: repo from the template, Cloudflare Pages project, first publish, URL into the workspace")
     n.add_argument("name", help="repo name, e.g. <slug>-site")
     n.add_argument("--tagline", help="one line under the name on the home page")
     n.add_argument("--primary", action="store_true", help="make this the workspace's live_url even if one is set")
     n.add_argument("--no-wait", action="store_true", help="don't wait for the first Pages build")
     n.add_argument("--dry-run", action="store_true", help="check everything and print the plan; create nothing")
+    n.add_argument("--gh-pages", action="store_true", help="serve from GitHub Pages instead of Cloudflare (legacy)")
     n.set_defaults(fn=cmd_new)
+    pb = sub.add_parser("publish", help="HEAD of ./repos/<name> -> its Cloudflare Pages project (commit + push first)")
+    pb.add_argument("name", nargs="?", help="repo name under ./repos (optional when there is one)")
+    pb.add_argument("--dry-run", action="store_true")
+    pb.set_defaults(fn=cmd_publish)
+    ad = sub.add_parser("adopt", help="register an existing repo as a Cloudflare site and create its project (SITE_ADMIN=1)")
+    ad.add_argument("name"); ad.add_argument("--project", help="Pages project name (default: the repo name)")
+    ad.add_argument("--dry-run", action="store_true")
+    ad.set_defaults(fn=cmd_adopt)
     sub.add_parser("ls", help="repos in ./repos with their Pages URLs").set_defaults(fn=cmd_ls)
-    st = sub.add_parser("stamp", help="new build id into version.json + every page's cache-buster (run before committing)")
+    st = sub.add_parser("stamp", help="(GitHub Pages sites only) new build id into version.json + every page's cache-buster")
     st.add_argument("name", help="repo name under ./repos")
     st.add_argument("--commit", metavar="MSG", help="git add -A && git commit -m MSG in that repo afterwards")
     st.set_defaults(fn=cmd_stamp)

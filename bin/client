@@ -103,7 +103,7 @@ def render_claude_md(meta, notes=""):
     tools = ["`git -C repos/<name>`", "`img`", "`site`", "`shot`"] + (["`pf`"] if meta.get("plateful") else [])
     md = md.replace("{{TOOLS}}", ", ".join(tools))
     if meta.get("live_url") and not meta.get("plateful"):
-        check = f"`curl -sI {meta['live_url']}` is allowed; wait a minute for Pages to deploy first"
+        check = f"`curl -s {meta['live_url']}PAGE` — no .html on the end, the host redirects those — is allowed; the change is there as soon as `site publish` says so"
     else:
         check = ("the allowlist gains a curl rule for a site's URL when `site new` creates it; "
                  "until then verify the push landed with `git -C repos/<name> log -1` and say so")

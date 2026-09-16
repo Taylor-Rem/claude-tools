@@ -1,0 +1,328 @@
+#!/usr/bin/env python3
+"""
+chats — read the relay's conversations, with the pictures people sent.
+
+    chats                              # last 40 exchanges -> one HTML file, path printed
+    chats --from smith -n 100          # just Smith
+    chats --project bleu-grave         # just one project
+    chats --photos                     # only exchanges that came with a picture
+    chats ls                           # the same thing as text in the terminal
+    chats doctor                       # is anything set up wrong?
+
+`./relay.py inbox` already shows the words. This exists for the pictures: a
+client texts a photo and says "like this", and the words alone don't tell you
+what they meant. The relay writes each exchange to state/messages.jsonl and
+keeps a copy of every inbound picture under state/media/; this stitches the
+two together into a single self-contained HTML file (pictures embedded, no
+server, no network) that you can open anywhere or send to yourself.
+
+Photos only exist from the point the relay started archiving them. Before
+that the working copies in each client's incoming/ were deleted by the agent
+once it had looked at them, so older pictures are gone unless the file
+happens to still be there — those get picked up from the run log.
+"""
+
+import argparse
+import base64
+import html
+import json
+import mimetypes
+import os
+import re
+import sys
+from datetime import datetime
+from pathlib import Path
+
+RELAY = Path(os.environ.get("RELAY_DIR", Path.home() / "projects" / "sms-relay"))
+CLIENTS = Path(os.environ.get("CLIENTS_DIR", Path.home() / "projects" / "clients"))
+OUT_DIR = Path(os.environ.get("CHATS_OUT", Path.home() / ".cache" / "claude-tools" / "chats"))
+
+INCOMING_RE = re.compile(r"incoming/(photo-[\w.-]+\.(?:jpg|jpeg|png))", re.I)
+
+# How close a surviving working copy's mtime must be to the exchange before we
+# believe it is that exchange's picture. They share a per-day filename, so this
+# is the only thing separating the real one from every other message that day.
+RECOVER_WINDOW_S = 300
+
+
+# ---- reading -----------------------------------------------------------------
+
+def state_dir(relay):
+    return relay / "state"
+
+
+def load_config(relay):
+    try:
+        return json.loads((relay / "config.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def load_rows(relay):
+    path = state_dir(relay) / "messages.jsonl"
+    if not path.exists():
+        sys.exit(f"no messages yet ({path} does not exist)")
+    rows = []
+    for line in path.read_text().splitlines():
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return sorted(rows, key=lambda r: r.get("ts", ""))
+
+
+def photo_paths(relay, row):
+    """(absolute path, archived?) for each picture that came with this exchange.
+
+    Archived copies (state/media/) are exact: one file per picture, named for
+    the message it arrived on. Anything older predates archiving, and the only
+    hope is the working copy named in the run log — but those are named for the
+    *day* (photo-20260915.jpg), so one survivor would otherwise match every
+    exchange that day. Hence the mtime check: accept it only if the file was
+    written within a few minutes of this exchange. Wrong pictures next to a
+    client's words are worse than no pictures."""
+    out = []
+    for rel in row.get("photos") or []:
+        p = state_dir(relay) / rel
+        if p.is_file():
+            out.append((p, True))
+    if out or not row.get("run"):
+        return out
+    try:
+        when = datetime.fromisoformat(row["ts"]).timestamp()
+    except (ValueError, KeyError):
+        return out
+    log = relay / "logs" / "runs" / row["run"]
+    if not log.is_file():
+        return out
+    try:
+        body = log.read_text(errors="replace")
+    except OSError:
+        return out
+    for name in dict.fromkeys(INCOMING_RE.findall(body)):
+        for hit in CLIENTS.glob(f"*/incoming/{name}"):
+            if hit.is_file() and abs(hit.stat().st_mtime - when) <= RECOVER_WINDOW_S:
+                out.append((hit, False))
+                break
+    return out
+
+
+def data_uri(path, max_bytes=4_000_000):
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    if len(raw) > max_bytes:
+        return None
+    mime = mimetypes.guess_type(path.name)[0] or "image/jpeg"
+    return f"data:{mime};base64," + base64.b64encode(raw).decode()
+
+
+def select(rows, args, cfg):
+    def keep(r):
+        if args.sender:
+            who = args.sender.lower()
+            if who not in (r.get("sender_name", "").lower(), r.get("sender", "").lower()):
+                return False
+        if args.project:
+            want = args.project.lower()
+            name = cfg.get("projects", {}).get(r.get("project"), {}).get("name", "").lower()
+            if want not in (r.get("project", "").lower(), name):
+                return False
+        return True
+
+    rows = [r for r in rows if keep(r)]
+    if args.photos:
+        rows = [r for r in rows if r.get("_photos")]
+    return rows[-args.number:] if args.number else rows
+
+
+# ---- html --------------------------------------------------------------------
+
+CSS = """
+:root{--bg:#f6f6f4;--card:#fff;--ink:#16161a;--dim:#6b6b76;--line:#e2e2dd;
+      --them:#fff;--you:#e8f0fe;--accent:#3b5bdb;--bad:#c92a2a;}
+:root:not([data-theme=light]) @media (prefers-color-scheme:dark){}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){
+  --bg:#141416;--card:#1c1c20;--ink:#ececf0;--dim:#9a9aa6;--line:#2c2c33;
+  --them:#26262c;--you:#1e2a44;--accent:#8aa4ff;--bad:#ff8787;}}
+:root[data-theme=dark]{--bg:#141416;--card:#1c1c20;--ink:#ececf0;--dim:#9a9aa6;
+  --line:#2c2c33;--them:#26262c;--you:#1e2a44;--accent:#8aa4ff;--bad:#ff8787;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+.wrap{max-width:820px;margin:0 auto;padding:24px 16px 64px}
+h1{font-size:1.4rem;margin:0 0 4px}
+.sub{color:var(--dim);font-size:.85rem;margin-bottom:24px}
+.day{position:sticky;top:0;background:var(--bg);padding:14px 0 8px;font-size:.78rem;
+  letter-spacing:.08em;text-transform:uppercase;color:var(--dim);z-index:2}
+.x{margin:0 0 22px}
+.meta{font-size:.74rem;color:var(--dim);margin:0 0 4px}
+.bub{background:var(--them);border:1px solid var(--line);border-radius:14px;
+  padding:10px 14px;white-space:pre-wrap;overflow-wrap:anywhere;max-width:86%}
+.you .bub{background:var(--you);margin-left:auto}
+.you .meta{text-align:right}
+.failed .bub{border-color:var(--bad)}
+.failed .meta{color:var(--bad)}
+.shots{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 0}
+.you .shots{justify-content:flex-end}
+.shots img{max-width:220px;max-height:280px;border-radius:10px;border:1px solid var(--line);
+  cursor:zoom-in;background:var(--card)}
+.shots img.big{max-width:100%;max-height:none;cursor:zoom-out}
+.shots img.loose{border-style:dashed;border-color:var(--dim)}
+.gone{font-size:.74rem;color:var(--dim);font-style:italic}
+.empty{color:var(--dim);padding:40px 0;text-align:center}
+"""
+
+JS = """
+document.addEventListener('click',function(e){
+  if(e.target.tagName==='IMG'&&e.target.closest('.shots'))e.target.classList.toggle('big');
+});
+"""
+
+
+def render(rows, cfg, relay, title):
+    bot = cfg.get("bot_name", "bot")
+    parts = [
+        "<!doctype html><html lang=en><meta charset=utf-8>",
+        '<meta name=viewport content="width=device-width,initial-scale=1">',
+        f"<title>{html.escape(title)}</title>",
+        f"<style>{CSS}</style><body><div class=wrap>",
+        f"<h1>{html.escape(title)}</h1>",
+        f'<div class=sub>{len(rows)} exchange(s) · built {datetime.now():%a %b %d, %H:%M} '
+        "· tap a picture to enlarge</div>",
+    ]
+    if not rows:
+        parts.append("<div class=empty>Nothing matched.</div>")
+    day = None
+    for r in rows:
+        try:
+            t = datetime.fromisoformat(r["ts"]).astimezone()
+        except (ValueError, KeyError):
+            continue
+        if t.date() != day:
+            day = t.date()
+            parts.append(f"<div class=day>{t:%A %B %-d, %Y}</div>")
+        pname = cfg.get("projects", {}).get(r.get("project"), {}).get("name") \
+            or r.get("project") or "not on the allowlist"
+        who = html.escape(r.get("sender_name") or "someone")
+        meta = f"{who} → {html.escape(pname)} · {html.escape(r.get('transport') or '?')} · {t:%H:%M}"
+        shots = []
+        for p, archived in r.get("_photos", []):
+            uri = data_uri(p)
+            if not uri:
+                shots.append(f'<span class=gone>[{html.escape(p.name)} — too big to embed]</span>')
+                continue
+            tip = "" if archived else ' title="recovered from the working copy, not archived"'
+            cls = "" if archived else " class=loose"
+            shots.append(f'<img src="{uri}" alt="picture from {who}"{cls}{tip} loading=lazy>')
+        text = r.get("text") or ("" if shots else "(no text)")
+        if r.get("run") != "send":
+            parts.append('<div class=x><div class=meta>' + meta + "</div>"
+                         + (f"<div class=bub>{html.escape(text)}</div>" if text else "")
+                         + (f"<div class=shots>{''.join(shots)}</div>" if shots else "")
+                         + "</div>")
+        ok = r.get("ok", True)
+        tag = bot if ok else f"{bot} — failed"
+        reply = r.get("reply") or "(no reply)"
+        parts.append(f'<div class="x you{"" if ok else " failed"}"><div class=meta>{html.escape(tag)}</div>'
+                     f"<div class=bub>{html.escape(reply)}</div></div>")
+    parts.append(f"</div><script>{JS}</script>")
+    return "\n".join(parts)
+
+
+# ---- terminal ----------------------------------------------------------------
+
+def show_text(rows, cfg):
+    bot = cfg.get("bot_name", "bot")
+    day = None
+    for r in rows:
+        try:
+            t = datetime.fromisoformat(r["ts"]).astimezone()
+        except (ValueError, KeyError):
+            continue
+        if t.date() != day:
+            day = t.date()
+            print(f"\n{t:%a %b %d}")
+        pname = cfg.get("projects", {}).get(r.get("project"), {}).get("name") or r.get("project")
+        pics = r.get("_photos", [])
+        mark = f"  [{len(pics)} picture(s)]" if pics else ""
+        print(f"{t:%H:%M}  {r.get('sender_name')} → {pname} ({r.get('transport')}){mark}")
+        for line in (r.get("text") or "(attachment only)").splitlines():
+            print(f"         {line}")
+        for p, archived in pics:
+            print(f"         · {p}{'' if archived else '   (recovered, not archived)'}")
+        tag = bot if r.get("ok", True) else f"{bot} (FAILED)"
+        for i, line in enumerate((r.get("reply") or "(no reply)").splitlines()):
+            print(f"       {tag + ':' if i == 0 else ' ' * (len(tag) + 1)} {line}")
+
+
+def doctor(relay, cfg):
+    ok = True
+    print(f"relay        {relay}{'' if relay.is_dir() else '   MISSING'}")
+    msgs = state_dir(relay) / "messages.jsonl"
+    print(f"messages     {msgs}{'' if msgs.is_file() else '   MISSING'}")
+    media = state_dir(relay) / "media"
+    n = len(list(media.glob("*/*/*"))) if media.is_dir() else 0
+    print(f"photo store  {media}  ({n} archived)")
+    if not media.is_dir():
+        print("             · nothing archived yet — the relay writes here on the next")
+        print("               message with a picture. Restart it if you just updated the code.")
+    rows = load_rows(relay) if msgs.is_file() else []
+    with_photos = sum(1 for r in rows if r.get("photos"))
+    print(f"exchanges    {len(rows)} logged, {with_photos} with archived pictures")
+    stale = [r for r in rows if "photos" not in r]
+    if stale:
+        print(f"             · {len(stale)} from before archiving existed; their pictures are")
+        print("               recovered from incoming/ only if the files are still there")
+    print(f"output       {OUT_DIR}")
+    return 0 if ok else 1
+
+
+# ---- cli ---------------------------------------------------------------------
+
+def main():
+    ap = argparse.ArgumentParser(prog="chats", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("command", nargs="?", default="html", choices=["html", "ls", "doctor"])
+    ap.add_argument("--from", dest="sender", help="only this person (name or sender key)")
+    ap.add_argument("--project", help="only this project (key or name)")
+    ap.add_argument("-n", "--number", type=int, default=40, help="how many exchanges (0 = all)")
+    ap.add_argument("--photos", action="store_true", help="only exchanges that came with a picture")
+    ap.add_argument("--out", type=Path, help="write the HTML here instead of the cache dir")
+    ap.add_argument("--relay", type=Path, default=RELAY, help="relay checkout (default: ~/projects/sms-relay)")
+    args = ap.parse_args()
+
+    cfg = load_config(args.relay)
+    if args.command == "doctor":
+        return doctor(args.relay, cfg)
+
+    rows = load_rows(args.relay)
+    for r in rows:
+        r["_photos"] = photo_paths(args.relay, r)
+    rows = select(rows, args, cfg)
+
+    if args.command == "ls":
+        if not rows:
+            print("nothing matched")
+            return 0
+        show_text(rows, cfg)
+        return 0
+
+    bits = [b for b in (args.sender, args.project) if b]
+    title = "Relay chats" + (" — " + ", ".join(bits) if bits else "")
+    out = args.out
+    if not out:
+        OUT_DIR.mkdir(parents=True, exist_ok=True)
+        slug = re.sub(r"[^a-z0-9]+", "-", "-".join(bits).lower()).strip("-") or "all"
+        out = OUT_DIR / f"chats-{slug}-{datetime.now():%Y%m%d-%H%M%S}.html"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(render(rows, cfg, args.relay, title))
+    pics = sum(len(r.get("_photos", [])) for r in rows)
+    print(f"{len(rows)} exchange(s), {pics} picture(s)")
+    print(out.resolve())
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

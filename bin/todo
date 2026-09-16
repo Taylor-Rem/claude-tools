@@ -11,7 +11,7 @@ GitHub API with a fine-grained token Taylor pastes once in the browser.
 
   todo ls [--all]              open items by section, numbered
   todo done <n> [<n>...]       tick item(s) by number from `todo ls`
-  todo add "text" [--section N]   a new item (default: section 4, Later)
+  todo add "text" [--section N]   a new item (default: the "Later" section)
   todo sync                    local edits up, web ticks down (the timer's job)
   todo init                    one time: the private data repo, the timer
   todo site push               publish todo-site/index.html to the Pages repo
@@ -184,7 +184,10 @@ def cmd_add(args):
     sections = parse(text)
     if not sections:
         die("no '## ' sections in the file")
-    idx = (args.section or len(sections)) - 1
+    # default: the "Later" section, wherever it sits — the file ends with a
+    # Done archive, which is the last thing a new item should land in
+    default = next((i + 1 for i, s in enumerate(sections) if "later" in s["name"].lower()), len(sections))
+    idx = (args.section or default) - 1
     if not 0 <= idx < len(sections):
         die(f"--section must be 1..{len(sections)}")
     # insert after the section's last item (or its header), before the next header

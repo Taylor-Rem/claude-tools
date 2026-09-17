@@ -16,6 +16,7 @@ before 2026-09-16 and goes away once Bleu Grave has moved.
   site domain <name> [example.com]     # custom domain on the project + the DNS lines   (SITE_ADMIN=1)
   site adopt <name> [--project P]      # register an existing repo as a Cloudflare site   (SITE_ADMIN=1)
   site transfer <name> <github-user> [--keep]  # hand the repo to the client             (SITE_ADMIN=1)
+  site retire <name> [--delete-repo] [--keep-local]  # take a site down: Pages project + registry row (+ repo)  (SITE_ADMIN=1)
   site stamp <name>                    # (GitHub Pages only) build id into version.json + every page
   site template push                   # mirror templates/site to <org>/site-template
   site doctor                          # auth, org, template, Cloudflare, and each repo
@@ -25,7 +26,7 @@ Everything but `template` and `doctor` runs only inside a client workspace
 touches ./repos/. Which Pages project a workspace may publish to is
 recorded in ~/.config/claude-tools/sites.json by `site new` / `site adopt`
 — outside the workspace, so a client session can't point itself at another
-client's project. domain, adopt and transfer are Taylor's work: they refuse
+client's project. domain, adopt, transfer and retire are Taylor's work: they refuse
 unless SITE_ADMIN=1 is in the environment, which a client session can't set.
 
 Config, by name, never printed:
@@ -904,6 +905,85 @@ def cmd_transfer(a):
         say(f"  removed repos/{a.name} from the workspace (everything is on GitHub; the relay no longer sees it)")
 
 
+def cmd_retire(a):
+    """Take a site down for good: its Pages project (custom domains first), its
+    registry row, the workspace's live_url if it was this site, the local
+    clone. The GitHub repo stays — it is the record and what a client gets on
+    exit — unless --delete-repo, which is for throwaway runs. Never touches
+    config.json: the relay's project entry is the owner's to remove."""
+    global DRY
+    require_admin("retire")
+    ws, meta = workspace()
+    name = a.name
+    if not NAME_RE.match(name):
+        die(f"{name!r} is not a valid site name")
+    d = ws / "repos" / name
+    entry = site_entry(meta, name)
+    slug = remote_slug(d) if d.is_dir() else None     # a read; before DRY so the dry run can name the repo
+    DRY = a.dry_run
+    if not entry and not d.is_dir():
+        die(f"nothing to retire: repos/{name} is not here and the registry has no {meta['slug']}/{name}")
+    project = (entry or {}).get("project") or name
+    say(f"site retire {name} for {meta['name']} ({meta['slug']}){' — DRY RUN' if DRY else ''}")
+
+    # 1. the host: domains, then the project
+    if entry and entry.get("host") == "cloudflare":
+        cf_creds()
+        if cf_project(project):
+            for dom in cf_domains(project):
+                cf_api("DELETE", f"/pages/projects/{project}/domains/{dom['name']}", ok404=True)
+                say(f"  detached {dom['name']} (the DNS records at the registrar are still theirs to remove)")
+            cf_api("DELETE", f"/pages/projects/{project}", ok404=True)
+            say(f"  deleted Pages project {project} (https://{project}.pages.dev is gone)")
+        else:
+            say(f"  Pages project {project} was already gone")
+    elif entry:
+        say(f"  registry says host {entry.get('host')!r}; nothing to delete on a host")
+    else:
+        say("  not in the registry (GitHub Pages era or never adopted); host untouched")
+
+    # 2. the registry
+    if entry:
+        reg = registry_load()
+        reg.get(meta["slug"], {}).pop(name, None)
+        if not reg.get(meta["slug"]):
+            reg.pop(meta["slug"], None)
+        if not DRY:
+            registry_save(reg)
+        say(f"  removed {meta['slug']}/{name} from the registry")
+
+    # 3. the repo on GitHub
+    if slug:
+        if a.delete_repo:
+            code, out, err = gh("repo", "delete", slug, "--yes", check=False) if not DRY else (0, "", "")
+            if code == 0:
+                say(f"  deleted https://github.com/{slug}" + (" (dry run)" if DRY else ""))
+            else:
+                say(f"  WARN could not delete {slug}: {(err or out).strip()[:200]}. Delete it on GitHub "
+                    f"(the token needs Administration: write) or leave it")
+        else:
+            say(f"  kept https://github.com/{slug} (the record; --delete-repo removes it, `site transfer` hands it over)")
+
+    # 4. the workspace
+    url = f"https://{project}.pages.dev/"
+    if meta.get("live_url") and meta["live_url"].rstrip("/") + "/" == url:
+        meta["live_url"] = None
+        if not DRY:
+            write_meta(ws, meta)
+            restamp(ws, meta)
+        say("  live_url cleared (the workspace no longer points at it)")
+    if d.is_dir():
+        if a.keep_local:
+            say(f"  repos/{name} kept (--keep-local)")
+        else:
+            if not DRY:
+                shutil.rmtree(d)
+            say(f"  removed repos/{name}")
+    say()
+    say(f"retired {name}." + (" Nothing changed (dry run)." if DRY else "")
+        + f" If the relay has a project for {meta['slug']}, remove or pause it in config.json.")
+
+
 def cmd_template(a):
     if a.action != "push":
         die("site template push is the only template action")
@@ -1077,6 +1157,12 @@ def main():
     t.add_argument("name"); t.add_argument("user")
     t.add_argument("--keep", action="store_true", help="keep the local clone in repos/")
     t.set_defaults(fn=cmd_transfer)
+    rt = sub.add_parser("retire", help="take a site down: Pages project, registry row, local clone; the repo stays unless --delete-repo (SITE_ADMIN=1)")
+    rt.add_argument("name")
+    rt.add_argument("--delete-repo", action="store_true", help="also delete the GitHub repo (throwaway runs)")
+    rt.add_argument("--keep-local", action="store_true", help="keep repos/<name> in the workspace")
+    rt.add_argument("--dry-run", action="store_true")
+    rt.set_defaults(fn=cmd_retire)
     tp = sub.add_parser("template", help="`site template push` mirrors templates/site to <org>/site-template")
     tp.add_argument("action", choices=["push"]); tp.set_defaults(fn=cmd_template)
     sub.add_parser("doctor", help="check auth, org, template, and this workspace's sites").set_defaults(fn=cmd_doctor)

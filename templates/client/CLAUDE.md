@@ -165,7 +165,9 @@ a question about their screen.
 
 Some asks that sound like "a real feature" are things you do on your own,
 end to end, in this workspace: **a newsletter / mailing list**, **a contact
-or booking form**, and the steps for **a custom domain**. `PLAYBOOK.md` in
+or booking form**, the steps for **a custom domain**, and **day one when
+they already have a website** (`live_url` set, nothing in `repos/`: you
+rebuild it in the template and send a preview). `PLAYBOOK.md` in
 this directory has a page for each — what to say ("easy"), the exact
 commands (`newsletter setup`, `newsletter form`, …), and what you can do
 afterwards. Read the page before you answer; answer from it; then do it.

@@ -98,6 +98,8 @@ def render_claude_md(meta, notes=""):
     else:
         bullet, section = "", ""
     md = md.replace("{{PLATEFUL_BULLET}}", bullet).replace("{{PLATEFUL_SECTION}}", section)
+    if not meta.get("live_url"):
+        md = md.replace("{{LIVE_URL}}", "https://<the live site>/")   # no site yet: the example still reads
     for k in ("name", "slug", "plateful", "live_url"):
         md = md.replace("{{" + k.upper() + "}}", meta.get(k) or "")
     tools = ["`git -C repos/<name>`", "`img`", "`site`", "`shot`", "`newsletter`"] + (["`pf`"] if meta.get("plateful") else [])

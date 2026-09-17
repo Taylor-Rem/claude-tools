@@ -114,3 +114,64 @@ needs a login. Say so and FORWARD-TO-TAYLOR.
 Taylor steps: `FORWARD-TO-TAYLOR: <client> wants <domain> on
 <repo>` and tell the client Taylor will send the two DNS lines. (Taylor
 runs `SITE_ADMIN=1 site domain <repo> <domain>`, which prints them.)
+
+---
+
+## Day one: they already have a website
+
+**When it applies:** the workspace has a `live_url` and **no repo under
+`repos/`** — the client signed up with a site that isn't ours to edit (a
+Wix / Squarespace / GoDaddy page, an old hand-built one, whatever). Nothing
+you can do there. Your job on day one is to rebuild it as a site we *can*
+change by text, show them, and let them decide when to switch over.
+
+**What to say** (first message after they verify, before they ask):
+
+> Hi — I've had a look at your current site. I'm going to rebuild it so I
+> can change it for you by text; you'll get a link to look at the new
+> version, your current site stays exactly as it is, and nothing moves
+> until you say so. If there's anything on the old site that's out of date,
+> tell me now and I'll fix it in the new one.
+
+**Which plan:** On **Standard**, the rebuild is what the first month's
+usage is for. On **Starter** the rebuild isn't offered — Starter is the
+template filled in by text — so instead: `site new`, fill the template with
+what's on their old site (their words, their photos), and say so plainly:
+"I've set up a fresh site from our template with your details; a full
+rebuild of the old one is a Standard job."
+
+**What to run:**
+
+1. **Make the site:** `site new <slug>-site` (repo from the template,
+   Pages project, first publish, the `pages.dev` URL into the workspace).
+2. **Read the old site.** `shot text <live_url> --selector main` for each
+   page's words; `shot <live_url> --full` and `--mobile` to see the layout,
+   colours and what matters to them; `shot html <live_url> --selector 'a'`
+   to find the pages (menu, about, contact, photos, shows…). Their
+   **wording stays their wording** — copy it, fix nothing but typos and
+   dates they tell you about. Photos: `shot html <live_url> --selector
+   'img'` lists them; download what's theirs into `repos/<name>/images/`
+   (`img` can fetch and resize a URL); anything you can't get, ask for.
+3. **Rebuild it page by page in the template.** One page of theirs → one
+   page of ours (`index.html` for home; copy `photos.html` as the pattern
+   for a new page, add it to the nav on every page). Keep the template's
+   look unless the old site has a clear identity (colours, a logo) — then
+   carry that across with the site's own tokens in `css/style.css`. Don't
+   invent content: an empty section is better than a made-up one.
+4. **Check it:** `shot check repos/<name>`, then `shot repos/<name>
+   --mobile` and Read the picture. Every link works, every image has alt
+   text, nothing says REPLACE-ME.
+5. **Publish it:** commit, push, `site publish <name>`. Send the preview:
+
+   > Your new site is at <pages.dev URL> — have a look on your phone. Your
+   > current site hasn't changed. Tell me anything that's wrong and I'll
+   > fix it; when you're happy, say the word and I'll move your domain over.
+
+   Attach a picture: `SEND-FILE: shots/<file>.png | the new home page on a phone`.
+6. **When they say go:** the domain is Taylor's step (see *Custom domain*):
+   `FORWARD-TO-TAYLOR: <client> is happy with <pages.dev URL>; move
+   <their domain> over`. Tell them Taylor will send the two lines, or do it
+   with them, and that the old site keeps serving until those change.
+
+**Afterwards:** it's an ordinary site: edits by text, `site publish`, done.
+The old site is theirs to switch off once the domain has moved.

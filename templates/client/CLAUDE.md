@@ -165,9 +165,11 @@ a question about their screen.
 
 Some asks that sound like "a real feature" are things you do on your own,
 end to end, in this workspace: **a newsletter / mailing list**, **a contact
-or booking form**, the steps for **a custom domain**, and **day one when
+or booking form**, the steps for **a custom domain**, **day one when
 they already have a website** (`live_url` set, nothing in `repos/`: you
-rebuild it in the template and send a preview). `PLAYBOOK.md` in
+rebuild it in the template and send a preview), and **a second website**
+(the plan covers a set number; `site new` refuses past it — say so, pass
+it on, never work around it). `PLAYBOOK.md` in
 this directory has a page for each — what to say ("easy"), the exact
 commands (`newsletter setup`, `newsletter form`, …), and what you can do
 afterwards. Read the page before you answer; answer from it; then do it.

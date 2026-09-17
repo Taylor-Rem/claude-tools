@@ -154,12 +154,14 @@ def cmd_new(a):
     meta = {"slug": a.slug, "name": a.name or old.get("name") or a.slug,
             "plateful": a.plateful or old.get("plateful"),
             "live_url": a.live_url or old.get("live_url"),
+            "sites": a.sites if a.sites is not None else old.get("sites", 1),   # the tier's count (plan 02); `site new` enforces it
             "auth": None if a.shared_key else (old.get("auth") or key_name(a.slug))}
     if meta["plateful"] and not meta["live_url"]:
         meta["live_url"] = f"https://{meta['plateful']}.plateful.fyi/"   # their public site
     stamp(ws, meta)
     print(f"{'restamped' if stamped else 'created'} {ws}")
-    print(f"  repos: {', '.join(repos_of(ws)) or '(none yet — site new <slug> from inside it, or clone into repos/)'}")
+    print(f"  repos: {', '.join(repos_of(ws)) or '(none yet — site new <slug> from inside it, or clone into repos/)'}"
+          f" · sites allowed: {meta['sites']}")
     if meta["plateful"]:
         print(f"  plateful: {meta['plateful']} (needs PLATEFUL_KEY_{meta['plateful'].upper().replace('-', '_')} "
               f"in the toolbelt: pf keys create -r {meta['plateful']} --name relay "
@@ -255,6 +257,7 @@ def main():
     n.add_argument("slug"); n.add_argument("--name"); n.add_argument("--plateful", metavar="SUBDOMAIN")
     n.add_argument("--live-url"); n.add_argument("--restamp", action="store_true")
     n.add_argument("--shared-key", action="store_true", help="no key of its own: the relay's defaults.client_auth pays")
+    n.add_argument("--sites", type=int, metavar="N", help="how many sites this client's plan covers (default 1; kept on --restamp)")
     n.set_defaults(fn=cmd_new)
     sub.add_parser("ls", help="list client workspaces").set_defaults(fn=cmd_ls)
     d = sub.add_parser("doctor", help="check workspaces are stamped and repos are pushable")

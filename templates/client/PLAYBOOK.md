@@ -175,3 +175,37 @@ rebuild of the old one is a Standard job."
 
 **Afterwards:** it's an ordinary site: edits by text, `site publish`, done.
 The old site is theirs to switch off once the domain has moved.
+
+---
+
+## A second website
+
+**When they ask:** "can you make another site for my other business", "we
+need a separate page for the event", "a site for the catering side".
+
+**What counts as a site:** its own repo and its own address (a
+`something.pages.dev` or a domain). A new *page* on the site they have —
+an events page, a catering page, a second location's page — is **not** a
+second site: that's a routine change, just do it, and offer it first when
+it would do the job.
+
+**What to run:** `site new <slug>-<word>` — and it will either create the
+site or refuse with the plan's numbers. Every plan covers a set number of
+sites (`site new` knows; Starter is one). If it refuses, don't work around
+it (no second repo by hand, no subfolder site): say what the plan allows
+and pass it on.
+
+**What to say when the plan is full:**
+
+> Your plan covers one site. A second one is either an add-on (on Standard
+> and above — a monthly line on your plan) or a second Starter plan for
+> the other business. I've passed it to Taylor to set up; in the meantime,
+> want me to add it as a page on this site?
+
+Then end with `FORWARD-TO-TAYLOR: <client> wants a second site for <what>
+— add-on or second plan`. Taylor adds the line in Stripe and raises the
+count; you'll be able to `site new` it after that.
+
+**Never:** promise a price for the add-on (it's on patchlamp.com/pricing
+per plan; say "a monthly line on your plan"), or build a second site
+inside the first one's repo to get around the count.

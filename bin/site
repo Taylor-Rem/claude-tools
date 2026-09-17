@@ -453,6 +453,18 @@ def cmd_new(a):
     code, _, err = gh("repo", "view", slug, "--json", "name", check=False)
     if code == 0 and not DRY:
         die(f"{slug} already exists on GitHub; pick another name or clone it into repos/{name}")
+    # Plan 02: the plan covers N sites (.client.json "sites", from the tier via
+    # `client new --sites`). Counted here, outside the client's write scope, so
+    # Patch explains the plan instead of routing around it. SITE_ADMIN=1 overrides.
+    allowed = meta.get("sites")
+    allowed = 1 if allowed is None else int(allowed)
+    have = sorted(set(registry_load().get(meta["slug"], {})) | set(p.name for p in (ws / "repos").iterdir() if (p / ".git").exists())) \
+        if (ws / "repos").is_dir() else sorted(registry_load().get(meta["slug"], {}))
+    if len(have) >= allowed and os.environ.get("SITE_ADMIN") != "1":
+        die(f"this plan covers {allowed} site{'s' if allowed != 1 else ''} and {meta['name']} already has "
+            f"{len(have)} ({', '.join(have)}). A second site is a second plan on Starter, or an add-on on "
+            f"Standard and up — tell the client plainly and FORWARD-TO-TAYLOR it (PLAYBOOK.md 'A second "
+            f"website'). Taylor: SITE_ADMIN=1 site new {name}, or client new {meta['slug']} --restamp --sites N.")
     cloudflare = not a.gh_pages
     if cloudflare:
         cf_creds()                                   # fail before creating anything

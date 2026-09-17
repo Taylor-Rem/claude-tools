@@ -4,6 +4,7 @@ discord — read-only window onto the Discord servers the relay bot is in.
 
   discord ls                      servers and their text channels (id, name, last activity)
   discord read <#name|id> [-n N]  the last N messages in a channel, oldest first (default 30)
+  discord history [#name ...|--all] [--out FILE]   everything, oldest first, to a file (Read it whole)
                                   [--before <message id>] to page back, [--json] for rows
   discord doctor                  is the token there, can we reach the API
 
@@ -17,6 +18,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -52,7 +54,11 @@ def need_token():
 
 
 def call(path, **params):
-    r = requests.get(API + path, headers={"Authorization": f"Bot {need_token()}"}, params=params, timeout=30)
+    for _ in range(6):
+        r = requests.get(API + path, headers={"Authorization": f"Bot {need_token()}"}, params=params, timeout=30)
+        if r.status_code != 429:
+            break
+        time.sleep(float((r.json() or {}).get("retry_after", 1)) + 0.1)   # paging history hits this
     if r.status_code == 403:
         die(f"no access to {path} (HTTP 403)")
     if r.status_code == 404:
@@ -144,6 +150,84 @@ def cmd_read(args):
         print(f"(page back with --before {rows[0]['id']})")
 
 
+def _rows(msgs):
+    rows = []
+    for m in msgs:
+        a = m.get("author") or {}
+        who = a.get("global_name") or a.get("username") or "?"
+        text = (m.get("content") or "").strip()
+        if m.get("attachments"):
+            text = (text + " " + " ".join(f"[attachment: {x.get('filename')}]" for x in m["attachments"])).strip()
+        if m.get("embeds") and not text:
+            text = "[embed]"
+        ts = m.get("timestamp", "")[:16].replace("T", " ")
+        rows.append({"id": m["id"], "ts": ts, "who": who, "user": a.get("username", ""), "text": text})
+    return rows
+
+
+def cmd_history(args):
+    """Everything in a channel (or every text channel with --all), oldest first,
+    written to a file so a model can Read it in one go instead of paging. With
+    --out the pull is incremental: <out>.state.json remembers the newest id per
+    channel and the next run appends only what's new (the first full pull of a
+    busy server takes a minute or two; after that it's seconds)."""
+    chans = []
+    if args.all:
+        for _, cs in guild_channels():
+            chans += cs
+    else:
+        chans = [resolve(c) for c in args.channel]
+    if not chans:
+        die("discord history: name a channel, or --all")
+    state_path = Path(args.out + ".state.json") if args.out else None
+    state = json.loads(state_path.read_text()) if state_path and state_path.exists() else {}
+    fresh = not state or args.refresh
+    out = open(args.out, "w" if fresh else "a") if args.out else sys.stdout
+    total = 0
+    for c in chans:
+        after = "" if fresh else state.get(c["id"], "")
+        msgs = []
+        if after:
+            # ascending pages from where we left off
+            while len(msgs) < args.max:
+                page = call(f"/channels/{c['id']}/messages", limit=100, after=after)
+                if not page:
+                    break
+                page = list(reversed(page))          # Discord returns newest first
+                msgs += page
+                after = page[-1]["id"]
+                if len(page) < 100:
+                    break
+        else:
+            before = ""
+            while len(msgs) < args.max:
+                params = {"limit": 100}
+                if before:
+                    params["before"] = before
+                page = call(f"/channels/{c['id']}/messages", **params)
+                if not page:
+                    break
+                msgs += page
+                before = page[-1]["id"]
+                if len(page) < 100:
+                    break
+            msgs = list(reversed(msgs[:args.max]))
+        rows = _rows(msgs)
+        total += len(rows)
+        if rows:
+            state[c["id"]] = rows[-1]["id"]
+        elif c["id"] not in state and c.get("last_message_id"):
+            state[c["id"]] = c["last_message_id"]
+        if fresh or rows:
+            print(f"\n===== #{c.get('name', c['id'])} — {len(rows)} {'new ' if not fresh else ''}messages, oldest first =====", file=out)
+        for r in rows:
+            print(f"[{r['ts']}] {r['who']}: {r['text']}", file=out)
+    if args.out:
+        out.close()
+        state_path.write_text(json.dumps(state))
+        print(f"{total} {'new ' if not fresh else ''}messages from {len(chans)} channel(s) -> {args.out}")
+
+
 def cmd_doctor(args):
     src = "env" if os.environ.get("DISCORD_BOT_TOKEN") else ("file" if load_keys().get("DISCORD_BOT_TOKEN") else None)
     print(f"token: {'found in ' + src if src else 'MISSING'}")
@@ -165,6 +249,13 @@ def main():
     r.add_argument("--before", default="", help="message id to page back from")
     r.add_argument("--json", action="store_true")
     r.set_defaults(fn=cmd_read)
+    h = sub.add_parser("history", help="a channel's whole history (or --all channels), oldest first, to a file")
+    h.add_argument("channel", nargs="*", help="#name or id (several ok)")
+    h.add_argument("--all", action="store_true", help="every text channel on every server")
+    h.add_argument("--max", type=int, default=5000, help="cap per channel (default 5000)")
+    h.add_argument("--out", help="write here instead of stdout (incremental on rerun)")
+    h.add_argument("--refresh", action="store_true", help="with --out: pull everything again")
+    h.set_defaults(fn=cmd_history)
     sub.add_parser("doctor", help="token + API check").set_defaults(fn=cmd_doctor)
     args = ap.parse_args()
     args.fn(args)

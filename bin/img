@@ -4,6 +4,7 @@ img — Claude's image toolbelt. Stock photos (Pexels) and generation (Gemini).
 
     img stock "chicken tikka masala" [-n 5] [--orientation landscape] [--out DIR] [--page 2]
     img gen "prompt" [--style plateful-menu] [--quality menu|hero|pro|draft] [--aspect 4:3] [--ref photo.jpg] [--out FILE]
+    img edit photo.jpg "put a party hat on him" [--quality ...] [--out FILE]   # instructed edit of a real photo
     img styles                       # list style presets
     img info FILE...                 # dimensions + sidecar metadata
 
@@ -252,6 +253,73 @@ def cmd_stock(args):
 
 # ---------------------------------------------------------------- gen
 
+MIMES = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp"}
+EXTS = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
+
+
+def image_part(path):
+    p = Path(path)
+    if not p.exists():
+        die(f"image not found: {path}")
+    mime = MIMES.get(p.suffix.lower().lstrip("."), "image/jpeg")
+    return {"inlineData": {"mimeType": mime, "data": base64.b64encode(p.read_bytes()).decode()}}
+
+
+def gemini_image(model, key, body):
+    """One generateContent call; returns (base64 image, mime) or dies."""
+    r = requests.post(GEMINI_URL.format(model=model), headers={"x-goog-api-key": key},
+                      json=body, timeout=180)
+    if r.status_code != 200:
+        die(f"Gemini generate failed: HTTP {r.status_code} {r.text[:300]}")
+    resp = r.json()
+    for cand in resp.get("candidates", []):
+        for part in cand.get("content", {}).get("parts", []):
+            if "inlineData" in part:
+                return part["inlineData"]["data"], part["inlineData"].get("mimeType", "image/png")
+    die(f"Gemini returned no image. Response: {json.dumps(resp)[:400]}")
+
+
+def cmd_edit(args):
+    """img edit PHOTO "instruction": Gemini redraws the photo with the change
+    asked for and nothing else. Same model/cost table as gen; the sidecar and
+    ledger say which file it was an edit of."""
+    key = need_key("GEMINI_API_KEY")
+    _, key_name = key_source("GEMINI_API_KEY")
+    src = Path(args.photo)
+    prompt = (f"Edit this photo: {args.instruction}\n\nKeep everything else exactly as it is: the same "
+              f"people, faces, framing, lighting and composition. Photorealistic, matching the original. "
+              f"Output the edited photo only.")
+    q = QUALITY[args.quality]
+    model = GEMINI_MODEL or q["model"]
+    body = {"contents": [{"parts": [image_part(src), {"text": prompt}]}],
+            "generationConfig": {"responseModalities": ["IMAGE"], "imageConfig": {"imageSize": q["size"]}}}
+    img_b64, mime = gemini_image(model, key, body)
+    ext = EXTS.get(mime, ".png")
+    if args.out:
+        path = Path(args.out).resolve()
+        path.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        path = out_dir(args.out_dir, slugify(src.stem)) / f"{slugify(src.stem, 24)}-{slugify(args.instruction, 24)}-{stamp}{ext}"
+    path.write_bytes(base64.b64decode(img_b64))
+    write_sidecar(path, {
+        "source": "edited", "edit_of": str(src.resolve()), "instruction": args.instruction,
+        "full_prompt": prompt, "model": model, "quality": args.quality, "size": q["size"],
+        "est_cost_usd": q["usd"], "billed_to": f"gemini:{key_name}",
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    })
+    if not args.no_ledger:
+        ledger_append(args.ledger, {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()), "kind": "image",
+            "model": model, "quality": args.quality, "cost_usd": q["usd"], "billed_to": f"gemini:{key_name}",
+            "project": os.environ.get("PF_RESTAURANT") or os.getcwd(), "path": str(path), "edit_of": str(src.resolve()),
+        })
+    wh = image_size(path)
+    print(f"  {path}  {f'{wh[0]}x{wh[1]}' if wh else '?'}")
+    print(f"  ({model}, {q['size']}, ~${q['usd']:.2f}, billed to {key_name})")
+    return [path]
+
+
 def cmd_gen(args):
     key = need_key("GEMINI_API_KEY")
     _, key_name = key_source("GEMINI_API_KEY")   # who pays, by name only
@@ -282,23 +350,7 @@ def cmd_gen(args):
     dest_dir = out_dir(args.out_dir, slugify(args.prompt))
     made = []
     for i in range(args.n):
-        r = requests.post(GEMINI_URL.format(model=model), headers={"x-goog-api-key": key},
-                          json=body, timeout=180)
-        if r.status_code != 200:
-            die(f"Gemini generate failed: HTTP {r.status_code} {r.text[:300]}")
-        resp = r.json()
-        img_b64 = None
-        mime = "image/png"
-        for cand in resp.get("candidates", []):
-            for part in cand.get("content", {}).get("parts", []):
-                if "inlineData" in part:
-                    img_b64 = part["inlineData"]["data"]
-                    mime = part["inlineData"].get("mimeType", mime)
-                    break
-            if img_b64:
-                break
-        if not img_b64:
-            die(f"Gemini returned no image. Response: {json.dumps(resp)[:400]}")
+        img_b64, mime = gemini_image(model, key, body)
         ext = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}.get(mime, ".png")
         if args.out and args.n == 1:
             path = Path(args.out).resolve()
@@ -425,6 +477,16 @@ def main():
     g.add_argument("--ledger", default=str(LEDGER), help=f"cost ledger to append to (default {LEDGER})")
     g.add_argument("--no-ledger", action="store_true", help="don't record this generation's cost")
     g.set_defaults(fn=cmd_gen)
+
+    e = sub.add_parser("edit", help="edit a real photo with Gemini (instructed edit, same photo back)")
+    e.add_argument("photo")
+    e.add_argument("instruction", help='what to change, e.g. "remove the guy on the left", "make it night"')
+    e.add_argument("--quality", choices=list(QUALITY), default="menu")
+    e.add_argument("--out", help="exact output file")
+    e.add_argument("--out-dir", help="directory for the output")
+    e.add_argument("--ledger", default=str(LEDGER))
+    e.add_argument("--no-ledger", action="store_true")
+    e.set_defaults(fn=cmd_edit)
 
     st = sub.add_parser("styles", help="list style presets")
     st.set_defaults(fn=cmd_styles)

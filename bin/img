@@ -37,7 +37,9 @@ import calendar
 import json
 import os
 import re
+import shutil
 import struct
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -95,6 +97,23 @@ VEO_POLL_SECONDS = 10
 VEO_TIMEOUT_SECONDS = 300      # under a chat room's 480s run timeout, so a stuck
                                # generation fails as a tool error, not a dead run
 DISCORD_ATTACH_LIMIT_MB = 10          # what a plain Discord server takes; bigger needs a link
+
+# `--from`: Veo can't edit an existing video (no video-to-video; extension is
+# Veo-generated clips only). What it can do is start from one frame. So a
+# "remake" is: Gemini watches the clip and writes what's in it, the change the
+# caller wants is folded into that description, and the clip's first frame
+# anchors the generation. The result is the same room and the same subject
+# doing something new -- not the original footage, and it says so.
+DESCRIBE_MODEL = os.environ.get("IMG_DESCRIBE_MODEL", "gemini-3.6-flash")
+DESCRIBE_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+DESCRIBE_MAX_MB = 15                  # bigger than this and a small proxy copy is described instead
+DESCRIBE_PROMPT = (
+    "Watch this video and write a single-paragraph shot description for a video generator: the setting, "
+    "who or what is in frame and exactly what they look like, the camera (angle, height, movement, how it's "
+    "held), the lighting and the look of the footage, and what happens over the clip. Be concrete and "
+    "visual; no commentary, no lists, no preamble. Then continue the description so that this happens: "
+    "{ask}. Write the whole thing as one continuous shot description, present tense."
+)
 
 # Pexels src sizes. large2x = 1880w, comfortably under Plateful's 2000px original cap.
 PEXELS_SIZES = ("original", "large2x", "large", "medium", "small", "portrait", "landscape", "tiny")
@@ -451,6 +470,60 @@ def veo_uri(payload):
 RES_ORDER = ["720p", "1080p", "4k"]
 
 
+def ffmpeg_or_die():
+    for exe in ("ffmpeg", "ffprobe"):
+        if not shutil.which(exe):
+            die(f"{exe} is not installed — it's what reads a video's first frame. "
+                "A static build in ~/.local/bin is enough (johnvansickle.com/ffmpeg).")
+
+
+def probe(path):
+    """(width, height, seconds) for a video file."""
+    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                          "stream=width,height", "-show_entries", "format=duration",
+                          "-of", "json", str(path)], capture_output=True, text=True)
+    if out.returncode != 0:
+        die(f"ffprobe couldn't read {path}: {out.stderr.strip()[:200]}")
+    d = json.loads(out.stdout)
+    st = (d.get("streams") or [{}])[0]
+    return st.get("width", 0), st.get("height", 0), float(d.get("format", {}).get("duration") or 0)
+
+
+def first_frame(path, dest):
+    r = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-frames:v", "1", "-y", str(dest)],
+                       capture_output=True, text=True)
+    if r.returncode != 0 or not Path(dest).exists():
+        die(f"ffmpeg couldn't take a frame from {path}: {r.stderr.strip()[:200]}")
+    return dest
+
+
+def describe_video(path, ask, key):
+    """Gemini watches the clip and writes the merged shot description."""
+    src = Path(path)
+    if src.stat().st_size > DESCRIBE_MAX_MB * 1_000_000:
+        # Too big to inline: describe a small, short proxy instead of the original.
+        proxy = src.with_suffix(".proxy.mp4")
+        subprocess.run(["ffmpeg", "-v", "error", "-i", str(src), "-t", "10", "-vf", "scale=360:-2",
+                        "-r", "12", "-an", "-y", str(proxy)], capture_output=True, text=True)
+        if proxy.exists():
+            src = proxy
+    mime = "video/quicktime" if src.suffix.lower() == ".mov" else "video/mp4"
+    body = {"contents": [{"parts": [
+        {"inlineData": {"mimeType": mime, "data": base64.b64encode(src.read_bytes()).decode()}},
+        {"text": DESCRIBE_PROMPT.format(ask=ask)},
+    ]}]}
+    r = requests.post(DESCRIBE_URL.format(model=DESCRIBE_MODEL),
+                      headers={"x-goog-api-key": key, "Content-Type": "application/json"},
+                      json=body, timeout=180)
+    if r.status_code != 200:
+        die(f"describe: HTTP {r.status_code} {r.text[:300]}")
+    parts = r.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
+    text = "".join(p.get("text", "") for p in parts).strip()
+    if not text:
+        die("describe: the model returned nothing to work from")
+    return text
+
+
 def video_quota(ledger_path, who, cap, hours=24):
     """(used, frees_up_in_seconds) — how many videos `who` has made in the last
     `hours` according to the ledger, and how long until the oldest of them
@@ -498,6 +571,19 @@ def video_house_rules(resolution, seconds, cost, quality):
 
 
 def cmd_video(args):
+    source_note = None
+    if args.source:
+        ffmpeg_or_die()
+        src = Path(args.source)
+        if not src.exists():
+            die(f"video not found: {args.source}")
+        w, h, dur = probe(src)
+        if not args.aspect:
+            args.aspect = "9:16" if h > w else "16:9"
+        source_note = {"from": str(src.resolve()), "asked": args.prompt,
+                       "source_size": f"{w}x{h}", "source_seconds": round(dur, 1)}
+    args.aspect = args.aspect or "16:9"
+
     q = VIDEO_QUALITY[args.quality]
     model = VIDEO_MODEL or q["model"]
     seconds = int(args.seconds)
@@ -529,7 +615,10 @@ def cmd_video(args):
             die(f"first-frame image not found: {args.ref}")
         mime = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp"}.get(
             rp.suffix.lower().lstrip("."), "image/jpeg")
-        instance["image"] = {"inlineData": {"mimeType": mime, "data": base64.b64encode(rp.read_bytes()).decode()}}
+        # Veo's predictLongRunning takes the predict-style image object; the
+        # generateContent-style {"inlineData": ...} is rejected with a 400
+        # "`inlineData` isn't supported by this model" (checked 2026-09-17).
+        instance["image"] = {"bytesBase64Encoded": base64.b64encode(rp.read_bytes()).decode(), "mimeType": mime}
 
     body = {"instances": [instance], "parameters": {
         # durationSeconds is a NUMBER; the docs show a string and the API
@@ -539,6 +628,10 @@ def cmd_video(args):
         body["instances"][0]["negativePrompt"] = args.negative
 
     if args.dry_run:
+        # A dry run stays free: it doesn't watch the video either, it says it would.
+        if args.source:
+            print(f"  would watch {Path(args.source).name} with {DESCRIBE_MODEL}, take its first frame, "
+                  f"and fold in: {args.prompt}")
         if who and cap:
             used, _ = video_quota(args.ledger, who, cap)
             print(f"  quota: {used} of {cap} used in the last 24h")
@@ -551,6 +644,18 @@ def cmd_video(args):
     key = need_key("GEMINI_API_KEY")
     _, key_name = key_source("GEMINI_API_KEY")
     headers = {"x-goog-api-key": key, "Content-Type": "application/json"}
+
+    if args.source:
+        print(f"  watching {Path(args.source).name} ({DESCRIBE_MODEL})...")
+        args.prompt = describe_video(args.source, args.prompt, key)
+        source_note["description"] = args.prompt
+        args.ref = args.ref or str(first_frame(args.source, Path(args.source).with_suffix(".frame0.png")))
+        instance["prompt"] = args.prompt
+        rp = Path(args.ref)
+        instance["image"] = {"bytesBase64Encoded": base64.b64encode(rp.read_bytes()).decode(),
+                             "mimeType": "image/png"}
+        body["instances"] = [instance]
+        print(f"  shot: {args.prompt[:160]}{'...' if len(args.prompt) > 160 else ''}")
 
     r = requests.post(VEO_URL.format(model=model), headers=headers, json=body, timeout=60)
     if r.status_code != 200:
@@ -597,7 +702,7 @@ def cmd_video(args):
         "source": "generated", "kind": "video", "model": model, "quality": args.quality,
         "resolution": resolution, "seconds": seconds, "aspect": args.aspect,
         "est_cost_usd": round(cost, 3), "billed_to": f"gemini:{key_name}",
-        "prompt": args.prompt, "negative_prompt": args.negative,
+        "prompt": args.prompt, "negative_prompt": args.negative, "remake_of": source_note,
         "first_frame": str(Path(args.ref).resolve()) if args.ref else None,
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
     })
@@ -720,9 +825,13 @@ def main():
     v.add_argument("--quality", choices=list(VIDEO_QUALITY), default="draft",
                    help="draft (lite 720p, $0.05/s, default) | good (fast 720p, $0.10/s) | pro (1080p, $0.40/s)")
     v.add_argument("--seconds", choices=["4", "6", "8"], default="4")
-    v.add_argument("--aspect", choices=["16:9", "9:16"], default="16:9")
+    v.add_argument("--aspect", choices=["16:9", "9:16"], default=None,
+                   help="default 16:9, or matched to the source with --from")
     v.add_argument("--resolution", choices=["720p", "1080p", "4k"], help="default is the quality's own")
     v.add_argument("--ref", help="an image to start from (first frame) — a real face, a photo someone sent")
+    v.add_argument("--from", dest="source", metavar="CLIP",
+                   help="remake a video someone sent: Gemini watches it, the prompt becomes the change you "
+                        "want, and the clip's first frame anchors the new one")
     v.add_argument("--negative", help="what to keep out of it")
     v.add_argument("--dry-run", action="store_true", help="print the model, length and price; generate nothing")
     v.add_argument("--out", help="exact output file (.mp4)")

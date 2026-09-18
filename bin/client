@@ -43,6 +43,25 @@ DANGEROUS = ("Bash(python3 -c:*)", "Bash(python:*)", "Bash(cat:*)", "Bash(cp:*)"
 REQUIRED_DENY = ("Bash(* /home/*)", "Bash(*~/*)", "Bash(*../*)", "Bash(*$HOME*)",
                  "Bash(*$ANTHROPIC*)", "Bash(*$GEMINI*)", "Bash(*_API_KEY*)")   # the run's own keys stay out of commands
 TOOLBELT = Path(os.environ.get("CLAUDE_TOOLS_ENV", "~/.config/claude-tools/env")).expanduser()
+SITES = TOOLBELT.parent / "sites.json"          # `site new` / `site adopt` record every site here
+
+
+def site_urls(meta):
+    """Every URL a client session may check: live_url, plus each site `site new`
+    made for this workspace (its pages.dev address and any domain on it)."""
+    urls = []
+    if meta.get("live_url"):
+        urls.append(meta["live_url"])
+    try:
+        sites = json.loads(SITES.read_text()).get(meta.get("slug", ""), {})
+    except (OSError, ValueError):
+        sites = {}
+    for entry in sites.values():
+        if entry.get("host") == "cloudflare" and entry.get("project"):
+            urls.append(f"https://{entry['project']}.pages.dev/")
+        for d in entry.get("domains", []):
+            urls.append(f"https://{d}/")
+    return list(dict.fromkeys(u.rstrip("/") + "/" for u in urls))
 
 
 def key_name(slug):
@@ -82,9 +101,8 @@ def render_settings(meta):
     allow = list(tpl["permissions"]["allow"]) + rules["repos"]
     if meta.get("plateful"):
         allow += rules["plateful"]
-    if meta.get("live_url"):
-        url = meta["live_url"].rstrip("/")
-        allow += [r.format(url=url) for r in rules["live_url"]]
+    for url in site_urls(meta):
+        allow += [r.format(url=url.rstrip("/")) for r in rules["live_url"]]
     tpl["permissions"]["allow"] = allow
     return json.dumps(tpl, indent=2) + "\n"
 

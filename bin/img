@@ -6,6 +6,9 @@ img — Claude's image toolbelt. Stock photos (Pexels) and generation (Gemini).
     img gen "prompt" [--style plateful-menu] [--quality menu|hero|pro|draft] [--aspect 4:3] [--ref photo.jpg] [--out FILE]
     img edit photo.jpg "put a party hat on him" [--quality ...] [--out FILE]   # instructed edit of a real photo
     img video "prompt" [--quality draft|good|pro] [--seconds 4|6|8] [--aspect 16:9|9:16] [--ref first-frame.jpg] [--dry-run]
+    img describe clip.mov [--ask "..."]              # watch a video, say what's in it (no generation)
+    img credit 5 --proof receipt.jpg                 # $5 on account: the daily cap lifts until it's spent
+    img balance                                      # dollars on account, free videos left
     img styles                       # list style presets
     img info FILE...                 # dimensions + sidecar metadata
 
@@ -91,6 +94,14 @@ VIDEO_MODEL = os.environ.get("IMG_VIDEO_MODEL")       # explicit override beats 
 #   IMG_VIDEO_WHO           who this run is for; the daily cap counts per person
 #   IMG_VIDEO_WHO_LABEL     their name, for the refusal message
 #   IMG_VIDEO_DAILY_CAP     how many videos that person gets per 24h
+#   IMG_VIDEO_CREDIT_MAX_USD  most one person can put on account in 24h
+#   IMG_VIDEO_PAID_MAX_SECONDS  longest clip while they're in credit
+#   IMG_VIDEO_CREDIT_PROOF  "1" = `img credit` refuses without --proof pointing
+#                           at a file that exists (a screenshot of the receipt)
+#
+# Paying puts dollars on account, not a number of videos: while the balance
+# covers the clip the daily cap doesn't apply, longer clips are allowed, and
+# the run is billed against the balance. Spend it and the free cap is back.
 VEO_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:predictLongRunning"
 VEO_OP_URL = "https://generativelanguage.googleapis.com/v1beta/{op}"
 VEO_POLL_SECONDS = 10
@@ -556,14 +567,15 @@ def describe_video(path, ask, key, prompt=None, want_start=False):
         return text, 0.0, ""
 
 
-def video_quota(ledger_path, who, cap, hours=24):
-    """(used, frees_up_in_seconds) — how many videos `who` has made in the last
-    `hours` according to the ledger, and how long until the oldest of them
-    ages out. Counting the ledger rather than a counter file means the cap and
-    the bill are the same record; a missing or unreadable ledger means zero
-    used, because refusing on a bookkeeping problem is the wrong failure."""
+def video_account(ledger_path, who, hours=24):
+    """What `who` has coming to them right now, from the ledger alone:
+    (balance_usd, free_stamps, paid_usd).
+
+    A video row carries paid=True when it was billed against a balance, so the
+    free daily cap only ever counts the free ones and the balance only ever
+    pays for what it actually paid for. One file, no second source of truth."""
     cutoff = time.time() - hours * 3600
-    stamps = []
+    paid_usd, paid_spend, free_stamps = 0.0, 0.0, []
     try:
         with open(ledger_path) as f:
             for line in f:
@@ -571,33 +583,53 @@ def video_quota(ledger_path, who, cap, hours=24):
                     row = json.loads(line)
                 except ValueError:
                     continue
-                if row.get("kind") != "video" or row.get("who") != who:
+                if row.get("who") != who or row.get("kind") not in ("video", "video_credit"):
                     continue
                 try:
                     when = calendar.timegm(time.strptime(row["ts"][:19], "%Y-%m-%dT%H:%M:%S"))
                 except (KeyError, ValueError):
                     continue
-                if when >= cutoff:
-                    stamps.append(when)
+                if when < cutoff:
+                    continue
+                if row["kind"] == "video_credit":
+                    paid_usd += float(row.get("usd") or 0)
+                elif row.get("paid"):
+                    paid_spend += float(row.get("cost_usd") or 0)
+                else:
+                    free_stamps.append(when)
     except OSError:
-        return 0, 0
-    stamps.sort()
+        return 0.0, [], 0.0
+    free_stamps.sort()
+    return round(paid_usd - paid_spend, 4), free_stamps, paid_usd
+
+
+def video_quota(ledger_path, who, cap, hours=24):
+    """(free videos used, seconds until one frees up, balance in dollars)."""
+    balance, stamps, _ = video_account(ledger_path, who, hours)
     frees = int(stamps[0] + hours * 3600 - time.time()) if len(stamps) >= cap and stamps else 0
-    return len(stamps), max(0, frees)
+    return len(stamps), max(0, frees), balance
 
 
-def video_house_rules(resolution, seconds, cost, quality):
-    """Apply IMG_VIDEO_MAX_*: returns the resolution to actually use, or dies."""
-    max_s = os.environ.get("IMG_VIDEO_MAX_SECONDS")
+def video_house_rules(resolution, seconds, cost, paid=False, balance=0.0):
+    """Apply IMG_VIDEO_MAX_*: returns the resolution to actually use, or dies.
+
+    In credit the length limit is longer and the per-clip price ceiling is the
+    balance itself -- they're spending their own money, so the only question is
+    whether it's there."""
+    max_s = os.environ.get("IMG_VIDEO_PAID_MAX_SECONDS" if paid else "IMG_VIDEO_MAX_SECONDS")
     if max_s and seconds > int(max_s):
         die(f"clips here are {max_s}s or less (asked for {seconds}s)")
     max_res = os.environ.get("IMG_VIDEO_MAX_RESOLUTION")
     if max_res and RES_ORDER.index(resolution) > RES_ORDER.index(max_res):
         print(f"  ({resolution} isn't allowed here, using {max_res})")
         resolution = max_res
+    if paid:
+        if cost > balance + 1e-9:
+            die(f"that clip costs ${cost:.2f} and there's ${balance:.2f} left on the account")
+        return resolution
     max_usd = os.environ.get("IMG_VIDEO_MAX_USD")
     if max_usd and cost > float(max_usd) + 1e-9:
-        die(f"that clip would cost ${cost:.2f}; the limit here is ${float(max_usd):.2f} "
+        die(f"that clip would cost ${cost:.2f}; the free limit here is ${float(max_usd):.2f} "
             f"(try --quality draft, or fewer seconds)")
     return resolution
 
@@ -622,18 +654,27 @@ def cmd_video(args):
     resolution = args.resolution or q["resolution"]
     cost = q["usd_per_s"] * seconds
 
-    resolution = video_house_rules(resolution, seconds, cost, args.quality)
-    cost = q["usd_per_s"] * seconds     # unchanged by a clamp: price is per second, not per pixel
-
     who = os.environ.get("IMG_VIDEO_WHO")
     cap = int(os.environ.get("IMG_VIDEO_DAILY_CAP") or 0)
-    if who and cap:
-        used, frees = video_quota(args.ledger, who, cap)
+    label = os.environ.get("IMG_VIDEO_WHO_LABEL") or who
+    balance, free_stamps, _ = video_account(args.ledger, who) if who else (0.0, [], 0.0)
+
+    # In credit and the clip fits inside it -> their money, their rules (within
+    # reason). Otherwise it's a free one and the daily cap applies.
+    paid_run = bool(who) and balance >= cost - 1e-9
+    resolution = video_house_rules(resolution, seconds, cost, paid=paid_run, balance=balance)
+    cost = q["usd_per_s"] * seconds     # unchanged by a clamp: price is per second, not per pixel
+
+    if who and cap and not paid_run:
+        used = len(free_stamps)
         if used >= cap:
-            label = os.environ.get("IMG_VIDEO_WHO_LABEL") or who
+            frees = int(free_stamps[0] + 86400 - time.time()) if free_stamps else 0
             when = f"{frees // 3600}h {frees % 3600 // 60}m" if frees else "soon"
-            die(f"video quota: {label} has used {used} of {cap} in the last 24h — "
-                f"the next one frees up in {when}. Nothing was generated.")
+            short = (f" There's ${balance:.2f} on their account, not enough for this clip."
+                     if balance > 0 else "")
+            die(f"video quota: {label} has used {used} of {cap} free videos in the last 24h — "
+                f"the next one frees up in {when}.{short} Nothing was generated. "
+                "(Paying puts dollars on account and lifts the cap; see `img credit`.)")
 
     if resolution in ("1080p", "4k") and seconds != 8:
         die(f"{resolution} is 8 seconds only (asked for {seconds}); use --seconds 8 or --resolution 720p")
@@ -664,9 +705,9 @@ def cmd_video(args):
         if args.source:
             print(f"  would watch {Path(args.source).name} with {DESCRIBE_MODEL}, take its first frame, "
                   f"and fold in: {args.prompt}")
-        if who and cap:
-            used, _ = video_quota(args.ledger, who, cap)
-            print(f"  quota: {used} of {cap} used in the last 24h")
+        if who:
+            print(f"  account: ${balance:.2f} on account, {len(free_stamps)} of {cap} free videos used"
+                  + ("  → this one is paid" if paid_run else ""))
         print(f"  would generate: {model}, {resolution}, {seconds}s, {args.aspect}"
               + (f", first frame {args.ref}" if args.ref else ""))
         print(f"  prompt: {args.prompt}")
@@ -754,7 +795,7 @@ def cmd_video(args):
             "kind": "video", "model": model, "quality": args.quality,
             "seconds": seconds, "cost_usd": round(cost, 3),
             "billed_to": f"gemini:{key_name}",
-            "who": who, "who_label": os.environ.get("IMG_VIDEO_WHO_LABEL"),
+            "who": who, "who_label": label, "paid": paid_run,
             "project": os.environ.get("PF_RESTAURANT") or os.getcwd(),
             "path": str(path),
         })
@@ -763,7 +804,65 @@ def cmd_video(args):
         print(f"  note: {mb:.1f}MB is over Discord's {DISCORD_ATTACH_LIMIT_MB}MB attachment limit — "
               "regenerate shorter or at 720p")
     print(f"  ({model}, {resolution}, {seconds}s, ~${cost:.2f}, billed to {key_name})")
+    if who and paid_run:
+        print(f"  ${balance - cost:.2f} left on {label}'s account")
     return path
+
+
+def cmd_credit(args):
+    """They paid, so they get more. One ledger line, same file the cap reads,
+    so there is no second source of truth about who is owed what.
+
+    Whoever calls this is the one judging the receipt -- in a chat room that's
+    the agent looking at a screenshot, which is forgeable and meant to be. The
+    guards that matter are the ceiling (IMG_VIDEO_CREDIT_MAX) and the fact that
+    every grant is a line with the proof's path on it."""
+    usd = round(float(args.usd), 2)
+    args.who = args.who or os.environ.get("IMG_VIDEO_WHO")
+    if not args.who:
+        die("nobody to credit: pass --who, or run where IMG_VIDEO_WHO is set")
+    proof = None
+    if args.proof:
+        proof = Path(args.proof)
+        if not proof.exists():
+            die(f"no such receipt: {args.proof}")
+    elif usd > 0 and os.environ.get("IMG_VIDEO_CREDIT_PROOF") == "1":
+        die("credits here need --proof <the screenshot they sent>")
+
+    balance, _, paid_today = video_account(args.ledger, args.who)
+    ceiling = float(os.environ.get("IMG_VIDEO_CREDIT_MAX_USD") or 0)
+    if ceiling and usd > 0 and paid_today + usd > ceiling + 1e-9:
+        die(f"{args.label or args.who} has already put ${paid_today:.2f} of ${ceiling:.2f} on account "
+            "in the last 24h — that's the daily ceiling")
+
+    ledger_append(args.ledger, {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()),
+        "kind": "video_credit", "who": args.who, "who_label": args.label or None,
+        "usd": usd, "cost_usd": 0.0, "note": args.note or None,
+        "proof": str(proof.resolve()) if proof else None,
+        "project": os.environ.get("PF_RESTAURANT") or os.getcwd(),
+    })
+    verb = "credited" if usd >= 0 else "clawed back"
+    print(f"  {args.label or args.who}: {verb} ${abs(usd):.2f}"
+          + (f", receipt {proof.name}" if proof else "")
+          + f" — ${balance + usd:.2f} on account")
+
+
+def cmd_balance(args):
+    """Where someone stands: dollars on account and free videos left."""
+    who = args.who or os.environ.get("IMG_VIDEO_WHO")
+    if not who:
+        die("nobody to look up: pass --who, or run where IMG_VIDEO_WHO is set")
+    label = args.label or os.environ.get("IMG_VIDEO_WHO_LABEL") or who
+    cap = int(os.environ.get("IMG_VIDEO_DAILY_CAP") or 0)
+    balance, stamps, paid_today = video_account(args.ledger, who)
+    free_left = max(0, cap - len(stamps)) if cap else None
+    print(f"  {label}: ${balance:.2f} on account (${paid_today:.2f} paid in the last 24h)"
+          + (f", {free_left} of {cap} free videos left" if cap else ""))
+    if balance > 0:
+        per = VIDEO_QUALITY["draft"]["usd_per_s"]
+        print(f"  that's about {int(balance // (per * 6))} more six-second clips")
+    return balance
 
 
 def cmd_describe(args):
@@ -899,6 +998,22 @@ def main():
     v.add_argument("--ledger", default=str(LEDGER))
     v.add_argument("--no-ledger", action="store_true")
     v.set_defaults(fn=cmd_video)
+
+    cr = sub.add_parser("credit", help="record that someone paid for more videos")
+    cr.add_argument("usd", type=float, help="dollars they paid (negative claws it back)")
+    cr.add_argument("--who", help="the quota key to credit; defaults to IMG_VIDEO_WHO, i.e. whoever "
+                                  "this run is for — which is the person who just paid")
+    cr.add_argument("--label", help="their name, for the record")
+    cr.add_argument("--proof", help="the receipt they sent (a file that exists)")
+    cr.add_argument("--note", help="anything worth remembering about it")
+    cr.add_argument("--ledger", default=str(LEDGER))
+    cr.set_defaults(fn=cmd_credit)
+
+    bal = sub.add_parser("balance", help="what someone has on account and free videos left")
+    bal.add_argument("--who")
+    bal.add_argument("--label")
+    bal.add_argument("--ledger", default=str(LEDGER))
+    bal.set_defaults(fn=cmd_balance)
 
     dsc = sub.add_parser("describe", help="watch a video and say what's in it (no generation, ~free)")
     dsc.add_argument("clip")

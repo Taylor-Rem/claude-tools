@@ -5,6 +5,7 @@ img — Claude's image toolbelt. Stock photos (Pexels) and generation (Gemini).
     img stock "chicken tikka masala" [-n 5] [--orientation landscape] [--out DIR] [--page 2]
     img gen "prompt" [--style plateful-menu] [--quality menu|hero|pro|draft] [--aspect 4:3] [--ref photo.jpg] [--out FILE]
     img edit photo.jpg "put a party hat on him" [--quality ...] [--out FILE]   # instructed edit of a real photo
+    img video "prompt" [--quality draft|good|pro] [--seconds 4|6|8] [--aspect 16:9|9:16] [--ref first-frame.jpg] [--dry-run]
     img styles                       # list style presets
     img info FILE...                 # dimensions + sidecar metadata
 
@@ -17,6 +18,10 @@ Every downloaded/generated image gets
 a sidecar <name>.json recording where it came from (photographer, Pexels URL,
 prompt, model) so credit and provenance are never lost.
 
+Video is the expensive one: seconds, not images. `img video --dry-run` prints
+the model, the length and the price without generating anything -- use it
+before spending, and see VIDEO_QUALITY below for what a clip costs.
+
 Every generated image is also a billable event: `img gen` appends one JSON line
 per image to the ledger (~/.local/state/claude-tools/ledger.jsonl, or $IMG_LEDGER,
 or --ledger PATH; --no-ledger to skip) with the estimated cost and the project it
@@ -28,6 +33,7 @@ absolute, so the caller can Read the files to review them.
 
 import argparse
 import base64
+import calendar
 import json
 import os
 import re
@@ -60,6 +66,35 @@ QUALITY = {
     "pro":   {"model": "gemini-3-pro-image",          "size": "2K", "usd": 0.134},
 }
 GEMINI_MODEL = os.environ.get("IMG_GEN_MODEL")  # explicit override beats --quality
+
+# Video (Veo 3.1, Sept 2026 paid-tier rates, per SECOND -- a clip is 10-50x an
+# image, which is the whole reason --dry-run exists).
+#   draft — lite 720p, $0.05/s: 4s = $0.20. The one to reach for.
+#   good  — fast 720p, $0.10/s: 4s = $0.40. Better motion and prompt-following.
+#   pro   — standard 1080p, $0.40/s: 8s = $3.20. Only when it's going somewhere real.
+# Veo always writes audio. 1080p and 4K are 8s only; lite has no 4K.
+VIDEO_QUALITY = {
+    "draft": {"model": "veo-3.1-lite-generate-preview", "resolution": "720p",  "usd_per_s": 0.05},
+    "good":  {"model": "veo-3.1-fast-generate-preview", "resolution": "720p",  "usd_per_s": 0.10},
+    "pro":   {"model": "veo-3.1-generate-preview",      "resolution": "1080p", "usd_per_s": 0.40},
+}
+VIDEO_MODEL = os.environ.get("IMG_VIDEO_MODEL")       # explicit override beats --quality
+
+# House rules, set by whoever runs the tool (the relay sets them per room, per
+# person) so a prompt can't talk its way past them -- they are checked here,
+# before anything is spent:
+#   IMG_VIDEO_MAX_SECONDS   longest clip allowed
+#   IMG_VIDEO_MAX_RESOLUTION  720p / 1080p -- anything higher is clamped down
+#   IMG_VIDEO_MAX_USD       refuse a clip that would cost more than this
+#   IMG_VIDEO_WHO           who this run is for; the daily cap counts per person
+#   IMG_VIDEO_WHO_LABEL     their name, for the refusal message
+#   IMG_VIDEO_DAILY_CAP     how many videos that person gets per 24h
+VEO_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:predictLongRunning"
+VEO_OP_URL = "https://generativelanguage.googleapis.com/v1beta/{op}"
+VEO_POLL_SECONDS = 10
+VEO_TIMEOUT_SECONDS = 300      # under a chat room's 480s run timeout, so a stuck
+                               # generation fails as a tool error, not a dead run
+DISCORD_ATTACH_LIMIT_MB = 10          # what a plain Discord server takes; bigger needs a link
 
 # Pexels src sizes. large2x = 1880w, comfortably under Plateful's 2000px original cap.
 PEXELS_SIZES = ("original", "large2x", "large", "medium", "small", "portrait", "landscape", "tiny")
@@ -392,6 +427,198 @@ def cmd_gen(args):
     return made
 
 
+# ---------------------------------------------------------------- video
+
+def veo_uri(payload):
+    """Find the finished video's URI anywhere in the operation response.
+
+    Veo returns it under response.generateVideoResponse.generatedSamples[].video.uri,
+    but the shape has moved between previews; walking for the first uri-ish
+    string is what keeps this working when it moves again."""
+    stack = [payload]
+    while stack:
+        node = stack.pop(0)
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if k in ("uri", "videoUri", "url") and isinstance(v, str) and v.startswith("http"):
+                    return v
+                stack.append(v)
+        elif isinstance(node, list):
+            stack.extend(node)
+    return None
+
+
+RES_ORDER = ["720p", "1080p", "4k"]
+
+
+def video_quota(ledger_path, who, cap, hours=24):
+    """(used, frees_up_in_seconds) — how many videos `who` has made in the last
+    `hours` according to the ledger, and how long until the oldest of them
+    ages out. Counting the ledger rather than a counter file means the cap and
+    the bill are the same record; a missing or unreadable ledger means zero
+    used, because refusing on a bookkeeping problem is the wrong failure."""
+    cutoff = time.time() - hours * 3600
+    stamps = []
+    try:
+        with open(ledger_path) as f:
+            for line in f:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if row.get("kind") != "video" or row.get("who") != who:
+                    continue
+                try:
+                    when = calendar.timegm(time.strptime(row["ts"][:19], "%Y-%m-%dT%H:%M:%S"))
+                except (KeyError, ValueError):
+                    continue
+                if when >= cutoff:
+                    stamps.append(when)
+    except OSError:
+        return 0, 0
+    stamps.sort()
+    frees = int(stamps[0] + hours * 3600 - time.time()) if len(stamps) >= cap and stamps else 0
+    return len(stamps), max(0, frees)
+
+
+def video_house_rules(resolution, seconds, cost, quality):
+    """Apply IMG_VIDEO_MAX_*: returns the resolution to actually use, or dies."""
+    max_s = os.environ.get("IMG_VIDEO_MAX_SECONDS")
+    if max_s and seconds > int(max_s):
+        die(f"clips here are {max_s}s or less (asked for {seconds}s)")
+    max_res = os.environ.get("IMG_VIDEO_MAX_RESOLUTION")
+    if max_res and RES_ORDER.index(resolution) > RES_ORDER.index(max_res):
+        print(f"  ({resolution} isn't allowed here, using {max_res})")
+        resolution = max_res
+    max_usd = os.environ.get("IMG_VIDEO_MAX_USD")
+    if max_usd and cost > float(max_usd) + 1e-9:
+        die(f"that clip would cost ${cost:.2f}; the limit here is ${float(max_usd):.2f} "
+            f"(try --quality draft, or fewer seconds)")
+    return resolution
+
+
+def cmd_video(args):
+    q = VIDEO_QUALITY[args.quality]
+    model = VIDEO_MODEL or q["model"]
+    seconds = int(args.seconds)
+    resolution = args.resolution or q["resolution"]
+    cost = q["usd_per_s"] * seconds
+
+    resolution = video_house_rules(resolution, seconds, cost, args.quality)
+    cost = q["usd_per_s"] * seconds     # unchanged by a clamp: price is per second, not per pixel
+
+    who = os.environ.get("IMG_VIDEO_WHO")
+    cap = int(os.environ.get("IMG_VIDEO_DAILY_CAP") or 0)
+    if who and cap:
+        used, frees = video_quota(args.ledger, who, cap)
+        if used >= cap:
+            label = os.environ.get("IMG_VIDEO_WHO_LABEL") or who
+            when = f"{frees // 3600}h {frees % 3600 // 60}m" if frees else "soon"
+            die(f"video quota: {label} has used {used} of {cap} in the last 24h — "
+                f"the next one frees up in {when}. Nothing was generated.")
+
+    if resolution in ("1080p", "4k") and seconds != 8:
+        die(f"{resolution} is 8 seconds only (asked for {seconds}); use --seconds 8 or --resolution 720p")
+    if resolution == "4k" and args.quality == "draft":
+        die("lite (draft) doesn't do 4K; use --quality good or pro")
+
+    instance = {"prompt": args.prompt}
+    if args.ref:
+        rp = Path(args.ref)
+        if not rp.exists():
+            die(f"first-frame image not found: {args.ref}")
+        mime = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp"}.get(
+            rp.suffix.lower().lstrip("."), "image/jpeg")
+        instance["image"] = {"inlineData": {"mimeType": mime, "data": base64.b64encode(rp.read_bytes()).decode()}}
+
+    body = {"instances": [instance], "parameters": {
+        # durationSeconds is a NUMBER; the docs show a string and the API
+        # rejects that with a 400 (checked 2026-09-17).
+        "aspectRatio": args.aspect, "resolution": resolution, "durationSeconds": seconds}}
+    if args.negative:
+        body["instances"][0]["negativePrompt"] = args.negative
+
+    if args.dry_run:
+        if who and cap:
+            used, _ = video_quota(args.ledger, who, cap)
+            print(f"  quota: {used} of {cap} used in the last 24h")
+        print(f"  would generate: {model}, {resolution}, {seconds}s, {args.aspect}"
+              + (f", first frame {args.ref}" if args.ref else ""))
+        print(f"  prompt: {args.prompt}")
+        print(f"  ~${cost:.2f} — nothing was generated (--dry-run)")
+        return None
+
+    key = need_key("GEMINI_API_KEY")
+    _, key_name = key_source("GEMINI_API_KEY")
+    headers = {"x-goog-api-key": key, "Content-Type": "application/json"}
+
+    r = requests.post(VEO_URL.format(model=model), headers=headers, json=body, timeout=60)
+    if r.status_code != 200:
+        die(f"veo: HTTP {r.status_code} {r.text[:400]}")
+    op = r.json().get("name")
+    if not op:
+        die(f"veo: no operation name in {r.text[:300]}")
+
+    print(f"  generating ({model}, {resolution}, {seconds}s, ~${cost:.2f})...")
+    waited = 0
+    while True:
+        time.sleep(VEO_POLL_SECONDS)
+        waited += VEO_POLL_SECONDS
+        pr = requests.get(VEO_OP_URL.format(op=op), headers={"x-goog-api-key": key}, timeout=60)
+        if pr.status_code != 200:
+            die(f"veo: poll HTTP {pr.status_code} {pr.text[:300]}")
+        payload = pr.json()
+        if payload.get("done"):
+            break
+        if waited >= VEO_TIMEOUT_SECONDS:
+            die(f"veo: still not done after {waited}s (operation {op})")
+        print(f"  ...{waited}s")
+
+    if "error" in payload:
+        die(f"veo: {json.dumps(payload['error'])[:400]}")
+    uri = veo_uri(payload)
+    if not uri:
+        die(f"veo: finished but no video uri in {json.dumps(payload)[:400]}")
+
+    if args.out:
+        path = Path(args.out).resolve()
+        path.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        path = out_dir(args.out_dir, slugify(args.prompt)) / f"{slugify(args.prompt, 32)}-{stamp}.mp4"
+
+    dl = requests.get(uri, headers={"x-goog-api-key": key}, timeout=300)
+    if dl.status_code != 200:
+        die(f"veo: download HTTP {dl.status_code}")
+    path.write_bytes(dl.content)
+
+    mb = path.stat().st_size / 1_000_000
+    write_sidecar(path, {
+        "source": "generated", "kind": "video", "model": model, "quality": args.quality,
+        "resolution": resolution, "seconds": seconds, "aspect": args.aspect,
+        "est_cost_usd": round(cost, 3), "billed_to": f"gemini:{key_name}",
+        "prompt": args.prompt, "negative_prompt": args.negative,
+        "first_frame": str(Path(args.ref).resolve()) if args.ref else None,
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    })
+    if not args.no_ledger:
+        ledger_append(args.ledger, {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()),
+            "kind": "video", "model": model, "quality": args.quality,
+            "seconds": seconds, "cost_usd": round(cost, 3),
+            "billed_to": f"gemini:{key_name}",
+            "who": who, "who_label": os.environ.get("IMG_VIDEO_WHO_LABEL"),
+            "project": os.environ.get("PF_RESTAURANT") or os.getcwd(),
+            "path": str(path),
+        })
+    print(f"  {path}  {mb:.1f}MB")
+    if mb > DISCORD_ATTACH_LIMIT_MB:
+        print(f"  note: {mb:.1f}MB is over Discord's {DISCORD_ATTACH_LIMIT_MB}MB attachment limit — "
+              "regenerate shorter or at 720p")
+    print(f"  ({model}, {resolution}, {seconds}s, ~${cost:.2f}, billed to {key_name})")
+    return path
+
+
 # ---------------------------------------------------------------- misc
 
 def cmd_styles(_args):
@@ -487,6 +714,22 @@ def main():
     e.add_argument("--ledger", default=str(LEDGER))
     e.add_argument("--no-ledger", action="store_true")
     e.set_defaults(fn=cmd_edit)
+
+    v = sub.add_parser("video", help="generate a short video with Veo (seconds, not cents — check --dry-run first)")
+    v.add_argument("prompt")
+    v.add_argument("--quality", choices=list(VIDEO_QUALITY), default="draft",
+                   help="draft (lite 720p, $0.05/s, default) | good (fast 720p, $0.10/s) | pro (1080p, $0.40/s)")
+    v.add_argument("--seconds", choices=["4", "6", "8"], default="4")
+    v.add_argument("--aspect", choices=["16:9", "9:16"], default="16:9")
+    v.add_argument("--resolution", choices=["720p", "1080p", "4k"], help="default is the quality's own")
+    v.add_argument("--ref", help="an image to start from (first frame) — a real face, a photo someone sent")
+    v.add_argument("--negative", help="what to keep out of it")
+    v.add_argument("--dry-run", action="store_true", help="print the model, length and price; generate nothing")
+    v.add_argument("--out", help="exact output file (.mp4)")
+    v.add_argument("--out-dir", help="directory for the output")
+    v.add_argument("--ledger", default=str(LEDGER))
+    v.add_argument("--no-ledger", action="store_true")
+    v.set_defaults(fn=cmd_video)
 
     st = sub.add_parser("styles", help="list style presets")
     st.set_defaults(fn=cmd_styles)

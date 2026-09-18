@@ -6,6 +6,7 @@ img — Claude's image toolbelt. Stock photos (Pexels) and generation (Gemini).
     img gen "prompt" [--style plateful-menu] [--quality menu|hero|pro|draft] [--aspect 4:3] [--ref photo.jpg] [--out FILE]
     img edit photo.jpg "put a party hat on him" [--quality ...] [--out FILE]   # instructed edit of a real photo
     img video "prompt" [--quality draft|good|pro] [--seconds 4|6|8] [--aspect 16:9|9:16] [--ref first-frame.jpg] [--dry-run]
+    img video "prompt" --length 22 [--then "..." --then "..."]   # 8s + extensions, stitched by Veo
     img describe clip.mov [--ask "..."]              # watch a video, say what's in it (no generation)
     img credit 5 --proof receipt.jpg                 # $5 on account: the daily cap lifts until it's spent
     img balance                                      # dollars on account, free videos left
@@ -38,6 +39,7 @@ import argparse
 import base64
 import calendar
 import json
+import math
 import os
 import re
 import shutil
@@ -104,6 +106,16 @@ VIDEO_MODEL = os.environ.get("IMG_VIDEO_MODEL")       # explicit override beats 
 # the run is billed against the balance. Spend it and the free cap is back.
 VEO_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:predictLongRunning"
 VEO_OP_URL = "https://generativelanguage.googleapis.com/v1beta/{op}"
+# Extension: Veo continues one of its own clips, 720p, ~7s at a time, up to 20
+# times. Lite can't do it (Google: "Veo 3.1 & Veo 3.1 Fast models only"), so a
+# long video costs at least the fast rate. The response comes back as the whole
+# video, input plus the new tail, so chaining is generate -> extend -> extend.
+EXTEND_SECONDS = 7
+EXTEND_MAX = 20
+EXTEND_MODEL_QUALITY = "good"         # lite can't do the extending itself...
+# ...but it *can* make the clip that gets extended: proven 2026-09-18, a 4s lite
+# video extended by fast came back as one 11s file. So a long video is a cheap
+# base plus fast tails, not all-fast.
 VEO_POLL_SECONDS = 10
 VEO_TIMEOUT_SECONDS = 300      # under a chat room's 480s run timeout, so a stuck
                                # generation fails as a tool error, not a dead run
@@ -634,6 +646,59 @@ def video_house_rules(resolution, seconds, cost, paid=False, balance=0.0):
     return resolution
 
 
+def veo_call(model, key, body, label, timeout=VEO_TIMEOUT_SECONDS):
+    """POST a predictLongRunning job, wait for it, hand back the finished
+    operation payload. Every Veo job in here goes through this."""
+    headers = {"x-goog-api-key": key, "Content-Type": "application/json"}
+    r = requests.post(VEO_URL.format(model=model), headers=headers, json=body, timeout=120)
+    if r.status_code != 200:
+        die(f"veo: HTTP {r.status_code} {r.text[:400]}")
+    op = r.json().get("name")
+    if not op:
+        die(f"veo: no operation name in {r.text[:300]}")
+    waited = 0
+    while True:
+        time.sleep(VEO_POLL_SECONDS)
+        waited += VEO_POLL_SECONDS
+        pr = requests.get(VEO_OP_URL.format(op=op), headers={"x-goog-api-key": key}, timeout=60)
+        if pr.status_code != 200:
+            die(f"veo: poll HTTP {pr.status_code} {pr.text[:300]}")
+        payload = pr.json()
+        if payload.get("done"):
+            break
+        if waited >= timeout:
+            die(f"veo: {label} still not done after {waited}s (operation {op})")
+        print(f"  ...{waited}s")
+    if "error" in payload:
+        die(f"veo: {json.dumps(payload['error'])[:400]}")
+    return payload
+
+
+def veo_download(uri, key):
+    dl = requests.get(uri, headers={"x-goog-api-key": key}, timeout=300)
+    if dl.status_code != 200:
+        die(f"veo: download HTTP {dl.status_code}")
+    return dl.content
+
+
+def veo_extend(model, key, video_uri, prompt, aspect):
+    """Continue a Veo clip, by the URI the generation came back with.
+
+    The bytes are not accepted: inline data is a 400 ("`inlineData` isn't
+    supported by this model"), and so is the predict-style
+    bytesBase64Encoded ("Video URI not found in the request") -- Veo extends
+    something it is still holding, which it keeps for two days and re-ups every
+    time it's referenced. Returns the new URI; the result is the whole video so
+    far, input plus tail, so the next call just passes it back in."""
+    body = {"instances": [{"prompt": prompt, "video": {"uri": video_uri, "mimeType": "video/mp4"}}],
+            "parameters": {"aspectRatio": aspect, "resolution": "720p"}}
+    payload = veo_call(model, key, body, "extension")
+    uri = veo_uri(payload)
+    if not uri:
+        die(f"veo: extension finished but no video uri in {json.dumps(payload)[:400]}")
+    return uri
+
+
 def cmd_video(args):
     source_note = None
     if args.source:
@@ -648,11 +713,25 @@ def cmd_video(args):
                        "source_size": f"{w}x{h}", "source_seconds": round(dur, 1)}
     args.aspect = args.aspect or "16:9"
 
+    # A long video is one generation plus N extensions of ~7s each, and the
+    # whole plan is priced before anything is spent.
+    extensions = 0
+    if args.length:
+        if args.length > 8:
+            extensions = min(EXTEND_MAX, int(math.ceil((args.length - 8) / EXTEND_SECONDS)))
+            args.seconds = "8"
+        else:
+            args.seconds = str(min([4, 6, 8], key=lambda n: abs(n - args.length)))
+
     q = VIDEO_QUALITY[args.quality]
     model = VIDEO_MODEL or q["model"]
     seconds = int(args.seconds)
     resolution = args.resolution or q["resolution"]
-    cost = q["usd_per_s"] * seconds
+    total_seconds = seconds + extensions * EXTEND_SECONDS
+    # The base can be lite; the tails can't, so they're priced at their own rate.
+    ext_q = q if q["usd_per_s"] >= VIDEO_QUALITY[EXTEND_MODEL_QUALITY]["usd_per_s"] else VIDEO_QUALITY[EXTEND_MODEL_QUALITY]
+    ext_model = VIDEO_MODEL or ext_q["model"]
+    cost = q["usd_per_s"] * seconds + ext_q["usd_per_s"] * extensions * EXTEND_SECONDS
 
     who = os.environ.get("IMG_VIDEO_WHO")
     cap = int(os.environ.get("IMG_VIDEO_DAILY_CAP") or 0)
@@ -662,8 +741,8 @@ def cmd_video(args):
     # In credit and the clip fits inside it -> their money, their rules (within
     # reason). Otherwise it's a free one and the daily cap applies.
     paid_run = bool(who) and balance >= cost - 1e-9
-    resolution = video_house_rules(resolution, seconds, cost, paid=paid_run, balance=balance)
-    cost = q["usd_per_s"] * seconds     # unchanged by a clamp: price is per second, not per pixel
+    resolution = video_house_rules(resolution, total_seconds, cost, paid=paid_run, balance=balance)
+    # (a resolution clamp doesn't change the price: it's per second, not per pixel)
 
     if who and cap and not paid_run:
         used = len(free_stamps)
@@ -680,6 +759,8 @@ def cmd_video(args):
         die(f"{resolution} is 8 seconds only (asked for {seconds}); use --seconds 8 or --resolution 720p")
     if resolution == "4k" and args.quality == "draft":
         die("lite (draft) doesn't do 4K; use --quality good or pro")
+    if extensions and resolution != "720p":
+        die(f"extending is 720p only (asked for {resolution}) — drop --resolution or shorten it")
 
     instance = {"prompt": args.prompt}
     if args.ref:
@@ -709,7 +790,8 @@ def cmd_video(args):
             print(f"  account: ${balance:.2f} on account, {len(free_stamps)} of {cap} free videos used"
                   + ("  → this one is paid" if paid_run else ""))
         print(f"  would generate: {model}, {resolution}, {seconds}s, {args.aspect}"
-              + (f", first frame {args.ref}" if args.ref else ""))
+              + (f", first frame {args.ref}" if args.ref else "")
+              + (f", then {extensions} extension(s) on {ext_model} → {total_seconds}s" if extensions else ""))
         print(f"  prompt: {args.prompt}")
         print(f"  ~${cost:.2f} — nothing was generated (--dry-run)")
         return None
@@ -740,33 +822,23 @@ def cmd_video(args):
         body["instances"] = [instance]
         print(f"  shot: {args.prompt[:160]}{'...' if len(args.prompt) > 160 else ''}")
 
-    r = requests.post(VEO_URL.format(model=model), headers=headers, json=body, timeout=60)
-    if r.status_code != 200:
-        die(f"veo: HTTP {r.status_code} {r.text[:400]}")
-    op = r.json().get("name")
-    if not op:
-        die(f"veo: no operation name in {r.text[:300]}")
-
-    print(f"  generating ({model}, {resolution}, {seconds}s, ~${cost:.2f})...")
-    waited = 0
-    while True:
-        time.sleep(VEO_POLL_SECONDS)
-        waited += VEO_POLL_SECONDS
-        pr = requests.get(VEO_OP_URL.format(op=op), headers={"x-goog-api-key": key}, timeout=60)
-        if pr.status_code != 200:
-            die(f"veo: poll HTTP {pr.status_code} {pr.text[:300]}")
-        payload = pr.json()
-        if payload.get("done"):
-            break
-        if waited >= VEO_TIMEOUT_SECONDS:
-            die(f"veo: still not done after {waited}s (operation {op})")
-        print(f"  ...{waited}s")
-
-    if "error" in payload:
-        die(f"veo: {json.dumps(payload['error'])[:400]}")
+    print(f"  generating ({model}, {resolution}, {seconds}s"
+          + (f" + {extensions}x{EXTEND_SECONDS}s on {ext_model.split('-generate')[0]}" if extensions else "")
+          + f", ~${cost:.2f})...")
+    payload = veo_call(model, key, body, "generation")
     uri = veo_uri(payload)
     if not uri:
         die(f"veo: finished but no video uri in {json.dumps(payload)[:400]}")
+
+    for i in range(extensions):
+        print(f"  extending {i + 1}/{extensions} (+{EXTEND_SECONDS}s)...")
+        # Each call returns the whole thing so far, so the next one just points
+        # at it again. The prompt carries what should happen next; when the
+        # caller didn't say, the original prompt keeps the scene going.
+        nxt = (args.then or [])[i] if args.then and i < len(args.then) else None
+        uri = veo_extend(ext_model, key, uri, nxt or args.prompt, args.aspect)
+
+    video = veo_download(uri, key)
 
     if args.out:
         path = Path(args.out).resolve()
@@ -774,16 +846,14 @@ def cmd_video(args):
     else:
         stamp = time.strftime("%Y%m%d-%H%M%S")
         path = out_dir(args.out_dir, slugify(args.prompt)) / f"{slugify(args.prompt, 32)}-{stamp}.mp4"
-
-    dl = requests.get(uri, headers={"x-goog-api-key": key}, timeout=300)
-    if dl.status_code != 200:
-        die(f"veo: download HTTP {dl.status_code}")
-    path.write_bytes(dl.content)
+    path.write_bytes(video)
 
     mb = path.stat().st_size / 1_000_000
     write_sidecar(path, {
         "source": "generated", "kind": "video", "model": model, "quality": args.quality,
-        "resolution": resolution, "seconds": seconds, "aspect": args.aspect,
+        "resolution": resolution, "seconds": total_seconds, "aspect": args.aspect,
+        "generated_seconds": seconds, "extensions": extensions,
+        "extend_model": ext_model if extensions else None,
         "est_cost_usd": round(cost, 3), "billed_to": f"gemini:{key_name}",
         "prompt": args.prompt, "negative_prompt": args.negative, "remake_of": source_note,
         "first_frame": str(Path(args.ref).resolve()) if args.ref else None,
@@ -793,7 +863,7 @@ def cmd_video(args):
         ledger_append(args.ledger, {
             "ts": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()),
             "kind": "video", "model": model, "quality": args.quality,
-            "seconds": seconds, "cost_usd": round(cost, 3),
+            "seconds": total_seconds, "cost_usd": round(cost, 3),
             "billed_to": f"gemini:{key_name}",
             "who": who, "who_label": label, "paid": paid_run,
             "project": os.environ.get("PF_RESTAURANT") or os.getcwd(),
@@ -801,9 +871,20 @@ def cmd_video(args):
         })
     print(f"  {path}  {mb:.1f}MB")
     if mb > DISCORD_ATTACH_LIMIT_MB:
-        print(f"  note: {mb:.1f}MB is over Discord's {DISCORD_ATTACH_LIMIT_MB}MB attachment limit — "
-              "regenerate shorter or at 720p")
-    print(f"  ({model}, {resolution}, {seconds}s, ~${cost:.2f}, billed to {key_name})")
+        # A 22-second clip lands near the line, and a video nobody can attach
+        # is a wasted generation. Squeeze a copy rather than make them redo it.
+        small = path.with_name(path.stem + "-small.mp4")
+        if shutil.which("ffmpeg"):
+            subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-vf", "scale=-2:540",
+                            "-crf", "32", "-preset", "veryfast", "-c:a", "aac", "-b:a", "96k",
+                            "-y", str(small)], capture_output=True, text=True)
+        if small.exists():
+            print(f"  {small}  {small.stat().st_size / 1_000_000:.1f}MB "
+                  f"(the original is over Discord's {DISCORD_ATTACH_LIMIT_MB}MB limit — send this one)")
+        else:
+            print(f"  note: {mb:.1f}MB is over Discord's {DISCORD_ATTACH_LIMIT_MB}MB attachment limit — "
+                  "regenerate shorter")
+    print(f"  ({model}, {resolution}, {total_seconds}s, ~${cost:.2f}, billed to {key_name})")
     if who and paid_run:
         print(f"  ${balance - cost:.2f} left on {label}'s account")
     return path
@@ -989,6 +1070,11 @@ def main():
     v.add_argument("--from", dest="source", metavar="CLIP",
                    help="remake a video someone sent: Gemini watches it, the prompt becomes the change you "
                         "want, and the clip's first frame anchors the new one")
+    v.add_argument("--length", type=int, metavar="SECONDS",
+                   help="how long the finished video should be: one generation plus ~7s extensions "
+                        "(720p, needs --quality good or better, up to 148s)")
+    v.add_argument("--then", action="append", metavar="PROMPT",
+                   help="what happens in each extension, in order; repeat the flag")
     v.add_argument("--at", type=float, metavar="SECONDS",
                    help="with --from: start from this moment instead of the one the model picks")
     v.add_argument("--negative", help="what to keep out of it")

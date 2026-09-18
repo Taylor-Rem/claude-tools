@@ -114,6 +114,24 @@ DESCRIBE_PROMPT = (
     "visual; no commentary, no lists, no preamble. Then continue the description so that this happens: "
     "{ask}. Write the whole thing as one continuous shot description, present tense."
 )
+# The frame a remake starts from decides what Veo thinks the subjects look
+# like, so the model that just watched the clip picks it: the last moment where
+# everything that matters is visible, before the action. Frame 0 is often the
+# worst choice -- the cat is still off-screen.
+START_FRAME_PROMPT = (
+    "\n\nAlso choose the single best frame of the ORIGINAL video to generate from: the latest moment "
+    "where every subject that matters (people, animals, the thing being acted on) is clearly visible, "
+    "before the new action starts. Answer as JSON: "
+    '{{"description": "<the shot description>", "start_seconds": <number>, "frame_note": "<what is visible '
+    'at that moment, one short line>"}}'
+)
+WATCH_PROMPT = (
+    "Watch this video and describe it for someone who can't see it: where it is, who or what is in it and "
+    "what they look like, what actually happens, how it's shot and how it feels (funny, chaotic, staged, "
+    "dull). Concrete and specific, two or three sentences, no preamble, no lists. Mention anything "
+    "genuinely notable -- a fail, a reaction, something in the background. If there's speech, say what is "
+    "said.{ask}"
+)
 
 # Pexels src sizes. large2x = 1880w, comfortably under Plateful's 2000px original cap.
 PEXELS_SIZES = ("original", "large2x", "large", "medium", "small", "portrait", "landscape", "tiny")
@@ -489,16 +507,18 @@ def probe(path):
     return st.get("width", 0), st.get("height", 0), float(d.get("format", {}).get("duration") or 0)
 
 
-def first_frame(path, dest):
-    r = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-frames:v", "1", "-y", str(dest)],
+def first_frame(path, dest, at=0.0):
+    seek = ["-ss", f"{max(0.0, at):.2f}"] if at else []
+    r = subprocess.run(["ffmpeg", "-v", "error", *seek, "-i", str(path), "-frames:v", "1", "-y", str(dest)],
                        capture_output=True, text=True)
     if r.returncode != 0 or not Path(dest).exists():
         die(f"ffmpeg couldn't take a frame from {path}: {r.stderr.strip()[:200]}")
     return dest
 
 
-def describe_video(path, ask, key):
-    """Gemini watches the clip and writes the merged shot description."""
+def describe_video(path, ask, key, prompt=None, want_start=False):
+    """Gemini watches the clip. Returns the text, or (text, start_seconds,
+    note) when want_start -- the moment a remake should generate from."""
     src = Path(path)
     if src.stat().st_size > DESCRIBE_MAX_MB * 1_000_000:
         # Too big to inline: describe a small, short proxy instead of the original.
@@ -507,11 +527,16 @@ def describe_video(path, ask, key):
                         "-r", "12", "-an", "-y", str(proxy)], capture_output=True, text=True)
         if proxy.exists():
             src = proxy
-    mime = "video/quicktime" if src.suffix.lower() == ".mov" else "video/mp4"
+    mime = {"mov": "video/quicktime", "webm": "video/webm"}.get(src.suffix.lower().lstrip("."), "video/mp4")
+    instruction = (prompt or DESCRIBE_PROMPT).format(ask=ask)
+    if want_start:
+        instruction += START_FRAME_PROMPT
     body = {"contents": [{"parts": [
         {"inlineData": {"mimeType": mime, "data": base64.b64encode(src.read_bytes()).decode()}},
-        {"text": DESCRIBE_PROMPT.format(ask=ask)},
+        {"text": instruction},
     ]}]}
+    if want_start:
+        body["generationConfig"] = {"responseMimeType": "application/json"}
     r = requests.post(DESCRIBE_URL.format(model=DESCRIBE_MODEL),
                       headers={"x-goog-api-key": key, "Content-Type": "application/json"},
                       json=body, timeout=180)
@@ -521,7 +546,14 @@ def describe_video(path, ask, key):
     text = "".join(p.get("text", "") for p in parts).strip()
     if not text:
         die("describe: the model returned nothing to work from")
-    return text
+    if not want_start:
+        return text
+    try:
+        d = json.loads(text)
+        return d["description"].strip(), float(d.get("start_seconds") or 0), (d.get("frame_note") or "").strip()
+    except (ValueError, KeyError, TypeError):
+        # Malformed JSON shouldn't cost anyone their clip: fall back to frame 0.
+        return text, 0.0, ""
 
 
 def video_quota(ledger_path, who, cap, hours=24):
@@ -647,9 +679,19 @@ def cmd_video(args):
 
     if args.source:
         print(f"  watching {Path(args.source).name} ({DESCRIBE_MODEL})...")
-        args.prompt = describe_video(args.source, args.prompt, key)
+        pick_frame = args.at is None
+        if pick_frame:
+            args.prompt, at, note = describe_video(args.source, args.prompt, key, want_start=True)
+            dur = source_note["source_seconds"]
+            at = min(max(0.0, at), max(0.0, dur - 0.05))     # a seek past the end gives no frame at all
+            print(f"  starting from {at:.1f}s" + (f" — {note}" if note else ""))
+        else:
+            args.prompt = describe_video(args.source, args.prompt, key)
+            at = args.at
         source_note["description"] = args.prompt
-        args.ref = args.ref or str(first_frame(args.source, Path(args.source).with_suffix(".frame0.png")))
+        source_note["start_seconds"] = round(at, 2)
+        source_note["frame_chosen_by"] = DESCRIBE_MODEL if pick_frame else "--at"
+        args.ref = args.ref or str(first_frame(args.source, Path(args.source).with_suffix(".startframe.png"), at))
         instance["prompt"] = args.prompt
         rp = Path(args.ref)
         instance["image"] = {"bytesBase64Encoded": base64.b64encode(rp.read_bytes()).decode(),
@@ -722,6 +764,22 @@ def cmd_video(args):
               "regenerate shorter or at 720p")
     print(f"  ({model}, {resolution}, {seconds}s, ~${cost:.2f}, billed to {key_name})")
     return path
+
+
+def cmd_describe(args):
+    """Watch a clip and say what's in it. No generation, fractions of a cent --
+    this is how something that can't see video gets to have an opinion."""
+    ffmpeg_or_die()
+    src = Path(args.clip)
+    if not src.exists():
+        die(f"video not found: {args.clip}")
+    key = need_key("GEMINI_API_KEY")
+    w, h, dur = probe(src)
+    ask = f" The person asking wants to know: {args.ask}" if args.ask else ""
+    text = describe_video(src, "", key, prompt=WATCH_PROMPT.format(ask=ask))
+    print(f"  {src.name} — {w}x{h}, {dur:.1f}s ({DESCRIBE_MODEL})\n")
+    print(text)
+    return text
 
 
 # ---------------------------------------------------------------- misc
@@ -832,6 +890,8 @@ def main():
     v.add_argument("--from", dest="source", metavar="CLIP",
                    help="remake a video someone sent: Gemini watches it, the prompt becomes the change you "
                         "want, and the clip's first frame anchors the new one")
+    v.add_argument("--at", type=float, metavar="SECONDS",
+                   help="with --from: start from this moment instead of the one the model picks")
     v.add_argument("--negative", help="what to keep out of it")
     v.add_argument("--dry-run", action="store_true", help="print the model, length and price; generate nothing")
     v.add_argument("--out", help="exact output file (.mp4)")
@@ -839,6 +899,11 @@ def main():
     v.add_argument("--ledger", default=str(LEDGER))
     v.add_argument("--no-ledger", action="store_true")
     v.set_defaults(fn=cmd_video)
+
+    dsc = sub.add_parser("describe", help="watch a video and say what's in it (no generation, ~free)")
+    dsc.add_argument("clip")
+    dsc.add_argument("--ask", help="what you want to know about it")
+    dsc.set_defaults(fn=cmd_describe)
 
     st = sub.add_parser("styles", help="list style presets")
     st.set_defaults(fn=cmd_styles)

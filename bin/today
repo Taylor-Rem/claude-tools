@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# today — a chat room's morning briefing (today.md), and a way to refresh it.
+#
+#   today                    print the room's today.md (run inside the room dir)
+#   today refresh [why...]   re-run the briefing now — at most once every 2 hours
+#                            unless --force; "why" steers it ("plane crash in denver")
+#   today age                how old the current briefing is
+#
+# The briefing is written by the relay (`relay.py memes briefing <room>`, one
+# Sonnet web-search turn, ~$0.08); this is the room-side handle on it so the
+# bot can ask for the latest without touching the relay's directory.
+set -euo pipefail
+room="$(basename "$PWD")"
+relay="$HOME/projects/sms-relay"
+file="$PWD/today.md"
+MIN_AGE=$((2*3600))
+
+age() { [ -f "$file" ] && echo $(( $(date +%s) - $(stat -c %Y "$file") )) || echo 999999; }
+human() { local s=$1; if [ "$s" -ge 3600 ]; then echo "$((s/3600))h $(( (s%3600)/60 ))m"; else echo "$((s/60))m"; fi; }
+
+case "${1:-show}" in
+  show)
+    [ -f "$file" ] || { echo "no briefing yet for $room — try: today refresh"; exit 1; }
+    echo "(written $(human "$(age)") ago)"; echo; cat "$file" ;;
+  age)
+    echo "$(human "$(age)") old" ;;
+  refresh)
+    shift; force=0; why=()
+    for a in "$@"; do [ "$a" = "--force" ] && force=1 || why+=("$a"); done
+    a=$(age)
+    if [ "$force" = 0 ] && [ "$a" -lt "$MIN_AGE" ]; then
+      echo "briefing is only $(human "$a") old — fresh enough. Read today.md, or search the web for the specific story."
+      exit 2
+    fi
+    echo "refreshing the briefing for $room (about a minute)…"
+    "$relay/.venv/bin/python" "$relay/relay.py" memes briefing "$room" "${why[@]}" >/dev/null 2>&1 \
+      || { echo "the refresh failed; the relay log has why"; exit 1; }
+    echo; cat "$file" ;;
+  *) sed -n '2,12p' "$0"; exit 1 ;;
+esac

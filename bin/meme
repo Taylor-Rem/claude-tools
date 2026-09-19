@@ -1,0 +1,496 @@
+#!/usr/bin/env python3
+"""
+meme — memes for the group chat: what's fresh, what's niche, what fits, home-made.
+
+  meme fresh [sub ...] [-n N] [--sort hot|top|new] [--t day|week|month]
+                                  the newest from one or more subreddits (default: a curated
+                                  mixed bag, see `meme subs`), pictures downloaded, one per line
+  meme search "<query>" [--sub a,b] [-n N]
+                                  memes ABOUT something, across the meme subs (best with a Reddit
+                                  app key; without one it greps titles from the fresh feeds)
+  meme subs                       the curated subreddit list and what each one is for
+  meme templates [query]          imgflip's top-100 templates: name, id, how many text boxes
+  meme make "<template>" "line" ["line" ...]
+                                  caption a template ("drake" matches "Drake Hotline Bling").
+                                  With an imgflip login the boxes land where they belong; without
+                                  one it's classic top/bottom text, Impact-style
+  meme gif "<query>"              a GIF from Tenor (needs TENOR_API_KEY)
+  meme x "<topic>" [-n 20]        memes about a topic from X, right now (run inside a chat room:
+                                  the relay searches the last 7 days of image posts, describes the
+                                  top few by likes, puts them on the room's shelf, prints them)
+  meme takes "<topic>"            what people on X are saying about it: the top posts by likes,
+                                  text only (inside a chat room, through the relay; ~10¢)
+  meme doctor                     which sources work right now
+
+Every command that produces a file prints `<path>\\t<where it came from>` so you can
+SEND-FILE it. Files land in --out-dir (default `generated/` if that exists, else `.`).
+Already-sent memes are remembered per out-dir (`.meme-seen.json`) and skipped, so
+`meme fresh` never hands you the same one twice.
+
+Keys (all optional, from the environment or ~/.config/claude-tools/env, never printed):
+  REDDIT_CLIENT_ID + REDDIT_CLIENT_SECRET   a "script" app at reddit.com/prefs/apps — turns on
+                                            real search and hot/top/new sorting; without it the
+                                            feeds come from meme-api.com (works, no search)
+  IMGFLIP_USERNAME + IMGFLIP_PASSWORD       a free imgflip.com account — multi-box captioning
+  TENOR_API_KEY                             Google Cloud, free — `meme gif`
+"""
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import requests
+
+ENV_FILE = Path(os.environ.get("CLAUDE_TOOLS_ENV", Path.home() / ".config/claude-tools/env"))
+UA = "patch-meme/0.1 (a group-chat bot; by /u/taylorremund)"
+FONT = Path(__file__).resolve().parent.parent / "fonts" / "Anton-Regular.ttf"
+IMAGE_EXT = (".jpg", ".jpeg", ".png", ".gif", ".webp")
+MAX_BYTES = 9_500_000  # Discord's cap is 10MB
+
+# The curated list. Mixed bag = the first group; the rest are the niches Patch
+# can reach for by name ("meme fresh surrealmemes").
+SUBS = [
+    ("memes", "the mainstream feed, what everyone's seen this week", True),
+    ("dankmemes", "louder mainstream, more edge", True),
+    ("me_irl", "self-deprecating, relatable", True),
+    ("shitposting", "low-effort on purpose, the current formats", True),
+    ("okbuddyretard", "deliberately dumb, ironic, very online", True),
+    ("comedyheaven", "so bad it wraps around to good", True),
+    ("196", "chaotic, terminally online, weird", False),
+    ("surrealmemes", "meaningless in a good way", False),
+    ("deepfriedmemes", "cooked images, nuked formats", False),
+    ("bonehurtingjuice", "templates used literally", False),
+    ("HistoryMemes", "history nerds", False),
+    ("ProgrammerHumor", "code and IT", False),
+    ("PrequelMemes", "star wars prequels", False),
+    ("gaming", "gaming, with the memes that go with it", False),
+    ("wholesomememes", "nice, for when someone's actually down", False),
+    ("AdviceAnimals", "the old formats, boomer-tier", False),
+    ("MemeEconomy", "what formats are rising and dying", False),
+    ("terriblefacebookmemes", "minion-tier, unironically posted by uncles", False),
+    ("Animemes", "anime", False),
+    ("PoliticalCompassMemes", "politics, every quadrant getting roasted", False),
+    ("Conservative", "right-side takes, few pictures", False),
+    ("nfl", "football, meme threads on game day", False),
+]
+DEFAULT_SUBS = [s for s, _, d in SUBS if d]
+SEARCH_SUBS = ["memes", "dankmemes", "me_irl", "shitposting", "comedyheaven", "HistoryMemes",
+               "ProgrammerHumor", "AdviceAnimals", "PoliticalCompassMemes", "gaming"]
+
+
+def die(msg, code=1):
+    print(f"meme: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def load_keys():
+    keys = {}
+    if not ENV_FILE.exists():
+        return keys
+    for line in ENV_FILE.read_text().splitlines():
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        keys[k.strip()] = v.strip()
+    return keys
+
+
+def key(name):
+    return os.environ.get(name) or load_keys().get(name) or ""
+
+
+def slugify(text, limit=40):
+    s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return s[:limit].rstrip("-") or "meme"
+
+
+def out_dir(args):
+    d = Path(args.out_dir) if args.out_dir else (Path("generated") if Path("generated").is_dir() else Path("."))
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def rel(path):
+    try:
+        return str(Path(path).resolve().relative_to(Path.cwd().resolve()))
+    except ValueError:
+        return str(path)
+
+
+# ---- seen list ---------------------------------------------------------------
+
+def seen_file(d):
+    return d / ".meme-seen.json"
+
+
+def load_seen(d):
+    try:
+        return set(json.loads(seen_file(d).read_text()))
+    except (OSError, ValueError):
+        return set()
+
+
+def mark_seen(d, ids):
+    s = load_seen(d) | set(ids)
+    try:
+        seen_file(d).write_text(json.dumps(sorted(s)[-2000:]))
+    except OSError:
+        pass
+
+
+# ---- download ----------------------------------------------------------------
+
+def download(url, dest_stem, d):
+    ext = Path(url.split("?")[0]).suffix.lower() or ".jpg"
+    if ext not in IMAGE_EXT:
+        return None
+    r = requests.get(url, headers={"User-Agent": UA}, timeout=60, stream=True)
+    if r.status_code != 200:
+        return None
+    dest = d / f"{dest_stem}{ext}"
+    size = 0
+    with dest.open("wb") as fh:
+        for chunk in r.iter_content(65536):
+            size += len(chunk)
+            if size > MAX_BYTES:
+                fh.close()
+                dest.unlink(missing_ok=True)
+                return None
+            fh.write(chunk)
+    return dest
+
+
+# ---- reddit --------------------------------------------------------------------
+
+def reddit_token():
+    cid, sec = key("REDDIT_CLIENT_ID"), key("REDDIT_CLIENT_SECRET")
+    if not (cid and sec):
+        return ""
+    r = requests.post("https://www.reddit.com/api/v1/access_token", auth=(cid, sec),
+                      data={"grant_type": "client_credentials"}, headers={"User-Agent": UA}, timeout=30)
+    if r.status_code != 200:
+        return ""
+    return r.json().get("access_token", "")
+
+
+def reddit_posts(token, path, params):
+    r = requests.get("https://oauth.reddit.com" + path, params=dict(params, raw_json=1),
+                     headers={"User-Agent": UA, "Authorization": f"bearer {token}"}, timeout=30)
+    if r.status_code != 200:
+        return []
+    out = []
+    for c in r.json().get("data", {}).get("children", []):
+        p = c.get("data", {})
+        url = p.get("url_overridden_by_dest") or p.get("url") or ""
+        out.append({"id": p.get("id"), "sub": p.get("subreddit"), "title": p.get("title", ""),
+                    "url": url, "ups": p.get("ups", 0), "nsfw": p.get("over_18", False),
+                    "link": "https://redd.it/" + str(p.get("id"))})
+    return out
+
+
+def memeapi_posts(sub, n):
+    r = requests.get(f"https://meme-api.com/gimme/{sub}/{min(max(n, 1), 50)}",
+                     headers={"User-Agent": UA}, timeout=30)
+    if r.status_code != 200:
+        return []
+    out = []
+    for m in r.json().get("memes", []):
+        out.append({"id": m.get("postLink", "").rsplit("/", 1)[-1], "sub": m.get("subreddit"),
+                    "title": m.get("title", ""), "url": m.get("url", ""), "ups": m.get("ups", 0),
+                    "nsfw": m.get("nsfw", False), "link": m.get("postLink", "")})
+    return out
+
+
+def is_image(p):
+    return Path(p["url"].split("?")[0]).suffix.lower() in IMAGE_EXT
+
+
+def emit(posts, d, n, source, want_nsfw=False):
+    """Download up to n unseen image posts, print them, remember them."""
+    seen = load_seen(d)
+    got = []
+    for p in posts:
+        if len(got) >= n:
+            break
+        if not p["url"] or not is_image(p) or p["id"] in seen or (p["nsfw"] and not want_nsfw):
+            continue
+        dest = download(p["url"], f"meme-{slugify(p['title'])}-{p['id']}", d)
+        if not dest:
+            continue
+        got.append(p)
+        print(f"{rel(dest)}\tr/{p['sub']} · {p['title']} · {p['ups']}↑ · {p['link']}")
+    mark_seen(d, [p["id"] for p in got])
+    if not got:
+        print(f"nothing new from {source} (already seen, or no pictures)", file=sys.stderr)
+        sys.exit(2)
+
+
+def cmd_fresh(args):
+    subs = args.sub or DEFAULT_SUBS
+    d = out_dir(args)
+    token = reddit_token()
+    posts = []
+    if token:
+        path = f"/r/{'+'.join(subs)}/{args.sort}"
+        posts = reddit_posts(token, path, {"limit": 100, "t": args.t})
+        source = "reddit"
+    if not posts:
+        per = max(args.n * 3, 10)
+        for s in subs:
+            posts += memeapi_posts(s, per)
+        source = "meme-api.com"
+    if args.sort == "top" or not token:
+        posts.sort(key=lambda p: -p["ups"])
+    emit(posts, d, args.n, source, args.nsfw)
+
+
+def cmd_search(args):
+    subs = args.sub.split(",") if args.sub else SEARCH_SUBS
+    d = out_dir(args)
+    token = reddit_token()
+    posts = []
+    if token:
+        posts = reddit_posts(token, f"/r/{'+'.join(subs)}/search",
+                             {"q": args.query, "restrict_sr": 1, "sort": "relevance", "t": "all", "limit": 100})
+        posts.sort(key=lambda p: -p["ups"])
+        source = "reddit search"
+    if not posts:
+        words = [w for w in re.findall(r"[a-z0-9]+", args.query.lower()) if len(w) > 2]
+        for s in subs:
+            for p in memeapi_posts(s, 50):
+                t = p["title"].lower()
+                if any(w in t for w in words):
+                    posts.append(p)
+        posts.sort(key=lambda p: -p["ups"])
+        source = "meme-api.com title match (no Reddit key, so this is shallow)"
+    emit(posts, d, args.n, source, args.nsfw)
+
+
+# ---- imgflip -----------------------------------------------------------------
+
+def templates():
+    r = requests.get("https://api.imgflip.com/get_memes", timeout=30)
+    if r.status_code != 200 or not r.json().get("success"):
+        die("imgflip is not answering")
+    return r.json()["data"]["memes"]
+
+
+def cmd_templates(args):
+    q = (args.query or "").lower()
+    for m in templates():
+        if q and q not in m["name"].lower():
+            continue
+        print(f"{m['name']}\tid {m['id']}\t{m['box_count']} boxes")
+
+
+def find_template(name):
+    ms = templates()
+    name_l = name.lower().strip()
+    for m in ms:
+        if m["id"] == name_l or m["name"].lower() == name_l:
+            return m
+    hits = [m for m in ms if name_l in m["name"].lower()]
+    if not hits:
+        words = name_l.split()
+        hits = [m for m in ms if all(w in m["name"].lower() for w in words)]
+    if not hits:
+        die(f"no template matching {name!r}; `meme templates` lists them")
+    return hits[0]
+
+
+def caption_local(template, lines, d):
+    """Classic top/bottom text with ImageMagick. Anton stands in for Impact."""
+    if not shutil.which("magick") and not shutil.which("convert"):
+        die("ImageMagick is not installed and there's no imgflip login for the API path")
+    src = download(template["url"], f"tpl-{template['id']}", d)
+    if not src:
+        die("could not fetch the template image")
+    dest = d / f"meme-{slugify(template['name'])}-{int(time.time())}.jpg"
+    w, h = template["width"], template["height"]
+    font = str(FONT) if FONT.exists() else "DejaVu-Sans-Bold"
+    # `caption:` word-wraps and picks the biggest point size that fits the box;
+    # the stroke is what makes it read as a meme and not a poster.
+    cmd = [shutil.which("magick") or "convert", str(src)]
+    for pos, text in zip(("north", "south"), lines):
+        cmd += ["(", "-background", "none", "-fill", "white", "-stroke", "black",
+                "-strokewidth", str(max(2, w // 300)), "-font", font, "-gravity", "center",
+                "-size", f"{w - 20}x{h // 5}", f"caption:{text.upper()}", ")",
+                "-gravity", pos, "-geometry", "+0+8", "-composite"]
+    cmd += ["-quality", "90", str(dest)]
+    subprocess.run(cmd, check=True)
+    src.unlink(missing_ok=True)
+    return dest
+
+
+def cmd_make(args):
+    d = out_dir(args)
+    t = find_template(args.template)
+    user, pw = key("IMGFLIP_USERNAME"), key("IMGFLIP_PASSWORD")
+    if user and pw:
+        data = {"template_id": t["id"], "username": user, "password": pw}
+        for i, line in enumerate(args.lines):
+            data[f"boxes[{i}][text]"] = line
+        r = requests.post("https://api.imgflip.com/caption_image", data=data, timeout=30)
+        j = r.json() if r.status_code == 200 else {}
+        if not j.get("success"):
+            die(f"imgflip: {j.get('error_message', r.status_code)}")
+        dest = download(j["data"]["url"], f"meme-{slugify(t['name'])}-{int(time.time())}", d)
+        how = "imgflip"
+    else:
+        if t["box_count"] > 2 and len(args.lines) > 2:
+            print(f"note: {t['name']} has {t['box_count']} boxes; without an imgflip login only "
+                  "top/bottom text is placed, using your first two lines", file=sys.stderr)
+        dest = caption_local(t, args.lines[:2], d)
+        how = "local top/bottom"
+    print(f"{rel(dest)}\t{t['name']} · {how}")
+
+
+# ---- tenor -------------------------------------------------------------------
+
+def cmd_gif(args):
+    k = key("TENOR_API_KEY")
+    if not k:
+        die("TENOR_API_KEY is not set. Ask Taylor to run: ~/.config/claude-tools/setenv.sh TENOR_API_KEY")
+    d = out_dir(args)
+    r = requests.get("https://tenor.googleapis.com/v2/search",
+                     params={"q": args.query, "key": k, "client_key": "patch", "limit": 10,
+                             "media_filter": "gif,mediumgif,tinygif", "contentfilter": "low"},
+                     timeout=30)
+    if r.status_code != 200:
+        die(f"tenor: {r.status_code} {r.text[:200]}")
+    seen = load_seen(d)
+    for g in r.json().get("results", []):
+        if g["id"] in seen:
+            continue
+        fmts = g.get("media_formats", {})
+        for name in ("mediumgif", "gif", "tinygif"):
+            f = fmts.get(name)
+            if f and f.get("size", 0) < MAX_BYTES:
+                dest = download(f["url"], f"gif-{slugify(args.query)}-{g['id']}", d)
+                if dest:
+                    mark_seen(d, [g["id"]])
+                    print(f"{rel(dest)}\ttenor · {g.get('content_description') or g.get('title') or args.query} · {g.get('itemurl', '')}")
+                    return
+    die("tenor had nothing new for that")
+
+
+# ---- x, on demand (through the relay, which holds the keys and the describer) ----
+
+RELAY = Path.home() / "projects" / "sms-relay"
+
+
+def _via_relay(sub, *rest):
+    room = Path.cwd().name
+    py = RELAY / ".venv" / "bin" / "python"
+    if not py.exists() or not (Path.cwd() / "CLAUDE.md").exists():
+        die(f"`meme {sub}` runs inside a chat room directory, through the relay")
+    return [str(py), str(RELAY / "relay.py"), "memes", sub, room, *rest]
+
+
+def cmd_takes(args):
+    res = subprocess.run(_via_relay("takes", args.topic), capture_output=True, text=True, timeout=120)
+    out = "\n".join(ln for ln in res.stdout.splitlines() if not ln.startswith("["))
+    print(out.strip() or res.stderr.strip()[-300:] or "nothing came back")
+
+
+def cmd_x(args):
+    cmd = _via_relay("find", "-n", str(args.n), args.topic)
+    res = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    out = "\n".join(ln for ln in res.stdout.splitlines() if not ln.startswith("["))  # drop relay log lines
+    print(out.strip() or res.stderr.strip()[-300:] or "nothing came back")
+    if res.returncode:
+        sys.exit(res.returncode)
+
+
+# ---- subs / doctor -----------------------------------------------------------
+
+def cmd_subs(_args):
+    for s, what, default in SUBS:
+        print(f"r/{s:<24} {what}{'   (in the default mix)' if default else ''}")
+
+
+def cmd_doctor(_args):
+    print(f"env file: {ENV_FILE}  ({'exists' if ENV_FILE.exists() else 'MISSING'})")
+    print(f"font: {FONT}  ({'ok' if FONT.exists() else 'missing, falls back to DejaVu'})")
+    print(f"imagemagick: {'ok' if shutil.which('magick') or shutil.which('convert') else 'MISSING'}")
+    tok = reddit_token()
+    print(f"reddit app key: {'ok, token issued' if tok else ('set but rejected' if key('REDDIT_CLIENT_ID') else 'not set (feeds via meme-api.com, no real search)')}")
+    try:
+        n = len(memeapi_posts("memes", 3))
+        print(f"meme-api.com: {'ok' if n else 'answered with nothing'}")
+    except requests.RequestException as exc:
+        print(f"meme-api.com: {exc}")
+    try:
+        print(f"imgflip templates: {len(templates())} available; login {'set' if key('IMGFLIP_USERNAME') else 'not set (local top/bottom only)'}")
+    except SystemExit:
+        pass
+    print(f"tenor: {'key set' if key('TENOR_API_KEY') else 'no key (meme gif is off)'}")
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="meme", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    def common(p):
+        p.add_argument("-n", type=int, default=1, help="how many (default 1)")
+        p.add_argument("--out-dir", help="where files go (default generated/ or .)")
+        p.add_argument("--nsfw", action="store_true", help="allow posts flagged nsfw")
+
+    p = sub.add_parser("fresh", help="the newest from the meme subs")
+    p.add_argument("sub", nargs="*", help="subreddit names (default: the curated mix)")
+    p.add_argument("--sort", choices=["hot", "top", "new"], default="hot")
+    p.add_argument("--t", choices=["hour", "day", "week", "month", "year", "all"], default="day")
+    common(p)
+    p.set_defaults(fn=cmd_fresh)
+
+    p = sub.add_parser("search", help="memes about something")
+    p.add_argument("query")
+    p.add_argument("--sub", help="comma-separated subreddits to search")
+    common(p)
+    p.set_defaults(fn=cmd_search)
+
+    p = sub.add_parser("subs", help="the curated list")
+    p.set_defaults(fn=cmd_subs)
+
+    p = sub.add_parser("templates", help="imgflip's top templates")
+    p.add_argument("query", nargs="?")
+    p.set_defaults(fn=cmd_templates)
+
+    p = sub.add_parser("make", help="caption a template")
+    p.add_argument("template")
+    p.add_argument("lines", nargs="+")
+    p.add_argument("--out-dir")
+    p.set_defaults(fn=cmd_make)
+
+    p = sub.add_parser("gif", help="a GIF from Tenor")
+    p.add_argument("query")
+    p.add_argument("--out-dir")
+    p.set_defaults(fn=cmd_gif)
+
+    p = sub.add_parser("x", help="memes about a topic from X, now (inside a room)")
+    p.add_argument("topic")
+    p.add_argument("-n", type=int, default=20, help="posts to read from X (10-100, $0.005 each)")
+    p.set_defaults(fn=cmd_x)
+
+    p = sub.add_parser("takes", help="what X is saying about a topic (inside a room)")
+    p.add_argument("topic")
+    p.set_defaults(fn=cmd_takes)
+
+    p = sub.add_parser("doctor", help="which sources work")
+    p.set_defaults(fn=cmd_doctor)
+
+    args = ap.parse_args()
+    try:
+        args.fn(args)
+    except requests.RequestException as exc:
+        die(f"network: {exc}")
+
+
+if __name__ == "__main__":
+    main()

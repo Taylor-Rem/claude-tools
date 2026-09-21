@@ -1,0 +1,464 @@
+#!/usr/bin/env python3
+"""books — Taylor's own books, from where the numbers actually live
+(plans/03-books.md, ROADMAP B3; the record is private-docs/TAXES.md).
+
+  books                         # this month's P&L
+  books pl [--year Y|--month Y-M]        gross, fees, refunds, net income, cash expenses, net profit
+  books income [--year|--month] [--all]  every Stripe balance transaction that is money in (or out), per account
+  books expenses [--year|--month]        real spend: API keys, Gemini, Resend, manual rows; the statement-only vendors
+  books setaside [--year|--month]        25-30% of net profit, the rule in TAXES.md §4
+  books export [--year] [--out DIR]      income-Y.csv, expenses-Y.csv, pl-Y.csv (default private-docs/exports/)
+  books add income|expense DATE VENDOR AMOUNT ["note"]   a cash row Stripe/the ledgers don't have; also logged in TAXES.md
+  books doctor
+
+Income is Stripe: every STRIPE_KEY_* in the toolbelt is one account (PATCHLAMP,
+PLATEFUL). Balance transactions carry gross, fee and net per payment, so the
+books show gross with Stripe's fee as an expense — the way the 1099-K is
+filed. Expenses are the relay ledger's cash rows (billed_to != plan; the
+plan rows are notional and are shown on their own line, never deducted), the
+toolbelt ledger (images, video, newsletter), and manual rows in
+private-docs/books.jsonl. Vendors with no local record (TAXES.md §3) are
+listed as statement-only reminders. Nothing here prints a key.
+
+Config, by name, never printed:  STRIPE_KEY_<ACCOUNT>   ~/.config/claude-tools/env
+"""
+
+import argparse
+import csv
+import json
+import os
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+ENV_FILE = Path(os.environ.get("CLAUDE_TOOLS_ENV", Path.home() / ".config/claude-tools/env"))
+PROJECTS = Path(os.environ.get("PROJECTS_DIR", "~/projects")).expanduser()
+PRIVATE = PROJECTS / "private-docs"
+TAXES = PRIVATE / "TAXES.md"
+MANUAL = PRIVATE / "books.jsonl"
+EXPORTS = PRIVATE / "exports"
+RELAY_LEDGER = PROJECTS / "sms-relay" / "state" / "ledger.jsonl"
+TOOL_LEDGER = Path.home() / ".local/state/claude-tools/ledger.jsonl"
+TZ = ZoneInfo("America/Denver")
+SET_ASIDE = (0.25, 0.30)
+NO_RECORD = [("Anthropic", "Claude Max subscription (flat, monthly)"), ("Twilio", "number + SMS"),
+             ("Porkbun", "domains (annual)"), ("Laravel Cloud", "hosting (monthly)"), ("Resend", "email (monthly)"),
+             ("Zoho Mail", "founder@ inboxes (yearly)"), ("Cloudflare", "R2 backup bucket ($0 at this size)")]
+
+
+def die(msg, code=1):
+    print(f"books: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def read_env():
+    keys = {}
+    if ENV_FILE.exists():
+        for line in ENV_FILE.read_text().splitlines():
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                keys[k.strip()] = v.strip().strip('"').strip("'")
+    return keys
+
+
+def accounts():
+    """{name: key} for every STRIPE_KEY_* in the toolbelt (name = the part after the prefix, lower case)."""
+    return {k[len("STRIPE_KEY_"):].lower(): v for k, v in read_env().items() if k.startswith("STRIPE_KEY_") and v}
+
+
+# ---- the window ----------------------------------------------------------------
+
+def window(args):
+    """(start, end, label) as aware datetimes in Denver time; end is exclusive."""
+    if getattr(args, "month", None):
+        y, m = (int(x) for x in args.month.split("-"))
+        start = datetime(y, m, 1, tzinfo=TZ)
+        end = datetime(y + (m == 12), (m % 12) + 1, 1, tzinfo=TZ)
+        return start, end, args.month
+    y = int(getattr(args, "year", None) or date.today().year)
+    return datetime(y, 1, 1, tzinfo=TZ), datetime(y + 1, 1, 1, tzinfo=TZ), str(y)
+
+
+def to_local(ts):
+    """A Stripe epoch or an ISO string -> aware datetime in Denver time."""
+    if isinstance(ts, (int, float)):
+        return datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(TZ)
+    s = str(ts).replace("Z", "+00:00")
+    t = datetime.fromisoformat(s)
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)
+    return t.astimezone(TZ)
+
+
+# ---- Stripe ------------------------------------------------------------------------
+
+def stripe_get(key, path, params=None):
+    url = "https://api.stripe.com/v1" + path + ("?" + urllib.parse.urlencode(params, doseq=True) if params else "")
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {key}", "User-Agent": "claude-tools/books"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")
+        try:
+            msg = json.loads(body)["error"].get("message", "")
+        except (ValueError, KeyError):
+            msg = body[:160]
+        raise RuntimeError(f"Stripe {e.code} on {path}: {msg.split('.')[0]}")
+
+
+def balance_transactions(key, start, end):
+    """Every balance transaction in the window, oldest first."""
+    out, after = [], None
+    while True:
+        params = {"limit": 100, "created[gte]": int(start.timestamp()), "created[lt]": int(end.timestamp())}
+        if after:
+            params["starting_after"] = after
+        page = stripe_get(key, "/balance_transactions", params)
+        out += page["data"]
+        if not page.get("has_more") or not page["data"]:
+            break
+        after = page["data"][-1]["id"]
+    return sorted(out, key=lambda b: b["created"])
+
+
+def classify(b):
+    """One balance transaction -> (bucket, gross, fee) in dollars. Buckets:
+    sale (a charge/payment: gross in, fee out), refund (gross out, fee back),
+    payout (a transfer to the bank: not P&L), fee (a Stripe fee billed on its
+    own), other (adjustments, disputes: listed, counted as income +/-)."""
+    t = b["type"]
+    gross, fee = b["amount"] / 100, b["fee"] / 100
+    if t in ("charge", "payment"):
+        return "sale", gross, fee
+    if t in ("refund", "payment_refund", "payment_failure_refund"):
+        return "refund", gross, fee            # amount is negative; fee is negative or 0 (Stripe keeps its fee)
+    if t in ("payout", "transfer", "payout_cancel", "payout_failure"):
+        return "payout", gross, fee
+    if t in ("stripe_fee", "application_fee"):
+        return "fee", gross, fee
+    return "other", gross, fee
+
+
+def income_rows(start, end):
+    """Rows per account; an account that can't be read is reported, not fatal."""
+    rows, problems = [], []
+    for name, key in sorted(accounts().items()):
+        try:
+            for b in balance_transactions(key, start, end):
+                bucket, gross, fee = classify(b)
+                rows.append({"account": name, "date": to_local(b["created"]).strftime("%Y-%m-%d"), "type": b["type"],
+                             "bucket": bucket, "gross": gross, "fee": fee, "net": b["net"] / 100,
+                             "id": b["id"], "source": b.get("source") or "",
+                             "description": (b.get("description") or "")[:80], "currency": b.get("currency", "usd")})
+        except RuntimeError as exc:
+            problems.append(f"{name}: {exc}")
+    return rows, problems
+
+
+def income_totals(rows):
+    t = {"gross": 0.0, "fees": 0.0, "refunds": 0.0, "refund_fees": 0.0, "other": 0.0, "payouts": 0.0, "net": 0.0}
+    for r in rows:
+        if r["bucket"] == "sale":
+            t["gross"] += r["gross"]
+            t["fees"] += r["fee"]
+        elif r["bucket"] == "refund":
+            t["refunds"] += -r["gross"]
+            t["refund_fees"] += -r["fee"]        # a fee refunded back (usually 0: Stripe keeps it)
+        elif r["bucket"] == "fee":
+            t["fees"] += -r["gross"]
+        elif r["bucket"] == "payout":
+            t["payouts"] += -r["gross"]
+        else:
+            t["other"] += r["net"]
+    t["net"] = t["gross"] - t["fees"] - t["refunds"] + t["refund_fees"] + t["other"]
+    return t
+
+
+# ---- expenses ----------------------------------------------------------------------
+
+def _jsonl(path):
+    if not path.exists():
+        return
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            yield json.loads(line)
+        except ValueError:
+            continue
+
+
+def _in(t, start, end):
+    return start <= t < end
+
+
+def expense_rows(start, end):
+    """Cash expenses with a local record, one row per (vendor, day), plus the notional plan total."""
+    by = {}
+    plan = 0.0
+
+    def add(vendor, day, usd, what):
+        k = (vendor, day, what)
+        by[k] = by.get(k, 0.0) + usd
+
+    for e in _jsonl(RELAY_LEDGER):
+        try:
+            t = to_local(e.get("ts"))
+        except (ValueError, TypeError):
+            continue
+        if not _in(t, start, end):
+            continue
+        usd = float(e.get("cost_usd") or 0)
+        billed = str(e.get("billed_to") or "plan")
+        if e.get("kind") == "credit" or usd == 0:
+            continue
+        if billed.startswith("plan"):
+            plan += usd
+        elif billed.startswith("gemini:"):
+            add("Google (Gemini)", t.strftime("%Y-%m-%d"), usd, "images")
+        else:
+            add("Anthropic API", t.strftime("%Y-%m-%d"), usd, billed)
+    copied = set()
+    for e in _jsonl(RELAY_LEDGER):
+        if e.get("kind") in ("image", "newsletter", "video") and e.get("run"):
+            copied.add(e["run"])
+    for e in _jsonl(TOOL_LEDGER):
+        try:
+            t = to_local(e.get("ts"))
+        except (ValueError, TypeError):
+            continue
+        if not _in(t, start, end) or (e.get("path") or e.get("ref") or "") in copied:
+            continue
+        usd = float(e.get("cost_usd") or 0)
+        if usd == 0:
+            continue
+        kind = e.get("kind") or "image"
+        vendor = "Resend" if kind == "newsletter" else "Google (Gemini)"
+        add(vendor, t.strftime("%Y-%m-%d"), usd, kind)
+    manual = []
+    for e in _jsonl(MANUAL):
+        try:
+            t = to_local(e.get("date") + "T12:00:00")
+        except (ValueError, TypeError):
+            continue
+        if not _in(t, start, end):
+            continue
+        manual.append(e)
+        if e.get("kind") == "expense":
+            add(e.get("vendor") or "?", e["date"], float(e.get("amount") or 0), e.get("note") or "manual")
+    rows = [{"vendor": v, "date": d, "amount": round(usd, 4), "what": w} for (v, d, w), usd in sorted(by.items(), key=lambda kv: (kv[0][1], kv[0][0]))]
+    return rows, round(plan, 2), manual
+
+
+def expense_totals(rows):
+    by = {}
+    for r in rows:
+        by[r["vendor"]] = by.get(r["vendor"], 0.0) + r["amount"]
+    return dict(sorted(by.items())), sum(by.values())
+
+
+def manual_income(manual):
+    return [{"account": "manual", "date": e["date"], "type": "manual", "bucket": "sale", "gross": float(e["amount"]), "fee": 0.0,
+             "net": float(e["amount"]), "id": "", "source": "", "description": (e.get("vendor") or "") + (" — " + e["note"] if e.get("note") else ""), "currency": "usd"}
+            for e in manual if e.get("kind") == "income"]
+
+
+# ---- reports ---------------------------------------------------------------------------
+
+def money(x):
+    return f"${x:,.2f}" if x >= 0 else f"-${-x:,.2f}"
+
+
+def compute(args):
+    start, end, label = window(args)
+    inc, problems = income_rows(start, end)
+    exp, plan, manual = expense_rows(start, end)
+    inc += manual_income(manual)
+    it = income_totals(inc)
+    by_vendor, cash = expense_totals(exp)
+    return {"label": label, "start": start, "end": end, "income": inc, "income_totals": it, "expenses": exp,
+            "by_vendor": by_vendor, "cash": cash, "plan": plan, "problems": problems,
+            "net_profit": it["net"] - cash}
+
+
+def cmd_pl(args):
+    d = compute(args)
+    it = d["income_totals"]
+    names = sorted(accounts()) or ["(no Stripe key in the toolbelt)"]
+    print(f"P&L {d['label']}  (Stripe: {', '.join(names)}; cash basis; Denver time)")
+    print(f"  gross income        {money(it['gross']):>12}")
+    print(f"  − Stripe fees       {money(it['fees']):>12}")
+    print(f"  − refunds           {money(it['refunds']):>12}" + (f"   (fees kept by Stripe on refunds already counted above)" if it["refunds"] else ""))
+    if it["other"]:
+        print(f"  ± other Stripe      {money(it['other']):>12}   (adjustments/disputes — check `books income`)")
+    print(f"  = net income        {money(it['net']):>12}")
+    for v, usd in d["by_vendor"].items():
+        print(f"  − {v:<18}{money(usd):>12}")
+    print(f"  = net profit        {money(d['net_profit']):>12}   (before the statement-only vendors: {', '.join(v for v, _ in NO_RECORD[:5])}…)")
+    print(f"  set aside 25–30%    {money(max(d['net_profit'], 0) * SET_ASIDE[0]):>12} – {money(max(d['net_profit'], 0) * SET_ASIDE[1])}")
+    print(f"  notional plan usage {money(d['plan']):>12}   (Claude Max — list price of the runs; not a cash cost, never deduct)")
+    if it["payouts"]:
+        print(f"  paid out to bank    {money(it['payouts']):>12}   (transfers, not income)")
+    for p in d["problems"]:
+        print(f"  ! {p}")
+
+
+def cmd_income(args):
+    d = compute(args)
+    rows = d["income"] if args.all else [r for r in d["income"] if r["bucket"] != "payout"]
+    if not rows:
+        print(f"no Stripe activity in {d['label']}" + (" on " + ", ".join(sorted(accounts())) if accounts() else ""))
+    for r in rows:
+        print(f"  {r['date']}  {r['account']:<9} {r['bucket']:<7} {money(r['gross']):>10}  fee {money(r['fee']):>8}  net {money(r['net']):>10}  {r['description']}")
+    it = d["income_totals"]
+    print(f"  gross {money(it['gross'])}, fees {money(it['fees'])}, refunds {money(it['refunds'])}, net income {money(it['net'])}")
+    for p in d["problems"]:
+        print(f"  ! {p}")
+
+
+def cmd_expenses(args):
+    d = compute(args)
+    if not d["expenses"]:
+        print(f"no recorded cash expenses in {d['label']}")
+    for r in d["expenses"]:
+        print(f"  {r['date']}  {r['vendor']:<18} {money(r['amount']):>10}  {r['what']}")
+    for v, usd in d["by_vendor"].items():
+        print(f"  {v:<30}{money(usd):>10}")
+    print(f"  cash expenses with a record   {money(d['cash']):>10}")
+    print(f"  notional plan usage           {money(d['plan']):>10}   (not deductible)")
+    print("  statement only (no local record; take from the card statement):")
+    for v, what in NO_RECORD:
+        print(f"    {v:<16} {what}")
+
+
+def cmd_setaside(args):
+    d = compute(args)
+    p = d["net_profit"]
+    print(f"{d['label']}: net profit {money(p)} (before statement-only vendors)")
+    if p <= 0:
+        print("  nothing to set aside yet")
+    else:
+        print(f"  set aside {money(p * SET_ASIDE[0])} – {money(p * SET_ASIDE[1])} (25–30%, TAXES.md §4); next 1040-ES date is in the calendar there")
+
+
+def cmd_export(args):
+    d = compute(args)
+    out = Path(args.out).expanduser() if args.out else EXPORTS
+    out.mkdir(parents=True, exist_ok=True)
+    y = d["label"]
+    with open(out / f"income-{y}.csv", "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["account", "date", "type", "bucket", "gross", "fee", "net", "currency", "id", "source", "description"])
+        w.writeheader()
+        for r in d["income"]:
+            w.writerow({k: r.get(k, "") for k in w.fieldnames})
+    with open(out / f"expenses-{y}.csv", "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["date", "vendor", "amount", "what"])
+        w.writeheader()
+        for r in d["expenses"]:
+            w.writerow(r)
+        for v, what in NO_RECORD:
+            w.writerow({"date": "", "vendor": v, "amount": "", "what": f"statement only — {what}"})
+    it = d["income_totals"]
+    with open(out / f"pl-{y}.csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["line", "usd", "note"])
+        w.writerow(["gross income", f"{it['gross']:.2f}", "Stripe, all accounts: " + ", ".join(sorted(accounts()))])
+        w.writerow(["stripe fees", f"{-it['fees'] or 0.0:.2f}", "expense, not netted"])
+        w.writerow(["refunds", f"{-it['refunds'] or 0.0:.2f}", ""])
+        w.writerow(["other stripe", f"{it['other']:.2f}", "adjustments/disputes"])
+        w.writerow(["net income", f"{it['net']:.2f}", ""])
+        for v, usd in d["by_vendor"].items():
+            w.writerow([f"expense: {v}", f"{-usd or 0.0:.2f}", "local record"])
+        w.writerow(["net profit (recorded)", f"{d['net_profit']:.2f}", "before statement-only vendors"])
+        w.writerow(["notional plan usage", f"{d['plan']:.2f}", "Claude Max list price; NOT a cash cost"])
+    for p in d["problems"]:
+        print(f"  ! {p}")
+    print(f"wrote {out}/income-{y}.csv, expenses-{y}.csv, pl-{y}.csv ({len(d['income'])} income rows, {len(d['expenses'])} expense rows)")
+
+
+def cmd_add(args):
+    try:
+        day = date.fromisoformat(args.date)
+        amount = round(float(args.amount), 2)
+    except ValueError:
+        die("books add income|expense YYYY-MM-DD VENDOR AMOUNT [note]")
+    row = {"kind": args.kind, "date": day.isoformat(), "vendor": args.vendor, "amount": amount, "note": args.note or "",
+           "added": datetime.now(TZ).isoformat(timespec="seconds")}
+    MANUAL.parent.mkdir(parents=True, exist_ok=True)
+    with open(MANUAL, "a") as f:
+        f.write(json.dumps(row) + "\n")
+    if TAXES.exists():
+        line = (f"- **{date.today().isoformat()}** — `books add`: {args.kind} {money(amount)} {args.vendor}"
+                f" on {day.isoformat()}" + (f" — {args.note}" if args.note else "") + ".\n")
+        text = TAXES.read_text()
+        TAXES.write_text(text + ("" if text.endswith("\n") else "\n") + line)
+    print(f"recorded {args.kind} {money(amount)} {args.vendor} ({day}); logged in TAXES.md")
+
+
+def cmd_doctor(args):
+    ok = True
+    accts = accounts()
+    print(f"toolbelt: {ENV_FILE}  Stripe accounts: {', '.join(sorted(accts)) or 'NONE'}")
+    if not accts:
+        ok = False
+    for name, key in sorted(accts.items()):
+        for path in ("/balance_transactions", "/charges", "/balance"):
+            try:
+                stripe_get(key, path, {"limit": 1} if path != "/balance" else None)
+                print(f"  {name}: {path} ok")
+            except RuntimeError as exc:
+                print(f"  {name}: {path} FAIL — {exc}")
+                ok = False
+    if "plateful" not in accts:
+        print("  MISSING STRIPE_KEY_PLATEFUL: the Plateful LLC account (2026's real money) — TAYLOR-TODO §1")
+        ok = False
+    for label, p in (("relay ledger", RELAY_LEDGER), ("toolbelt ledger", TOOL_LEDGER), ("TAXES.md", TAXES)):
+        print(f"  {label}: {'ok' if p.exists() else 'missing'} {p}")
+        ok = ok and p.exists()
+    print(f"  manual rows: {sum(1 for _ in _jsonl(MANUAL))} in {MANUAL}")
+    sys.exit(0 if ok else 1)
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="books", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd")
+
+    def win(p):
+        p.add_argument("--year", type=int)
+        p.add_argument("--month", help="YYYY-MM")
+
+    for name, fn, help_ in (("pl", cmd_pl, "the P&L"), ("income", cmd_income, "Stripe money in/out"),
+                            ("expenses", cmd_expenses, "real spend"), ("setaside", cmd_setaside, "what to put away")):
+        p = sub.add_parser(name, help=help_)
+        win(p)
+        if name == "income":
+            p.add_argument("--all", action="store_true", help="include payouts to the bank")
+        p.set_defaults(fn=fn)
+    p = sub.add_parser("export", help="CSVs for the CPA")
+    win(p)
+    p.add_argument("--out")
+    p.set_defaults(fn=cmd_export)
+    p = sub.add_parser("add", help="a cash row with no other record")
+    p.add_argument("kind", choices=["income", "expense"])
+    p.add_argument("date")
+    p.add_argument("vendor")
+    p.add_argument("amount")
+    p.add_argument("note", nargs="?")
+    p.set_defaults(fn=cmd_add)
+    sub.add_parser("doctor").set_defaults(fn=cmd_doctor)
+    args = ap.parse_args()
+    if not args.cmd:
+        args.year, args.month = None, date.today().strftime("%Y-%m")
+        cmd_pl(args)
+        return
+    args.fn(args)
+
+
+if __name__ == "__main__":
+    main()

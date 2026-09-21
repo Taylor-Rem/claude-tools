@@ -3,9 +3,11 @@
 
 The file stays where every session writes it. A tiny git repo whose git-dir
 lives beside it (~/projects/.todo-git, work tree ~/projects, everything but
-that one file excluded) mirrors it to a PRIVATE GitHub repo; a systemd user
+the tracked docs excluded) mirrors it to a PRIVATE GitHub repo; a systemd user
 timer runs `todo sync` every two minutes so local edits go up and ticks made
-on the web come down. The web page is a static file on GitHub Pages (a PUBLIC
+on the web come down. Since 2026-09-21 the same side-car also carries the
+root planning docs (ROADMAP.md, VISION.md, HISTORY.md, CLAUDE.md, COWORK.md,
+plans/) so Cowork on the MacBook reads the same plan (`TRACKED` below). The web page is a static file on GitHub Pages (a PUBLIC
 repo holding only the page) that reads and writes the private file through the
 GitHub API with a fine-grained token Taylor pastes once in the browser.
 
@@ -32,6 +34,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 import sys
 import tempfile
 from datetime import date
@@ -48,6 +51,29 @@ GIT_DIR = WORK_TREE / ".todo-git"
 DATA_REPO = os.environ.get("TODO_DATA_REPO", "taylor-todo")
 SITE_REPO = os.environ.get("TODO_SITE_REPO", "todo")
 BRANCH = "main"
+# Everything the side-car mirrors, relative to WORK_TREE. TAYLOR-TODO.md is
+# the web page's file; the rest is the plan Cowork reads on the MacBook.
+TRACKED = [TODO_FILE.name, "ROADMAP.md", "VISION.md", "HISTORY.md", "CLAUDE.md",
+           "COWORK.md", "plans", "mac", "requests"]
+# The request box (plans/01-cowork-bridge.md, B17): Cowork drops
+# requests/<name>.md in the shared repo; each sync starts one unanswered
+# request as a headless claude session in WORK_TREE and the reply lands in
+# requests/<name>.reply.md, which the next sync pushes back.
+REQUESTS = WORK_TREE / "requests"
+REQUEST_TIMEOUT = int(os.environ.get("TODO_REQUEST_TIMEOUT", 45 * 60))
+REQUEST_MAX_CHARS = 4000
+REQUEST_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+
+
+def tracked_paths():
+    return [str(WORK_TREE / t) for t in TRACKED if (WORK_TREE / t).exists()]
+
+
+def write_exclude():
+    """Only the tracked docs are ever seen by the side-car; everything else is excluded."""
+    (GIT_DIR / "info").mkdir(exist_ok=True)
+    lines = ["*"] + [f"!/{t}" for t in TRACKED] + ["!/plans/**", "!/mac/**", "!/requests/**"]
+    (GIT_DIR / "info" / "exclude").write_text("\n".join(lines) + "\n")
 
 ITEM = re.compile(r"^- \[( |x|X)\] (.*)$")
 SECTION = re.compile(r"^## (.*)$")
@@ -215,7 +241,8 @@ def cmd_sync(args):
     if not TODO_FILE.exists():
         die(f"{TODO_FILE} is missing")
     q = getattr(args, "quiet", False)
-    git("add", "--", str(TODO_FILE))
+    write_exclude()
+    git("add", "--", *tracked_paths())
     if git("diff", "--cached", "--quiet", check=False).returncode:
         git("commit", "-q", "-m", "todo: local edit")
         if not q:
@@ -228,22 +255,25 @@ def cmd_sync(args):
     if local == remote:
         if not q:
             print("in sync")
+        start_requests(q)
         return
     if git("merge-base", "--is-ancestor", remote, local, check=False).returncode == 0:
         git("push", "-q", "origin", f"HEAD:{BRANCH}")
         if not q:
             print("pushed")
+        start_requests(q)
         return
     if git("merge-base", "--is-ancestor", local, remote, check=False).returncode == 0:
         git("merge", "-q", "--ff-only", f"origin/{BRANCH}")
         if not q:
             print("pulled web changes")
+        start_requests(q)
         return
     # both moved: replay local on top of the web's version; on a clash the local line wins
     r = git("rebase", f"origin/{BRANCH}", check=False)
     if r.returncode:
-        git("checkout", "--theirs", "--", str(TODO_FILE), check=False)
-        git("add", "--", str(TODO_FILE))
+        git("checkout", "--theirs", "--", *tracked_paths(), check=False)
+        git("add", "--", *tracked_paths())
         r2 = git("rebase", "--continue", check=False)
         if r2.returncode:
             git("rebase", "--abort", check=False)
@@ -252,6 +282,133 @@ def cmd_sync(args):
     git("push", "-q", "origin", f"HEAD:{BRANCH}")
     if not q:
         print("merged and pushed")
+    start_requests(q)
+
+
+# --- the request box -------------------------------------------------------
+
+def request_files():
+    """(name, prompt path, reply path, running marker) for every request, oldest first."""
+    if not REQUESTS.exists():
+        return []
+    out = []
+    for p in sorted(REQUESTS.glob("*.md"), key=lambda x: x.stat().st_mtime):
+        if p.name.endswith(".reply.md"):
+            continue
+        name = p.stem
+        if not REQUEST_NAME.match(name):
+            continue
+        out.append((name, p, REQUESTS / f"{name}.reply.md", REQUESTS / f"{name}.running"))
+    return out
+
+
+def request_state(name, prompt, reply, running):
+    if reply.exists():
+        return "answered"
+    if running.exists():
+        return "running"
+    return "waiting"
+
+
+def new_request_name(prompt):
+    stem = re.sub(r"[^a-z0-9]+", "-", prompt.strip().lower())[:40].strip("-") or "request"
+    stamp = time.strftime("%m%d-%H%M")
+    name = f"{stem}-{stamp}"
+    n = 2
+    while (REQUESTS / f"{name}.md").exists():
+        name = f"{stem}-{stamp}-{n}"
+        n += 1
+    return name
+
+
+def start_requests(quiet=False):
+    """Start the oldest unanswered request, detached, unless one is running.
+    Never raises: a broken request box must not stop the sync."""
+    try:
+        reqs = request_files()
+        if any(state == "running" for state in (request_state(*r) for r in reqs)):
+            return
+        for name, prompt, reply, running in reqs:
+            if request_state(name, prompt, reply, running) != "waiting":
+                continue
+            running.write_text(f"started {time.strftime('%Y-%m-%d %H:%M:%S')} by todo sync\n")
+            cmd = ["systemd-run", "--user", "--quiet", "--collect", f"--unit=todo-request-{name}",
+                   "--setenv=PATH=" + os.environ.get("PATH", "") + ":" + str(Path.home() / ".local/bin"),
+                   str(Path(__file__).resolve()), "request", "run", name]
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            if r.returncode:
+                running.unlink(missing_ok=True)
+                print(f"todo: could not start request {name}: {(r.stderr or r.stdout).strip()}", file=sys.stderr)
+            elif not quiet:
+                print(f"started request {name}")
+            return
+    except Exception as exc:  # noqa: BLE001
+        print(f"todo: request box skipped: {exc}", file=sys.stderr)
+
+
+def cmd_request(args):
+    if args.action == "ls":
+        reqs = request_files()
+        if not reqs:
+            print("no requests")
+        for name, prompt, reply, running in reqs:
+            first = prompt.read_text().strip().splitlines()[0] if prompt.read_text().strip() else ""
+            print(f"  {request_state(name, prompt, reply, running):<9} {name}  {first[:70]}")
+        return
+    if args.action == "run":
+        run_request(args.name)
+        return
+    # action == "new": file one (and start it now unless --later)
+    text = (args.name or "").strip()
+    if not text:
+        die("todo request \"<prompt>\"")
+    if len(text) > REQUEST_MAX_CHARS:
+        die(f"prompt is over {REQUEST_MAX_CHARS} characters")
+    REQUESTS.mkdir(exist_ok=True)
+    name = new_request_name(text)
+    (REQUESTS / f"{name}.md").write_text(text + "\n")
+    print(name)
+    if not args.later:
+        start_requests(quiet=True)
+
+
+def run_request(name):
+    """Run one request to its reply file. Called detached by start_requests."""
+    if not REQUEST_NAME.match(name or ""):
+        die("bad request name")
+    prompt_path, reply, running = REQUESTS / f"{name}.md", REQUESTS / f"{name}.reply.md", REQUESTS / f"{name}.running"
+    if not prompt_path.exists():
+        die(f"no such request: {name}")
+    if reply.exists():
+        die(f"{name} is already answered")
+    prompt = prompt_path.read_text().strip()[:REQUEST_MAX_CHARS]
+    started = time.strftime("%Y-%m-%d %H:%M:%S")
+    running.write_text(f"started {started}\n")
+    head = [f"# reply to {name}", f"started {started} in {WORK_TREE}", ""]
+    try:
+        r = subprocess.run(["claude", "-p", prompt, "--permission-mode", "auto", "--output-format", "json"],
+                           cwd=WORK_TREE, capture_output=True, text=True, timeout=REQUEST_TIMEOUT,
+                           env=dict(os.environ, TODO_REQUEST=name))
+        body, meta = r.stdout, {}
+        try:
+            data = json.loads(r.stdout)
+            body = data.get("result") or r.stdout
+            meta = {k: data.get(k) for k in ("num_turns", "duration_ms", "total_cost_usd", "is_error") if k in data}
+        except ValueError:
+            pass
+        status = f"finished {time.strftime('%Y-%m-%d %H:%M:%S')}, exit {r.returncode}"
+        if meta:
+            status += f", {meta.get('num_turns', '?')} turns, {round((meta.get('duration_ms') or 0) / 60000, 1)} min, ${meta.get('total_cost_usd') or 0:.2f}"
+        if r.returncode and r.stderr.strip():
+            body = (body or "") + "\n\nstderr:\n" + r.stderr.strip()[-2000:]
+    except subprocess.TimeoutExpired:
+        status = f"timed out after {REQUEST_TIMEOUT // 60} minutes"
+        body = "(the session was stopped at the cap; whatever it committed is in the repos)"
+    except FileNotFoundError:
+        status = "failed: claude is not on PATH for the runner"
+        body = ""
+    reply.write_text("\n".join(head + [status, "", (body or "").strip()[-20000:], ""]))
+    running.unlink(missing_ok=True)
 
 
 def cmd_init(args):
@@ -268,18 +425,17 @@ def cmd_init(args):
             die(f"{full} exists but is {vis}; the todo has client names in it — make it private first")
     if not repo_ready():
         git("init", "-q", "-b", BRANCH)
-        (GIT_DIR / "info").mkdir(exist_ok=True)
-        (GIT_DIR / "info" / "exclude").write_text(f"*\n!/{TODO_FILE.name}\n")
+        write_exclude()
         git("config", "core.worktree", str(WORK_TREE))
         git("config", "user.name", "todo sync")
         git("config", "user.email", "todo@localhost")
         git("remote", "add", "origin", f"git@github.com:{full}.git")
-        print(f"side-car repo at {GIT_DIR} (tracks only {TODO_FILE.name})")
+        print(f"side-car repo at {GIT_DIR} (tracks {', '.join(TRACKED)})")
     r = git("fetch", "-q", "origin", BRANCH, check=False)
     if r.returncode == 0 and git("rev-parse", "-q", "--verify", "HEAD", check=False).returncode:
         # remote has history, we have none: adopt it, then commit the local version on top
         git("reset", "-q", "--soft", f"origin/{BRANCH}")
-    git("add", "--", str(TODO_FILE))
+    git("add", "--", *tracked_paths())
     if git("diff", "--cached", "--quiet", check=False).returncode or git("rev-parse", "-q", "--verify", "HEAD", check=False).returncode:
         git("commit", "-q", "-m", "todo: sync from the laptop")
     git("push", "-q", "-u", "origin", f"HEAD:{BRANCH}")
@@ -391,7 +547,18 @@ def main():
     p = sub.add_parser("site"); p.add_argument("action", choices=["push"]); p.set_defaults(fn=cmd_site)
     p = sub.add_parser("open"); p.set_defaults(fn=cmd_open)
     p = sub.add_parser("doctor"); p.set_defaults(fn=cmd_doctor)
-    args = ap.parse_args()
+    p = sub.add_parser("request", help="the request box: todo request \"<prompt>\" | todo request ls | todo request run NAME")
+    p.add_argument("name", nargs="?", help="the prompt (new), or the request name (run)")
+    p.add_argument("--later", action="store_true", help="file it; let the next sync start it")
+    p.add_argument("--run", dest="action", action="store_const", const="run", default="new")
+    p.add_argument("--ls", dest="action", action="store_const", const="ls")
+    p.set_defaults(fn=cmd_request)
+    argv = sys.argv[1:]
+    if argv[:2] == ["request", "ls"]:
+        argv = ["request", "--ls"]
+    elif argv[:2] == ["request", "run"]:
+        argv = ["request", "--run", *argv[2:]]
+    args = ap.parse_args(argv)
     args.fn(args)
 
 

@@ -1,0 +1,234 @@
+#!/usr/bin/env python3
+"""projects-mcp — the laptop's admin lane as an MCP server, for Claude
+Desktop on the MacBook over ssh (plans/01-cowork-bridge.md, ROADMAP B17).
+
+  projects-mcp serve            # stdio JSON-RPC; what Claude Desktop launches
+  projects-mcp call TOOL [JSON] # run one tool from the terminal (testing)
+  projects-mcp tools            # the allowlist
+  projects-mcp doctor
+
+Claude Desktop config on the Mac (~/Library/Application Support/Claude/claude_desktop_config.json):
+
+  {"mcpServers": {"laptop": {"command": "ssh", "args": ["laptop", "projects-mcp", "serve"]}}}
+
+The tools are a fixed allowlist, every one a command Taylor already runs by
+hand: read the roadmap, list/tick/add todo items, the relay's queue, costs
+and billing, the context gauge, and `session_run`, which files a request in
+the shared repo's request box (`todo request`) and starts a headless
+`claude -p` in ~/projects — capped, one at a time, reply in
+requests/<name>.reply.md (`session_status`). No shell, no arbitrary
+commands, no keys, nothing under clients/ or rooms/.
+"""
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+PROJECTS = Path(os.environ.get("PROJECTS_DIR", "~/projects")).expanduser()
+RELAY = PROJECTS / "sms-relay"
+PROTOCOL = "2025-06-18"
+MAX_OUT = 60_000
+
+
+def run(cmd, cwd=None, timeout=120):
+    try:
+        r = subprocess.run(cmd, cwd=cwd or PROJECTS, capture_output=True, text=True, timeout=timeout,
+                           env=dict(os.environ, PATH=os.environ.get("PATH", "") + ":" + str(Path.home() / ".local/bin")))
+    except subprocess.TimeoutExpired:
+        return f"(timed out after {timeout}s)"
+    except FileNotFoundError:
+        return f"({cmd[0]} is not installed on the laptop)"
+    out = (r.stdout or "") + (("\n" + r.stderr) if r.stderr.strip() else "")
+    return out.strip()[-MAX_OUT:] or f"(no output, exit {r.returncode})"
+
+
+# ---- the tools ---------------------------------------------------------------
+
+def t_roadmap_read(a):
+    return (PROJECTS / "ROADMAP.md").read_text()
+
+
+def t_todo_ls(a):
+    return run(["todo", "ls"] + (["--all"] if a.get("all") else []))
+
+
+def t_todo_done(a):
+    n = a.get("n")
+    if not isinstance(n, int) or n < 1:
+        raise ValueError("n must be the item's number from todo_ls")
+    return run(["todo", "done", str(n)])
+
+
+def t_todo_add(a):
+    text = str(a.get("text", "")).strip()
+    if not text:
+        raise ValueError("text is required")
+    cmd = ["todo", "add", text]
+    if a.get("section"):
+        cmd += ["--section", str(int(a["section"]))]
+    cmd += ["--by", str(a.get("by") or "Cowork")]
+    return run(cmd)
+
+
+def t_relay_queue(a):
+    return run(["./relay.py", "queue"], cwd=RELAY)
+
+
+def t_relay_costs(a):
+    return run(["./relay.py", "costs"], cwd=RELAY)
+
+
+def t_relay_billing(a):
+    return run(["./relay.py", "billing"], cwd=RELAY)
+
+
+def t_ctx(a):
+    return run(["ctx"])
+
+
+def t_session_run(a):
+    prompt = str(a.get("prompt", "")).strip()
+    if not prompt:
+        raise ValueError("prompt is required (e.g. \"/continue\", or a question about the repos)")
+    name = run(["todo", "request", prompt])
+    return (f"started request {name} in ~/projects; a headless claude session is running it "
+            f"(one at a time, 45-minute cap). Check with session_status(\"{name}\"); the reply also "
+            f"lands in requests/{name}.reply.md in the shared repo within two minutes of finishing.")
+
+
+def t_session_status(a):
+    name = str(a.get("name", "")).strip()
+    if not name:
+        return run(["todo", "request", "ls"])
+    reqs = PROJECTS / "requests"
+    reply, running, prompt = reqs / f"{name}.reply.md", reqs / f"{name}.running", reqs / f"{name}.md"
+    if reply.exists():
+        return reply.read_text()[-MAX_OUT:]
+    if running.exists():
+        return f"{name}: still running ({running.read_text().strip()})"
+    if prompt.exists():
+        return f"{name}: waiting for the next sync to start it"
+    return f"no request named {name}"
+
+
+TOOLS = {
+    "roadmap_read": ("Read ~/projects/ROADMAP.md, the order of work.", {}, t_roadmap_read),
+    "todo_ls": ("The open TAYLOR-TODO items, numbered (all=true includes ticked ones).",
+                {"all": {"type": "boolean"}}, t_todo_ls),
+    "todo_done": ("Tick TAYLOR-TODO item number n (from todo_ls).",
+                  {"n": {"type": "integer"}}, t_todo_done),
+    "todo_add": ("Add a TAYLOR-TODO entry: text, optional section number (1 Now, 2 Before the first restaurant, 3 Decisions, 4 Later), optional by.",
+                 {"text": {"type": "string"}, "section": {"type": "integer"}, "by": {"type": "string"}}, t_todo_add),
+    "relay_queue": ("What Patch is doing right now (the relay's worker pool).", {}, t_relay_queue),
+    "relay_costs": ("The relay ledger: what every run and image cost.", {}, t_relay_costs),
+    "relay_billing": ("Who is on what plan and where their allowance stands.", {}, t_relay_billing),
+    "ctx": ("Every relay conversation's context gauge.", {}, t_ctx),
+    "session_run": ("Start a headless Claude Code session in ~/projects with this prompt — \"/continue\" picks up the next ROADMAP build item; anything else is a question about the repos. Files a request in the shared repo; one at a time, 45-minute cap.",
+                    {"prompt": {"type": "string"}}, t_session_run),
+    "session_status": ("The reply to a request started with session_run (by name), or the list of requests when no name is given.",
+                       {"name": {"type": "string"}}, t_session_status),
+}
+REQUIRED = {"todo_done": ["n"], "todo_add": ["text"], "session_run": ["prompt"]}
+
+
+def tool_list():
+    return [{"name": n, "description": d,
+             "inputSchema": {"type": "object", "properties": props, "required": REQUIRED.get(n, [])}}
+            for n, (d, props, _) in TOOLS.items()]
+
+
+def call(name, args):
+    if name not in TOOLS:
+        raise ValueError(f"unknown tool {name}; the allowlist is {', '.join(TOOLS)}")
+    return TOOLS[name][2](args or {})
+
+
+# ---- stdio JSON-RPC ------------------------------------------------------------
+
+def reply(msg):
+    sys.stdout.write(json.dumps(msg) + "\n")
+    sys.stdout.flush()
+
+
+def serve():
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            req = json.loads(line)
+        except ValueError:
+            reply({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "parse error"}})
+            continue
+        method, rid, params = req.get("method"), req.get("id"), req.get("params") or {}
+        if method == "initialize":
+            reply({"jsonrpc": "2.0", "id": rid, "result": {
+                "protocolVersion": params.get("protocolVersion") or PROTOCOL,
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "projects-mcp", "version": "1.0"},
+                "instructions": "Taylor's laptop, admin lane. Tools are an allowlist; session_run starts a headless build or question session in ~/projects."}})
+        elif method == "notifications/initialized" or (method or "").startswith("notifications/"):
+            continue
+        elif method == "ping":
+            reply({"jsonrpc": "2.0", "id": rid, "result": {}})
+        elif method == "tools/list":
+            reply({"jsonrpc": "2.0", "id": rid, "result": {"tools": tool_list()}})
+        elif method == "tools/call":
+            try:
+                text = call(params.get("name"), params.get("arguments") or {})
+                reply({"jsonrpc": "2.0", "id": rid, "result": {"content": [{"type": "text", "text": text}], "isError": False}})
+            except Exception as exc:  # noqa: BLE001 — the error is the tool's result, not a protocol failure
+                reply({"jsonrpc": "2.0", "id": rid, "result": {"content": [{"type": "text", "text": f"error: {exc}"}], "isError": True}})
+        elif rid is not None:
+            reply({"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": f"method not found: {method}"}})
+
+
+def doctor():
+    ok = True
+    print(f"projects: {PROJECTS}")
+    for f in ("ROADMAP.md", "TAYLOR-TODO.md", "COWORK.md"):
+        if not (PROJECTS / f).exists():
+            print(f"  FAIL {f} missing"); ok = False
+    for tool in ("todo", "ctx", "claude"):
+        if not any((Path(p) / tool).exists() for p in os.environ.get("PATH", "").split(":") + [str(Path.home() / ".local/bin")]):
+            print(f"  FAIL {tool} not on PATH"); ok = False
+    if not (RELAY / "relay.py").exists():
+        print("  FAIL sms-relay/relay.py missing"); ok = False
+    t = subprocess.run(["systemctl", "--user", "is-active", "todo-sync.timer"], capture_output=True, text=True).stdout.strip()
+    print(f"  todo-sync.timer: {t}" + ("" if t == "active" else "  FAIL (requests are started by the sync)")); ok = ok and t == "active"
+    sshd = subprocess.run(["systemctl", "is-active", "ssh"], capture_output=True, text=True).stdout.strip()
+    print(f"  sshd: {sshd}" + ("" if sshd == "active" else "  (the Desktop route needs it: TAYLOR-TODO §4 \"Cowork over ssh\")"))
+    ts = subprocess.run(["tailscale", "ip", "-4"], capture_output=True, text=True)
+    print(f"  tailscale: {ts.stdout.strip() or 'not running'}")
+    print(f"  tools: {', '.join(TOOLS)}")
+    smoke = subprocess.run([sys.executable, __file__, "serve"], input='{"jsonrpc":"2.0","id":1,"method":"tools/list"}\n',
+                           capture_output=True, text=True, timeout=30)
+    n = len(json.loads(smoke.stdout.strip().splitlines()[0])["result"]["tools"]) if smoke.stdout.strip() else 0
+    print(f"  stdio round-trip: {'ok' if n == len(TOOLS) else 'FAIL'} ({n} tools listed)"); ok = ok and n == len(TOOLS)
+    sys.exit(0 if ok else 1)
+
+
+def main():
+    argv = sys.argv[1:]
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__)
+        return
+    if argv[0] == "serve":
+        serve()
+    elif argv[0] == "tools":
+        for t in tool_list():
+            print(f"  {t['name']:<16} {t['description']}")
+    elif argv[0] == "call":
+        if len(argv) < 2:
+            sys.exit("projects-mcp call TOOL [JSON]")
+        print(call(argv[1], json.loads(argv[2]) if len(argv) > 2 else {}))
+    elif argv[0] == "doctor":
+        doctor()
+    else:
+        sys.exit(f"projects-mcp: unknown command {argv[0]} (serve | call | tools | doctor)")
+
+
+if __name__ == "__main__":
+    main()

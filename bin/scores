@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+"""
+scores — live scores, straight from ESPN's public scoreboard. No key.
+
+  scores                          today's games in every league that's playing
+  scores <team|league> [...]      one team ("steelers", "PIT", "utah jazz") or one league
+                                  (nfl, ncaaf, nba, ncaab, mlb, nhl, mls, wnba)
+  scores <team> --plays           the scoring plays of that team's game (who scored, when)
+  scores <team> --last            that team's most recent finished game (yesterday, last week)
+  scores --json ...               the same, as JSON
+  scores <league> --event ID      one game by ESPN event id (what --json prints as "id")
+  scores doctor                   is ESPN answering
+
+A line looks like:
+  NFL  PIT @ NE   3-20   in progress, 1:57 - 4th
+  NFL  DET @ BUF  31-41  FINAL
+  NFL  IND @ KC   8:20 PM EDT
+Away team first, away score first. "in progress" means it's happening right
+now — say the score as of now and expect it to move.
+
+This is a fact source: a score printed here beats a web article and beats
+your own notes. Someone in the room watching the game still beats this if
+ESPN lags — never argue a score with a person who's watching it.
+"""
+
+import json
+import re
+import socket
+import sys
+import urllib.error
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
+
+# AAAA lookups time out at the router here (~5s a host); ESPN is fine over v4.
+_getaddrinfo = socket.getaddrinfo
+socket.getaddrinfo = lambda host, port, family=0, *a, **k: _getaddrinfo(host, port, socket.AF_INET, *a, **k)
+
+BASE = "https://site.api.espn.com/apis/site/v2/sports"
+LEAGUES = {                       # key: (sport path, league path)
+    "nfl": ("football", "nfl"),
+    "ncaaf": ("football", "college-football"),
+    "nba": ("basketball", "nba"),
+    "wnba": ("basketball", "wnba"),
+    "ncaab": ("basketball", "mens-college-basketball"),
+    "mlb": ("baseball", "mlb"),
+    "nhl": ("hockey", "nhl"),
+    "mls": ("soccer", "usa.1"),
+}
+ALIASES = {"college football": "ncaaf", "cfb": "ncaaf", "college basketball": "ncaab", "cbb": "ncaab",
+           "hockey": "nhl", "baseball": "mlb", "basketball": "nba", "football": "nfl", "soccer": "mls"}
+TIMEOUT = 15
+
+
+def get(url):
+    # ESPN's edge 403s unfamiliar user agents; curl's it lets through
+    req = urllib.request.Request(url, headers={"User-Agent": "curl/8.0"})
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+        return json.load(r)
+
+
+def scoreboard(league, date=None):
+    sport, lg = LEAGUES[league]
+    url = f"{BASE}/{sport}/{lg}/scoreboard"
+    if date:
+        url += f"?dates={date}"
+    if league == "ncaaf":
+        url += ("&" if "?" in url else "?") + "groups=80&limit=200"     # FBS, all of it
+    return get(url).get("events", [])
+
+
+def summary(league, event_id):
+    sport, lg = LEAGUES[league]
+    return get(f"{BASE}/{sport}/{lg}/summary?event={event_id}")
+
+
+def flatten(league, ev):
+    c = ev["competitions"][0]
+    st = c["status"]["type"]
+    away = next(x for x in c["competitors"] if x["homeAway"] == "away")
+    home = next(x for x in c["competitors"] if x["homeAway"] == "home")
+    return {
+        "league": league.upper(),
+        "id": ev["id"],
+        "name": ev.get("shortName", ""),
+        "away": away["team"]["abbreviation"], "away_name": away["team"]["displayName"],
+        "away_score": int(away.get("score") or 0),
+        "home": home["team"]["abbreviation"], "home_name": home["team"]["displayName"],
+        "home_score": int(home.get("score") or 0),
+        "state": st["state"],            # pre | in | post
+        "detail": st.get("shortDetail", ""),
+        "start": ev.get("date", ""),
+        "records": {away["team"]["abbreviation"]: (away.get("records") or [{}])[0].get("summary", ""),
+                    home["team"]["abbreviation"]: (home.get("records") or [{}])[0].get("summary", "")},
+        "teams": [away["team"]["abbreviation"].lower(), away["team"]["displayName"].lower(),
+                  away["team"].get("name", "").lower(), away["team"].get("location", "").lower(),
+                  home["team"]["abbreviation"].lower(), home["team"]["displayName"].lower(),
+                  home["team"].get("name", "").lower(), home["team"].get("location", "").lower()],
+    }
+
+
+def line(g):
+    score = f"{g['away_score']}-{g['home_score']}"
+    if g["state"] == "in":
+        status = f"in progress, {g['detail']}"
+    elif g["state"] == "post":
+        status = "FINAL" + ("" if g["detail"].strip().lower() == "final" else f" ({g['detail']})")
+    else:
+        status, score = g["detail"], ""
+    return f"{g['league']:<5} {g['away']} @ {g['home']:<4} {score:<7} {status}".rstrip()
+
+
+def matches(g, words):
+    hay = " ".join(g["teams"])
+    return all(w in hay for w in words)
+
+
+def find(words, leagues, date=None):
+    def one(lg):
+        try:
+            return [flatten(lg, e) for e in scoreboard(lg, date)]
+        except (urllib.error.URLError, KeyError, ValueError, TimeoutError) as exc:
+            print(f"! {lg}: {exc}", file=sys.stderr)
+            return []
+    out = []
+    with ThreadPoolExecutor(max_workers=len(leagues)) as pool:      # the leagues, all at once
+        for got in pool.map(one, leagues):
+            out += got
+    return [g for g in out if not words or matches(g, words)]
+
+
+def plays(g):
+    s = summary(g["league"].lower(), g["id"])
+    rows = []
+    for p in s.get("scoringPlays", []):
+        rows.append(f"  {p.get('period', {}).get('number', '?')}Q {p.get('clock', {}).get('displayValue', ''):>5}  "
+                    f"{p['team']['abbreviation']:<4} {p.get('awayScore', '')}-{p.get('homeScore', '')}  {p.get('text', '')}")
+    if not rows and s.get("plays"):
+        for p in s["plays"][-8:]:
+            rows.append(f"  {p.get('text', '')}")
+    return rows
+
+
+def main(argv):
+    args = list(argv)
+    as_json = "--json" in args; want_plays = "--plays" in args; want_last = "--last" in args
+    event = args[args.index("--event") + 1] if "--event" in args and args.index("--event") + 1 < len(args) else ""
+    args = [a for a in args if not a.startswith("--") and a != event]
+    if args[:1] == ["doctor"]:
+        try:
+            n = len(scoreboard("nfl"))
+            print(f"ok: ESPN scoreboard answers ({n} NFL games on the board)")
+            return 0
+        except Exception as exc:  # noqa: BLE001
+            print(f"ESPN not answering: {exc}"); return 1
+    q = " ".join(args).lower().strip()
+    q = ALIASES.get(q, q)
+    leagues = list(LEAGUES)
+    words = []
+    if q in LEAGUES:
+        leagues = [q]
+    elif q:
+        words = [w for w in re.split(r"[^a-z0-9]+", q) if w and w not in ("game", "score", "the", "vs", "today", "tonight")]
+        if words and words[0] in LEAGUES:
+            leagues, words = [words[0]], words[1:]
+    games = []
+    if want_last:
+        for back in range(0, 10):
+            d = (datetime.now() - timedelta(days=back)).strftime("%Y%m%d")
+            games = [g for g in find(words, leagues, d) if g["state"] == "post"]
+            if games:
+                break
+    else:
+        games = find([] if event else words, leagues)
+        if event:
+            games = [g for g in games if g["id"] == event]
+    if as_json:
+        print(json.dumps(games, indent=1)); return 0
+    if not games:
+        print(f"no game found for {q!r} " + ("in the last 10 days" if want_last else "today") +
+              " — try the league name, or a team name the way ESPN spells it")
+        return 2
+    live = any(g["state"] == "in" for g in games)
+    for g in games:
+        rec = "  ".join(f"{k} {v}" for k, v in g["records"].items() if v)
+        print(line(g) + (f"   [{rec}]" if rec and words else ""))
+        if want_plays:
+            for r in plays(g):
+                print(r)
+    if live:
+        print(f"(as of {datetime.now().strftime('%-I:%M %p')} — in-progress scores move; say 'right now')")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

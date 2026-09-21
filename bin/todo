@@ -75,6 +75,55 @@ def write_exclude():
     lines = ["*"] + [f"!/{t}" for t in TRACKED] + ["!/plans/**", "!/mac/**", "!/requests/**"]
     (GIT_DIR / "info" / "exclude").write_text("\n".join(lines) + "\n")
 
+
+ITEM_RE = re.compile(r"^- \[( |~|x)\] \*\*(.{12,80}?)(?:\*\*|$)", re.M)
+
+
+def item_keys(text):
+    """{first 12–80 chars of an item's bold title: its tick state}."""
+    return {m.group(2): m.group(1) for m in ITEM_RE.finditer(text)}
+
+
+def item_block(text, key):
+    i = text.index("**" + key) - len("- [ ] ")
+    m = re.search(r"\n(?=- \[|## )", text[i + 1:])
+    return text[i:i + 1 + m.start() + 1] if m else text[i:]
+
+
+def restore_dropped_items(before, after):
+    """A remote edit (Cowork writing a stale copy) can silently delete open
+    items. Ticking is fine; vanishing is not. Put the lost blocks back at the
+    top of §1 and say so. Returns the new text and the keys restored."""
+    b, a = item_keys(before), item_keys(after)
+    lost = [k for k, st in b.items() if st in " ~" and k not in a]
+    if not lost:
+        return after, []
+    blocks = []
+    for k in lost:
+        blk = item_block(before, k).rstrip("\n")
+        blk += f"\n  _(restored by `todo sync` {date.today()}: a remote edit dropped it)_\n"
+        blocks.append(blk)
+    m = re.search(r"^## 1\..*$", after, re.M)
+    if not m:
+        return after + "\n" + "\n".join(blocks), lost
+    first = re.search(r"^- \[", after[m.end():], re.M)
+    at = m.end() + (first.start() if first else 0)
+    return after[:at] + "\n".join(blocks) + "\n" + after[at:], lost
+
+
+def guard_dropped(before, quiet):
+    """After taking remote changes: put back any open item they deleted."""
+    after = TODO_FILE.read_text()
+    fixed, lost = restore_dropped_items(before, after)
+    if not lost:
+        return
+    TODO_FILE.write_text(fixed)
+    git("add", "--", str(TODO_FILE))
+    git("commit", "-q", "-m", f"todo: restored {len(lost)} open item(s) a remote edit dropped")
+    git("push", "-q", "origin", f"HEAD:{BRANCH}", check=False)
+    print(f"restored {len(lost)} open item(s) a remote edit had dropped: "
+          + "; ".join(k[:40] for k in lost), file=sys.stderr)
+
 ITEM = re.compile(r"^- \[( |x|X)\] (.*)$")
 SECTION = re.compile(r"^## (.*)$")
 BOLD = re.compile(r"\*\*(.+?)\*\*")
@@ -252,6 +301,7 @@ def cmd_sync(args):
         die(f"fetch failed (offline?): {r.stderr.strip()}", 1)
     local = git("rev-parse", "HEAD").stdout.strip()
     remote = git("rev-parse", f"origin/{BRANCH}").stdout.strip()
+    before = TODO_FILE.read_text()
     if local == remote:
         if not q:
             print("in sync")
@@ -267,6 +317,7 @@ def cmd_sync(args):
         git("merge", "-q", "--ff-only", f"origin/{BRANCH}")
         if not q:
             print("pulled web changes")
+        guard_dropped(before, q)
         start_requests(q)
         return
     # both moved: replay local on top of the web's version; on a clash the local line wins
@@ -282,6 +333,7 @@ def cmd_sync(args):
     git("push", "-q", "origin", f"HEAD:{BRANCH}")
     if not q:
         print("merged and pushed")
+    guard_dropped(before, q)
     start_requests(q)
 
 

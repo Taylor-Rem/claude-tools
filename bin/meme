@@ -14,10 +14,12 @@ meme — memes for the group chat: what's fresh, what's niche, what fits, home-m
                                   caption a template ("drake" matches "Drake Hotline Bling").
                                   With an imgflip login the boxes land where they belong; without
                                   one it's classic top/bottom text, Impact-style
-  meme gif "<query>"              a GIF from Tenor (needs TENOR_API_KEY)
+  meme gif "<query>"              a reaction GIF: Klipy (KLIPY_API_KEY, free) or Giphy (GIPHY_API_KEY)
   meme x "<topic>" [-n 20]        memes about a topic from X, right now (run inside a chat room:
                                   the relay searches the last 7 days of image posts, describes the
                                   top few by likes, puts them on the room's shelf, prints them)
+  meme pic "<meme name>"          a KNOWN meme by name ("nothing ever happens", "this is fine"):
+                                  image search, the canonical pictures shelved with their says lines
   meme takes "<topic>"            what people on X are saying about it: the top posts by likes,
                                   text only (inside a chat room, through the relay; ~10¢)
   meme doctor                     which sources work right now
@@ -32,7 +34,8 @@ Keys (all optional, from the environment or ~/.config/claude-tools/env, never pr
                                             real search and hot/top/new sorting; without it the
                                             feeds come from meme-api.com (works, no search)
   IMGFLIP_USERNAME + IMGFLIP_PASSWORD       a free imgflip.com account — multi-box captioning
-  TENOR_API_KEY                             Google Cloud, free — `meme gif`
+  KLIPY_API_KEY / GIPHY_API_KEY             klipy.com/developers or developers.giphy.com, free — `meme gif`
+                                            (Tenor's API died 2026-06-30; Klipy is its successor)
 """
 
 import argparse
@@ -146,8 +149,8 @@ def mark_seen(d, ids):
 
 # ---- download ----------------------------------------------------------------
 
-def download(url, dest_stem, d):
-    ext = Path(url.split("?")[0]).suffix.lower() or ".jpg"
+def download(url, dest_stem, d, ext=None):
+    ext = ext or Path(url.split("?")[0]).suffix.lower() or ".jpg"
     if ext not in IMAGE_EXT:
         return None
     r = requests.get(url, headers={"User-Agent": UA}, timeout=60, stream=True)
@@ -353,31 +356,80 @@ def cmd_make(args):
 
 # ---- tenor -------------------------------------------------------------------
 
+def _pick_file(d):
+    """From a dict of format/size variants, the largest gif under the cap:
+    Klipy nests files[size][format]{url,width,height,size}; Giphy uses
+    images[name]{url,size}. Walk both shapes."""
+    best = None
+    def consider(url, size, w=0):
+        nonlocal best
+        if not url or not url.split("?")[0].lower().endswith(".gif"):
+            return
+        try:
+            size = int(size or 0)
+        except (TypeError, ValueError):
+            size = 0
+        if size and size >= MAX_BYTES:
+            return
+        key = (size or 0, w or 0)
+        if best is None or key > best[0]:
+            best = (key, url)
+    for v in d.values():
+        if isinstance(v, dict):
+            if "url" in v:
+                consider(v.get("url"), v.get("size"), v.get("width"))
+            else:
+                for vv in v.values():
+                    if isinstance(vv, dict) and "url" in vv:
+                        consider(vv.get("url"), vv.get("size"), vv.get("width"))
+    return best[1] if best else ""
+
+
 def cmd_gif(args):
-    k = key("TENOR_API_KEY")
-    if not k:
-        die("TENOR_API_KEY is not set. Ask Taylor to run: ~/.config/claude-tools/setenv.sh TENOR_API_KEY")
+    """Klipy first (Tenor's successor, near-identical API), Giphy second."""
     d = out_dir(args)
-    r = requests.get("https://tenor.googleapis.com/v2/search",
-                     params={"q": args.query, "key": k, "client_key": "patch", "limit": 10,
-                             "media_filter": "gif,mediumgif,tinygif", "contentfilter": "low"},
-                     timeout=30)
-    if r.status_code != 200:
-        die(f"tenor: {r.status_code} {r.text[:200]}")
     seen = load_seen(d)
-    for g in r.json().get("results", []):
-        if g["id"] in seen:
+    hits = []          # (id, url, label)
+    if key("KLIPY_API_KEY"):
+        r = requests.get(f"https://api.klipy.com/api/v1/{key('KLIPY_API_KEY')}/gifs/search",
+                         params={"q": args.query, "per_page": 12, "rating": "r"}, timeout=30)
+        if r.status_code != 200:
+            die(f"klipy: {r.status_code} {r.text[:200]}")
+        items = ((r.json().get("data") or {}).get("data") or [])
+        for g in items:
+            # file[size][format]{url,width,height,size}; the urls carry no extension
+            f = g.get("file") or g.get("files") or {}
+            pick = ""
+            for size in ("hd", "md", "sm"):
+                gif = (f.get(size) or {}).get("gif") or {}
+                if gif.get("url") and int(gif.get("size") or 0) < MAX_BYTES:
+                    pick = gif["url"]
+                    break
+            hits.append((f"klipy:{g.get('id') or g.get('slug')}", pick,
+                         g.get("title") or g.get("slug") or args.query))
+    elif key("GIPHY_API_KEY"):
+        r = requests.get("https://api.giphy.com/v1/gifs/search",
+                         params={"api_key": key("GIPHY_API_KEY"), "q": args.query, "limit": 12, "rating": "r"},
+                         timeout=30)
+        if r.status_code != 200:
+            die(f"giphy: {r.status_code} {r.text[:200]}")
+        for g in r.json().get("data") or []:
+            imgs = g.get("images") or {}
+            pick = _pick_file({k: imgs[k] for k in ("downsized_medium", "downsized", "fixed_height", "original")
+                               if k in imgs})
+            hits.append((f"giphy:{g.get('id')}", pick, g.get("title") or args.query))
+    else:
+        die("no GIF key: KLIPY_API_KEY (klipy.com/developers, free) or GIPHY_API_KEY. "
+            "Ask Taylor to run: ~/.config/claude-tools/setenv.sh KLIPY_API_KEY")
+    for gid, url, label in hits:
+        if not url or gid in seen:
             continue
-        fmts = g.get("media_formats", {})
-        for name in ("mediumgif", "gif", "tinygif"):
-            f = fmts.get(name)
-            if f and f.get("size", 0) < MAX_BYTES:
-                dest = download(f["url"], f"gif-{slugify(args.query)}-{g['id']}", d)
-                if dest:
-                    mark_seen(d, [g["id"]])
-                    print(f"{rel(dest)}\ttenor · {g.get('content_description') or g.get('title') or args.query} · {g.get('itemurl', '')}")
-                    return
-    die("tenor had nothing new for that")
+        dest = download(url, f"gif-{slugify(args.query)}-{gid.split(':')[-1]}", d, ext=".gif")
+        if dest:
+            mark_seen(d, [gid])
+            print(f"{rel(dest)}\t{gid.split(':')[0]} · {label}")
+            return
+    die("nothing new for that")
 
 
 # ---- x, on demand (through the relay, which holds the keys and the describer) ----
@@ -391,6 +443,12 @@ def _via_relay(sub, *rest):
     if not py.exists() or not (Path.cwd() / "CLAUDE.md").exists():
         die(f"`meme {sub}` runs inside a chat room directory, through the relay")
     return [str(py), str(RELAY / "relay.py"), "memes", sub, room, *rest]
+
+
+def cmd_pic(args):
+    res = subprocess.run(_via_relay("pic", args.name), capture_output=True, text=True, timeout=300)
+    out = "\n".join(ln for ln in res.stdout.splitlines() if not ln.startswith("["))
+    print(out.strip() or res.stderr.strip()[-300:] or "nothing came back")
 
 
 def cmd_takes(args):
@@ -430,7 +488,7 @@ def cmd_doctor(_args):
         print(f"imgflip templates: {len(templates())} available; login {'set' if key('IMGFLIP_USERNAME') else 'not set (local top/bottom only)'}")
     except SystemExit:
         pass
-    print(f"tenor: {'key set' if key('TENOR_API_KEY') else 'no key (meme gif is off)'}")
+    print(f"gifs: {'klipy key set' if key('KLIPY_API_KEY') else 'giphy key set' if key('GIPHY_API_KEY') else 'no key (meme gif is off)'}")
 
 
 def main():
@@ -477,6 +535,10 @@ def main():
     p.add_argument("topic")
     p.add_argument("-n", type=int, default=20, help="posts to read from X (10-100, $0.005 each)")
     p.set_defaults(fn=cmd_x)
+
+    p = sub.add_parser("pic", help="a known meme by name (inside a room)")
+    p.add_argument("name")
+    p.set_defaults(fn=cmd_pic)
 
     p = sub.add_parser("takes", help="what X is saying about a topic (inside a room)")
     p.add_argument("topic")

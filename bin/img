@@ -5,8 +5,11 @@ img — Claude's image toolbelt. Stock photos (Pexels) and generation (Gemini).
     img stock "chicken tikka masala" [-n 5] [--orientation landscape] [--out DIR] [--page 2]
     img gen "prompt" [--style plateful-menu] [--quality menu|hero|pro|draft] [--aspect 4:3] [--ref photo.jpg] [--out FILE]
     img edit photo.jpg "put a party hat on him" [--quality ...] [--out FILE]   # instructed edit of a real photo
-    img video "prompt" [--quality draft|good|pro] [--seconds 4|6|8] [--aspect 16:9|9:16] [--ref first-frame.jpg] [--dry-run]
-    img video "prompt" --length 22 [--then "..." --then "..."]   # 8s + extensions, stitched by Veo
+    img video "prompt" [--engine grok|veo] [--quality draft|good|pro] [--seconds N] [--aspect 16:9|9:16] [--ref first-frame.jpg] [--dry-run]
+    img video "prompt" --length 22 [--then "..." --then "..."]   # veo: 8s + extensions, stitched by Veo
+        engine: grok (xAI Grok Imagine, XAI_API_KEY) is the default when its key is set — it does
+        named real people, 1-15s in one go, $0.08/s; veo (Gemini) is the fallback and the only one
+        that extends past 15s. IMG_VIDEO_ENGINE or --engine pins it.
     img describe clip.mov [--ask "..."]              # watch a video, say what's in it (no generation)
     img credit 5 --proof receipt.jpg                 # $5 on account: the daily cap lifts until it's spent
     img balance                                      # dollars on account, free videos left
@@ -86,6 +89,34 @@ VIDEO_QUALITY = {
     "pro":   {"model": "veo-3.1-generate-preview",      "resolution": "1080p", "usd_per_s": 0.40},
 }
 VIDEO_MODEL = os.environ.get("IMG_VIDEO_MODEL")       # explicit override beats --quality
+
+# Grok Imagine (xAI): the other video engine. Text-to-video, image-to-video
+# (`--ref` = pinned first frame), 1-15s in one request, 480p/720p/1080p, audio
+# on by default, $0.08/s flat (2026-09-20 price list). Its moderation is a
+# world apart from Veo's: it renders named public figures (Veo's RAI filter
+# eats the output after you've paid for it), so it's the default whenever its
+# key is there. `video.respect_moderation: false` in a result means xAI
+# altered the clip to pass its own rules -- we say so.
+GROK_URL = "https://api.x.ai/v1/videos/generations"
+GROK_STATUS_URL = "https://api.x.ai/v1/videos/{request_id}"
+GROK_VIDEO_MODEL = "grok-imagine-video-1.5"
+GROK_USD_PER_S = 0.08
+GROK_MAX_SECONDS = 15
+GROK_RESOLUTION = {"draft": "720p", "good": "720p", "pro": "1080p"}   # same price at every size
+GROK_POLL_SECONDS = 5
+GROK_TIMEOUT_SECONDS = 300
+ENGINES = ("grok", "veo")
+
+
+def video_engine(asked=None):
+    """Which engine a video runs on: --engine, else IMG_VIDEO_ENGINE, else grok
+    when XAI_API_KEY is set (anywhere the toolbelt looks), else veo."""
+    e = (asked or os.environ.get("IMG_VIDEO_ENGINE") or "").lower()
+    if e in ENGINES:
+        return e
+    if e:
+        die(f"unknown video engine {e!r}; one of {', '.join(ENGINES)}")
+    return "grok" if key_source("XAI_API_KEY")[0] else "veo"
 
 # House rules, set by whoever runs the tool (the relay sets them per room, per
 # person) so a prompt can't talk its way past them -- they are checked here,
@@ -699,7 +730,53 @@ def veo_extend(model, key, video_uri, prompt, aspect):
     return uri
 
 
+def grok_video(key, body, timeout=GROK_TIMEOUT_SECONDS):
+    """POST a Grok Imagine job, poll it, return the finished payload (status done)."""
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    r = requests.post(GROK_URL, headers=headers, json=body, timeout=120)
+    if r.status_code != 200:
+        die(f"grok: HTTP {r.status_code} {r.text[:400]}")
+    rid = r.json().get("request_id")
+    if not rid:
+        die(f"grok: no request_id in {r.text[:300]}")
+    waited = 0
+    while True:
+        time.sleep(GROK_POLL_SECONDS)
+        waited += GROK_POLL_SECONDS
+        pr = requests.get(GROK_STATUS_URL.format(request_id=rid), headers={"Authorization": headers["Authorization"]},
+                          timeout=60)
+        if pr.status_code != 200:
+            die(f"grok: poll HTTP {pr.status_code} {pr.text[:300]}")
+        payload = pr.json()
+        status = payload.get("status")
+        if status == "done":
+            return payload
+        if status in ("failed", "expired"):
+            die(f"grok: generation {status}: {json.dumps(payload)[:400]}")
+        if waited >= timeout:
+            die(f"grok: still {status or 'pending'} after {waited}s (request {rid})")
+        if waited % 10 == 0:
+            print(f"  ...{waited}s")
+
+
+def grok_download(url):
+    dl = requests.get(url, timeout=300)
+    if dl.status_code != 200:
+        die(f"grok: download HTTP {dl.status_code}")
+    return dl.content
+
+
+def data_url(path):
+    rp = Path(path)
+    mime = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp"}.get(
+        rp.suffix.lower().lstrip("."), "image/jpeg")
+    return f"data:{mime};base64,{base64.b64encode(rp.read_bytes()).decode()}"
+
+
 def cmd_video(args):
+    engine = video_engine(args.engine)
+    if engine == "grok":
+        return cmd_video_grok(args)
     source_note = None
     if args.source:
         ffmpeg_or_die()
@@ -726,6 +803,8 @@ def cmd_video(args):
     q = VIDEO_QUALITY[args.quality]
     model = VIDEO_MODEL or q["model"]
     seconds = int(args.seconds)
+    if seconds not in (4, 6, 8):
+        die(f"veo clips are 4, 6 or 8 seconds (asked for {seconds}); grok takes 1-15 (--engine grok)")
     resolution = args.resolution or q["resolution"]
     total_seconds = seconds + extensions * EXTEND_SECONDS
     # The base can be lite; the tails can't, so they're priced at their own rate.
@@ -890,6 +969,154 @@ def cmd_video(args):
     return path
 
 
+def cmd_video_grok(args):
+    """`img video` on Grok Imagine. Same house rules, ledger and output as the
+    Veo path; no extensions (1-15s is one request), `--then` is folded into the
+    prompt as what happens next."""
+    source_note = None
+    if args.source:
+        ffmpeg_or_die()
+        src = Path(args.source)
+        if not src.exists():
+            die(f"video not found: {args.source}")
+        w, h, dur = probe(src)
+        if not args.aspect:
+            args.aspect = "9:16" if h > w else "16:9"
+        source_note = {"from": str(src.resolve()), "asked": args.prompt,
+                       "source_size": f"{w}x{h}", "source_seconds": round(dur, 1)}
+    args.aspect = args.aspect or "16:9"
+    seconds = int(args.length or args.seconds)
+    if seconds > GROK_MAX_SECONDS:
+        die(f"grok does up to {GROK_MAX_SECONDS}s in one clip (asked for {seconds}); "
+            f"for longer use --engine veo --length {seconds}")
+    if args.then:
+        args.prompt = args.prompt.rstrip(". ") + ". Then " + ". Then ".join(t.strip() for t in args.then)
+    model = VIDEO_MODEL if (VIDEO_MODEL or "").startswith("grok") else GROK_VIDEO_MODEL
+    resolution = args.resolution or GROK_RESOLUTION[args.quality]
+    if resolution == "4k":
+        die("grok tops out at 1080p; use --resolution 1080p")
+    cost = GROK_USD_PER_S * seconds
+
+    who = os.environ.get("IMG_VIDEO_WHO")
+    cap = int(os.environ.get("IMG_VIDEO_DAILY_CAP") or 0)
+    label = os.environ.get("IMG_VIDEO_WHO_LABEL") or who
+    balance, free_stamps, _ = video_account(args.ledger, who) if who else (0.0, [], 0.0)
+    paid_run = bool(who) and balance >= cost - 1e-9
+    resolution = video_house_rules(resolution, seconds, cost, paid=paid_run, balance=balance)
+    if who and cap and not paid_run:
+        used = len(free_stamps)
+        if used >= cap:
+            frees = int(free_stamps[0] + 86400 - time.time()) if free_stamps else 0
+            when = f"{frees // 3600}h {frees % 3600 // 60}m" if frees else "soon"
+            short = (f" There's ${balance:.2f} on their account, not enough for this clip."
+                     if balance > 0 else "")
+            die(f"video quota: {label} has used {used} of {cap} free videos in the last 24h — "
+                f"the next one frees up in {when}.{short} Nothing was generated. "
+                "(Paying puts dollars on account and lifts the cap; see `img credit`.)")
+
+    body = {"model": model, "prompt": args.prompt, "duration": seconds,
+            "aspect_ratio": args.aspect, "resolution": resolution}
+    if args.ref:
+        if not Path(args.ref).exists():
+            die(f"first-frame image not found: {args.ref}")
+        body["image"] = {"url": data_url(args.ref)}
+
+    if args.dry_run:
+        if args.source:
+            print(f"  would watch {Path(args.source).name} with {DESCRIBE_MODEL}, take its first frame, "
+                  f"and fold in: {args.prompt}")
+        if who:
+            print(f"  account: ${balance:.2f} on account, {len(free_stamps)} of {cap} free videos used"
+                  + ("  → this one is paid" if paid_run else ""))
+        print(f"  would generate: {model} (grok), {resolution}, {seconds}s, {args.aspect}"
+              + (f", first frame {args.ref}" if args.ref else ""))
+        print(f"  prompt: {args.prompt}")
+        print(f"  ~${cost:.2f} — nothing was generated (--dry-run)")
+        return None
+
+    key = need_key("XAI_API_KEY")
+    _, key_name = key_source("XAI_API_KEY")
+
+    if args.source:
+        # Watching the clip is Gemini's job either way (grok has no describe).
+        gkey = need_key("GEMINI_API_KEY")
+        print(f"  watching {Path(args.source).name} ({DESCRIBE_MODEL})...")
+        pick_frame = args.at is None
+        if pick_frame:
+            args.prompt, at, note = describe_video(args.source, args.prompt, gkey, want_start=True)
+            dur = source_note["source_seconds"]
+            at = min(max(0.0, at), max(0.0, dur - 0.05))
+            print(f"  starting from {at:.1f}s" + (f" — {note}" if note else ""))
+        else:
+            args.prompt = describe_video(args.source, args.prompt, gkey)
+            at = args.at
+        source_note["description"] = args.prompt
+        source_note["start_seconds"] = round(at, 2)
+        source_note["frame_chosen_by"] = DESCRIBE_MODEL if pick_frame else "--at"
+        args.ref = args.ref or str(first_frame(args.source, Path(args.source).with_suffix(".startframe.png"), at))
+        body["prompt"] = args.prompt
+        body["image"] = {"url": data_url(args.ref)}
+        print(f"  shot: {args.prompt[:160]}{'...' if len(args.prompt) > 160 else ''}")
+
+    print(f"  generating ({model}, {resolution}, {seconds}s, ~${cost:.2f})...")
+    payload = grok_video(key, body)
+    vid = payload.get("video") or {}
+    url = vid.get("url")
+    if not url:
+        die(f"grok: finished but no video url in {json.dumps(payload)[:400]}")
+    moderated = vid.get("respect_moderation") is False
+    video = grok_download(url)
+
+    if args.out:
+        path = Path(args.out).resolve()
+        path.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        path = out_dir(args.out_dir, slugify(args.prompt)) / f"{slugify(args.prompt, 32)}-{stamp}.mp4"
+    path.write_bytes(video)
+    mb = path.stat().st_size / 1_000_000
+    write_sidecar(path, {
+        "source": "generated", "kind": "video", "engine": "grok", "model": model, "quality": args.quality,
+        "resolution": resolution, "seconds": seconds, "aspect": args.aspect,
+        "generated_seconds": vid.get("duration", seconds), "extensions": 0, "extend_model": None,
+        "est_cost_usd": round(cost, 3), "billed_to": f"xai:{key_name}",
+        "prompt": args.prompt, "negative_prompt": args.negative, "remake_of": source_note,
+        "first_frame": str(Path(args.ref).resolve()) if args.ref else None,
+        "moderated": moderated,
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    })
+    if not args.no_ledger:
+        ledger_append(args.ledger, {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()),
+            "kind": "video", "engine": "grok", "model": model, "quality": args.quality,
+            "seconds": seconds, "cost_usd": round(cost, 3),
+            "billed_to": f"xai:{key_name}",
+            "who": who, "who_label": label, "paid": paid_run,
+            "project": os.environ.get("PF_RESTAURANT") or os.getcwd(),
+            "path": str(path),
+        })
+    print(f"  {path}  {mb:.1f}MB")
+    if moderated:
+        print("  note: xAI says this clip was altered to pass its moderation (respect_moderation=false) — "
+              "it may not be what was asked for")
+    if mb > DISCORD_ATTACH_LIMIT_MB:
+        small = path.with_name(path.stem + "-small.mp4")
+        if shutil.which("ffmpeg"):
+            subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-vf", "scale=-2:540",
+                            "-crf", "32", "-preset", "veryfast", "-c:a", "aac", "-b:a", "96k",
+                            "-y", str(small)], capture_output=True, text=True)
+        if small.exists():
+            print(f"  {small}  {small.stat().st_size / 1_000_000:.1f}MB "
+                  f"(the original is over Discord's {DISCORD_ATTACH_LIMIT_MB}MB limit — send this one)")
+        else:
+            print(f"  note: {mb:.1f}MB is over Discord's {DISCORD_ATTACH_LIMIT_MB}MB attachment limit — "
+                  "regenerate shorter")
+    print(f"  ({model}, {resolution}, {seconds}s, ~${cost:.2f}, billed to {key_name})")
+    if who and paid_run:
+        print(f"  ${balance - cost:.2f} left on {label}'s account")
+    return path
+
+
 def cmd_credit(args):
     """They paid, so they get more. One ledger line, same file the cap reads,
     so there is no second source of truth about who is owed what.
@@ -974,7 +1201,7 @@ def cmd_doctor(_args):
     """Report whether each key is present and accepted, without printing values."""
     keys = load_keys()
     print(f"env file: {ENV_FILE}  ({'exists' if ENV_FILE.exists() else 'MISSING'})")
-    for name, ping in (("PEXELS_API_KEY", _ping_pexels), ("GEMINI_API_KEY", _ping_gemini)):
+    for name, ping in (("PEXELS_API_KEY", _ping_pexels), ("GEMINI_API_KEY", _ping_gemini), ("XAI_API_KEY", _ping_xai)):
         src, key_name = key_source(name)
         v = os.environ.get(name) if src == "env" else keys.get(name)
         if not v:
@@ -996,6 +1223,11 @@ def _ping_pexels(key):
 def _ping_gemini(key):
     r = requests.get("https://generativelanguage.googleapis.com/v1beta/models", headers={"x-goog-api-key": key},
                      params={"pageSize": 1}, timeout=15)
+    return "OK" if r.status_code == 200 else f"HTTP {r.status_code}"
+
+
+def _ping_xai(key):
+    r = requests.get("https://api.x.ai/v1/models", headers={"Authorization": f"Bearer {key}"}, timeout=15)
     return "OK" if r.status_code == 200 else f"HTTP {r.status_code}"
 
 
@@ -1058,11 +1290,14 @@ def main():
     e.add_argument("--no-ledger", action="store_true")
     e.set_defaults(fn=cmd_edit)
 
-    v = sub.add_parser("video", help="generate a short video with Veo (seconds, not cents — check --dry-run first)")
+    v = sub.add_parser("video", help="generate a short video (grok or veo; seconds, not cents — check --dry-run first)")
     v.add_argument("prompt")
+    v.add_argument("--engine", choices=list(ENGINES), default=None,
+                   help="grok (default when XAI_API_KEY is set; named real people ok, 1-15s) or veo (Gemini; "
+                        "--length past 15s). IMG_VIDEO_ENGINE sets it too")
     v.add_argument("--quality", choices=list(VIDEO_QUALITY), default="draft",
                    help="draft (lite 720p, $0.05/s, default) | good (fast 720p, $0.10/s) | pro (1080p, $0.40/s)")
-    v.add_argument("--seconds", choices=["4", "6", "8"], default="4")
+    v.add_argument("--seconds", default="4", help="veo: 4, 6 or 8; grok: 1-15")
     v.add_argument("--aspect", choices=["16:9", "9:16"], default=None,
                    help="default 16:9, or matched to the source with --from")
     v.add_argument("--resolution", choices=["720p", "1080p", "4k"], help="default is the quality's own")

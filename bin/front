@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+"""front — the front door of patchlamp.com: who came, and who left a number.
+Patchlamp plan 06 (ROADMAP B2). The site counts its own page loads with no
+cookie (a beacon per load; a hash that changes daily) and stores every
+"leave your number". This reads both back, for Taylor in the terminal or
+for Patch on the global project when Taylor texts "how's the front door".
+
+  front                      # the week: visits by day, top pages, referrers, new leads
+  front visits [--days 7]    # visits by day, top pages, top referring sites
+  front leads [--all]        # the leads (new ones only unless --all)
+  front doctor
+
+Talks to patchlamp.com's /internal/relay/front/* with the relay's shared
+secret. Read-only: telling Taylor about a lead is the relay's job
+(relay/front.py), which marks each one told on the site.
+
+Config, by name, never printed:
+  PATCHLAMP_RELAY_SHARED_SECRET   ~/.config/claude-tools/env
+  PATCHLAMP_URL                   optional; default https://patchlamp.com
+"""
+
+import argparse
+import json
+import os
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+ENV_FILE = Path(os.environ.get("CLAUDE_TOOLS_ENV", Path.home() / ".config/claude-tools/env"))
+
+
+def die(msg, code=1):
+    print(f"front: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def read_env():
+    keys = {}
+    if ENV_FILE.exists():
+        for line in ENV_FILE.read_text().splitlines():
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                keys[k.strip()] = v.strip()
+    return keys
+
+
+def base_url():
+    return (os.environ.get("PATCHLAMP_URL") or read_env().get("PATCHLAMP_URL") or "https://patchlamp.com").rstrip("/")
+
+
+def secret():
+    val = os.environ.get("PATCHLAMP_RELAY_SHARED_SECRET") or read_env().get("PATCHLAMP_RELAY_SHARED_SECRET")
+    if not val:
+        die("PATCHLAMP_RELAY_SHARED_SECRET is not in the toolbelt; this needs Taylor (setenv.sh)")
+    return val
+
+
+def api(path, params=None):
+    url = f"{base_url()}/internal/relay/front{path}"
+    if params:
+        url += "?" + urllib.parse.urlencode(params)
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {secret()}", "Accept": "application/json",
+                                              "User-Agent": "claude-tools/front"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")[:200]
+        die(f"{e.code} from {url.split('?')[0]}: {body}")
+    except (urllib.error.URLError, TimeoutError) as e:
+        die(f"could not reach {base_url()}: {e}")
+
+
+def show_visits(days, as_json=False):
+    d = api("/visits", {"days": days})
+    if as_json:
+        print(json.dumps(d, indent=2))
+        return
+    t = d["totals"]
+    print(f"patchlamp.com, last {d['days']} day{'s' if d['days'] != 1 else ''} (since {d['since']}): "
+          f"{t['views']} page views, {t['visitor_days']} visitor-days")
+    if not d["by_day"]:
+        print("  no visits recorded yet")
+    for r in d["by_day"]:
+        bar = "#" * min(40, r["visitors"])
+        print(f"  {r['day']}  {r['visitors']:>4} visitors  {r['views']:>5} views  {bar}")
+    if d["pages"]:
+        print("  pages:      " + ", ".join(f"{p['path']} {p['views']}" for p in d["pages"]))
+    if d["referrers"]:
+        print("  came from:  " + ", ".join(f"{p['ref']} {p['views']}" for p in d["referrers"]))
+    else:
+        print("  came from:  nobody arrived by a link from another site")
+
+
+def show_leads(all_leads, as_json=False):
+    d = api("/leads", {} if all_leads else {"new": 1})
+    if as_json:
+        print(json.dumps(d, indent=2))
+        return
+    leads = d["leads"]
+    if not leads:
+        print("no leads" + ("" if all_leads else " waiting for a reply") + " on patchlamp.com")
+        return
+    print(f"{len(leads)} lead{'s' if len(leads) != 1 else ''}" + ("" if all_leads else " not yet texted to Taylor") + ":")
+    for x in leads:
+        told = "told" if x.get("notified_at") else "NEW"
+        who = x.get("business") or "someone"
+        line = f"  #{x['id']}  {x['at'][:16].replace('T', ' ')}  {told:<4} {who}: {x['phone']}"
+        if x.get("note"):
+            line += f' — "{x["note"][:120]}"'
+        if x.get("page") and x["page"] != "/":
+            line += f"  (on {x['page']})"
+        print(line)
+
+
+def cmd_default(a):
+    show_visits(7)
+    print()
+    show_leads(False)
+
+
+def cmd_visits(a):
+    show_visits(a.days, a.json)
+
+
+def cmd_leads(a):
+    show_leads(a.all, a.json)
+
+
+def cmd_doctor(a):
+    ok = True
+    print(f"patchlamp: {base_url()}")
+    if not (os.environ.get("PATCHLAMP_RELAY_SHARED_SECRET") or read_env().get("PATCHLAMP_RELAY_SHARED_SECRET")):
+        print("  FAIL no PATCHLAMP_RELAY_SHARED_SECRET in the toolbelt")
+        ok = False
+    else:
+        d = api("/visits", {"days": 1})
+        print(f"  visits endpoint: ok ({d['totals']['views']} views today)")
+        d = api("/leads", {"new": 1})
+        n = len(d["leads"])
+        print(f"  leads endpoint:  ok ({n} not yet texted to Taylor{'; the relay poll should clear these within a minute' if n else ''})")
+    sys.exit(0 if ok else 1)
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="front", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd")
+    v = sub.add_parser("visits", help="visits by day, top pages, top referring sites")
+    v.add_argument("--days", type=int, default=7)
+    v.add_argument("--json", action="store_true")
+    v.set_defaults(fn=cmd_visits)
+    l = sub.add_parser("leads", help="who left a number (new ones unless --all)")
+    l.add_argument("--all", action="store_true")
+    l.add_argument("--json", action="store_true")
+    l.set_defaults(fn=cmd_leads)
+    sub.add_parser("doctor", help="can this reach the site?").set_defaults(fn=cmd_doctor)
+    a = ap.parse_args()
+    (a.fn if a.cmd else cmd_default)(a)
+
+
+if __name__ == "__main__":
+    main()

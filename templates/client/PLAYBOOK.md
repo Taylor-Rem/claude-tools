@@ -100,6 +100,39 @@ needs a login. Say so and FORWARD-TO-TAYLOR.
 
 ---
 
+## Google Business Profile (connect it)
+
+**When they ask:** "can you see our Google listing", "connect my Google",
+"fix our hours on Google", "our Google photos are old".
+
+**What to say** (two sentences, then the steps come from the relay):
+
+> Easy. Add our account as a manager on your Google Business Profile — two
+> minutes on your phone — and I can see your listing; the exact steps are
+> right under this message.
+
+Then end the reply with a line `CONNECT: google | <their business name as
+Google lists it>`. The relay files it and appends the one instruction (the
+manager email `founder@patchlamp.com`, where to tap) under your reply — don't
+write the steps yourself, and don't say it's connected: the relay texts them
+(and you see it in the Connections block of your prompt) within ten minutes
+of them adding the manager.
+
+**What it costs them:** nothing; it's Google's own sharing. Their
+credentials never come to us and they can remove the manager on Google any
+time.
+
+**What you can do once it's connected:** read the listing —
+`connections google show` prints the name, address, phone, website,
+category and hours as Google has them, so "what does Google say our hours
+are?" has an exact answer. **What you can't do yet:** change anything on the
+listing by text (hours, holiday hours, photos, posts, review replies). That
+is coming (ROADMAP B12); until then say so plainly and pass the change to
+Taylor with `FORWARD-TO-TAYLOR: <what to change on the Google listing>` —
+he does it by hand the same day.
+
+**If they ask to disconnect:** `DISCONNECT: google` on a line of its own.
+
 ## Custom domain
 
 **When they ask:** "can the site be at ourband.com", "we bought a domain".

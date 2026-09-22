@@ -1,0 +1,251 @@
+#!/usr/bin/env python3
+"""connections — a client's connections on patchlamp.com (plan 03 § C, ROADMAP B11).
+Google Business Profile first, by the manager invite: the owner adds
+founder@patchlamp.com as a manager on their profile, the site accepts the
+invitation on our one grant, and Patch can read the listing.
+
+  connections                          # this workspace's connections (or every project's, outside one)
+  connections ls [--project SLUG]
+  connections google invite [--business "Name"] [--place-id ID]   # file the ask; prints the one instruction to text
+  connections google show              # the listing as Google has it: name, address, phone, website, hours
+  connections google sync              # accept pending invitations and match listings now (the relay does it every 10 min)
+  connections google grant             # the signed link founder@ opens once (Taylor)
+  connections revoke [ID]              # drop the connection(s)
+  connections doctor
+
+Inside a client workspace (a dir with .client.json) the project is that
+client's; elsewhere pass --project. Talks to patchlamp.com's
+/internal/relay/... with the relay's shared secret, so no Google token ever
+reaches a client sandbox: a run that needs one gets it from the relay as
+environment (GBP_ACCESS_TOKEN, GBP_LOCATION), never from this tool.
+
+Config, by name, never printed:
+  PATCHLAMP_RELAY_SHARED_SECRET   ~/.config/claude-tools/env
+  PATCHLAMP_URL                   optional; default https://patchlamp.com
+"""
+
+import argparse
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+ENV_FILE = Path(os.environ.get("CLAUDE_TOOLS_ENV", Path.home() / ".config/claude-tools/env"))
+
+
+def die(msg, code=1):
+    print(f"connections: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def read_env():
+    keys = {}
+    if ENV_FILE.exists():
+        for line in ENV_FILE.read_text().splitlines():
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                keys[k.strip()] = v.strip()
+    return keys
+
+
+def base_url():
+    return (os.environ.get("PATCHLAMP_URL") or read_env().get("PATCHLAMP_URL") or "https://patchlamp.com").rstrip("/")
+
+
+def secret():
+    val = os.environ.get("PATCHLAMP_RELAY_SHARED_SECRET") or read_env().get("PATCHLAMP_RELAY_SHARED_SECRET")
+    if not val:
+        die("PATCHLAMP_RELAY_SHARED_SECRET is not in the toolbelt; this needs Taylor (setenv.sh)")
+    return val
+
+
+def workspace_slug():
+    p = Path.cwd() / ".client.json"
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text()).get("slug")
+    except (ValueError, OSError):
+        return None
+
+
+def project_of(args):
+    slug = getattr(args, "project", None) or workspace_slug()
+    if not slug:
+        die("not in a client workspace (no .client.json here); pass --project SLUG")
+    return slug
+
+
+def api(method, path, body=None, ok=(200, 201)):
+    req = urllib.request.Request(base_url() + path, method=method, data=json.dumps(body).encode() if body is not None else None,
+                                 headers={"Authorization": f"Bearer {secret()}", "Accept": "application/json",
+                                          "Content-Type": "application/json", "User-Agent": "claude-tools/connections"})
+    try:
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            return resp.status, json.loads(resp.read().decode() or "{}")
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode(errors="replace")
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            data = {"error": raw[:200]}
+        if exc.code in ok:
+            return exc.code, data
+        if exc.code == 404 and "could not be found" in str(data.get("message", "")):
+            die("patchlamp.com doesn't have the connections endpoints yet (the B11 build is on `dev`; merge the PR to deploy)")
+        die(f"{method} {path}: HTTP {exc.code}: {data.get('error') or data.get('message') or raw[:200]}")
+    except urllib.error.URLError as exc:
+        die(f"{method} {path}: {exc.reason}")
+
+
+def google_line(g):
+    return (f"google grant: {'granted as ' + str(g.get('account')) if g.get('granted') else 'NOT granted (connections google grant)'}"
+            + ("" if g.get("configured") else "; GOOGLE_CLIENT_ID/SECRET not set on patchlamp.com (TAYLOR-TODO §1)")
+            + f"; manager email {g.get('manager_email')}")
+
+
+def print_rows(rows):
+    if not rows:
+        print("  no connections")
+    for c in rows:
+        when = (c.get("connected_at") or c.get("revoked_at") or c.get("invited_at") or "")[:16]
+        print(f"  {c['id']:>3}  {c.get('project') or '-':<18} {c['kind']:<8} {c['status']:<10} {c.get('label') or ''}  {when}"
+              + (f"  ({c['reason']})" if c.get("reason") else ""))
+
+
+# ---- commands --------------------------------------------------------------
+
+def cmd_ls(args):
+    slug = args.project or workspace_slug()
+    if slug:
+        _, data = api("GET", f"/internal/relay/projects/{slug}/connections")
+        print(f"{slug}: " + google_line(data.get("google") or {}))
+        rows = data.get("connections") or []
+        for c in rows:
+            c["project"] = slug
+        print_rows(rows)
+        for c in rows:
+            if c.get("instruction"):
+                print("\n  Text them:\n  " + c["instruction"])
+            if c.get("error"):
+                print(f"\n  note: {c['error']}")
+    else:
+        _, data = api("GET", "/internal/relay/connections")
+        print(google_line(data.get("google") or {}))
+        print_rows(data.get("connections") or [])
+
+
+def cmd_google(args):
+    if args.op == "invite":
+        slug = project_of(args)
+        body = {"kind": "google"}
+        if args.business:
+            body["business"] = args.business
+        if args.place_id:
+            body["place_id"] = args.place_id
+        _, data = api("POST", f"/internal/relay/projects/{slug}/connections", body)
+        c = data["connection"]
+        print(f"{c['id']}: {slug} google {c['status']} — {c.get('label') or ''}")
+        if data.get("already"):
+            print("already connected; nothing to ask them")
+        elif c.get("instruction"):
+            print("\nText them:\n" + c["instruction"])
+    elif args.op == "show":
+        slug = project_of(args)
+        _, data = api("GET", f"/internal/relay/projects/{slug}/connections")
+        rows = [c for c in data.get("connections") or [] if c["kind"] == "google"]
+        if not rows:
+            print(f"{slug}: no Google connection. `connections google invite` files one.")
+            return
+        c = rows[0]
+        print(f"{slug}: google {c['status']} — {c.get('label') or ''}")
+        if c["status"] != "connected":
+            print("  " + (c.get("instruction") or "waiting"))
+            return
+        _, r = api("GET", f"/internal/relay/projects/{slug}/connections/{c['id']}/listing", ok=(200, 409, 502))
+        if r.get("error"):
+            print(f"  listing: {r['error']}")
+            sys.exit(2)
+        for k, v in (r.get("listing") or {}).items():
+            if v in (None, [], ""):
+                continue
+            print(f"  {k}: {', '.join(v) if isinstance(v, list) else v}")
+    elif args.op == "sync":
+        _, r = api("POST", "/internal/relay/connections/google/sync", ok=(200, 502))
+        if r.get("error"):
+            print(f"sync: {r['error']}")
+            sys.exit(2)
+        print(f"accounts {r.get('accounts')}, locations {r.get('locations')}, invitations accepted {r.get('accepted')}, changes {len(r.get('changes') or [])}")
+        for ch in r.get("changes") or []:
+            print(f"  {ch.get('project')}: {ch.get('from')} -> {ch.get('to')} ({ch.get('label')})")
+    elif args.op == "grant":
+        _, r = api("POST", "/internal/relay/connections/google/grant-url", ok=(200, 503))
+        if r.get("error"):
+            die(r["error"])
+        print("Open this within the hour, signed in as founder@patchlamp.com (once):\n" + r["url"])
+
+
+def cmd_revoke(args):
+    slug = project_of(args)
+    ids = [args.id] if args.id else None
+    if ids is None:
+        _, data = api("GET", f"/internal/relay/projects/{slug}/connections")
+        ids = [c["id"] for c in data.get("connections") or []]
+    if not ids:
+        print("nothing to revoke")
+        return
+    for i in ids:
+        _, r = api("DELETE", f"/internal/relay/projects/{slug}/connections/{int(i)}")
+        c = r["connection"]
+        print(f"{c['id']}: {c['kind']} {c['status']}")
+
+
+def cmd_doctor(args):
+    ok = True
+    keys = read_env()
+    print(f"toolbelt: {ENV_FILE}  PATCHLAMP_RELAY_SHARED_SECRET: {'set' if keys.get('PATCHLAMP_RELAY_SHARED_SECRET') else 'MISSING'}")
+    ok = ok and bool(keys.get("PATCHLAMP_RELAY_SHARED_SECRET"))
+    print(f"site: {base_url()}")
+    slug = workspace_slug()
+    print(f"workspace: {slug or '(none — outside a client workspace)'}")
+    try:
+        _, data = api("GET", "/internal/relay/connections")
+    except SystemExit:
+        raise
+    g = data.get("google") or {}
+    print("  endpoints: ok")
+    print("  " + google_line(g))
+    if not g.get("configured") or not g.get("granted"):
+        ok = False
+    rows = data.get("connections") or []
+    print(f"  connections: {len(rows)} ({sum(c['status'] == 'connected' for c in rows)} connected, {sum(c['status'] == 'invited' for c in rows)} invited)")
+    print("  a listing changes by text: not yet (B12); reading one: `connections google show`")
+    sys.exit(0 if ok else 1)
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="connections", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--project", help="project slug (default: this workspace's .client.json)")
+    sub = ap.add_subparsers(dest="cmd")
+    ls = sub.add_parser("ls")
+    ls.set_defaults(fn=cmd_ls)
+    g = sub.add_parser("google", help="invite | show | sync | grant")
+    g.add_argument("op", choices=["invite", "show", "sync", "grant"])
+    g.add_argument("--business", help="the business name as Google lists it (invite)")
+    g.add_argument("--place-id", help="the Google place id, if known (invite; the census has them)")
+    g.set_defaults(fn=cmd_google)
+    rv = sub.add_parser("revoke")
+    rv.add_argument("id", nargs="?", type=int)
+    rv.set_defaults(fn=cmd_revoke)
+    d = sub.add_parser("doctor")
+    d.set_defaults(fn=cmd_doctor)
+    args = ap.parse_args()
+    if not args.cmd:
+        args.fn = cmd_ls
+    args.fn(args)
+
+
+if __name__ == "__main__":
+    main()

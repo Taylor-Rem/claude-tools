@@ -1,0 +1,13 @@
+{
+ "GET /v1/locations/129": [
+  "location.json",
+  "location_after.json"
+ ],
+ "PATCH /v1/locations/129": "location_after.json",
+ "GET /v4/accounts/104/locations/129/reviews": "reviews.json",
+ "PUT /v4/accounts/104/locations/129/reviews/AbC1/reply": "reply.json",
+ "GET /v4/accounts/104/locations/129/localPosts": "posts.json",
+ "POST /v4/accounts/104/locations/129/localPosts": "localpost_created.json",
+ "POST /v4/accounts/104/locations/129/media:startUpload": "media_start.json",
+ "POST /v4/accounts/104/locations/129/media": "media.json"
+}

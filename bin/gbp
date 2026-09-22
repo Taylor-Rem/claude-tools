@@ -1,0 +1,749 @@
+#!/usr/bin/env python3
+"""gbp — a client's Google Business Profile, changed by text (ROADMAP B12,
+plan ~/projects/plans/06-gbp-by-text.md). Hours and holiday hours, photos,
+posts, reviews and owner replies, on the B11 connection.
+
+  gbp show                                  # the listing as Google has it
+  gbp hours                                 # this week + any special days
+  gbp hours set mon-fri 11:00-21:00 sat 11-22 sun closed
+  gbp hours holiday thanksgiving closed     # or: gbp hours holiday 2026-11-26 closed
+  gbp hours holiday 2026-12-24 09:00-14:00  # open, different hours
+  gbp hours clear 2026-12-24                # drop that special day
+  gbp hours holidays                        # the names this understands, with dates
+  gbp post "Fresh pho every Saturday." [--photo FILE|URL] [--url URL --cta LEARN_MORE]
+  gbp posts [-n 5]
+  gbp photo FILE|URL [--category FOOD_AND_DRINK]
+  gbp reviews [-n 10] [--unanswered]
+  gbp reply 1 "Thanks Maria — see you Saturday."     # 1 = newest; or a review id
+  gbp doctor
+
+Credentials come from the run's environment — `GBP_ACCESS_TOKEN`,
+`GBP_LOCATION`, `GBP_ACCOUNT` — which the relay puts there for a project with
+a connected listing (relay/connections.py `env_for`); nothing is stored here
+and no token is ever printed. Outside a run, `--project <slug>` (or the
+workspace's `.client.json`) fetches the same from patchlamp.com with the
+relay's shared secret.
+
+Which API does what (checked 2026-09-22): hours are Business Information v1
+(`PATCH /v1/locations/*?updateMask=regularHours|specialHours`); posts, media
+and reviews are still v4 on mybusiness.googleapis.com. Menus are v4
+`foodMenus` — real, but B16's job, not this tool's.
+
+Every write reads the listing back and prints what Google now says, so a
+reply to the owner quotes Google, not our intention. `--dry-run` prints the
+request and sends nothing. Google keeps no *name* for a special day, only
+the date and open/closed, so never tell an owner their listing says
+"Thanksgiving" — it says closed on that date.
+
+Free: Business Profile calls cost nothing, so there is no ledger line (that
+rule is about money — see `img`).
+
+Config, by name, never printed:
+  GBP_ACCESS_TOKEN / GBP_LOCATION / GBP_ACCOUNT   the run's environment
+  PATCHLAMP_RELAY_SHARED_SECRET                   only for --project, from the toolbelt
+  GBP_FIXTURES / GBP_RECORD                       recorded responses, for the tests
+"""
+
+import argparse
+import datetime as dt
+import json
+import mimetypes
+import os
+import re
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+ENV_FILE = Path(os.environ.get("CLAUDE_TOOLS_ENV", Path.home() / ".config/claude-tools/env"))
+INFO = "https://mybusinessbusinessinformation.googleapis.com/v1"
+V4 = "https://mybusiness.googleapis.com/v4"
+UPLOAD = "https://mybusiness.googleapis.com/upload/v1/media"
+READ_MASK = ("name,title,storeCode,websiteUri,phoneNumbers,storefrontAddress,regularHours,"
+             "specialHours,metadata,categories,openInfo")
+DAYS = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"]
+DAY_WORDS = {"mon": 0, "monday": 0, "tue": 1, "tues": 1, "tuesday": 1, "wed": 2, "weds": 2, "wednesday": 2,
+             "thu": 3, "thur": 3, "thurs": 3, "thursday": 3, "fri": 4, "friday": 4,
+             "sat": 5, "saturday": 5, "sun": 6, "sunday": 6}
+PHOTO_CATEGORIES = ["COVER", "PROFILE", "LOGO", "EXTERIOR", "INTERIOR", "PRODUCT", "AT_WORK",
+                    "FOOD_AND_DRINK", "MENU", "COMMON_AREA", "ROOMS", "TEAMS", "ADDITIONAL"]
+CTAS = ["BOOK", "ORDER", "SHOP", "LEARN_MORE", "SIGN_UP", "CALL"]
+
+
+def die(msg, code=1):
+    print(f"gbp: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+# ---- credentials ----------------------------------------------------------------
+
+def read_env_file():
+    keys = {}
+    if ENV_FILE.exists():
+        for line in ENV_FILE.read_text().splitlines():
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                keys[k.strip()] = v.strip()
+    return keys
+
+
+def workspace_slug():
+    p = Path.cwd() / ".client.json"
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text()).get("slug")
+    except (ValueError, OSError):
+        return None
+
+
+def from_patchlamp(slug):
+    """The same env the relay would have injected, for a terminal run."""
+    keys = read_env_file()
+    secret = os.environ.get("PATCHLAMP_RELAY_SHARED_SECRET") or keys.get("PATCHLAMP_RELAY_SHARED_SECRET")
+    if not secret:
+        die("PATCHLAMP_RELAY_SHARED_SECRET is not in the toolbelt, so --project can't fetch the connection")
+    base = (os.environ.get("PATCHLAMP_URL") or keys.get("PATCHLAMP_URL") or "https://patchlamp.com").rstrip("/")
+    req = urllib.request.Request(f"{base}/internal/relay/projects/{slug}/connections",
+                                 headers={"Authorization": f"Bearer {secret}", "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            data = json.loads(resp.read().decode() or "{}")
+    except urllib.error.HTTPError as exc:
+        die(f"patchlamp.com: HTTP {exc.code} for project {slug}")
+    except urllib.error.URLError as exc:
+        die(f"patchlamp.com unreachable: {exc.reason}")
+    for c in data.get("connections") or []:
+        if c.get("kind") == "google" and c.get("env"):
+            return c["env"]
+        if c.get("kind") == "google" and c.get("error"):
+            die(c["error"])
+    die(f"{slug} has no connected Google listing yet (connections google invite)")
+
+
+class Creds:
+    def __init__(self, args):
+        env = dict(os.environ)
+        if not env.get("GBP_LOCATION"):
+            slug = getattr(args, "project", None) or workspace_slug()
+            if slug:
+                env.update(from_patchlamp(slug))
+        self.token = env.get("GBP_ACCESS_TOKEN", "")
+        self.location = env.get("GBP_LOCATION", "")        # locations/123
+        self.account = env.get("GBP_ACCOUNT", "")          # accounts/456
+        self.title = env.get("GBP_LOCATION_TITLE", "")
+
+    @property
+    def ok(self):
+        return bool(self.token and self.location)
+
+    @property
+    def v4(self):
+        """accounts/456/locations/123 — posts, media and reviews still live on v4."""
+        if not self.account:
+            die("this listing has no GBP_ACCOUNT in the run's environment, and posts, photos and reviews need it")
+        return f"{self.account}/locations/{self.location.split('/')[-1]}"
+
+    def need(self):
+        if not self.ok:
+            die("no Google listing in this run's environment (GBP_ACCESS_TOKEN / GBP_LOCATION).\n"
+                "      Inside a client run the relay puts them there once the listing is connected:\n"
+                "      `connections google invite` files the ask, the owner adds the manager, and the sync connects it.\n"
+                "      From a terminal, pass --project <slug>.")
+
+
+# ---- HTTP (or recorded responses) -------------------------------------------------
+
+DRY_RUN = False
+
+
+def _record(entry):
+    path = os.environ.get("GBP_RECORD")
+    if path:
+        with open(path, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+
+
+def _fixture(method, url, params):
+    d = Path(os.environ["GBP_FIXTURES"])
+    routes = json.loads((d / "routes.json").read_text())
+    path = urllib.parse.urlsplit(url).path
+    hit = routes.get(f"{method} {path}")
+    if hit is None:
+        die(f"no recorded response for {method} {path} (tests)")
+    if isinstance(hit, list):                       # a sequence: one per call, last repeats
+        used = _fixture.used.setdefault(f"{method} {path}", 0)
+        _fixture.used[f"{method} {path}"] = used + 1
+        hit = hit[min(used, len(hit) - 1)]
+    if isinstance(hit, str):
+        hit = {"file": hit}
+    body = json.loads((d / hit["file"]).read_text()) if hit.get("file") else {}
+    return hit.get("status", 200), body
+
+
+_fixture.used = {}
+
+
+def api(creds, method, url, body=None, params=None, ok=(200,)):
+    creds.need()          # before anything is built: a missing connection has its own clear answer
+    params = {k: v for k, v in (params or {}).items() if v is not None}
+    full = url + ("?" + urllib.parse.urlencode(params) if params else "")
+    dry = DRY_RUN and method != "GET"
+    _record({"method": method, "url": url, "params": params, "body": body, "dry": dry})
+    if dry:
+        print(f"  would {method} {full}")
+        print("  " + json.dumps(body, indent=2).replace("\n", "\n  "))
+        return 200, (body or {})
+    if os.environ.get("GBP_FIXTURES"):
+        status, data = _fixture(method, url, params)
+    else:
+        data_bytes = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(full, method=method, data=data_bytes, headers={
+            "Authorization": f"Bearer {creds.token}", "Accept": "application/json",
+            "Content-Type": "application/json", "User-Agent": "claude-tools/gbp"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                status, data = resp.status, json.loads(resp.read().decode() or "{}")
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode(errors="replace")
+            try:
+                data = json.loads(raw)
+            except ValueError:
+                data = {"error": {"message": raw[:300]}}
+            status = exc.code
+        except urllib.error.URLError as exc:
+            die(f"Google unreachable: {exc.reason}")
+    if status not in ok:
+        die(why(status, data))
+    return status, data
+
+
+def why(status, data):
+    msg = ((data or {}).get("error") or {})
+    msg = msg.get("message") if isinstance(msg, dict) else str(msg)
+    msg = (msg or "")[:300]
+    if status == 403 and ("quota" in msg.lower() or "not been used" in msg.lower() or "disabled" in msg.lower()):
+        return ("quota is 0 — the Business Profile API access request is not approved yet "
+                "(TAYLOR-TODO §1 \"Google Business Profile API access\"). Nothing was changed.")
+    if status == 401:
+        return "Google refused the token. The relay refreshes it each run; try again, then `connections google sync`."
+    if status == 404:
+        return f"Google says that isn't there ({msg})."
+    return f"Google said HTTP {status}: {msg}"
+
+
+# ---- reading the listing ------------------------------------------------------------
+
+def location(creds):
+    return api(creds, "GET", f"{INFO}/{creds.location}", params={"readMask": READ_MASK})[1]
+
+
+def clock(t):
+    h, m = int((t or {}).get("hours", 0)), int((t or {}).get("minutes", 0))
+    if h == 24:
+        return "midnight"
+    suffix = "am" if h < 12 else "pm"
+    h12 = h % 12 or 12
+    return f"{h12}:{m:02d}{suffix}" if m else f"{h12}{suffix}"
+
+
+def day_label(enum):
+    return enum[:3].title()
+
+
+def hours_lines(loc):
+    out = []
+    by_day = {}
+    for p in (loc.get("regularHours") or {}).get("periods") or []:
+        by_day.setdefault(p.get("openDay"), []).append(p)
+    for d in DAYS:
+        periods = by_day.get(d) or []
+        if not periods:
+            out.append(f"  {day_label(d)}  closed")
+        else:
+            spans = ", ".join(f"{clock(p.get('openTime'))}–{clock(p.get('closeTime'))}" for p in periods)
+            out.append(f"  {day_label(d)}  {spans}")
+    return out
+
+
+def special_lines(loc, today=None):
+    today = today or dt.date.today()
+    out = []
+    for p in sorted((loc.get("specialHours") or {}).get("specialHourPeriods") or [], key=lambda p: date_key(p)):
+        d = as_date(p.get("startDate"))
+        if not d or d < today - dt.timedelta(days=1):
+            continue
+        when = d.strftime("%a %-d %b %Y")
+        if p.get("closed"):
+            out.append(f"  {when}  closed")
+        else:
+            out.append(f"  {when}  {clock(p.get('openTime'))}–{clock(p.get('closeTime'))}")
+    return out
+
+
+def as_date(d):
+    try:
+        return dt.date(int(d["year"]), int(d["month"]), int(d["day"]))
+    except (TypeError, KeyError, ValueError):
+        return None
+
+
+def date_key(p):
+    d = as_date(p.get("startDate"))
+    return d or dt.date(1970, 1, 1)
+
+
+def as_google_date(d):
+    return {"year": d.year, "month": d.month, "day": d.day}
+
+
+# ---- dates: holidays by name ----------------------------------------------------------
+
+def nth_weekday(year, month, weekday, n):
+    """n-th weekday (0=Mon) of a month; n=-1 for the last one."""
+    if n > 0:
+        first = dt.date(year, month, 1)
+        return first + dt.timedelta(days=(weekday - first.weekday()) % 7 + 7 * (n - 1))
+    last = dt.date(year, month + 1, 1) - dt.timedelta(days=1) if month < 12 else dt.date(year, 12, 31)
+    return last - dt.timedelta(days=(last.weekday() - weekday) % 7)
+
+
+def easter(year):
+    a, b, c = year % 19, year // 100, year % 100
+    d, e = b // 4, b % 4
+    f, g, h = (b + 8) // 25, (b - (b + 8) // 25 + 1) // 3, (19 * a + b - d - ((b - (b + 8) // 25 + 1) // 3) + 15) % 30
+    i, k = c // 4, c % 4
+    lm = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * lm) // 451
+    month = (h + lm - 7 * m + 114) // 31
+    day = ((h + lm - 7 * m + 114) % 31) + 1
+    return dt.date(year, month, day)
+
+
+HOLIDAYS = {
+    "new-years-day": lambda y: dt.date(y, 1, 1),
+    "mlk-day": lambda y: nth_weekday(y, 1, 0, 3),
+    "presidents-day": lambda y: nth_weekday(y, 2, 0, 3),
+    "easter": easter,
+    "memorial-day": lambda y: nth_weekday(y, 5, 0, -1),
+    "juneteenth": lambda y: dt.date(y, 6, 19),
+    "independence-day": lambda y: dt.date(y, 7, 4),
+    "pioneer-day": lambda y: dt.date(y, 7, 24),          # Utah
+    "labor-day": lambda y: nth_weekday(y, 9, 0, 1),
+    "halloween": lambda y: dt.date(y, 10, 31),
+    "veterans-day": lambda y: dt.date(y, 11, 11),
+    "thanksgiving": lambda y: nth_weekday(y, 11, 3, 4),
+    "black-friday": lambda y: nth_weekday(y, 11, 3, 4) + dt.timedelta(days=1),
+    "christmas-eve": lambda y: dt.date(y, 12, 24),
+    "christmas": lambda y: dt.date(y, 12, 25),
+    "new-years-eve": lambda y: dt.date(y, 12, 31),
+}
+HOLIDAY_ALIASES = {"thanksgiving-day": "thanksgiving", "xmas": "christmas", "christmas-day": "christmas",
+                   "new-years": "new-years-day", "new-year": "new-years-day", "nye": "new-years-eve",
+                   "july-4": "independence-day", "july-4th": "independence-day", "fourth-of-july": "independence-day",
+                   "4th-of-july": "independence-day", "mlk": "mlk-day", "memorial": "memorial-day",
+                   "labor": "labor-day", "veterans": "veterans-day", "pioneer": "pioneer-day"}
+
+
+def parse_date(text, today=None):
+    """A date, or a holiday name (this year, or next year if it has passed)."""
+    today = today or dt.date.today()
+    raw = (text or "").strip().lower()
+    m = re.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})", raw)
+    if m:
+        try:
+            return dt.date(*(int(x) for x in m.groups())), None
+        except ValueError:
+            die(f"{text} isn't a real date")
+    key = re.sub(r"[\s_']+", "-", raw).strip("-")
+    year = None
+    m = re.fullmatch(r"(.*?)-?(\d{4})", key)
+    if m and m.group(1):
+        key, year = m.group(1), int(m.group(2))
+    key = HOLIDAY_ALIASES.get(key, key)
+    if key in HOLIDAYS:
+        d = HOLIDAYS[key](year or today.year)
+        if year is None and d < today:
+            d = HOLIDAYS[key](today.year + 1)
+        return d, key
+    die(f"I don't know the date \"{text}\". Give it as YYYY-MM-DD, or use a name: {', '.join(sorted(HOLIDAYS))}.")
+
+
+# ---- hours: parsing what to set ----------------------------------------------------------
+
+def parse_days(token):
+    t = token.strip().lower().rstrip(",")
+    if t in ("daily", "everyday", "every-day", "all", "week"):
+        return list(range(7))
+    if t in ("weekdays", "weekday"):
+        return list(range(5))
+    if t in ("weekends", "weekend"):
+        return [5, 6]
+    out = []
+    for part in t.split(","):
+        if "-" in part:
+            a, b = part.split("-", 1)
+            if a in DAY_WORDS and b in DAY_WORDS:
+                i, j = DAY_WORDS[a], DAY_WORDS[b]
+                out += [k % 7 for k in range(i, (j if j >= i else j + 7) + 1)]
+                continue
+            return None
+        if part in DAY_WORDS:
+            out.append(DAY_WORDS[part])
+        else:
+            return None
+    return out or None
+
+
+def parse_time(text):
+    t = text.strip().lower().replace(" ", "")
+    m = re.fullmatch(r"(\d{1,2})(?::(\d{2}))?(am|pm|a|p)?", t)
+    if not m:
+        if t in ("midnight",):
+            return {"hours": 24}
+        if t in ("noon",):
+            return {"hours": 12}
+        die(f"I couldn't read the time \"{text}\" (try 11, 11:30, 9pm, 17:00, midnight)")
+    h, mins, ap = int(m.group(1)), int(m.group(2) or 0), m.group(3)
+    if ap in ("pm", "p") and h < 12:
+        h += 12
+    if ap in ("am", "a") and h == 12:
+        h = 0
+    if h == 24 and mins == 0:
+        return {"hours": 24}
+    if not (0 <= h <= 24 and 0 <= mins < 60):
+        die(f"{text} isn't a time of day")
+    out = {"hours": h}
+    if mins:
+        out["minutes"] = mins
+    return out
+
+
+def parse_spans(spec):
+    """'closed' -> []; '11-21' or '11:00-14:00,17:00-21:00' -> [(open, close), ...]"""
+    s = spec.strip().lower()
+    if s in ("closed", "shut", "close"):
+        return []
+    spans = []
+    for part in s.split(","):
+        if "-" not in part:
+            die(f"I couldn't read the hours \"{spec}\" (try 11-21, 11:00-21:00, or closed)")
+        a, b = part.split("-", 1)
+        spans.append((parse_time(a), parse_time(b)))
+    return spans
+
+
+def periods_for(day_index, spans):
+    out = []
+    for o, c in spans:
+        period = {"openDay": DAYS[day_index], "openTime": o, "closeDay": DAYS[day_index], "closeTime": c}
+        if (c.get("hours", 0), c.get("minutes", 0)) <= (o.get("hours", 0), o.get("minutes", 0)) and c.get("hours") != 24:
+            period["closeDay"] = DAYS[(day_index + 1) % 7]      # past midnight
+        out.append(period)
+    return out
+
+
+# ---- commands -------------------------------------------------------------------------------
+
+def cmd_show(args):
+    creds = Creds(args)
+    loc = location(creds)
+    addr = loc.get("storefrontAddress") or {}
+    street = " ".join(addr.get("addressLines") or [])
+    print(f"{loc.get('title') or creds.title}")
+    line = ", ".join(x for x in [street, addr.get("locality"), f"{addr.get('administrativeArea', '')} {addr.get('postalCode', '')}".strip()] if x)
+    if line:
+        print(f"  {line}")
+    for label, value in (("phone", (loc.get("phoneNumbers") or {}).get("primaryPhone")),
+                         ("website", loc.get("websiteUri")),
+                         ("category", ((loc.get("categories") or {}).get("primaryCategory") or {}).get("displayName")),
+                         ("status", (loc.get("openInfo") or {}).get("status")),
+                         ("maps", (loc.get("metadata") or {}).get("mapsUri"))):
+        if value:
+            print(f"  {label}: {value}")
+    print("  hours:")
+    for line in hours_lines(loc):
+        print("  " + line)
+    special = special_lines(loc)
+    if special:
+        print("  special days:")
+        for line in special:
+            print("  " + line)
+
+
+def cmd_hours(args):
+    creds = Creds(args)
+    if args.op is None:
+        loc = location(creds)
+        print(f"{loc.get('title') or creds.title} — hours on Google:")
+        for line in hours_lines(loc):
+            print(line)
+        special = special_lines(loc)
+        print("Special days ahead:" if special else "No special days set.")
+        for line in special:
+            print(line)
+        return
+    if args.op == "holidays":
+        today = dt.date.today()
+        print("Names this understands (next occurrence; a year works too, e.g. christmas-2027):")
+        for name in sorted(HOLIDAYS, key=lambda n: parse_date(n, today)[0]):
+            print(f"  {name:<18} {parse_date(name, today)[0].strftime('%a %-d %b %Y')}")
+        print("Google stores the date and open/closed — not the holiday's name.")
+        return
+    if args.op == "set":
+        if not args.rest:
+            die("what hours? e.g. gbp hours set mon-fri 11:00-21:00 sat 11-22 sun closed")
+        loc = location(creds)
+        periods = list((loc.get("regularHours") or {}).get("periods") or [])
+        touched, tokens = set(), list(args.rest)
+        while tokens:
+            days = parse_days(tokens.pop(0))
+            if days is None:
+                die("say which days first: mon, tue, mon-fri, weekends, daily")
+            if not tokens:
+                die("and what hours? e.g. mon-fri 11:00-21:00")
+            spans = parse_spans(tokens.pop(0))
+            for d in days:
+                touched.add(d)
+                periods = [p for p in periods if p.get("openDay") != DAYS[d]]
+                periods += periods_for(d, spans)
+        periods.sort(key=lambda p: (DAYS.index(p.get("openDay")), p.get("openTime", {}).get("hours", 0)))
+        body = {"regularHours": {"periods": periods}}
+        api(creds, "PATCH", f"{INFO}/{creds.location}", body, {"updateMask": "regularHours"})
+        said = ", ".join(day_label(DAYS[d]) for d in sorted(touched))
+        print(f"Set {said}. Google now has:")
+        for line in hours_lines(location(creds)):
+            print(line)
+        return
+    if args.op in ("holiday", "clear"):
+        if not args.rest:
+            die("which day? e.g. gbp hours holiday thanksgiving closed")
+        when, name = parse_date(args.rest[0])
+        loc = location(creds)
+        existing = list((loc.get("specialHours") or {}).get("specialHourPeriods") or [])
+        kept = [p for p in existing if as_date(p.get("startDate")) != when]
+        if args.op == "clear":
+            if len(kept) == len(existing):
+                print(f"Nothing special was set for {when.strftime('%a %-d %b %Y')}.")
+                return
+            new = kept
+        else:
+            spec = args.rest[1] if len(args.rest) > 1 else "closed"
+            spans = parse_spans(spec)
+            period = {"startDate": as_google_date(when), "endDate": as_google_date(when)}
+            if not spans:
+                period["closed"] = True
+            elif len(spans) > 1:
+                die("Google takes one span for a special day; pick the one they're actually open")
+            else:
+                period.update({"closed": False, "openTime": spans[0][0], "closeTime": spans[0][1]})
+            new = kept + [period]
+        new.sort(key=date_key)
+        api(creds, "PATCH", f"{INFO}/{creds.location}", {"specialHours": {"specialHourPeriods": new}},
+            {"updateMask": "specialHours"})
+        label = f" ({name.replace('-', ' ')})" if name else ""
+        print(f"{'Cleared' if args.op == 'clear' else 'Set'} {when.strftime('%a %-d %b %Y')}{label}. Google now has:")
+        lines = special_lines(location(creds))
+        for line in lines or ["  (no special days)"]:
+            print(line)
+        return
+
+
+def cmd_post(args):
+    creds = Creds(args)
+    body = {"languageCode": "en-US", "summary": args.text[:1500], "topicType": "STANDARD"}
+    if args.url:
+        body["callToAction"] = {"actionType": args.cta, "url": args.url}
+    elif args.cta == "CALL":
+        body["callToAction"] = {"actionType": "CALL"}
+    if args.photo:
+        body["media"] = [{"mediaFormat": "PHOTO", "sourceUrl": args.photo if is_url(args.photo) else upload_bytes(creds, args.photo)}]
+    _, post = api(creds, "POST", f"{V4}/{creds.v4}/localPosts", body, ok=(200, 201))
+    print("Posted to Google.")
+    print(f"  {post.get('summary') or args.text}")
+    if post.get("searchUrl"):
+        print(f"  {post['searchUrl']}")
+    print("  (a post shows for about a week, then drops off the listing)")
+
+
+def cmd_posts(args):
+    creds = Creds(args)
+    _, data = api(creds, "GET", f"{V4}/{creds.v4}/localPosts", params={"pageSize": args.n})
+    posts = data.get("localPosts") or []
+    if not posts:
+        print("No posts on this listing yet.")
+    for p in posts[: args.n]:
+        when = (p.get("createTime") or "")[:10]
+        print(f"  {when}  {(p.get('summary') or '')[:90]}  [{p.get('state', '')}]")
+
+
+def is_url(text):
+    return bool(re.match(r"^https?://", text or ""))
+
+
+def upload_bytes(creds, path):
+    """A local photo: start an upload, PUT the bytes, hand back the data ref."""
+    p = Path(path).expanduser()
+    if not p.exists():
+        die(f"no such file: {p}")
+    if p.stat().st_size > 10 * 1024 * 1024:
+        die(f"{p.name} is over Google's 10MB photo limit; `img` can resize it")
+    _, ref = api(creds, "POST", f"{V4}/{creds.v4}/media:startUpload", {}, ok=(200, 201))
+    name = ref.get("resourceName")
+    if not name:
+        die("Google didn't return an upload reference")
+    if DRY_RUN or os.environ.get("GBP_FIXTURES"):
+        _record({"method": "PUT", "url": f"{UPLOAD}/{name}", "file": p.name, "bytes": p.stat().st_size})
+        return {"resourceName": name}
+    req = urllib.request.Request(f"{UPLOAD}/{name}?upload_type=media", method="PUT", data=p.read_bytes(),
+                                 headers={"Authorization": f"Bearer {creds.token}",
+                                          "Content-Type": mimetypes.guess_type(p.name)[0] or "image/jpeg"})
+    try:
+        urllib.request.urlopen(req, timeout=120)
+    except urllib.error.HTTPError as exc:
+        die(f"the photo upload failed: HTTP {exc.code} {exc.read().decode(errors='replace')[:200]}")
+    except urllib.error.URLError as exc:
+        die(f"the photo upload failed: {exc.reason}")
+    return {"resourceName": name}
+
+
+def cmd_photo(args):
+    creds = Creds(args)
+    body = {"mediaFormat": "PHOTO", "locationAssociation": {"category": args.category}}
+    if is_url(args.file):
+        body["sourceUrl"] = args.file
+    else:
+        body["dataRef"] = upload_bytes(creds, args.file)
+    _, media = api(creds, "POST", f"{V4}/{creds.v4}/media", body, ok=(200, 201))
+    print(f"Photo added to Google ({args.category.replace('_', ' ').lower()}).")
+    if media.get("googleUrl"):
+        print(f"  {media['googleUrl']}")
+    print("  (Google can take a few minutes to show it, and screens photos it doesn't like)")
+
+
+def stars(n):
+    words = {"ONE": 1, "TWO": 2, "THREE": 3, "FOUR": 4, "FIVE": 5}
+    return words.get(str(n).upper(), 0)
+
+
+def cmd_reviews(args):
+    creds = Creds(args)
+    reviews = fetch_reviews(creds, args.n)
+    if args.unanswered:
+        reviews = [r for r in reviews if not r.get("reviewReply")]
+    if not reviews:
+        print("No unanswered reviews." if args.unanswered else "No reviews on this listing yet.")
+        return
+    for i, r in enumerate(reviews[: args.n], 1):
+        n = stars(r.get("starRating"))
+        who = (r.get("reviewer") or {}).get("displayName") or "someone"
+        when = (r.get("createTime") or "")[:10]
+        print(f"  {i}. {'★' * n}{'☆' * (5 - n)}  {who}  {when}"
+              + ("" if not r.get("reviewReply") else "  [replied]"))
+        if r.get("comment"):
+            print(f"     {' '.join(r['comment'].split())[:300]}")
+    print("Reply with: gbp reply <number> \"your reply\"")
+
+
+def fetch_reviews(creds, n=20):
+    _, data = api(creds, "GET", f"{V4}/{creds.v4}/reviews", params={"pageSize": max(n, 20), "orderBy": "updateTime desc"})
+    return data.get("reviews") or []
+
+
+def cmd_reply(args):
+    creds = Creds(args)
+    which = args.review
+    if re.fullmatch(r"\d{1,3}", which):
+        reviews = fetch_reviews(creds)
+        idx = int(which) - 1
+        if idx < 0 or idx >= len(reviews):
+            die(f"there is no review {which} (gbp reviews lists them, newest first)")
+        target = reviews[idx]
+        name = target.get("name") or f"{creds.v4}/reviews/{target.get('reviewId')}"
+        who = (target.get("reviewer") or {}).get("displayName") or "them"
+    else:
+        name = which if which.startswith("accounts/") else f"{creds.v4}/reviews/{which}"
+        who = "them"
+    api(creds, "PUT", f"{V4}/{name}/reply", {"comment": args.text[:4096]})
+    print(f"Replied to {who} on Google:")
+    print(f"  {args.text}")
+    print("  (the owner reply shows under their review, signed with the business name)")
+
+
+def cmd_doctor(args):
+    creds = Creds(args)
+    where = "the run's environment" if os.environ.get("GBP_LOCATION") else (
+        f"patchlamp.com (--project {args.project or workspace_slug()})" if (args.project or workspace_slug()) else "nothing")
+    print(f"credentials from: {where}")
+    print(f"  listing: {creds.location or 'MISSING'}  account: {creds.account or 'MISSING'}"
+          f"  title: {creds.title or '?'}")
+    print(f"  access token: {'present' if creds.token else 'MISSING'}")
+    if not creds.ok:
+        print("  → no connection in this environment. Inside a client run the relay injects it once the")
+        print("    listing is connected (`connections google invite`, the owner adds the manager, the sync connects it).")
+        sys.exit(1)
+    try:
+        loc = location(creds)
+    except SystemExit:
+        print("  → the read above is what a change would hit; nothing can be written until it succeeds.")
+        raise
+    print(f"  read ok: {loc.get('title')} — {len((loc.get('regularHours') or {}).get('periods') or [])} weekly periods, "
+          f"{len((loc.get('specialHours') or {}).get('specialHourPeriods') or [])} special days")
+    print("  writes: hours + special hours (Business Information v1), posts, photos, review replies (v4)")
+    print("  menus: not here — v4 foodMenus exists and belongs to ROADMAP B16")
+    sys.exit(0)
+
+
+def main():
+    global DRY_RUN
+    ap = argparse.ArgumentParser(prog="gbp", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--project", help="project slug, when running outside a client run")
+    ap.add_argument("--dry-run", action="store_true", help="print the request, change nothing")
+    sub = ap.add_subparsers(dest="cmd")
+
+    sub.add_parser("show").set_defaults(fn=cmd_show)
+
+    h = sub.add_parser("hours", help="show, set, holiday, clear, holidays")
+    h.add_argument("op", nargs="?", choices=["set", "holiday", "clear", "holidays"])
+    h.add_argument("rest", nargs="*")
+    h.set_defaults(fn=cmd_hours)
+
+    p = sub.add_parser("post")
+    p.add_argument("text")
+    p.add_argument("--photo", help="a file in incoming/ or a public URL")
+    p.add_argument("--url", help="where the button goes")
+    p.add_argument("--cta", default="LEARN_MORE", choices=CTAS)
+    p.set_defaults(fn=cmd_post)
+
+    ps = sub.add_parser("posts")
+    ps.add_argument("-n", type=int, default=5)
+    ps.set_defaults(fn=cmd_posts)
+
+    ph = sub.add_parser("photo")
+    ph.add_argument("file")
+    ph.add_argument("--category", default="ADDITIONAL", choices=PHOTO_CATEGORIES)
+    ph.set_defaults(fn=cmd_photo)
+
+    rv = sub.add_parser("reviews")
+    rv.add_argument("-n", type=int, default=10)
+    rv.add_argument("--unanswered", action="store_true")
+    rv.set_defaults(fn=cmd_reviews)
+
+    rp = sub.add_parser("reply")
+    rp.add_argument("review", help="a number from `gbp reviews` (1 = newest), or a review id")
+    rp.add_argument("text")
+    rp.set_defaults(fn=cmd_reply)
+
+    sub.add_parser("doctor").set_defaults(fn=cmd_doctor)
+
+    args = ap.parse_args()
+    DRY_RUN = args.dry_run
+    if not args.cmd:
+        ap.print_help()
+        sys.exit(0)
+    args.fn(args)
+
+
+if __name__ == "__main__":
+    main()

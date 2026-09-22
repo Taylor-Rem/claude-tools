@@ -1,0 +1,6 @@
+{
+ "GET /v1/locations/129": {
+  "status": 403,
+  "file": "quota403.json"
+ }
+}

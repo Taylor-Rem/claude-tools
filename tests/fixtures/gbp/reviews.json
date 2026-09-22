@@ -1,0 +1,32 @@
+{
+ "reviews": [
+  {
+   "name": "accounts/104/locations/129/reviews/AbC1",
+   "reviewId": "AbC1",
+   "reviewer": {
+    "displayName": "Maria S."
+   },
+   "starRating": "FIVE",
+   "comment": "Best pho in Utah county. The staff know my order.",
+   "createTime": "2026-09-20T18:04:00Z",
+   "updateTime": "2026-09-20T18:04:00Z"
+  },
+  {
+   "name": "accounts/104/locations/129/reviews/AbC2",
+   "reviewId": "AbC2",
+   "reviewer": {
+    "displayName": "Dev P."
+   },
+   "starRating": "TWO",
+   "comment": "Waited forty minutes for a takeout order.",
+   "createTime": "2026-09-01T01:10:00Z",
+   "updateTime": "2026-09-02T15:00:00Z",
+   "reviewReply": {
+    "comment": "Sorry about that \u2014 we were short-staffed.",
+    "updateTime": "2026-09-02T15:00:00Z"
+   }
+  }
+ ],
+ "averageRating": 4.3,
+ "totalReviewCount": 518
+}

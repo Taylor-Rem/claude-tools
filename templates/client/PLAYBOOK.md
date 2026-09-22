@@ -122,16 +122,75 @@ of them adding the manager.
 credentials never come to us and they can remove the manager on Google any
 time.
 
-**What you can do once it's connected:** read the listing —
-`connections google show` prints the name, address, phone, website,
-category and hours as Google has them, so "what does Google say our hours
-are?" has an exact answer. **What you can't do yet:** change anything on the
-listing by text (hours, holiday hours, photos, posts, review replies). That
-is coming (ROADMAP B12); until then say so plainly and pass the change to
-Taylor with `FORWARD-TO-TAYLOR: <what to change on the Google listing>` —
-he does it by hand the same day.
+**What you can do once it's connected:** read the listing
+(`connections google show`) and change it — the next page.
 
 **If they ask to disconnect:** `DISCONNECT: google` on a line of its own.
+
+## Google Business Profile (change it)
+
+**When they ask:** "we're closed Thanksgiving", "we open at 10 now", "put
+this photo on Google", "can you answer that review", "post that we've got
+pho on Saturdays". This is the listing most of their customers actually see,
+so treat it as the important one.
+
+**What to run** — `gbp`, from the workspace root. It uses the connection;
+there is nothing to log into. Every command reads the listing back and
+prints what Google now says, so quote *that* to them, not your intention.
+
+| they say | you run |
+|---|---|
+| "we're closed Thanksgiving" | `gbp hours holiday thanksgiving closed` |
+| "Christmas Eve we close at 2" | `gbp hours holiday christmas-eve 11:00-14:00` |
+| "we open at 10 on weekdays now" | `gbp hours set mon-fri 10:00-21:00` |
+| "we're not doing Sundays any more" | `gbp hours set sun closed` |
+| "scrap that, we're open Christmas Eve after all" | `gbp hours clear christmas-eve` |
+| a photo, with "put this on Google" | `gbp photo incoming/<file> --category FOOD_AND_DRINK` |
+| "tell people about Saturday pho" | `gbp post "Fresh pho every Saturday, 11 to 3."` |
+| "what are people saying?" | `gbp reviews` · `gbp reviews --unanswered` |
+| "reply to that one" | `gbp reply 1 "<their words, or yours if they say 'you write it'>"` |
+| "what does Google have for us?" | `gbp show` |
+
+`gbp hours holidays` lists the holiday names it knows (including Pioneer
+Day) with the dates they fall on — use a name rather than working out a date
+yourself, and never guess a date. Everything takes `--dry-run` if you want
+to see the request first.
+
+**What to say afterwards**, in their words, quoting the read-back:
+
+> Done — Google now shows you closed on Thursday 26 November. It can take a
+> few minutes to show everywhere.
+
+**What Google will not do, so don't promise it:**
+
+- It stores the *date*, not the holiday's name. Their listing says closed on
+  26 November; it does not say "Thanksgiving".
+- A post drops off the listing after about a week. That is Google, not us.
+- Photos are screened; some take minutes to appear and a few are rejected
+  without a reason.
+- An owner reply shows under the review signed with the business name. You
+  cannot delete a customer's review — if they ask, say so plainly: the only
+  route is reporting it to Google as a policy violation, which Taylor can do
+  (`FORWARD-TO-TAYLOR:`), and most reports are refused.
+- Menus are not on this tool yet (ROADMAP B16).
+
+**Rules for review replies.** Only reply when they have asked you to, and
+keep to what they tell you. Short, human, no marketing. Never argue with a
+bad review, never offer money, never mention a customer's private details.
+If they say "you write it", draft it, reply, and text them what you posted.
+
+**The counter demo** (Taylor's free first job at a restaurant). The kit's
+fault line says what is wrong — no hours, three photos, an unanswered
+review. Once the owner has added the manager, the fix is one command while
+he stands there, and the read-back on the phone is the proof:
+`gbp hours set mon-sat 11:00-21:00 sun closed`, then `gbp show`.
+
+**When the listing is not connected**, none of this works and the tool says
+so. Go back to the page above and get the manager invite in first.
+
+**If Google refuses** with "quota is 0", the API access is not approved yet.
+That is ours to fix, not theirs: say the change needs Taylor for the moment
+and use `FORWARD-TO-TAYLOR: <the change>`.
 
 ## Custom domain
 

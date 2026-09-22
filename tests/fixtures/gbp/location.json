@@ -1,0 +1,123 @@
+{
+ "name": "locations/129",
+ "title": "Fong Asian Dining",
+ "storefrontAddress": {
+  "regionCode": "US",
+  "languageCode": "en",
+  "postalCode": "84003",
+  "administrativeArea": "UT",
+  "locality": "American Fork",
+  "addressLines": [
+   "456 E State St #1200"
+  ]
+ },
+ "phoneNumbers": {
+  "primaryPhone": "(801) 701-0762"
+ },
+ "websiteUri": "",
+ "categories": {
+  "primaryCategory": {
+   "name": "categories/gcid:asian_restaurant",
+   "displayName": "Asian restaurant"
+  }
+ },
+ "regularHours": {
+  "periods": [
+   {
+    "openDay": "MONDAY",
+    "openTime": {
+     "hours": 11
+    },
+    "closeDay": "MONDAY",
+    "closeTime": {
+     "hours": 21
+    }
+   },
+   {
+    "openDay": "TUESDAY",
+    "openTime": {
+     "hours": 11
+    },
+    "closeDay": "TUESDAY",
+    "closeTime": {
+     "hours": 21
+    }
+   },
+   {
+    "openDay": "WEDNESDAY",
+    "openTime": {
+     "hours": 11
+    },
+    "closeDay": "WEDNESDAY",
+    "closeTime": {
+     "hours": 21
+    }
+   },
+   {
+    "openDay": "THURSDAY",
+    "openTime": {
+     "hours": 11
+    },
+    "closeDay": "THURSDAY",
+    "closeTime": {
+     "hours": 21
+    }
+   },
+   {
+    "openDay": "FRIDAY",
+    "openTime": {
+     "hours": 11
+    },
+    "closeDay": "FRIDAY",
+    "closeTime": {
+     "hours": 21
+    }
+   },
+   {
+    "openDay": "SATURDAY",
+    "openTime": {
+     "hours": 11
+    },
+    "closeDay": "SATURDAY",
+    "closeTime": {
+     "hours": 22
+    }
+   },
+   {
+    "openDay": "SUNDAY",
+    "openTime": {
+     "hours": 12
+    },
+    "closeDay": "SUNDAY",
+    "closeTime": {
+     "hours": 20
+    }
+   }
+  ]
+ },
+ "specialHours": {
+  "specialHourPeriods": [
+   {
+    "startDate": {
+     "year": 2026,
+     "month": 12,
+     "day": 25
+    },
+    "endDate": {
+     "year": 2026,
+     "month": 12,
+     "day": 25
+    },
+    "closed": true
+   }
+  ]
+ },
+ "openInfo": {
+  "status": "OPEN",
+  "canReopen": true
+ },
+ "metadata": {
+  "placeId": "ChIJuaCR_WKBTYcRWeupAei6-j4",
+  "mapsUri": "https://maps.google.com/maps?cid=4538145080152288089"
+ }
+}

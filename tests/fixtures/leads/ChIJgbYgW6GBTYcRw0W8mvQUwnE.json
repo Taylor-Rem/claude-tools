@@ -1,0 +1,250 @@
+{
+ "id": "ChIJgbYgW6GBTYcRw0W8mvQUwnE",
+ "displayName": {
+  "text": "Kahi Sushi",
+  "languageCode": "en"
+ },
+ "formattedAddress": "743 W 100 N, American Fork, UT 84003, USA",
+ "nationalPhoneNumber": "(801) 555-0103",
+ "rating": 4.8,
+ "userRatingCount": 590,
+ "businessStatus": "CLOSED_TEMPORARILY",
+ "googleMapsUri": "https://maps.google.com/?cid=8968829508073886711",
+ "location": {
+  "latitude": 40.3784915,
+  "longitude": -111.8191085
+ },
+ "primaryTypeDisplayName": {
+  "text": "Restaurant"
+ },
+ "photos": [
+  {
+   "name": "places/ChIJgbYgW6GBTYcRw0W8mvQUwnE/photos/0",
+   "widthPx": 1000,
+   "heightPx": 800
+  },
+  {
+   "name": "places/ChIJgbYgW6GBTYcRw0W8mvQUwnE/photos/1",
+   "widthPx": 1000,
+   "heightPx": 800
+  },
+  {
+   "name": "places/ChIJgbYgW6GBTYcRw0W8mvQUwnE/photos/2",
+   "widthPx": 1000,
+   "heightPx": 800
+  },
+  {
+   "name": "places/ChIJgbYgW6GBTYcRw0W8mvQUwnE/photos/3",
+   "widthPx": 1000,
+   "heightPx": 800
+  },
+  {
+   "name": "places/ChIJgbYgW6GBTYcRw0W8mvQUwnE/photos/4",
+   "widthPx": 1000,
+   "heightPx": 800
+  },
+  {
+   "name": "places/ChIJgbYgW6GBTYcRw0W8mvQUwnE/photos/5",
+   "widthPx": 1000,
+   "heightPx": 800
+  }
+ ],
+ "reviews": [],
+ "websiteUri": "https://kahisushi.com/",
+ "regularOpeningHours": {
+  "openNow": true,
+  "periods": [
+   {
+    "open": {
+     "day": 0,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 0,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 1,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 1,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 2,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 2,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 3,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 3,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 4,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 4,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 5,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 5,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 6,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 6,
+     "hour": 21,
+     "minute": 0
+    }
+   }
+  ],
+  "weekdayDescriptions": [
+   "Monday: 11:00 AM \u2013 9:00 PM",
+   "Tuesday: 11:00 AM \u2013 9:00 PM",
+   "Wednesday: 11:00 AM \u2013 9:00 PM",
+   "Thursday: 11:00 AM \u2013 9:00 PM",
+   "Friday: 11:00 AM \u2013 9:00 PM",
+   "Saturday: 11:00 AM \u2013 9:00 PM",
+   "Sunday: 11:00 AM \u2013 9:00 PM"
+  ]
+ },
+ "currentOpeningHours": {
+  "openNow": true,
+  "periods": [
+   {
+    "open": {
+     "day": 0,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 0,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 1,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 1,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 2,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 2,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 3,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 3,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 4,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 4,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 5,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 5,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 6,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 6,
+     "hour": 21,
+     "minute": 0
+    }
+   }
+  ],
+  "weekdayDescriptions": [
+   "Monday: 11:00 AM \u2013 9:00 PM",
+   "Tuesday: 11:00 AM \u2013 9:00 PM",
+   "Wednesday: 11:00 AM \u2013 9:00 PM",
+   "Thursday: 11:00 AM \u2013 9:00 PM",
+   "Friday: 11:00 AM \u2013 9:00 PM",
+   "Saturday: 11:00 AM \u2013 9:00 PM",
+   "Sunday: 11:00 AM \u2013 9:00 PM"
+  ]
+ }
+}

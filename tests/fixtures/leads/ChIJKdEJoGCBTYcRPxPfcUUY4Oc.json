@@ -1,0 +1,260 @@
+{
+ "id": "ChIJKdEJoGCBTYcRPxPfcUUY4Oc",
+ "displayName": {
+  "text": "China Isle Restaurant",
+  "languageCode": "en"
+ },
+ "formattedAddress": "323 S 500 E, American Fork, UT 84003, USA",
+ "nationalPhoneNumber": "(801) 756-9118",
+ "rating": 4.1,
+ "userRatingCount": 1000,
+ "businessStatus": "OPERATIONAL",
+ "googleMapsUri": "https://maps.google.com/?cid=6271380325649816313",
+ "location": {
+  "latitude": 40.3704276,
+  "longitude": -111.784758
+ },
+ "primaryTypeDisplayName": {
+  "text": "Restaurant"
+ },
+ "photos": [
+  {
+   "name": "places/ChIJKdEJoGCBTYcRPxPfcUUY4Oc/photos/0",
+   "widthPx": 1000,
+   "heightPx": 800
+  },
+  {
+   "name": "places/ChIJKdEJoGCBTYcRPxPfcUUY4Oc/photos/1",
+   "widthPx": 1000,
+   "heightPx": 800
+  },
+  {
+   "name": "places/ChIJKdEJoGCBTYcRPxPfcUUY4Oc/photos/2",
+   "widthPx": 1000,
+   "heightPx": 800
+  },
+  {
+   "name": "places/ChIJKdEJoGCBTYcRPxPfcUUY4Oc/photos/3",
+   "widthPx": 1000,
+   "heightPx": 800
+  },
+  {
+   "name": "places/ChIJKdEJoGCBTYcRPxPfcUUY4Oc/photos/4",
+   "widthPx": 1000,
+   "heightPx": 800
+  },
+  {
+   "name": "places/ChIJKdEJoGCBTYcRPxPfcUUY4Oc/photos/5",
+   "widthPx": 1000,
+   "heightPx": 800
+  },
+  {
+   "name": "places/ChIJKdEJoGCBTYcRPxPfcUUY4Oc/photos/6",
+   "widthPx": 1000,
+   "heightPx": 800
+  },
+  {
+   "name": "places/ChIJKdEJoGCBTYcRPxPfcUUY4Oc/photos/7",
+   "widthPx": 1000,
+   "heightPx": 800
+  }
+ ],
+ "reviews": [],
+ "websiteUri": "http://www.chinaisleamericanfork.com/",
+ "regularOpeningHours": {
+  "openNow": true,
+  "periods": [
+   {
+    "open": {
+     "day": 0,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 0,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 1,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 1,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 2,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 2,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 3,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 3,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 4,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 4,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 5,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 5,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 6,
+     "hour": 16,
+     "minute": 0
+    },
+    "close": {
+     "day": 6,
+     "hour": 21,
+     "minute": 0
+    }
+   }
+  ],
+  "weekdayDescriptions": [
+   "Monday: 11:00 AM \u2013 9:00 PM",
+   "Tuesday: 11:00 AM \u2013 9:00 PM",
+   "Wednesday: 11:00 AM \u2013 9:00 PM",
+   "Thursday: 11:00 AM \u2013 9:00 PM",
+   "Friday: 11:00 AM \u2013 9:00 PM",
+   "Saturday: 11:00 AM \u2013 9:00 PM",
+   "Sunday: 11:00 AM \u2013 9:00 PM"
+  ]
+ },
+ "currentOpeningHours": {
+  "openNow": true,
+  "periods": [
+   {
+    "open": {
+     "day": 0,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 0,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 1,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 1,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 2,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 2,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 3,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 3,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 4,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 4,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 5,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 5,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 6,
+     "hour": 16,
+     "minute": 0
+    },
+    "close": {
+     "day": 6,
+     "hour": 21,
+     "minute": 0
+    }
+   }
+  ],
+  "weekdayDescriptions": [
+   "Monday: 11:00 AM \u2013 9:00 PM",
+   "Tuesday: 11:00 AM \u2013 9:00 PM",
+   "Wednesday: 11:00 AM \u2013 9:00 PM",
+   "Thursday: 11:00 AM \u2013 9:00 PM",
+   "Friday: 11:00 AM \u2013 9:00 PM",
+   "Saturday: 11:00 AM \u2013 9:00 PM",
+   "Sunday: 11:00 AM \u2013 9:00 PM"
+  ]
+ }
+}

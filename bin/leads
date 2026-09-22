@@ -1,0 +1,630 @@
+#!/usr/bin/env python3
+"""leads — the restaurant pipeline by text. ROADMAP B18 today (the Saturday
+kit); B7 adds logging, follow-ups and the week's numbers on top.
+
+  leads kit                    # Saturday's six counters, faults and the opener (one page)
+  leads kit --for 2026-10-04   # a different Saturday
+  leads kit --last             # reprint the last kit without touching Google
+  leads kit --census-only      # no Places calls: what the census alone knows
+  leads candidates [--n 20]    # the ranked pool the kit picks from (no spend)
+  leads doctor
+
+The pick: marketplace-only independents from the census
+(plateful/plateful-sales/wasatch.db: on DoorDash/Uber/Grubhub with no ordering
+of their own), operational, with a phone, at least --min-reviews reviews,
+nearest to home first, skipping anyone kitted in the last eight weeks. Each
+candidate's Google listing is read through Place Details (Places API New) until
+six are open Saturday by 11:30 (hours unknown counts, flagged). The page lists
+them in visiting order from home with what is wrong on the listing (no hours,
+closed Saturdays, few photos, no website or a marketplace link for one, a low
+recent review, a stale listing), then the counter opener.
+
+Money: one Place Details call per candidate, cached seven days under
+~/.local/state/claude-tools/leads/details/, roughly $0.025 each at the
+Enterprise + Atmosphere SKU; each run appends one line to the toolbelt ledger
+(~/.local/state/claude-tools/ledger.jsonl) with the calls it made. Owner
+replies to reviews are not in the Places API, so "unanswered" is not claimed;
+that arrives with the Business Profile connection (B11/B12).
+
+Config, by name, never printed:
+  GOOGLE_MAPS_API_KEY   ~/.config/claude-tools/env (setenv.sh); falls back to
+                        plateful/plateful/.env. Without it the kit is census-only
+                        and says so on its first line.
+  LEADS_DB              the census (default plateful/plateful-sales/wasatch.db)
+  LEADS_HOME            "lat,lng" of home (default American Fork)
+  LEADS_STATE           state dir (default ~/.local/state/claude-tools/leads)
+"""
+
+import argparse
+import datetime as dt
+import json
+import math
+import os
+import re
+import sqlite3
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+ENV_FILE = Path(os.environ.get("CLAUDE_TOOLS_ENV", Path.home() / ".config/claude-tools/env"))
+PROJECTS = Path(os.environ.get("PROJECTS_DIR", Path.home() / "projects"))
+CENSUS = Path(os.environ.get("LEADS_DB", PROJECTS / "plateful/plateful-sales/wasatch.db"))
+PLATEFUL_ENV = PROJECTS / "plateful/plateful/.env"
+STATE = Path(os.environ.get("LEADS_STATE", Path.home() / ".local/state/claude-tools/leads"))
+LEDGER = Path(os.environ.get("LEADS_LEDGER", Path.home() / ".local/state/claude-tools/ledger.jsonl"))
+TZ = ZoneInfo("America/Denver")
+HOME_DEFAULT = (40.3769, -111.7958)  # American Fork (export_tier1.py's home base)
+
+DETAILS_URL = "https://places.googleapis.com/v1/places/"
+DETAILS_FIELDS = ",".join([
+    "id", "displayName", "formattedAddress", "nationalPhoneNumber", "websiteUri",
+    "rating", "userRatingCount", "businessStatus", "googleMapsUri", "location",
+    "regularOpeningHours", "currentOpeningHours", "photos", "reviews", "primaryTypeDisplayName",
+])
+DETAILS_COST_USD = 0.025      # Place Details, Enterprise + Atmosphere SKU (approx.)
+CACHE_DAYS = 7
+REPEAT_WEEKS = 8
+LATEST_OPEN = (11, 30)        # open Saturday by this or skip
+STALE_REVIEW_DAYS = 120
+SKIP_TYPES = {"gas_station", "convenience_store", "supermarket", "liquor_store", "food_court"}
+MARKETPLACE_HOSTS = ("doordash", "order.online", "ubereats", "grubhub", "toasttab", "facebook",
+                     "instagram", "linktr", "yelp", "slicelife", "menufy", "postmates", "seamless")
+DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+
+
+def die(msg, code=1):
+    print(f"leads: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+# ---- config -------------------------------------------------------------------
+
+def _env_file(path):
+    keys = {}
+    if path.exists():
+        for line in path.read_text().splitlines():
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                keys[k.strip()] = v.strip().strip('"').strip("'")
+    return keys
+
+
+def places_key():
+    """(key, where) — the toolbelt first, then Plateful's own .env. Never printed."""
+    val = os.environ.get("GOOGLE_MAPS_API_KEY") or _env_file(ENV_FILE).get("GOOGLE_MAPS_API_KEY")
+    if val:
+        return val, "toolbelt"
+    val = _env_file(PLATEFUL_ENV).get("GOOGLE_MAPS_API_KEY")
+    if val:
+        return val, "plateful/.env"
+    return None, None
+
+
+def home():
+    raw = os.environ.get("LEADS_HOME")
+    if raw:
+        try:
+            lat, lng = (float(x) for x in raw.split(","))
+            return lat, lng
+        except ValueError:
+            die("LEADS_HOME must be 'lat,lng'")
+    return HOME_DEFAULT
+
+
+def miles(a, b):
+    lat1, lng1 = a
+    lat2, lng2 = b
+    dy = (lat2 - lat1) * 69.0
+    dx = (lng2 - lng1) * 69.0 * math.cos(math.radians(lat1))
+    return math.hypot(dx, dy)
+
+
+def next_saturday(today=None):
+    today = today or dt.datetime.now(TZ).date()
+    return today + dt.timedelta(days=(5 - today.weekday()) % 7)
+
+
+# ---- the census ----------------------------------------------------------------
+
+def census_candidates(min_reviews=25):
+    if not CENSUS.exists():
+        die(f"no census at {CENSUS} (LEADS_DB)")
+    conn = sqlite3.connect(f"file:{CENSUS}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("""
+        SELECT r.place_id, p.name, p.address, p.locality, p.phone, p.website, p.has_website,
+               p.rating, p.reviews, p.lat, p.lng, p.primary_type, p.google_maps_uri, p.refreshed_at,
+               r.on_doordash, r.on_uber, r.on_grubhub, r.status, r.last_action_date, r.next_followup
+        FROM restaurants r JOIN place_cache p ON p.place_id = r.place_id
+        WHERE r.channel_class = 'marketplace-only'
+          AND COALESCE(r.is_chain, 0) = 0
+          AND (p.business_status IS NULL OR p.business_status = 'OPERATIONAL')
+          AND p.lat IS NOT NULL AND p.lng IS NOT NULL
+          AND r.status = 'Open'
+          AND COALESCE(p.reviews, 0) >= ?
+          AND COALESCE(p.phone, '') != ''
+    """, (min_reviews,)).fetchall()
+    conn.close()
+    h = home()
+    out = []
+    for r in rows:
+        d = dict(r)
+        if d["primary_type"] in SKIP_TYPES:
+            continue
+        d["miles"] = round(miles(h, (d["lat"], d["lng"])), 1)
+        out.append(d)
+    out.sort(key=lambda d: (d["miles"], -(d["reviews"] or 0)))
+    return out
+
+
+def census_stamp(cands):
+    stamps = sorted({(c.get("refreshed_at") or "")[:10] for c in cands if c.get("refreshed_at")})
+    return stamps[-1] if stamps else "?"
+
+
+# ---- kits already sent ---------------------------------------------------------
+
+def kits_log():
+    p = STATE / "kits.jsonl"
+    if not p.exists():
+        return []
+    out = []
+    for line in p.read_text().splitlines():
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return out
+
+
+def recently_kitted(for_date, weeks=REPEAT_WEEKS):
+    """place_id -> kit date for places on a kit in the last N weeks, except the
+    kit for this same date (re-running Friday's kit gives the same six)."""
+    since = for_date - dt.timedelta(weeks=weeks)
+    seen = {}
+    for k in kits_log():
+        try:
+            d = dt.date.fromisoformat(k["for"])
+        except (KeyError, ValueError):
+            continue
+        if d == for_date or d < since:
+            continue
+        for pid in k.get("place_ids", []):
+            seen[pid] = k["for"]
+    return seen
+
+
+# ---- Google Place Details ------------------------------------------------------
+
+class Places:
+    """Place Details with a seven-day cache and a fixture mode for tests."""
+
+    def __init__(self, key, where, fixture=None, refresh=False):
+        self.key, self.where, self.fixture, self.refresh = key, where, fixture, refresh
+        self.calls, self.failed = 0, None
+        (STATE / "details").mkdir(parents=True, exist_ok=True)
+
+    def get(self, place_id):
+        if self.fixture:
+            p = Path(self.fixture) / f"{place_id}.json"
+            return json.loads(p.read_text()) if p.exists() else None
+        cache = STATE / "details" / f"{place_id}.json"
+        if cache.exists() and not self.refresh:
+            age = time.time() - cache.stat().st_mtime
+            if age < CACHE_DAYS * 86400:
+                return json.loads(cache.read_text())
+        if not self.key or self.failed:
+            return None
+        req = urllib.request.Request(DETAILS_URL + place_id, headers={
+            "X-Goog-Api-Key": self.key, "X-Goog-FieldMask": DETAILS_FIELDS,
+            "Accept": "application/json", "User-Agent": "claude-tools/leads",
+        })
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                data = json.loads(resp.read().decode())
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode(errors="replace")[:300]
+            if exc.code in (400, 401, 403, 429):
+                self.failed = f"Places refused the key ({exc.code}; from {self.where}): {body.strip()}"
+                return None
+            if exc.code == 404:
+                data = {"id": place_id, "businessStatus": "GONE"}
+            else:
+                self.failed = f"Places error {exc.code}: {body.strip()}"
+                return None
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            self.failed = f"Places unreachable: {exc}"
+            return None
+        self.calls += 1
+        cache.write_text(json.dumps(data))
+        return data
+
+
+def ledger_append(event):
+    try:
+        LEDGER.parent.mkdir(parents=True, exist_ok=True)
+        with open(LEDGER, "a") as f:
+            f.write(json.dumps(event) + "\n")
+    except OSError as exc:
+        print(f"leads: ledger write failed ({exc})", file=sys.stderr)
+
+
+# ---- reading a listing ---------------------------------------------------------
+
+def saturday_open(details):
+    """(hour, minute) of the earliest Saturday opening, 'closed', or None (no hours)."""
+    hours = (details or {}).get("regularOpeningHours") or {}
+    periods = hours.get("periods")
+    if not periods:
+        return None
+    opens = []
+    for p in periods:
+        o = p.get("open") or {}
+        if o.get("day") == 6:
+            opens.append((o.get("hour", 0), o.get("minute", 0)))
+        elif "close" not in p and o.get("day") is None:
+            return (0, 0)  # open 24/7 comes as one open with no close
+    return min(opens) if opens else "closed"
+
+
+def clock(hm):
+    h, m = hm
+    suffix = "am" if h < 12 else "pm"
+    h12 = h % 12 or 12
+    return f"{h12}:{m:02d}{suffix}" if m else f"{h12}{suffix}"
+
+
+def host_of(url):
+    m = re.match(r"^(?:https?://)?(?:www\.)?([^/]+)", url or "")
+    return (m.group(1) if m else "").lower()
+
+
+def marketplace_link(url):
+    h = host_of(url)
+    for mk in MARKETPLACE_HOSTS:
+        if mk in h:
+            return {"order.online": "DoorDash Storefront", "doordash": "DoorDash", "ubereats": "Uber Eats",
+                    "grubhub": "Grubhub", "toasttab": "Toast", "facebook": "Facebook", "instagram": "Instagram",
+                    "linktr": "Linktree", "yelp": "Yelp", "slicelife": "Slice", "menufy": "Menufy",
+                    "postmates": "Postmates", "seamless": "Seamless"}[mk]
+    return None
+
+
+def platforms(c):
+    on = [name for col, name in (("on_doordash", "DoorDash"), ("on_uber", "Uber Eats"), ("on_grubhub", "Grubhub"))
+          if (c.get(col) or "").strip().lower() == "yes"]
+    maybe = [name for col, name in (("on_doordash", "DoorDash"), ("on_uber", "Uber Eats"), ("on_grubhub", "Grubhub"))
+             if (c.get(col) or "").strip().lower() == "maybe"]
+    s = " + ".join(on) if on else ""
+    if maybe:
+        s += (" (maybe " if s else "maybe ") + " + ".join(maybe) + (")" if s else "")
+    return s or "a marketplace"
+
+
+def review_age_days(rev, today):
+    ts = rev.get("publishTime")
+    if not ts:
+        return None
+    try:
+        d = dt.datetime.fromisoformat(ts.replace("Z", "+00:00")).date()
+    except ValueError:
+        return None
+    return (today - d).days
+
+
+def faults(c, details, today):
+    """What is wrong on the listing, worst first. Also returns the one-line
+    Google summary. Works with details=None (census-only)."""
+    out = []
+    d = details or {}
+    website = d.get("websiteUri") if details else (c.get("website") if (c.get("has_website") or "").lower() == "yes" else None)
+    rating = d.get("rating") if details else c.get("rating")
+    n_reviews = d.get("userRatingCount") if details else c.get("reviews")
+    plat = platforms(c)
+
+    if not website:
+        out.append(f"no website — Google sends people to {plat}")
+    else:
+        mk = marketplace_link(website)
+        if mk:
+            out.append(f"the website link is a {mk} page, not their own")
+
+    if details:
+        sat = saturday_open(details)
+        if sat is None:
+            out.append("no hours on Google")
+        elif sat == "closed":
+            out.append("Google says closed Saturdays")
+        cur = (d.get("currentOpeningHours") or {}).get("weekdayDescriptions")
+        reg = (d.get("regularOpeningHours") or {}).get("weekdayDescriptions")
+        if cur and reg and cur != reg:
+            out.append("special hours set this week (check they're right)")
+        n_photos = len(d.get("photos") or [])
+        if n_photos == 0:
+            out.append("no photos")
+        elif n_photos < 5:
+            out.append(f"only {n_photos} photos")
+        revs = d.get("reviews") or []
+        newest = None
+        for r in revs:
+            age = review_age_days(r, today)
+            if age is not None and (newest is None or age < newest):
+                newest = age
+        low = [r for r in revs if (r.get("rating") or 5) <= 3]
+        if low:
+            r = min(low, key=lambda r: review_age_days(r, today) or 9999)
+            out.append(f"a {r.get('rating')}★ review {r.get('relativePublishTimeDescription') or ''}".strip())
+        if newest is not None and newest > STALE_REVIEW_DAYS:
+            out.append(f"newest review is {newest // 30} months old")
+        if not d.get("nationalPhoneNumber"):
+            out.append("no phone on Google")
+    if n_reviews is not None and n_reviews < 100:
+        out.append(f"only {n_reviews} reviews")
+    if rating is not None and rating < 4.0:
+        out.append(f"rating {rating}")
+
+    stars = f"{rating}★ ({n_reviews})" if rating is not None else "no rating"
+    if details:
+        n_photos = len(d.get("photos") or [])
+        photos = "10+ photos" if n_photos >= 10 else f"{n_photos} photos"
+        web = "no website" if not website else (f"website → {marketplace_link(website)}" if marketplace_link(website) else host_of(website))
+        summary = f"{stars} · {photos} · {web} · on {plat}"
+    else:
+        web = "no website" if not website else (f"website → {marketplace_link(website)}" if marketplace_link(website) else host_of(website))
+        summary = f"{stars} · {web} · on {plat} · (census only)"
+    return out, summary
+
+
+# ---- the kit --------------------------------------------------------------------
+
+def route(picks, start):
+    """Nearest-neighbour from home. Six stops; good enough for a morning."""
+    left, order, at = list(picks), [], start
+    while left:
+        nxt = min(left, key=lambda p: miles(at, (p["lat"], p["lng"])))
+        left.remove(nxt)
+        order.append(nxt)
+        at = (nxt["lat"], nxt["lng"])
+    return order
+
+
+def loop_miles(order, start):
+    total, at = 0.0, start
+    for p in order:
+        total += miles(at, (p["lat"], p["lng"]))
+        at = (p["lat"], p["lng"])
+    return total + miles(at, start)
+
+
+def build_kit(args):
+    for_date = dt.date.fromisoformat(args.for_date) if args.for_date else next_saturday()
+    today = dt.datetime.now(TZ).date()
+    key, where = (None, None) if args.census_only else places_key()
+    places = Places(key, where, fixture=args.fixture, refresh=args.refresh)
+    cands = census_candidates(args.min_reviews)
+    skip = {} if args.allow_repeat else recently_kitted(for_date)
+    pool = [c for c in cands if c["miles"] <= args.radius and c["place_id"] not in skip]
+    if not pool:
+        die(f"no candidates within {args.radius} miles of home; widen --radius")
+
+    picks, skipped, cap = [], [], max(args.n * 5, 20)
+    for c in pool[:cap]:
+        if len(picks) >= args.n:
+            break
+        details = places.get(c["place_id"]) if (key or args.fixture) else None
+        if places.failed and not args.fixture:
+            details = None
+        c = dict(c)
+        c["details"] = details
+        if details:
+            if details.get("businessStatus") not in (None, "OPERATIONAL"):
+                skipped.append((c["name"], details.get("businessStatus", "").lower().replace("_", " ")))
+                continue
+            sat = saturday_open(details)
+            if sat == "closed":
+                skipped.append((c["name"], "closed Saturdays"))
+                continue
+            if sat is not None and sat > LATEST_OPEN:
+                skipped.append((c["name"], f"opens Sat {clock(sat)}"))
+                continue
+            c["sat_open"] = sat
+            loc = details.get("location") or {}
+            if loc.get("latitude") is not None:
+                c["lat"], c["lng"] = loc["latitude"], loc["longitude"]
+            c["address"] = details.get("formattedAddress") or c["address"]
+            c["phone"] = details.get("nationalPhoneNumber") or c["phone"]
+            c["maps"] = clean_maps(details.get("googleMapsUri") or c["google_maps_uri"])
+            c["name"] = (details.get("displayName") or {}).get("text") or c["name"]
+        else:
+            c["sat_open"] = None
+            c["maps"] = clean_maps(c["google_maps_uri"])
+        c["faults"], c["summary"] = faults(c, details, today)
+        picks.append(c)
+
+    start = home()
+    order = route(picks, start)
+    for p in order:
+        p["miles"] = round(miles(start, (p["lat"], p["lng"])), 1)
+
+    if places.calls:
+        ledger_append({
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()), "kind": "places_details",
+            "tool": "leads", "calls": places.calls, "cost_usd": round(places.calls * DETAILS_COST_USD, 3),
+            "billed_to": f"google:GOOGLE_MAPS_API_KEY({where})", "project": "global", "for": for_date.isoformat(),
+        })
+
+    page = render(order, for_date, today, mode=("fixture" if args.fixture else "google" if (key and not places.failed) else "census"),
+                  note=places.failed, skipped=skipped, census_date=census_stamp(cands), loop=loop_miles(order, start),
+                  short=len(order) < args.n, n=args.n)
+
+    if not args.fixture and not args.no_save:
+        (STATE / "kits").mkdir(parents=True, exist_ok=True)
+        (STATE / "kits" / f"{for_date.isoformat()}.md").write_text(page)
+        with open(STATE / "kits.jsonl", "a") as f:
+            f.write(json.dumps({"ts": dt.datetime.now(TZ).isoformat(timespec="seconds"), "for": for_date.isoformat(),
+                                "place_ids": [p["place_id"] for p in order], "names": [p["name"] for p in order],
+                                "mode": "google" if key and not places.failed else "census", "calls": places.calls}) + "\n")
+    return page, order
+
+
+def clean_maps(url):
+    """The census stores Google's tracking suffix (&g_mp=...); the phone doesn't need it."""
+    return re.sub(r"[&?]g_mp=[^&]*", "", url or "")
+
+
+def short_address(addr):
+    """'123 E Main St, American Fork, UT 84003, USA' -> '123 E Main St, American Fork'."""
+    parts = [p.strip() for p in (addr or "").split(",")]
+    return ", ".join(parts[:2]) if len(parts) >= 2 else (addr or "")
+
+
+def render(order, for_date, today, mode, note, skipped, census_date, loop, short, n):
+    lines = []
+    head = f"Saturday kit — {for_date.strftime('%a %-d %b')}, 9–11 · {len(order)} counters from American Fork · ~{loop:.0f} mi loop"
+    lines.append(head)
+    if mode == "google":
+        lines.append(f"(Google listings read {today.strftime('%a %-d %b')}; census {census_date})")
+    elif mode == "fixture":
+        lines.append("(FIXTURE listings — a test, not Google)")
+    else:
+        lines.append(f"(census {census_date} only — no Places key on this machine, so hours, photos and recent reviews are missing; TAYLOR-TODO §1)")
+        if note:
+            lines.append(f"({note})")
+    if mode == "google" and note:
+        lines.append(f"({note})")
+    lines.append("")
+    for i, p in enumerate(order, 1):
+        opens = f"opens Sat {clock(p['sat_open'])}" if isinstance(p.get("sat_open"), tuple) else "Sat hours unknown, call first"
+        phone = p.get("phone") or "no phone"
+        lines.append(f"{i}. {p['name']} — {p['miles']} mi · {short_address(p['address'])} · {opens} · {phone}")
+        lines.append(f"   Google: {p['summary']}")
+        lines.append(f"   Wrong: {' · '.join(p['faults']) if p['faults'] else 'nothing obvious — lead with the fee math'}")
+        if p.get("maps"):
+            lines.append(f"   {p['maps']}")
+        lines.append("")
+    if short:
+        lines.append(f"(only {len(order)} of {n}: the rest of the nearby pool is closed Saturday mornings; widen --radius)")
+        lines.append("")
+    if skipped:
+        lines.append("Skipped: " + "; ".join(f"{name} ({why})" for name, why in skipped[:8]))
+        lines.append("")
+    lines += [
+        "Open with the fault, not the pitch: \"Your Google listing is where people find you and it's got <the thing above>. "
+        "Text me the fix and it's live today, free. If you want it kept right, that's $99 a month and I'm on the hook for all of it.\"",
+        "The line to test: \"Text Patch and it's done. Your Google listing, your menu, your hours, changed in a minute by a number you text. It's AI, with someone on the hook.\"",
+        "Marketplace-only close: \"You're on DoorDash and Uber Eats — on a $6k month they keep about $1,500. The same orders through your own page cost about $480 all-in, and you keep every customer's name.\" Ordering is 4% instead of 25%; founding offer 0% platform fee for three months, the monthly never discounted.",
+        "",
+        "Log every conversation in the pipeline sheet (leads log lands with B7). Owner replies to reviews aren't in the Places API — glance at the listing for unanswered ones.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+# ---- commands -------------------------------------------------------------------
+
+def cmd_kit(args):
+    if args.last:
+        kits = sorted((STATE / "kits").glob("*.md")) if (STATE / "kits").exists() else []
+        if not kits:
+            die("no kit yet; run `leads kit`")
+        print(kits[-1].read_text(), end="")
+        return
+    page, order = build_kit(args)
+    if args.json:
+        print(json.dumps([{k: v for k, v in p.items() if k != "details"} for p in order], indent=1, default=str))
+        return
+    print(page, end="")
+
+
+def cmd_candidates(args):
+    cands = census_candidates(args.min_reviews)
+    for_date = next_saturday()
+    skip = recently_kitted(for_date)
+    print(f"{len(cands)} marketplace-only independents with a phone and ≥{args.min_reviews} reviews; nearest first (census {census_stamp(cands)})")
+    shown = 0
+    for c in cands:
+        if c["miles"] > args.radius:
+            break
+        if shown >= args.n:
+            break
+        tag = f"  (kitted {skip[c['place_id']]})" if c["place_id"] in skip else ""
+        web = "no site" if (c.get("has_website") or "").lower() != "yes" else (marketplace_link(c["website"]) or host_of(c["website"]))
+        print(f"  {c['miles']:>4} mi  {c['name']} · {c['locality']} · {c['rating']}★ ({c['reviews']}) · {web} · on {platforms(c)}{tag}")
+        shown += 1
+
+
+def cmd_doctor(args):
+    ok = True
+    print(f"census: {CENSUS} {'ok' if CENSUS.exists() else 'MISSING'}")
+    if CENSUS.exists():
+        cands = census_candidates(25)
+        print(f"  {len(cands)} marketplace-only independents (phone, ≥25 reviews); {sum(c['miles'] <= 10 for c in cands)} within 10 mi of home; census {census_stamp(cands)}")
+    else:
+        ok = False
+    key, where = places_key()
+    if key:
+        print(f"GOOGLE_MAPS_API_KEY: set ({where})")
+        # Place Details with an IDs-only mask is the free SKU: an auth check that costs nothing.
+        req = urllib.request.Request(DETAILS_URL + "ChIJN1t_tDeuEmsRUsoyG83frY4", headers={
+            "X-Goog-Api-Key": key, "X-Goog-FieldMask": "id", "User-Agent": "claude-tools/leads"})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                json.loads(resp.read().decode())
+            print("  Places API (New): ok")
+        except urllib.error.HTTPError as exc:
+            print(f"  Places API (New): FAIL {exc.code} — {exc.read().decode(errors='replace')[:200].strip()}")
+            ok = False
+        except (urllib.error.URLError, OSError) as exc:
+            print(f"  Places API (New): unreachable ({exc})")
+            ok = False
+    else:
+        print("GOOGLE_MAPS_API_KEY: not set — census-only kits until `setenv.sh GOOGLE_MAPS_API_KEY` (TAYLOR-TODO §1)")
+        ok = False
+    lat, lng = home()
+    print(f"home: {lat},{lng}{' (LEADS_HOME)' if os.environ.get('LEADS_HOME') else ' (American Fork)'}")
+    kits = kits_log()
+    print(f"state: {STATE}  kits sent: {len(kits)}" + (f", last for {kits[-1]['for']}" if kits else ""))
+    cached = len(list((STATE / "details").glob("*.json"))) if (STATE / "details").exists() else 0
+    print(f"  cached listings: {cached}  ledger: {LEDGER}")
+    print(f"next Saturday: {next_saturday()}")
+    sys.exit(0 if ok else 1)
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="leads", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd")
+
+    k = sub.add_parser("kit", help="Saturday's counters, one page")
+    k.add_argument("--for", dest="for_date", help="YYYY-MM-DD (default: next Saturday)")
+    k.add_argument("--n", type=int, default=6)
+    k.add_argument("--radius", type=float, default=10.0, help="miles from home (default 10)")
+    k.add_argument("--min-reviews", type=int, default=25)
+    k.add_argument("--census-only", action="store_true", help="no Google calls")
+    k.add_argument("--refresh", action="store_true", help="ignore the 7-day listing cache")
+    k.add_argument("--allow-repeat", action="store_true", help="don't skip places kitted in the last 8 weeks")
+    k.add_argument("--last", action="store_true", help="reprint the last kit")
+    k.add_argument("--no-save", action="store_true")
+    k.add_argument("--json", action="store_true")
+    k.add_argument("--fixture", help="dir of <place_id>.json Place Details (tests)")
+    k.set_defaults(fn=cmd_kit)
+
+    c = sub.add_parser("candidates", help="the pool the kit picks from (no spend)")
+    c.add_argument("--n", type=int, default=20)
+    c.add_argument("--radius", type=float, default=10.0)
+    c.add_argument("--min-reviews", type=int, default=25)
+    c.set_defaults(fn=cmd_candidates)
+
+    d = sub.add_parser("doctor")
+    d.set_defaults(fn=cmd_doctor)
+
+    args = ap.parse_args()
+    if not args.cmd:
+        ap.print_help()
+        sys.exit(0)
+    args.fn(args)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,43 @@
+{
+ "id": "ChIJy4pFOG-BTYcRs0SeRbDJe9k",
+ "displayName": {
+  "text": "Jalisco's Market & Taquer\u00eda",
+  "languageCode": "en"
+ },
+ "formattedAddress": "399 E State St, American Fork, UT 84003, USA",
+ "nationalPhoneNumber": "(801) 492-9327",
+ "rating": 4.4,
+ "userRatingCount": 499,
+ "businessStatus": "OPERATIONAL",
+ "googleMapsUri": "https://maps.google.com/?cid=3138749946109718270",
+ "location": {
+  "latitude": 40.3749764,
+  "longitude": -111.7883831
+ },
+ "primaryTypeDisplayName": {
+  "text": "Restaurant"
+ },
+ "photos": [
+  {
+   "name": "places/ChIJy4pFOG-BTYcRs0SeRbDJe9k/photos/0",
+   "widthPx": 1000,
+   "heightPx": 800
+  },
+  {
+   "name": "places/ChIJy4pFOG-BTYcRs0SeRbDJe9k/photos/1",
+   "widthPx": 1000,
+   "heightPx": 800
+  }
+ ],
+ "reviews": [
+  {
+   "rating": 5,
+   "relativePublishTimeDescription": "6 months ago",
+   "publishTime": "2026-03-09T12:00:00Z",
+   "text": {
+    "text": "Best tacos",
+    "languageCode": "en"
+   }
+  }
+ ]
+}

@@ -1,0 +1,289 @@
+{
+ "id": "ChIJEbLd52iBTYcRJiMaJeZBGvw",
+ "displayName": {
+  "text": "Whistle Wok",
+  "languageCode": "en"
+ },
+ "formattedAddress": "193 E 30 N, American Fork, UT 84003, USA",
+ "nationalPhoneNumber": "(801) 763-5377",
+ "rating": 4.4,
+ "userRatingCount": 739,
+ "businessStatus": "OPERATIONAL",
+ "googleMapsUri": "https://maps.google.com/?cid=5046673351238939726",
+ "location": {
+  "latitude": 40.377722,
+  "longitude": -111.79343
+ },
+ "primaryTypeDisplayName": {
+  "text": "Restaurant"
+ },
+ "photos": [
+  {
+   "name": "places/ChIJEbLd52iBTYcRJiMaJeZBGvw/photos/0",
+   "widthPx": 1000,
+   "heightPx": 800
+  },
+  {
+   "name": "places/ChIJEbLd52iBTYcRJiMaJeZBGvw/photos/1",
+   "widthPx": 1000,
+   "heightPx": 800
+  },
+  {
+   "name": "places/ChIJEbLd52iBTYcRJiMaJeZBGvw/photos/2",
+   "widthPx": 1000,
+   "heightPx": 800
+  },
+  {
+   "name": "places/ChIJEbLd52iBTYcRJiMaJeZBGvw/photos/3",
+   "widthPx": 1000,
+   "heightPx": 800
+  },
+  {
+   "name": "places/ChIJEbLd52iBTYcRJiMaJeZBGvw/photos/4",
+   "widthPx": 1000,
+   "heightPx": 800
+  },
+  {
+   "name": "places/ChIJEbLd52iBTYcRJiMaJeZBGvw/photos/5",
+   "widthPx": 1000,
+   "heightPx": 800
+  },
+  {
+   "name": "places/ChIJEbLd52iBTYcRJiMaJeZBGvw/photos/6",
+   "widthPx": 1000,
+   "heightPx": 800
+  },
+  {
+   "name": "places/ChIJEbLd52iBTYcRJiMaJeZBGvw/photos/7",
+   "widthPx": 1000,
+   "heightPx": 800
+  },
+  {
+   "name": "places/ChIJEbLd52iBTYcRJiMaJeZBGvw/photos/8",
+   "widthPx": 1000,
+   "heightPx": 800
+  },
+  {
+   "name": "places/ChIJEbLd52iBTYcRJiMaJeZBGvw/photos/9",
+   "widthPx": 1000,
+   "heightPx": 800
+  }
+ ],
+ "reviews": [
+  {
+   "rating": 5,
+   "relativePublishTimeDescription": "4 days ago",
+   "publishTime": "2026-09-21T12:00:00Z",
+   "text": {
+    "text": "Great",
+    "languageCode": "en"
+   }
+  },
+  {
+   "rating": 4,
+   "relativePublishTimeDescription": "20 days ago",
+   "publishTime": "2026-09-05T12:00:00Z",
+   "text": {
+    "text": "Good",
+    "languageCode": "en"
+   }
+  }
+ ],
+ "websiteUri": "http://order.online/business/whistle-wok",
+ "regularOpeningHours": {
+  "openNow": true,
+  "periods": [
+   {
+    "open": {
+     "day": 0,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 0,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 1,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 1,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 2,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 2,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 3,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 3,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 4,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 4,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 5,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 5,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 6,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 6,
+     "hour": 21,
+     "minute": 0
+    }
+   }
+  ],
+  "weekdayDescriptions": [
+   "Monday: 11:00 AM \u2013 9:00 PM",
+   "Tuesday: 11:00 AM \u2013 9:00 PM",
+   "Wednesday: 11:00 AM \u2013 9:00 PM",
+   "Thursday: 11:00 AM \u2013 9:00 PM",
+   "Friday: 11:00 AM \u2013 9:00 PM",
+   "Saturday: 11:00 AM \u2013 9:00 PM",
+   "Sunday: 11:00 AM \u2013 9:00 PM"
+  ]
+ },
+ "currentOpeningHours": {
+  "openNow": true,
+  "periods": [
+   {
+    "open": {
+     "day": 0,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 0,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 1,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 1,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 2,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 2,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 3,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 3,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 4,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 4,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 5,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 5,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 6,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 6,
+     "hour": 21,
+     "minute": 0
+    }
+   }
+  ],
+  "weekdayDescriptions": [
+   "Monday: 11:00 AM \u2013 9:00 PM",
+   "Tuesday: 11:00 AM \u2013 9:00 PM",
+   "Wednesday: 11:00 AM \u2013 9:00 PM",
+   "Thursday: 11:00 AM \u2013 9:00 PM",
+   "Friday: 11:00 AM \u2013 9:00 PM",
+   "Saturday: 11:00 AM \u2013 9:00 PM",
+   "Sunday: 11:00 AM \u2013 9:00 PM"
+  ]
+ }
+}

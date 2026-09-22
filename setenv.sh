@@ -27,6 +27,7 @@ KNOWN_KEYS=(
   TELEGRAM_BOT_TOKEN    # sms-relay
   DISCORD_BOT_TOKEN     # sms-relay
   GITHUB_TOKEN          # site (repo create/pages); gh honours it as GH_TOKEN
+  GOOGLE_MAPS_API_KEY   # leads (Places API (New), Place Details)
 )
 
 mkdir -p "$(dirname "$ENV_FILE")"

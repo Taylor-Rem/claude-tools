@@ -1,0 +1,280 @@
+{
+ "id": "ChIJlzRlVHGBTYcRzZpm-YlqwqM",
+ "displayName": {
+  "text": "Avenue Bakery",
+  "languageCode": "en"
+ },
+ "formattedAddress": "297 W Main St, American Fork, UT 84003, USA",
+ "nationalPhoneNumber": "(801) 420-2011",
+ "rating": 4.4,
+ "userRatingCount": 1326,
+ "businessStatus": "OPERATIONAL",
+ "googleMapsUri": "https://maps.google.com/?cid=7424268984510490963",
+ "location": {
+  "latitude": 40.3765911,
+  "longitude": -111.8062921
+ },
+ "primaryTypeDisplayName": {
+  "text": "Restaurant"
+ },
+ "photos": [
+  {
+   "name": "places/ChIJlzRlVHGBTYcRzZpm-YlqwqM/photos/0",
+   "widthPx": 1000,
+   "heightPx": 800
+  },
+  {
+   "name": "places/ChIJlzRlVHGBTYcRzZpm-YlqwqM/photos/1",
+   "widthPx": 1000,
+   "heightPx": 800
+  },
+  {
+   "name": "places/ChIJlzRlVHGBTYcRzZpm-YlqwqM/photos/2",
+   "widthPx": 1000,
+   "heightPx": 800
+  },
+  {
+   "name": "places/ChIJlzRlVHGBTYcRzZpm-YlqwqM/photos/3",
+   "widthPx": 1000,
+   "heightPx": 800
+  },
+  {
+   "name": "places/ChIJlzRlVHGBTYcRzZpm-YlqwqM/photos/4",
+   "widthPx": 1000,
+   "heightPx": 800
+  },
+  {
+   "name": "places/ChIJlzRlVHGBTYcRzZpm-YlqwqM/photos/5",
+   "widthPx": 1000,
+   "heightPx": 800
+  },
+  {
+   "name": "places/ChIJlzRlVHGBTYcRzZpm-YlqwqM/photos/6",
+   "widthPx": 1000,
+   "heightPx": 800
+  },
+  {
+   "name": "places/ChIJlzRlVHGBTYcRzZpm-YlqwqM/photos/7",
+   "widthPx": 1000,
+   "heightPx": 800
+  },
+  {
+   "name": "places/ChIJlzRlVHGBTYcRzZpm-YlqwqM/photos/8",
+   "widthPx": 1000,
+   "heightPx": 800
+  },
+  {
+   "name": "places/ChIJlzRlVHGBTYcRzZpm-YlqwqM/photos/9",
+   "widthPx": 1000,
+   "heightPx": 800
+  }
+ ],
+ "reviews": [
+  {
+   "rating": 5,
+   "relativePublishTimeDescription": "2 days ago",
+   "publishTime": "2026-09-23T12:00:00Z",
+   "text": {
+    "text": "Yum",
+    "languageCode": "en"
+   }
+  }
+ ],
+ "websiteUri": "http://avenuebakeryaf.com/",
+ "regularOpeningHours": {
+  "openNow": true,
+  "periods": [
+   {
+    "open": {
+     "day": 0,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 0,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 1,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 1,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 2,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 2,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 3,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 3,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 4,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 4,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 5,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 5,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 6,
+     "hour": 7,
+     "minute": 0
+    },
+    "close": {
+     "day": 6,
+     "hour": 21,
+     "minute": 0
+    }
+   }
+  ],
+  "weekdayDescriptions": [
+   "Monday: 11:00 AM \u2013 9:00 PM",
+   "Tuesday: 11:00 AM \u2013 9:00 PM",
+   "Wednesday: 11:00 AM \u2013 9:00 PM",
+   "Thursday: 11:00 AM \u2013 9:00 PM",
+   "Friday: 11:00 AM \u2013 9:00 PM",
+   "Saturday: 11:00 AM \u2013 9:00 PM",
+   "Sunday: 11:00 AM \u2013 9:00 PM"
+  ]
+ },
+ "currentOpeningHours": {
+  "openNow": true,
+  "periods": [
+   {
+    "open": {
+     "day": 0,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 0,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 1,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 1,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 2,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 2,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 3,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 3,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 4,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 4,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 5,
+     "hour": 11,
+     "minute": 0
+    },
+    "close": {
+     "day": 5,
+     "hour": 21,
+     "minute": 0
+    }
+   },
+   {
+    "open": {
+     "day": 6,
+     "hour": 7,
+     "minute": 0
+    },
+    "close": {
+     "day": 6,
+     "hour": 21,
+     "minute": 0
+    }
+   }
+  ],
+  "weekdayDescriptions": [
+   "Monday: 11:00 AM \u2013 9:00 PM",
+   "Tuesday: 11:00 AM \u2013 9:00 PM",
+   "Wednesday: 11:00 AM \u2013 9:00 PM",
+   "Thursday: 11:00 AM \u2013 9:00 PM",
+   "Friday: 11:00 AM \u2013 9:00 PM",
+   "Saturday: 11:00 AM \u2013 9:00 PM",
+   "Sunday: Closed"
+  ]
+ }
+}

@@ -192,6 +192,54 @@ so. Go back to the page above and get the manager invite in first.
 That is ours to fix, not theirs: say the change needs Taylor for the moment
 and use `FORWARD-TO-TAYLOR: <the change>`.
 
+## Ordering (an Order button on their site)
+
+**When they ask:** "can people order from the site", "add ordering", "we want
+online orders", "how do we take orders without DoorDash".
+
+**First, check they have a restaurant on Plateful.** `pf me` lists it with a
+`url=` — that is their storefront. If `pf` says there is no restaurant, the
+ordering page itself is Taylor's step (he sets up the restaurant, the menu
+and their Stripe account): say that plainly, say you'll put the button up the
+moment it exists, and end with `FORWARD-TO-TAYLOR: set up ordering for
+<client>`. Don't promise a date.
+
+**What to say** when the restaurant does exist:
+
+> Easy. I'll put an Order button on every page of the site, going to your own
+> ordering page — pickup and delivery, paid online. Give me a minute.
+
+**What it costs them**, only if they ask: 4% of the food on each order, capped
+at $399 a month, plus card processing at cost. Nothing per month for ordering
+itself. If Taylor sold them the founding offer, `pf me` shows
+`fee=0% (founding offer until <date>)` — quote that date, not a guess. Never
+quote a different number; these are published prices.
+
+**What to run** (from the workspace root):
+
+1. `pf me` — copy the `url=` for this restaurant exactly.
+2. Open `~/projects/claude-tools/templates/capabilities/ordering/README.md`
+   and follow it: the button into the header of **every** `.html` page, the
+   section into the home page, the CSS appended to `css/style.css`. Fill
+   `{{ORDER_URL}}` with the url from step 1 and `{{NAME}}` with the
+   restaurant's name.
+3. `shot site repos/<name>` and look at the pictures — the button must be on
+   every page, and legible on a phone.
+4. Commit, push, `site publish <name>`, then open the live URL and click
+   through to the storefront before you reply.
+
+**What you can do afterwards** (`pf`, already scoped to their restaurant):
+menu photos (`pf upload-image`), 86 an item and bring it back
+(`pf availability`), read orders (`pf orders`, `pf kitchen`), gallery and
+branding images. **What you cannot:** item names, descriptions, prices,
+adding or removing items and categories, hours, delivery settings, Stripe,
+refunds. Those are Taylor's — say so and forward it.
+
+**What not to say:** don't tell them ordering is "on their website" — it is
+their own ordering page, on Plateful, linked from their site. Don't compare
+their takings to DoorDash unless they raise it; if they do, the honest line
+is the fee difference, not a promise about volume.
+
 ## Custom domain
 
 **When they ask:** "can the site be at ourband.com", "we bought a domain".

@@ -123,7 +123,16 @@ def cmd_me(c, a):
     me = c.req("GET", "me")
     print(f"{me['type']} '{me['name']}'  platform={me['isPlatform']}  scopes={me['scopes']}  (key: {c.key_name})")
     for r in me.get("restaurants", []):
-        print(f"  {r['subdomain']:<16} {r['name']:<24} role={r['role']} scopes={r['scopes']} live={r['isLive']} url={r['publicUrl']}")
+        # B6: what the next order is actually charged. Both fields are additive
+        # and only exist once the founding-offer change is deployed, so an older
+        # server just prints the line it always did.
+        fee = ""
+        if r.get("platformFeePercent") is not None:
+            pct = float(r["platformFeePercent"])
+            until = r.get("foundingOfferUntil")
+            fee = f" fee={pct:g}%" + (f" (founding offer until {until})" if until and pct == 0 else "")
+        print(f"  {r['subdomain']:<16} {r['name']:<24} role={r['role']} scopes={r['scopes']} "
+              f"live={r['isLive']}{fee} url={r['publicUrl']}")
 
 
 def _menu(c):

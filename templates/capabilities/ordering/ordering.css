@@ -1,0 +1,30 @@
+/* The Order button. Appended to the site's own stylesheet, so it inherits the
+   tokens in :root and matches whatever the site already looks like. Only the
+   accent colour is assumed. */
+
+.order-button {
+  display: inline-block;
+  padding: 0.6rem 1.1rem;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--bg);
+  font-family: var(--font-body);
+  font-weight: 600;
+  line-height: 1.2;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.order-button:hover,
+.order-button:focus-visible {
+  background: var(--accent-dim);
+  color: var(--bg);
+}
+
+/* In the header the nav links are plain text; the button should read as the
+   one thing to press, without making the bar taller on a phone. */
+.site-nav .order-button {
+  margin-left: 0.4rem;
+  padding: 0.45rem 0.9rem;
+  font-size: 0.95rem;
+}

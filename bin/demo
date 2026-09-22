@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+"""demo — the demo restaurant's site: put it back the way it was (ROADMAP B4,
+plan ~/projects/plans/07-demo-restaurant.md).
+
+Strangers text the relay and change this site for real; every night it goes
+back to a golden copy so the next person starts from a clean restaurant.
+
+  demo status            # what the site is now, and whether it matches golden
+  demo reset [--force]   # put it back to golden, publish, prove it is live
+  demo golden [--yes]    # mark the site as it is now as the new golden copy
+  demo diff              # what a reset would undo
+  demo doctor
+
+The reset never rewrites history: it commits golden's files back on top of
+whatever is there, so `main` only ever moves forward and nothing needs a
+force-push. `relay.py demo` is the other half (who may text it, and the
+caps); this half owns the site.
+
+Runs from the demo client's workspace (a directory with `.client.json`), or
+anywhere with DEMO_WORKSPACE set — which is how the timer runs it:
+`claude-tools/systemd/demo-reset.timer`, 04:10 daily.
+
+Config, by name, never printed:
+  DEMO_WORKSPACE   default ~/projects/clients/testaurant
+  DEMO_SITE        default: the workspace's only repo
+"""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+STATE = Path(os.environ.get("DEMO_STATE", Path.home() / ".local/state/claude-tools/demo.json"))
+GOLDEN = "golden"
+
+
+def die(msg, code=1):
+    print(f"demo: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def workspace():
+    ws = Path(os.environ.get("DEMO_WORKSPACE", Path.home() / "projects/clients/testaurant")).expanduser()
+    here = Path.cwd()
+    if (here / ".client.json").exists():
+        ws = here
+    if not (ws / ".client.json").exists():
+        die(f"{ws} is not a client workspace (no .client.json). Set DEMO_WORKSPACE or run this from one.")
+    return ws, json.loads((ws / ".client.json").read_text())
+
+
+def site_name(ws):
+    name = os.environ.get("DEMO_SITE")
+    if name:
+        return name
+    repos = sorted(p.name for p in (ws / "repos").iterdir() if (p / ".git").is_dir()) if (ws / "repos").is_dir() else []
+    if not repos:
+        die(f"{ws}/repos has no site yet — `site new <name>` in the workspace first")
+    if len(repos) > 1 and "testaurant" not in repos:
+        die(f"more than one site here ({', '.join(repos)}); pick one with DEMO_SITE")
+    return "testaurant" if "testaurant" in repos else repos[0]
+
+
+def git(repo, *args, check=True, quiet=False):
+    r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+    if check and r.returncode != 0:
+        die(f"git {' '.join(args)}: {(r.stderr or r.stdout).strip()[:300]}")
+    if not quiet and r.stdout.strip() and args[0] in ("push", "commit"):
+        pass
+    return r.returncode, r.stdout.strip(), r.stderr.strip()
+
+
+def state_read():
+    if STATE.exists():
+        try:
+            return json.loads(STATE.read_text())
+        except ValueError:
+            pass
+    return {}
+
+
+def state_write(data):
+    STATE.parent.mkdir(parents=True, exist_ok=True)
+    STATE.write_text(json.dumps(data, indent=1) + "\n")
+
+
+def has_golden(repo):
+    return git(repo, "rev-parse", "--verify", "--quiet", f"{GOLDEN}^{{commit}}", check=False)[0] == 0
+
+
+def tree_of(repo, ref):
+    return git(repo, "rev-parse", f"{ref}^{{tree}}")[1]
+
+
+def dirty(repo):
+    return bool(git(repo, "status", "--porcelain")[1])
+
+
+def live_url(meta):
+    return (meta.get("live_url") or "").rstrip("/")
+
+
+def fetch_live(url, tries=3):
+    for i in range(tries):
+        try:
+            req = urllib.request.Request(url + "/", headers={"User-Agent": "claude-tools/demo"})
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                return resp.status, resp.read().decode(errors="replace")
+        except urllib.error.HTTPError as exc:
+            return exc.code, ""
+        except (urllib.error.URLError, TimeoutError, OSError):
+            if i == tries - 1:
+                return None, ""
+            time.sleep(3)
+    return None, ""
+
+
+# ---- commands ----------------------------------------------------------------
+
+def cmd_status(args):
+    ws, meta = workspace()
+    name = site_name(ws)
+    repo = ws / "repos" / name
+    st = state_read()
+    print(f"demo site: {name} in {ws}")
+    print(f"  live: {live_url(meta) or '(no live_url in .client.json)'}")
+    if not has_golden(repo):
+        print(f"  golden: NOT SET — run `demo golden` once, with the site as you want it to come back")
+        return
+    same = tree_of(repo, "HEAD") == tree_of(repo, GOLDEN)
+    head = git(repo, "log", "-1", "--format=%h %s")[1]
+    print(f"  golden: {git(repo, 'log', '-1', '--format=%h %s', GOLDEN)[1]}")
+    print(f"  now:    {head}")
+    print(f"  {'matches golden' if same else 'CHANGED since golden — a reset would put it back'}"
+          + (" (uncommitted edits too)" if dirty(repo) else ""))
+    behind = git(repo, "rev-list", "--count", f"{GOLDEN}..HEAD")[1]
+    if behind and behind != "0":
+        print(f"  {behind} change{'s' if behind != '1' else ''} on top of golden")
+    if st.get("last_reset"):
+        print(f"  last reset: {st['last_reset']} ({st.get('last_reset_result', '?')})")
+
+
+def cmd_diff(args):
+    ws, _ = workspace()
+    repo = ws / "repos" / site_name(ws)
+    if not has_golden(repo):
+        die("no golden copy yet — `demo golden` once")
+    out = git(repo, "diff", "--stat", GOLDEN, "HEAD")[1]
+    print(out or "nothing to undo: the site is the golden copy")
+    if dirty(repo):
+        print("\nuncommitted, would also be discarded:")
+        print(git(repo, "status", "--short")[1])
+
+
+def cmd_golden(args):
+    ws, _ = workspace()
+    repo = ws / "repos" / site_name(ws)
+    if dirty(repo):
+        die("commit or discard the working tree first — golden is a committed state")
+    head = git(repo, "rev-parse", "HEAD")[1]
+    if has_golden(repo) and not args.yes:
+        print(f"golden is {git(repo, 'log', '-1', '--format=%h %s', GOLDEN)[1]}")
+        print(f"this would move it to {git(repo, 'log', '-1', '--format=%h %s')[1]}")
+        die("re-run with --yes to move it", 2)
+    git(repo, "tag", "-f", GOLDEN, head)
+    git(repo, "push", "-f", "origin", f"refs/tags/{GOLDEN}")
+    st = state_read()
+    st["golden"] = head
+    st["golden_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    state_write(st)
+    print(f"golden is now {head[:8]} — a reset brings the site back to this")
+
+
+def cmd_reset(args):
+    ws, meta = workspace()
+    name = site_name(ws)
+    repo = ws / "repos" / name
+    if not has_golden(repo):
+        die("no golden copy to go back to — run `demo golden` once, with the site as it should start")
+    git(repo, "fetch", "--quiet", "--tags", "--force", "origin")
+    changed = tree_of(repo, "HEAD") != tree_of(repo, GOLDEN) or dirty(repo)
+    if not changed and not args.force:
+        print("already the golden copy; nothing to undo")
+        _record("clean")
+        return
+    # Discard local edits, then put golden's files back as one ordinary commit
+    # on top of main: history moves forward, so no force-push anywhere.
+    git(repo, "reset", "--hard", "--quiet", "HEAD")
+    git(repo, "clean", "-qfd")
+    remote_head = git(repo, "rev-parse", "HEAD")[1]
+    git(repo, "reset", "--hard", "--quiet", GOLDEN)
+    git(repo, "reset", "--soft", "--quiet", remote_head)
+    if git(repo, "status", "--porcelain")[1]:
+        git(repo, "commit", "--quiet", "-m", "Nightly reset: back to the golden copy")
+        git(repo, "push", "--quiet", "origin", "HEAD:main")
+        print(f"reset {name} to golden and pushed")
+    else:
+        print(f"{name} already matched golden in git")
+    r = subprocess.run(["site", "publish", name], capture_output=True, text=True, cwd=str(ws))
+    tail = (r.stdout or r.stderr).strip().splitlines()[-2:]
+    for line in tail:
+        print("  " + line.strip())
+    if r.returncode != 0:
+        _record("publish failed")
+        die("the site did not publish; the repo is back to golden but the live site is not")
+    url = live_url(meta)
+    if url:
+        status, body = fetch_live(url)
+        if status != 200:
+            _record(f"live check {status}")
+            die(f"published, but {url} answered {status}")
+        print(f"  {url} — {status}, {len(body)} bytes")
+    _record("reset")
+
+
+def _record(result):
+    st = state_read()
+    st["last_reset"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    st["last_reset_result"] = result
+    state_write(st)
+
+
+def cmd_doctor(args):
+    ok = True
+    ws, meta = workspace()
+    name = site_name(ws)
+    repo = ws / "repos" / name
+    print(f"workspace: {ws} ({meta.get('slug')})")
+    print(f"  site: {name}  live: {live_url(meta) or 'MISSING'}")
+    if not (repo / ".git").is_dir():
+        print("  repo: MISSING")
+        sys.exit(1)
+    if has_golden(repo):
+        print(f"  golden: {git(repo, 'log', '-1', '--format=%h %ad %s', '--date=short', GOLDEN)[1]}")
+        remote = git(repo, "ls-remote", "--tags", "origin", GOLDEN, check=False)[1]
+        print(f"  golden on the remote: {'yes' if remote else 'NO — `demo golden --yes` pushes it'}")
+        ok = ok and bool(remote)
+    else:
+        print("  golden: NOT SET (`demo golden`)")
+        ok = False
+    print(f"  working tree: {'dirty' if dirty(repo) else 'clean'}")
+    url = live_url(meta)
+    if url:
+        status, body = fetch_live(url)
+        print(f"  live: HTTP {status}" + (f", {len(body)} bytes" if status == 200 else ""))
+        demo_bar = "This is a demo" in body
+        print(f"  says it is a demo on the page: {'yes' if demo_bar else 'NO — a demo site must say so'}")
+        ok = ok and status == 200 and demo_bar
+    st = state_read()
+    print(f"  last reset: {st.get('last_reset', 'never')} ({st.get('last_reset_result', '-')})")
+    timer = subprocess.run(["systemctl", "--user", "is-active", "demo-reset.timer"], capture_output=True, text=True)
+    print(f"  nightly timer: {timer.stdout.strip() or 'not installed'}")
+    ok = ok and timer.stdout.strip() == "active"
+    print("  who may text it: `cd ~/projects/sms-relay && ./relay.py demo status`")
+    sys.exit(0 if ok else 1)
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="demo", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd")
+    sub.add_parser("status").set_defaults(fn=cmd_status)
+    sub.add_parser("diff").set_defaults(fn=cmd_diff)
+    r = sub.add_parser("reset")
+    r.add_argument("--force", action="store_true", help="publish even when nothing changed")
+    r.set_defaults(fn=cmd_reset)
+    g = sub.add_parser("golden")
+    g.add_argument("--yes", action="store_true", help="move golden without asking")
+    g.set_defaults(fn=cmd_golden)
+    sub.add_parser("doctor").set_defaults(fn=cmd_doctor)
+    args = ap.parse_args()
+    if not args.cmd:
+        args.fn = cmd_status
+    args.fn(args)
+
+
+if __name__ == "__main__":
+    main()

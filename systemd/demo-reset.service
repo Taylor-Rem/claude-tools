@@ -1,0 +1,11 @@
+[Unit]
+Description=Put the demo restaurant's site back to its golden copy (ROADMAP B4)
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=DEMO_WORKSPACE=%h/projects/clients/testaurant
+ExecStart=%h/.local/bin/demo reset
+StandardOutput=append:%h/projects/claude-tools/logs/demo-reset.log
+StandardError=append:%h/projects/claude-tools/logs/demo-reset.log

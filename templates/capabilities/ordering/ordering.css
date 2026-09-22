@@ -22,9 +22,20 @@
 }
 
 /* In the header the nav links are plain text; the button should read as the
-   one thing to press, without making the bar taller on a phone. */
-.site-nav .order-button {
+   one thing to press, without making the bar taller on a phone. The colour has
+   to be repeated here: the template's own `.site-nav a` rule is more specific
+   than `.order-button`, so without this the label renders in the nav's ink on
+   the accent background and is barely legible. */
+.site-nav .order-button,
+.site-nav .order-button:hover,
+.site-nav .order-button:focus-visible {
   margin-left: 0.4rem;
   padding: 0.45rem 0.9rem;
   font-size: 0.95rem;
+  color: var(--bg);
+}
+
+.site-nav .order-button:hover,
+.site-nav .order-button:focus-visible {
+  background: var(--accent-dim);
 }

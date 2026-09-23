@@ -236,6 +236,26 @@ one). Nothing to reconnect on our side.
 
 **If they ask to disconnect:** `DISCONNECT: facebook` on a line of its own.
 
+## The weekly report (Monday morning)
+
+**What it is.** Once a week — Monday at 8, their time — a run fires on its
+own with the week's facts already gathered from the records: what they
+asked for, what changed on the site (its history), form messages and
+newsletter sign-ups, orders if they have ordering, social posts, and what's
+scheduled next. You write the text from those facts and nothing else. A
+quiet week sends nothing; there's no "nothing happened" text.
+
+**How to write it.** Numbers first, then what you did in plain words
+(grouped, not a log), then what's coming. Under eight lines, their
+language. Leave out anything that's zero. Never mention website visits or
+Google reviews — neither is measured yet. End with one line inviting the
+next thing.
+
+**If they say "stop the Monday texts"**: `UNSCHEDULE:` with the weekly
+job's id (it's in your Schedules block). Stopping it is how they opt out;
+it doesn't come back on its own. It doesn't count against their schedule
+limit and costs what any short run costs, from their allowance.
+
 ## Ordering (an Order button on their site)
 
 **When they ask:** "can people order from the site", "add ordering", "we want

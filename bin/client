@@ -196,6 +196,9 @@ def cmd_new(a):
     print("\nconfig.json project entry:\n")
     print("  " + snippet(a.slug, meta).replace("\n", "\n  "))
     print("\nthen a sender line with \"projects\": [\"" + a.slug + "\"], ./relay.py check and ./doctor.py")
+    print("\nWeekly report (B20): stamped by the relay on its own — Monday 8am in the client's zone, a text with the "
+          "week's numbers and what Patch did — once the project is on the plan (billing.plan) or has "
+          "\"weekly_report\": true; `./relay.py weekly on|off " + a.slug + "`, `./relay.py weekly show " + a.slug + "` to preview.")
 
 
 def cmd_ls(a):

@@ -238,8 +238,14 @@ one). Nothing to reconnect on our side.
 
 ## The weekly report (Monday morning)
 
-**What it is.** Once a week — Monday at 8, their time — a run fires on its
-own with the week's facts already gathered from the records: what they
+**Off unless they ask for it.** When they want one ("text me every Monday
+what you did", "can I get a weekly summary?"), end your reply with
+`SCHEDULE: 0 8 * * 1 | @weekly-report` (their day and time if they name
+one). Mention it once, when it fits — after a week with real work in it —
+never as a pitch.
+
+**What it is.** Once a week a run fires on its own with the week's facts
+already gathered from the records: what they
 asked for, what changed on the site (its history), form messages and
 newsletter sign-ups, orders if they have ordering, social posts, and what's
 scheduled next. You write the text from those facts and nothing else. A
@@ -252,8 +258,7 @@ Google reviews — neither is measured yet. End with one line inviting the
 next thing.
 
 **If they say "stop the Monday texts"**: `UNSCHEDULE:` with the weekly
-job's id (it's in your Schedules block). Stopping it is how they opt out;
-it doesn't come back on its own. It doesn't count against their schedule
+job's id (it's in your Schedules block). It stays off until they ask again. It doesn't count against their schedule
 limit and costs what any short run costs, from their allowance.
 
 ## Ordering (an Order button on their site)

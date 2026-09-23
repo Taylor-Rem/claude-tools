@@ -22,6 +22,11 @@ ANTHROPIC_KEY_<SLUG> in the toolbelt (`client new` prints the setenv.sh step
 and puts the `auth` line in the config.json entry). --shared-key skips that:
 the relay's defaults.client_auth (the shared workspace) pays instead.
 
+`client ls` and `client doctor` read the relay's config.json (RELAY_CONFIG,
+default ~/projects/sms-relay/config.json) for what is true of each client
+now — on the plan or unbilled, the demo, frozen, who texts, and which key
+actually pays — so the listing can't drift from the relay.
+
 CLIENTS_DIR overrides ~/projects/clients. No keys needed (it only checks names).
 """
 
@@ -44,6 +49,53 @@ REQUIRED_DENY = ("Bash(* /home/*)", "Bash(*~/*)", "Bash(*../*)", "Bash(*$HOME*)"
                  "Bash(*$ANTHROPIC*)", "Bash(*$GEMINI*)", "Bash(*_API_KEY*)")   # the run's own keys stay out of commands
 TOOLBELT = Path(os.environ.get("CLAUDE_TOOLS_ENV", "~/.config/claude-tools/env")).expanduser()
 SITES = TOOLBELT.parent / "sites.json"          # `site new` / `site adopt` record every site here
+RELAY_CONFIG = Path(os.environ.get("RELAY_CONFIG", "~/projects/sms-relay/config.json")).expanduser()
+
+
+def relay_config():
+    try:
+        return json.loads(RELAY_CONFIG.read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def relay_view(slug, cfg):
+    """What the relay says about this client: status, who texts, what pays. None if the relay doesn't know it."""
+    if not cfg:
+        return None
+    p = (cfg.get("projects") or {}).get(slug)
+    if not p:
+        return None
+    senders = [(k, v) for k, v in (cfg.get("senders") or {}).items()
+               if v.get("role") in ("client", "family") and (v.get("projects") == "*" or slug in (v.get("projects") or []))]
+    active = [v.get("name") or k for k, v in senders if v.get("state") in (None, "active")]
+    billing = p.get("billing") or {}
+    if slug == (cfg.get("demo") or {}).get("project"):
+        status = "demo"
+        active = active or ["anyone (the demo's texters aren't senders)"]
+    elif senders and not active:
+        status = "frozen"
+    elif billing.get("plan") == "managed":
+        status = f"on the plan ({billing.get('tier') or '?'})"
+    else:
+        status = "unbilled"
+    auth = (p.get("agent") or {}).get("auth")
+    if auth:
+        pays = auth
+    elif p.get("allow_plan"):
+        pays = "Taylor's plan (allow_plan)"
+    else:
+        pays = (cfg.get("defaults") or {}).get("client_auth") or "nothing — the relay refuses to load"
+    return {"status": status, "texters": active, "pays": pays, "auth": auth, "allow_plan": bool(p.get("allow_plan"))}
+
+
+def patch_built(slug, repo):
+    """Is this repo a site `site new` / `site adopt` made (so it carries the template's CLAUDE.md)?"""
+    try:
+        entries = json.loads(SITES.read_text()).get(slug, {})
+    except (OSError, ValueError):
+        return True
+    return any(e.get("repo") == repo or name == repo for name, e in entries.items()) if entries else False
 
 
 def site_urls(meta):
@@ -120,7 +172,7 @@ def render_claude_md(meta, notes=""):
         md = md.replace("{{LIVE_URL}}", "https://<the live site>/")   # no site yet: the example still reads
     for k in ("name", "slug", "plateful", "live_url"):
         md = md.replace("{{" + k.upper() + "}}", meta.get(k) or "")
-    tools = ["`git -C repos/<name>`", "`img`", "`site`", "`shot`", "`newsletter`"] + (["`pf`"] if meta.get("plateful") else [])
+    tools = ["`git -C repos/<name>`", "`img`", "`site`", "`shot`", "`newsletter`", "`gbp`", "`social`"] + (["`pf`"] if meta.get("plateful") else [])
     md = md.replace("{{TOOLS}}", ", ".join(tools))
     if meta.get("live_url") and not meta.get("plateful"):
         check = f"`curl -s {meta['live_url']}PAGE` — no .html on the end, the host redirects those — is allowed; the change is there as soon as `site publish` says so"
@@ -203,16 +255,22 @@ def cmd_new(a):
 def cmd_ls(a):
     if not CLIENTS_DIR.is_dir():
         die(f"{CLIENTS_DIR} does not exist")
+    cfg = relay_config()
     for ws in sorted(CLIENTS_DIR.iterdir()):
         if not ws.is_dir() or ws.name.startswith("."):
             continue
         m = read_meta(ws)
+        rv = relay_view(ws.name, cfg)
         flags = []
         if m.get("plateful"):
             flags.append(f"plateful={m['plateful']}")
         if m.get("live_url"):
             flags.append(m["live_url"])
-        print(f"{ws.name:<16} {m.get('name', '?'):<24} repos={','.join(repos_of(ws)) or '-'}  {' '.join(flags)}")
+        status = rv["status"] if rv else "not in the relay"
+        who = ", ".join(rv["texters"]) if rv and rv["texters"] else "nobody"
+        print(f"{ws.name:<18} {m.get('name', '?'):<28} {status:<20} texts: {who}")
+        print(f"{'':<18} repos={','.join(repos_of(ws)) or '-'}  {' '.join(flags)}"
+              + (f"  · pays: {rv['pays']}" if rv else ""))
 
 
 def cmd_doctor(a):
@@ -247,15 +305,24 @@ def cmd_doctor(a):
                 probs.append(f"remote is not SSH ({remote or 'none'})")
             if branch != "main":
                 probs.append(f"on {branch}, not main")
-            if not (d / "CLAUDE.md").exists():
-                probs.append("no CLAUDE.md")
+            if not (d / "CLAUDE.md").exists() and patch_built(ws.name, r):
+                probs.append("no CLAUDE.md")          # a repo that isn't a Patch-built site (James's app) is its owner's business
             print(f"  repo {r}: {'ok' if not probs else 'WARN ' + '; '.join(probs)}")
             ok = ok and not probs
         m = read_meta(ws)
-        if m.get("auth"):
-            print(f"  key {m['auth']}: {'set' if toolbelt_has(m['auth']) else 'NOT SET — setenv.sh ' + m['auth'] + ' (runs on the plan while config.json has allow_plan: true; otherwise client messages fail)'}")
-        elif m:
-            print("  key: none of its own (relay defaults.client_auth pays)")
+        rv = relay_view(ws.name, relay_config())
+        if rv is None:
+            print("  relay: no project by this name in config.json (client snippet " + ws.name + ")")
+        else:
+            print(f"  relay: {rv['status']}; texts: {', '.join(rv['texters']) or 'nobody'}; pays: {rv['pays']}")
+            if rv["auth"]:
+                if not toolbelt_has(rv["auth"]):
+                    print(f"  FAIL key {rv['auth']} is named in config.json but NOT in the toolbelt — client messages fail (setenv.sh {rv['auth']})")
+                    ok = False
+            if m.get("auth") and m["auth"] != rv["auth"]:
+                print(f"  note: .client.json names {m['auth']}, but the relay "
+                      + (f"uses {rv['auth']}" if rv["auth"] else f"runs it on {rv['pays']}")
+                      + f" (client new {ws.name} --restamp{' --shared-key' if not rv['auth'] else ''} to match)")
         stray = [p.name for p in (ws / "incoming").iterdir() if p.name != ".keep"] if (ws / "incoming").is_dir() else []
         if stray:
             print(f"  note: {len(stray)} file(s) left in incoming/")

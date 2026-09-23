@@ -659,7 +659,7 @@ def contacted(days=REPEAT_WEEKS * 7):
 
 
 def log_leads(rows):
-    """Append to social/leads-from-groups.md (a markdown table; B7 replaces it)."""
+    """Append to social/leads-from-groups.md (a markdown table beside the pipeline)."""
     try:
         GROUPS_LOG.parent.mkdir(parents=True, exist_ok=True)
         new = not GROUPS_LOG.exists()

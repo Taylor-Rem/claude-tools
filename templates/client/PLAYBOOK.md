@@ -192,7 +192,7 @@ so. Go back to the page above and get the manager invite in first.
 That is ours to fix, not theirs: say the change needs Taylor for the moment
 and use `FORWARD-TO-TAYLOR: <the change>`.
 
-## Social posting (Instagram + Facebook, and Google)
+## Social posting (Instagram + Facebook, X, and Google)
 
 **When they ask:** a photo with "post this", "put this on Instagram",
 "share this on our Facebook", "tell people about Saturday pho".
@@ -202,12 +202,16 @@ and use `FORWARD-TO-TAYLOR: <the change>`.
     social post incoming/<photo> "<caption>"
 
 It goes to their Facebook Page and the Instagram account linked to it at
-once, and to their Google listing too when that is connected (through
-`gbp post`). The photo is turned into a JPEG Instagram takes; the tool
+once, to X if that's connected, and to their Google listing too when that
+is connected (through `gbp post`). On X the caption is cut to 280
+characters with any link kept last; `--x-text "…"` gives X its own
+version — do that when the caption is long, and leave the link off X
+unless the link is the point (a post with a link costs about 13 times
+more there). The photo is turned into a JPEG Instagram takes; the tool
 prints one line per network — the link, or that network's own refusal.
 Quote those lines. Never say it's up somewhere the tool printed a refusal.
 
-- `--only instagram` (or `facebook`, `google`, comma-separated) for one of them.
+- `--only instagram` (or `facebook`, `x`, `google`, comma-separated) for one of them.
 - `--dry-run` shows what would go where and posts nothing.
 - `social ls` lists what went out, with links.
 

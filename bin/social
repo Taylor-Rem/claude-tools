@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""social — one photo and a line on Facebook, Instagram and Google at once
+"""social — one photo and a line on Facebook, Instagram, X and Google at once
 (ROADMAP B19, plan ~/projects/plans/10-social-posting.md).
 
   social                                   # what's connected here, and the last posts
@@ -12,7 +12,8 @@
   social queue                             # house drafts waiting for "post" (~/projects/social/queue/)
   social queue add BRAND IMAGE "caption" [--pillar P] [--topic T]
   social queue drop N
-  social connect [BRAND]                   # the signed link (24h) the Page's admin opens to grant it
+  social connect [BRAND] [--network x]     # the signed link (24h) the account's owner opens to grant it
+      --x-text "…"                         # (post) the X version; default: the caption cut to 280, any link kept last
   social ls [BRAND]                        # recent posts with their links
   social doctor
 
@@ -46,7 +47,7 @@ from pathlib import Path
 ENV_FILE = Path(os.environ.get("CLAUDE_TOOLS_ENV", Path.home() / ".config/claude-tools/env"))
 SOCIAL_DIR = Path(os.environ.get("SOCIAL_DIR", Path.home() / "projects/social"))
 HOUSE = ("patchlamp", "plateful")
-NETWORKS = ("facebook", "instagram", "google")
+NETWORKS = ("facebook", "instagram", "x", "google")
 MAX_SIDE = 1440
 IG_RATIO = (0.8, 1.91)          # Instagram's feed: 4:5 portrait to 1.91:1 landscape
 
@@ -212,6 +213,8 @@ def cmd_status(args):
             print(page_line(p))
         if not pages:
             print("  Facebook + Instagram: not connected (`social connect" + ("" if workspace_slug() else f" {slug}") + "`)")
+        xs = social.get("x") or []
+        print(f"  X: {xs[0].get('label') if xs else 'not connected (`social connect' + ('' if workspace_slug() else f' {slug}') + ' --network x`)'}")
         print(f"  Google: {'connected (posts go through gbp)' if google else 'not connected'}")
         for p in (social.get("posts") or [])[:3]:
             print(f"  last: {p['created_at'][:16]} {p['status']} — {p['caption'][:60]}")
@@ -243,16 +246,23 @@ def cmd_post(args):
     want = [n.strip() for n in args.only.split(",")] if args.only else list(NETWORKS)
     bad = [n for n in want if n not in NETWORKS]
     if bad:
-        die(f"unknown network {', '.join(bad)} (facebook, instagram, google)")
+        die(f"unknown network {', '.join(bad)} (facebook, instagram, x, google)")
 
     social, google = connected(slug)
     pages = social.get("pages") or []
-    meta_nets = [n for n in want if n in ("facebook", "instagram")]
-    if meta_nets and not pages:
-        if args.only:
+    xs = social.get("x") or []
+    meta_nets = [n for n in want if n in ("facebook", "instagram", "x")]     # the ones patchlamp.com posts
+    if any(n in meta_nets for n in ("facebook", "instagram")) and not pages:
+        if args.only and "x" not in meta_nets:
             die(f"no Facebook Page is connected on {slug} (`social connect`)")
         print(f"  Facebook + Instagram: not connected on {slug} — skipped (`social connect`)")
-        meta_nets = []
+        meta_nets = [n for n in meta_nets if n == "x"]
+    if "x" in meta_nets and not xs:
+        if args.only == "x":
+            die(f"no X account is connected on {slug} (`social connect --network x`)")
+        if args.only:
+            print(f"  X: not connected on {slug} — skipped (`social connect --network x`)")
+        meta_nets.remove("x")
     if "google" in want and not google:
         if args.only == "google":
             die(f"no Google listing is connected on {slug} (connections google invite)")
@@ -281,6 +291,8 @@ def cmd_post(args):
             body = {"image": base64.b64encode(jpg.read_bytes()).decode(), "caption": caption, "networks": meta_nets}
             if args.page:
                 body["page"] = args.page
+            if args.x_text:
+                body["x_text"] = args.x_text
             code, r = api("POST", f"/internal/relay/projects/{slug}/social", body, ok=(201, 409), timeout=180)
             if code == 409:
                 die(r.get("error", "refused") + "".join(f"\n  {p.get('external_id')}  {p.get('label')}" for p in r.get("pages") or []))
@@ -297,8 +309,8 @@ def cmd_post(args):
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
-    names = {"facebook": "Facebook", "instagram": "Instagram", "google": "Google"}
-    for net in ("facebook", "instagram", "google"):
+    names = {"facebook": "Facebook", "instagram": "Instagram", "x": "X", "google": "Google"}
+    for net in ("facebook", "instagram", "x", "google"):
         if net in results:
             r = results[net]
             print(f"  {names[net]}: " + ((r.get("url") or r.get("said") or "posted") if r.get("ok") else f"not posted — {r.get('error')}"))
@@ -355,6 +367,13 @@ def cmd_queue(args):
 
 def cmd_connect(args):
     slug, _ = resolve(args, args.words)
+    if args.network == "x":
+        code, r = api("POST", f"/internal/relay/projects/{slug}/connections/x/grant-url", {}, ok=(200, 503))
+        if code == 503:
+            die(r.get("error", "X is not configured on patchlamp.com"))
+        print(f"Open this logged into X as the {slug} account (good for 24 hours) and approve Patchlamp:")
+        print(r["url"])
+        return
     code, r = api("POST", f"/internal/relay/projects/{slug}/connections/meta/grant-url", {}, ok=(200, 503))
     if code == 503:
         die(r.get("error", "Meta is not configured on patchlamp.com"))
@@ -395,6 +414,8 @@ def cmd_doctor(args):
     line(code == 200, "Meta app keys on patchlamp.com" + ("" if code == 200 else f" — {r.get('error')}"))
     if code == 200:
         print(f"    app review: {'approved — clients can connect' if r.get('reviewed') else 'not yet (Development mode: our own Page and @patchlamp only)'}")
+    code, r = api("POST", f"/internal/relay/projects/{slugs[0]}/connections/x/grant-url", {}, ok=(200, 404, 503))
+    line(code == 200, "X app keys on patchlamp.com" + ("" if code == 200 else f" — {r.get('error') or 'the X endpoints are not deployed yet'}"))
     for slug in slugs:
         social, google = connected(slug)
         pages = social.get("pages") or []
@@ -402,6 +423,8 @@ def cmd_doctor(args):
         if pages:
             line(any(p.get("instagram") for p in pages), f"{slug}: Instagram linked to the Page"
                  + (f" — @{pages[0]['instagram']}" if pages[0].get("instagram") else " (Page → Settings → Linked accounts)"))
+        xs = social.get("x") or []
+        print(f"    {slug}: X {xs[0].get('label') + ' connected' if xs else 'not connected (social connect ' + slug + ' --network x)'}")
         print(f"    {slug}: Google {'connected' if google else 'not connected'}")
         last = (social.get("posts") or [None])[0]
         if last:
@@ -419,6 +442,7 @@ def main():
     p.add_argument("words", nargs="*")
     p.add_argument("--only")
     p.add_argument("--page")
+    p.add_argument("--x-text", help="the X version, if the caption cut to 280 won't do")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--project", default=argparse.SUPPRESS)
     p.set_defaults(fn=cmd_post)
@@ -431,6 +455,8 @@ def main():
         c = sub.add_parser(name)
         c.add_argument("words", nargs="*")
         c.add_argument("--project", default=argparse.SUPPRESS)
+        if name == "connect":
+            c.add_argument("--network", choices=("meta", "x"), default="meta", help="meta (Facebook + Instagram, the default) or x")
         c.set_defaults(fn=fn)
     d = sub.add_parser("doctor")
     d.set_defaults(fn=cmd_doctor)

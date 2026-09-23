@@ -43,7 +43,7 @@ class Fake(BaseHTTPRequestHandler):
         s = self.state
         s["sent"].append({"method": "GET", "path": self.path, "auth": self.headers.get("Authorization")})
         if self.path.endswith("/social"):
-            return self._send(200, {"pages": s["pages"], "posts": s["posts"]})
+            return self._send(200, {"pages": s["pages"], "x": s.get("x", []), "posts": s["posts"]})
         if self.path.endswith("/connections"):
             return self._send(200, {"connections": s["google"]})
         self._send(404, {"message": "could not be found"})
@@ -52,10 +52,12 @@ class Fake(BaseHTTPRequestHandler):
         s = self.state
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
         s["sent"].append({"method": "POST", "path": self.path, "body": body})
+        if self.path.endswith("/x/grant-url"):
+            return self._send(200, {"url": "https://patchlamp.com/connect/x/grant?project=patchlamp&signature=abc"})
         if self.path.endswith("/grant-url"):
             return self._send(200, {"url": "https://patchlamp.com/connect/meta/grant?project=patchlamp&signature=abc", "reviewed": False})
         if self.path.endswith("/social"):
-            if not s["pages"]:
+            if not s["pages"] and not s.get("x"):
                 return self._send(409, {"error": "no Facebook Page is connected on this project"})
             res = {n: {"ok": True, "id": "1", "url": f"https://{n}.example/p/1"} for n in body.get("networks", [])}
             if s.get("ig_refuses") and "instagram" in res:
@@ -181,6 +183,35 @@ class SocialTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("would post", r.stdout)
         self.assertEqual(self.posted(), [])
+
+
+    # -- X, the third network -------------------------------------------------------------
+
+    def test_x_goes_with_the_others_when_connected_and_takes_its_own_text(self):
+        Fake.state["x"] = [{"kind": "x", "label": "@PatchLamp", "username": "PatchLamp"}]
+        r = self.run_social("post", "patchlamp", str(self.photo), "Text it. Patched.", "--x-text", "Patched.")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        [sent] = self.posted()
+        self.assertEqual(sent["body"]["networks"], ["facebook", "instagram", "x"])
+        self.assertEqual(sent["body"]["x_text"], "Patched.")
+        self.assertIn("X: https://x.example/p/1", r.stdout)
+
+    def test_x_alone_and_x_not_connected(self):
+        Fake.state["pages"] = []
+        Fake.state["x"] = [{"kind": "x", "label": "@PatchLamp"}]
+        r = self.run_social("post", "patchlamp", str(self.photo), "x", "--only", "x")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.posted()[0]["body"]["networks"], ["x"])
+        Fake.state["x"] = []
+        r = self.run_social("post", "patchlamp", str(self.photo), "x", "--only", "x")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("social connect --network x", r.stderr)
+
+    def test_connect_x_prints_its_own_link(self):
+        r = self.run_social("connect", "patchlamp", "--network", "x")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("/connect/x/grant?project=patchlamp", r.stdout)
+        self.assertIn("logged into X", r.stdout)
 
 
 if __name__ == "__main__":

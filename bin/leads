@@ -1,6 +1,17 @@
 #!/usr/bin/env python3
-"""leads — the restaurant pipeline by text. ROADMAP B18 today (the Saturday
-kit); B7 adds logging, follow-ups and the week's numbers on top.
+"""leads — the restaurant pipeline by text. ROADMAP B18 (the Saturday kit),
+B25 (the remote lane), B7 (the pipeline: log, follow-ups, the week).
+
+  leads log "Whistle Wok" talked "owner Mike, wants to see the demo" --who Mike --next fri
+                               # one conversation; prints tomorrow's list back
+      outcomes: messaged visited talked interested demo later won lost
+      (each sets the stage and a default follow-up; --next overrides: tomorrow, fri, 3d, 2w, oct 3, none)
+  leads sent 1 3 4             # those picks from today's remote kit went out (or: sent all)
+  leads next [fri]             # the day's list (default tomorrow): follow-ups due, then new leads
+  leads due                    # follow-ups due today (the 8am report)
+  leads show "Whistle Wok"     # one lead's history
+  leads week [--ago 1]         # this week's numbers
+  leads pipeline [--all]       # every lead by stage
 
   leads kit                    # Saturday's six counters, faults and the opener (one page)
   leads kit --for 2026-10-04   # a different Saturday
@@ -39,8 +50,12 @@ Config, by name, never printed:
   LEADS_MAIL_ADDRESS    the postal address a cold email must carry (CAN-SPAM);
                         not a secret, kept in the toolbelt env beside the keys.
                         Without it every email draft says it isn't ready to send.
-  LEADS_GROUPS_LOG      where remote and group-thread leads are logged until B7
+  LEADS_GROUPS_LOG      the human-readable log of remote and group-thread leads
                         (default ~/projects/social/leads-from-groups.md)
+  LEADS_PIPELINE        the pipeline, one event per line (default
+                        ~/projects/private-docs/leads/pipeline.jsonl: backed up
+                        nightly, in no repo — it holds names and numbers). The
+                        census stays read-only; nothing here writes to it.
 
 The remote lane (B25, plan ~/projects/plans/09-social-strategy.md § Facebook
 groups): same census and diagnostic, delivered as messages instead of
@@ -346,7 +361,7 @@ def faults(c, details, today):
     else:
         mk = marketplace_link(website)
         if mk:
-            out.append(f"the website link is a {mk} page, not their own")
+            out.append(f"the website link is {'an' if mk[0] in 'AEIOU' else 'a'} {mk} page, not their own")
 
     if details:
         sat = saturday_open(details)
@@ -424,6 +439,7 @@ def build_kit(args):
     places = Places(key, where, fixture=args.fixture, refresh=args.refresh)
     cands = census_candidates(args.min_reviews)
     skip = {} if args.allow_repeat else recently_kitted(for_date)
+    skip.update({pid: "pipeline" for pid in pipeline_skip()})
     pool = [c for c in cands if c["miles"] <= args.radius and c["place_id"] not in skip]
     if not pool:
         die(f"no candidates within {args.radius} miles of home; widen --radius")
@@ -535,7 +551,7 @@ def render(order, for_date, today, mode, note, skipped, census_date, loop, short
         "The line to test: \"Text Patch and it's done. Your Google listing, your menu, your hours, changed in a minute by a number you text. It's AI, with someone on the hook.\"",
         "Marketplace-only close: \"You're on DoorDash and Uber Eats — on a $6k month they keep about $1,500. The same orders through your own page cost about $480 all-in, and you keep every customer's name.\" Ordering is 4% instead of 25%; founding offer 0% platform fee for three months, the monthly never discounted.",
         "",
-        "Log every conversation in the pipeline sheet (leads log lands with B7). Owner replies to reviews aren't in the Places API — glance at the listing for unanswered ones.",
+        "Log every conversation by text: \"log <name> talked|interested|… <note>\" (`leads log`). Owner replies to reviews aren't in the Places API — glance at the listing for unanswered ones.",
     ]
     return "\n".join(lines) + "\n"
 
@@ -651,7 +667,7 @@ def log_leads(rows):
             if new:
                 f.write("# Leads from the groups and the remote kit (B25)\n\n"
                         "One row per lead: where the name came from, how to reach them, what was wrong. "
-                        "Fill \"what happened\" as it happens; `leads` (B7) takes this over.\n\n"
+                        "The pipeline itself (stages, follow-ups) is `leads log`, in private-docs/leads/.\n\n"
                         "| date | name | city | source | reach | what was wrong | what happened |\n"
                         "|---|---|---|---|---|---|---|\n")
             for r in rows:
@@ -678,6 +694,7 @@ def build_remote(args):
     places = Places(key, where, fixture=args.fixture, refresh=args.refresh)
     cands = census_candidates(args.min_reviews)
     skip = {} if args.allow_repeat else contacted()
+    skip.update({pid: "pipeline" for pid in pipeline_skip()})
     chains = chain_names()
     pool = [c for c in cands if c["miles"] <= args.radius and c["place_id"] not in skip
             and (c["name"] or "").lower() not in chains]
@@ -762,13 +779,13 @@ def _render_remote(picks, today, mode, note, census_date, emails):
             lines.append(f"   {p['maps']}")
         lines.append("")
     lines += ["Email footer (every cold email, from founder@):", email_footer(), "",
-              "No owner names in the census; greet the team. Logged to social/leads-from-groups.md."]
+              "No owner names in the census; greet the team. After sending, text \"sent 1 3 4\" (or \"sent all\")."]
     return "\n".join(lines) + "\n"
 
 
 def norm(text):
     text = re.sub(r"[^a-z0-9 ]+", " ", (text or "").lower().replace("&", " and "))
-    return [w for w in text.split() if w not in {"the", "restaurant", "and", "cafe", "grill", "llc", "co"}]
+    return [w for w in text.split() if len(w) > 1 and w not in {"the", "restaurant", "and", "cafe", "grill", "llc", "co"}]
 
 
 def census_lookup(name, city=None):
@@ -794,8 +811,8 @@ def census_lookup(name, city=None):
         if not have:
             continue
         hit = len(set(want) & set(have))
-        if hit == 0:
-            continue
+        if hit == 0 or hit / len(set(want)) < 0.75:
+            continue          # most of what was typed has to be in the name: "Joe's Taco Truck" is not "The Taco Truck"
         score = hit / max(len(set(want)), 1) + 0.5 * hit / max(len(set(have)), 1)
         if " ".join(want) == " ".join(have):
             score += 1
@@ -899,6 +916,321 @@ def cmd_diagnose(args):
         log_leads([{"date": today.isoformat(), "name": clean_name(c["name"]), "city": c.get("locality") or c.get("city"),
                     "source": f"group: {args.group}" if args.group else "group thread",
                     "reach": reach_line(rc), "wrong": "; ".join(fs[:3])}])
+
+
+# ---- the pipeline (B7) ----------------------------------------------------------------
+
+PIPELINE = Path(os.environ.get("LEADS_PIPELINE", PROJECTS / "private-docs/leads/pipeline.jsonl"))
+
+# outcome -> (stage, default days to the follow-up, what it means)
+OUTCOMES = {
+    "messaged":   ("contacted", 4, "a DM or email went out, no answer yet"),
+    "visited":    ("contacted", 3, "walked in, the decision-maker wasn't there"),
+    "talked":     ("contacted", 7, "talked to the owner or manager, no decision"),
+    "interested": ("interested", 2, "wants to hear more"),
+    "demo":       ("negotiating", 2, "saw the demo / talked price"),
+    "later":      ("contacted", 30, "not now; ask again in a month"),
+    "won":        ("won", None, "said yes"),
+    "lost":       ("lost", None, "said no, or not a fit"),
+}
+STAGES = ["contacted", "interested", "negotiating", "won", "lost"]
+WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+
+def parse_when(text, today):
+    """'tomorrow', 'fri', 'friday', '3d', '2w', '2026-10-01', 'oct 3', 'none' -> a date (or None)."""
+    t = (text or "").strip().lower()
+    if t in ("", "none", "never", "-"):
+        return None
+    if t in ("today",):
+        return today
+    if t in ("tomorrow", "tmrw", "tmw"):
+        return today + dt.timedelta(days=1)
+    m = re.fullmatch(r"(\d+)\s*(d|day|days|w|wk|week|weeks)", t)
+    if m:
+        n = int(m.group(1))
+        return today + dt.timedelta(days=n * (7 if m.group(2).startswith("w") else 1))
+    names = {"mon": "monday", "tue": "tuesday", "wed": "wednesday", "thu": "thursday", "fri": "friday", "sat": "saturday", "sun": "sunday"}
+    t = re.sub(r"^next\s+", "", t)
+    if t[:3] in names and names[t[:3]].startswith(t.rstrip(".")):
+        ahead = (WEEKDAYS.index(t[:3]) - today.weekday()) % 7 or 7
+        return today + dt.timedelta(days=ahead)
+    try:
+        return dt.date.fromisoformat(t)
+    except ValueError:
+        pass
+    for fmt in ("%b %d", "%B %d", "%m/%d"):
+        try:
+            d = dt.datetime.strptime(t, fmt).date().replace(year=today.year)
+            return d if d >= today else d.replace(year=today.year + 1)
+        except ValueError:
+            continue
+    die(f"can't read the date \"{text}\" (tomorrow, fri, 3d, 2w, 2026-10-01, oct 3)")
+
+
+def pipeline_events():
+    if not PIPELINE.exists():
+        return []
+    out = []
+    for line in PIPELINE.read_text().splitlines():
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return out
+
+
+def pipeline_state():
+    """key -> the lead as of its last event (stage, next, who, notes, the history)."""
+    leads = {}
+    for e in pipeline_events():
+        k = e["key"]
+        lead = leads.setdefault(k, {"key": k, "place_id": e.get("place_id"), "name": e["name"], "city": e.get("city"),
+                                    "history": [], "who": None, "email": None, "phone": None, "reach": None})
+        lead["history"].append(e)
+        for f in ("name", "city", "stage", "outcome", "next", "reach"):
+            if f in e:
+                lead[f] = e[f]
+        for f in ("who", "email", "phone"):
+            if e.get(f):
+                lead[f] = e[f]
+        lead["last"] = e["date"]
+    return leads
+
+
+def pipeline_skip():
+    """place_ids the kits should leave alone: anyone won or lost, and anyone with a follow-up still ahead."""
+    today = dt.datetime.now(TZ).date().isoformat()
+    return {l["place_id"] for l in pipeline_state().values()
+            if l.get("place_id") and (l.get("stage") in ("won", "lost") or (l.get("next") or "") > today)}
+
+
+def resolve_lead(raw, place=None):
+    """(key, place_id, name, city, row) for a name typed on a phone. The census first; else a free-text lead."""
+    if place:
+        hits = [h for h in census_lookup(raw.split(",")[0].strip() or "x") if h[1]["place_id"] == place] or \
+               [(9, r) for r in _census_by_id(place)]
+        if not hits:
+            die(f"no place {place} in the census")
+        r = hits[0][1]
+        return f"place:{r['place_id']}", r["place_id"], clean_name(r["name"]), r.get("locality") or r.get("city"), r, []
+    # a lead already in the pipeline wins: "log fong interested" shouldn't re-match the census
+    name, _, city = raw.partition(",")
+    want = " ".join(norm(name))
+    for l in pipeline_state().values():
+        if " ".join(norm(l["name"])) == want and (not city.strip() or norm(city)[0:1] == norm(l.get("city") or "")[0:1]):
+            return l["key"], l.get("place_id"), l["name"], l.get("city"), None, []
+    hits = census_lookup(name.strip(), city.strip() or None)
+    if hits:
+        r = hits[0][1]
+        others = [h[1] for h in hits[1:3] if h[0] >= hits[0][0] - 0.3]
+        return f"place:{r['place_id']}", r["place_id"], clean_name(r["name"]), r.get("locality") or r.get("city"), r, others
+    slug = "-".join(norm(name)) or "lead"
+    return f"name:{slug}", None, name.strip(), city.strip() or None, None, []
+
+
+def _census_by_id(place_id):
+    conn = sqlite3.connect(f"file:{CENSUS}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("""SELECT p.*, r.on_doordash, r.on_uber, r.on_grubhub, r.channel_class, r.parasite_url, r.serp_top3,
+                                  r.contact_name, r.contact_email, r.city
+                           FROM place_cache p LEFT JOIN restaurants r ON r.place_id = p.place_id WHERE p.place_id = ?""",
+                        (place_id,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def cmd_log(args):
+    today = dt.datetime.now(TZ).date()
+    outcome = args.outcome.lower()
+    if outcome not in OUTCOMES:
+        die(f"outcome is one of: {', '.join(OUTCOMES)}")
+    key, pid, name, city, row, others = resolve_lead(" ".join(args.name), args.place)
+    stage, days, _ = OUTCOMES[outcome]
+    nxt = parse_when(args.next, today) if args.next is not None else (today + dt.timedelta(days=days) if days else None)
+    if nxt and nxt.weekday() == 6 and args.next is None:
+        nxt += dt.timedelta(days=1)            # nobody follows up on a Sunday
+    event = {"ts": dt.datetime.now(TZ).isoformat(timespec="seconds"), "date": today.isoformat(), "key": key,
+             "place_id": pid, "name": name, "city": city, "outcome": outcome, "stage": stage,
+             "next": nxt.isoformat() if nxt else None, "note": " ".join(args.note).strip() or None,
+             "who": args.who, "email": args.email, "phone": args.phone or (row or {}).get("phone"), "via": args.via}
+    if row:
+        rc = reach(row)
+        event["reach"] = reach_line(rc) or None
+    PIPELINE.parent.mkdir(parents=True, exist_ok=True)
+    with open(PIPELINE, "a") as f:
+        f.write(json.dumps({k: v for k, v in event.items() if v is not None or k == "next"}) + "\n")
+    when = f"follow up {nxt.strftime('%a %-d %b')}" if nxt else "no follow-up"
+    print(f"Logged: {name}{' (' + city + ')' if city else ''} — {outcome} → {stage}; {when}."
+          + ("" if row or pid else " (not in the census; logged by name)"))
+    if others:
+        print("  (matched the census's " + name + (f" in {city}" if city else "")
+              + "; also close: " + "; ".join(f"{clean_name(o['name'])} ({o.get('locality') or '?'}) --place {o['place_id']}" for o in others) + ")")
+    print()
+    print_list(today + dt.timedelta(days=1), args.n)
+
+
+def cmd_sent(args):
+    """`leads sent 1 3 4` (or `all`): those picks from the last remote kit were messaged."""
+    p = STATE / "remote.jsonl"
+    last = None
+    if p.exists():
+        for line in p.read_text().splitlines():
+            try:
+                last = json.loads(line)
+            except json.JSONDecodeError:
+                pass
+    if not last:
+        die("no remote kit yet; run `leads kit --remote`")
+    ids, names = last["place_ids"], last["names"]
+    picks = range(1, len(ids) + 1) if args.which == ["all"] else []
+    if not picks:
+        try:
+            picks = [int(x) for x in args.which]
+        except ValueError:
+            die("say which: leads sent 1 3 4, or leads sent all")
+    today = dt.datetime.now(TZ).date()
+    done = []
+    for i in picks:
+        if not 1 <= i <= len(ids):
+            die(f"the last remote kit ({last['for']}) has {len(ids)} leads, not {i}")
+        row = (_census_by_id(ids[i - 1]) or [{}])[0]
+        nxt = today + dt.timedelta(days=OUTCOMES["messaged"][1])
+        event = {"ts": dt.datetime.now(TZ).isoformat(timespec="seconds"), "date": today.isoformat(),
+                 "key": f"place:{ids[i - 1]}", "place_id": ids[i - 1], "name": clean_name(names[i - 1]),
+                 "city": row.get("locality") or row.get("city"), "outcome": "messaged", "stage": "contacted",
+                 "next": nxt.isoformat(), "via": args.via, "phone": row.get("phone"),
+                 "reach": reach_line(reach(row)) or None, "note": f"remote kit {last['for']} #{i}"}
+        PIPELINE.parent.mkdir(parents=True, exist_ok=True)
+        with open(PIPELINE, "a") as f:
+            f.write(json.dumps({k: v for k, v in event.items() if v is not None}) + "\n")
+        done.append(event["name"])
+    print(f"Logged {len(done)} sent: {', '.join(done)}; follow up {nxt.strftime('%a %-d %b')} if they don't answer.")
+
+
+def due_by(day):
+    """Leads whose follow-up is on or before `day`, oldest first (won and lost never come back)."""
+    rows = [l for l in pipeline_state().values()
+            if l.get("next") and l["next"] <= day.isoformat() and l.get("stage") not in ("won", "lost")]
+    return sorted(rows, key=lambda l: (l["next"], l["name"]))
+
+
+def lead_line(l, day):
+    late = (day - dt.date.fromisoformat(l["next"])).days
+    tag = f" · {late}d late" if late > 0 else ""
+    last = l["history"][-1]
+    note = f" — \"{last['note']}\"" if last.get("note") else ""
+    contact = " · ".join(x for x in (l.get("who"), l.get("phone"), l.get("reach"), l.get("email")) if x)
+    return (f"{l['name']}{' (' + l['city'] + ')' if l.get('city') else ''} · {l['stage']}, {last['outcome']} {last['date'][5:]}"
+            f"{tag}{note}" + (f"\n     {contact}" if contact else ""))
+
+
+def print_list(day, n=6):
+    """The day's list: follow-ups due, then fresh leads from the census to make up n."""
+    due = due_by(day)
+    label = ("Tomorrow, " if day == dt.datetime.now(TZ).date() + dt.timedelta(days=1) else "") + day.strftime("%a %-d %b")
+    print(f"{label}: {len(due)} follow-up{'s' if len(due) != 1 else ''}"
+          + (", then new ones" if len(due) < n else ""))
+    for i, l in enumerate(due, 1):
+        print(f"  {i}. {lead_line(l, day)}")
+    if len(due) < n:
+        taken = pipeline_skip() | {l["place_id"] for l in pipeline_state().values() if l.get("place_id")} | set(contacted())
+        chains = chain_names()
+        fresh = [c for c in census_candidates(25) if c["place_id"] not in taken and (c["name"] or "").lower() not in chains]
+        for c in fresh:
+            c["reach"] = reach(c)
+            c["faults"], _ = lead_faults(c, None, day)
+        fresh = [c for c in fresh if c["faults"]]
+        fresh.sort(key=lambda c: (not (c["reach"]["instagram"] or c["reach"]["facebook"]), c["miles"]))
+        for i, c in enumerate(fresh[: n - len(due)], len(due) + 1):
+            how = reach_line(c["reach"]) or c.get("phone") or ""
+            print(f"  {i}. NEW {clean_name(c['name'])} ({c.get('locality') or ''}, {c['miles']} mi) · {c['faults'][0]}"
+                  + (f"\n     {how}" if how else ""))
+    if day.weekday() == 5:
+        print("  (Saturday: the counter kit is `leads kit --last`)")
+
+
+def cmd_next(args):
+    today = dt.datetime.now(TZ).date()
+    day = parse_when(args.when, today) if args.when else today + dt.timedelta(days=1)
+    print_list(day, args.n)
+
+
+def cmd_due(args):
+    today = dt.datetime.now(TZ).date()
+    due = due_by(today)
+    if not due:
+        print("No follow-ups due today.")
+        return
+    print(f"{len(due)} follow-up{'s' if len(due) != 1 else ''} due:")
+    for i, l in enumerate(due, 1):
+        print(f"  {i}. {lead_line(l, today)}")
+
+
+def cmd_show(args):
+    key, pid, name, city, row, _ = resolve_lead(" ".join(args.name), args.place)
+    lead = pipeline_state().get(key)
+    if not lead:
+        print(f"{name}{' (' + city + ')' if city else ''}: not in the pipeline yet.")
+        if row:
+            fs, summary = lead_faults(row, None, dt.datetime.now(TZ).date())
+            print(f"  census: {summary.replace(' · (census only)', '')}" + (f" · wrong: {'; '.join(fs[:2])}" if fs else ""))
+        return
+    print(f"{lead['name']}{' (' + lead['city'] + ')' if lead.get('city') else ''} — {lead['stage']}"
+          + (f", follow up {lead['next']}" if lead.get("next") and lead["stage"] not in ("won", "lost") else ""))
+    for x in ("who", "phone", "email", "reach"):
+        if lead.get(x):
+            print(f"  {x}: {lead[x]}")
+    for e in lead["history"]:
+        print(f"  {e['date']}  {e['outcome']:<10} {e.get('note') or ''}")
+
+
+def week_bounds(today):
+    start = today - dt.timedelta(days=today.weekday())
+    return start, start + dt.timedelta(days=6)
+
+
+def cmd_week(args):
+    today = dt.datetime.now(TZ).date()
+    start, end = week_bounds(today - dt.timedelta(weeks=args.ago))
+    evs = [e for e in pipeline_events() if start.isoformat() <= e["date"] <= end.isoformat()]
+    counts = {o: sum(1 for e in evs if e["outcome"] == o) for o in OUTCOMES}
+    convo = sum(counts[o] for o in ("visited", "talked", "interested", "demo", "later", "won", "lost"))
+    state = pipeline_state()
+    live = {s: sum(1 for l in state.values() if l.get("stage") == s) for s in STAGES}
+    kits = sum(1 for k in kits_log() if start.isoformat() <= k.get("for", "") <= end.isoformat())
+    remote = 0
+    if (STATE / "remote.jsonl").exists():
+        for line in (STATE / "remote.jsonl").read_text().splitlines():
+            try:
+                if start.isoformat() <= json.loads(line).get("for", "") <= end.isoformat():
+                    remote += 1
+            except json.JSONDecodeError:
+                pass
+    print(f"Week of {start.strftime('%-d %b')}: {convo} conversation{'s' if convo != 1 else ''}, {counts['messaged']} message{'s' if counts['messaged'] != 1 else ''} sent"
+          f" · {counts['interested']} interested · {counts['demo']} demos · {counts['won']} won · {counts['lost']} lost")
+    print(f"Pipeline now: " + " · ".join(f"{live[s]} {s}" for s in STAGES)
+          + f" · {len(due_by(today))} follow-ups due")
+    print(f"Kits: {kits} Saturday, {remote} remote this week.")
+    won = sum(1 for l in state.values() if l.get("stage") == "won")
+    print(f"Target: 3 paying by 31 Oct, 10 by 31 Dec — {won} won so far.")
+
+
+def cmd_pipeline(args):
+    state = pipeline_state()
+    if not state:
+        print("The pipeline is empty. `leads log \"Name\" visited|talked|interested|demo|won|lost|messaged|later [note]`")
+        return
+    for s in STAGES:
+        rows = sorted((l for l in state.values() if l.get("stage") == s), key=lambda l: l.get("next") or "9")
+        if not rows or (s in ("won", "lost") and not args.all):
+            if rows:
+                print(f"{s}: {len(rows)}")
+            continue
+        print(f"{s}: {len(rows)}")
+        for l in rows:
+            print(f"  {l['name']}{' (' + l['city'] + ')' if l.get('city') else ''}"
+                  + (f" · next {l['next']}" if l.get("next") else "") + f" · last {l['last']}")
 
 
 # ---- commands -------------------------------------------------------------------
@@ -1019,6 +1351,45 @@ def main():
     c.add_argument("--radius", type=float, default=10.0)
     c.add_argument("--min-reviews", type=int, default=25)
     c.set_defaults(fn=cmd_candidates)
+
+    lg = sub.add_parser("log", help="log a conversation: leads log \"Name[, City]\" OUTCOME [note...]")
+    lg.add_argument("name", help='"Name" or "Name, City"', nargs=1)
+    lg.add_argument("outcome", help=" | ".join(OUTCOMES))
+    lg.add_argument("note", nargs="*")
+    lg.add_argument("--next", help="follow-up: tomorrow, fri, 3d, 2w, 2026-10-01, none (default by outcome)")
+    lg.add_argument("--who", help="who you talked to")
+    lg.add_argument("--email")
+    lg.add_argument("--phone")
+    lg.add_argument("--via", help="counter, dm, email, group, phone, referral")
+    lg.add_argument("--place", help="census place id, when the name matched the wrong one")
+    lg.add_argument("--n", type=int, default=6, help="size of tomorrow's list")
+    lg.set_defaults(fn=cmd_log)
+
+    nx = sub.add_parser("next", help="the day's list: follow-ups due, then new leads (default tomorrow)")
+    nx.add_argument("when", nargs="?")
+    nx.add_argument("--n", type=int, default=6)
+    nx.set_defaults(fn=cmd_next)
+
+    se = sub.add_parser("sent", help="picks from the last remote kit that went out: leads sent 1 3 4 | all")
+    se.add_argument("which", nargs="+")
+    se.add_argument("--via", default="dm")
+    se.set_defaults(fn=cmd_sent)
+
+    du = sub.add_parser("due", help="follow-ups due today")
+    du.set_defaults(fn=cmd_due)
+
+    sh = sub.add_parser("show", help="one lead's history")
+    sh.add_argument("name", nargs="+")
+    sh.add_argument("--place")
+    sh.set_defaults(fn=cmd_show)
+
+    wk = sub.add_parser("week", help="this week's numbers")
+    wk.add_argument("--ago", type=int, default=0, help="weeks back")
+    wk.set_defaults(fn=cmd_week)
+
+    pp = sub.add_parser("pipeline", help="every lead by stage")
+    pp.add_argument("--all", action="store_true", help="list won and lost too")
+    pp.set_defaults(fn=cmd_pipeline)
 
     d = sub.add_parser("doctor")
     d.set_defaults(fn=cmd_doctor)

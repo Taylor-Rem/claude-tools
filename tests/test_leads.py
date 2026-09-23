@@ -26,7 +26,7 @@ class KitTest(unittest.TestCase):
         self.env = {"LEADS_STATE": self.tmp.name, "LEADS_LEDGER": str(Path(self.tmp.name) / "ledger.jsonl"),
                     "LEADS_GROUPS_LOG": str(Path(self.tmp.name) / "leads-from-groups.md"),
                     "CLAUDE_TOOLS_ENV": str(Path(self.tmp.name) / "no-env"), "LEADS_MAIL_ADDRESS": "",
-                    "GOOGLE_MAPS_API_KEY": ""}
+                    "GOOGLE_MAPS_API_KEY": "", "LEADS_PIPELINE": str(Path(self.tmp.name) / "pipeline.jsonl")}
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -125,6 +125,68 @@ class KitTest(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("isn't in the census", r.stderr)
         self.assertFalse((Path(self.tmp.name) / "leads-from-groups.md").exists())
+
+
+    # -- B7: the pipeline ---------------------------------------------------------------
+
+    def events(self):
+        p = Path(self.tmp.name) / "pipeline.jsonl"
+        return [json.loads(x) for x in p.read_text().splitlines()] if p.exists() else []
+
+    def test_one_text_logs_a_counter_visit_and_returns_tomorrows_list(self):
+        r = run("log", "Whistle Wok", "talked", "owner Mike, wants the demo", "--who", "Mike", "--next", "tomorrow", env=self.env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("Logged: Whistle Wok (American Fork) — talked → contacted", r.stdout)
+        tomorrow = r.stdout.split("\n\n", 1)[1]
+        self.assertTrue(tomorrow.startswith("Tomorrow, "), tomorrow)
+        self.assertIn("1. Whistle Wok (American Fork) · contacted, talked", tomorrow)
+        self.assertIn('"owner Mike, wants the demo"', tomorrow)
+        self.assertIn("NEW ", tomorrow)                               # topped up to six from the census
+        self.assertEqual(tomorrow.count("NEW "), 5)
+        [e] = self.events()
+        self.assertEqual((e["who"], e["stage"], e["via"] if "via" in e else None), ("Mike", "contacted", None))
+        self.assertTrue(e["place_id"].startswith("ChIJ"))
+
+    def test_stages_follow_ups_and_the_week(self):
+        run("log", "Whistle Wok", "talked", env=self.env)
+        run("log", "Whistle Wok", "interested", "wants pricing", env=self.env)       # same lead, moves on
+        run("log", "Off Road Mexican, American Fork", "lost", "happy with DoorDash", env=self.env)
+        run("log", "Joe's Taco Truck, Lehi", "messaged", "--next", "today", env=self.env)
+        self.assertEqual(len({e["key"] for e in self.events()}), 3)
+        joe = [e for e in self.events() if e["name"] == "Joe's Taco Truck"][0]
+        self.assertIsNone(joe.get("place_id"), "not The Taco Truck: a wrong match is worse than none")
+        due = run("due", env=self.env).stdout
+        self.assertIn("Joe's Taco Truck (Lehi)", due)
+        self.assertNotIn("Off Road", due)
+        show = run("show", "whistle wok", env=self.env).stdout
+        self.assertIn("interested", show.splitlines()[0])
+        self.assertIn("wants pricing", show)
+        week = run("week", env=self.env).stdout
+        self.assertIn("3 conversations, 1 message sent · 1 interested", week)
+        self.assertIn("0 won so far", week)
+        pipe = run("pipeline", env=self.env).stdout
+        self.assertIn("interested: 1", pipe)
+        self.assertIn("lost: 1", pipe)
+        # the kits leave a lost lead and one with a follow-up ahead alone
+        kit = json.loads(run("kit", "--remote", "--census-only", "--json", "--no-save", env=self.env).stdout)
+        self.assertNotIn("Off Road Mexican Food", [x["name"] for x in kit])
+        self.assertNotIn("WHISTLE WOK", [x["name"] for x in kit])
+
+    def test_sent_marks_remote_kit_picks_as_messaged(self):
+        run("kit", "--remote", "--census-only", env=self.env)
+        r = run("sent", "1", "3", env=self.env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("Logged 2 sent", r.stdout)
+        self.assertEqual([e["outcome"] for e in self.events()], ["messaged", "messaged"])
+        self.assertNotEqual(run("sent", "9", env=self.env).returncode, 0)
+
+    def test_dates_a_phone_would_type(self):
+        for when in ("fri", "friday", "next fri", "3d", "2w", "oct 3", "2026-10-01"):
+            r = run("log", "Whistle Wok", "later", "--next", when, env=self.env)
+            self.assertEqual(r.returncode, 0, f"{when}: {r.stderr}")
+        r = run("log", "Whistle Wok", "later", "--next", "someday", env=self.env)
+        self.assertIn("can't read the date", r.stderr)
+        self.assertNotEqual(run("log", "Whistle Wok", "maybe", env=self.env).returncode, 0)
 
 
 if __name__ == "__main__":

@@ -310,6 +310,22 @@ def default_styles():
             "Wide editorial restaurant photograph, warm inviting interior or a "
             "spread of dishes on a table, soft natural light, realistic, no text."
         ),
+        # Social presets (plans/09-social-strategy.md). The style sentence is
+        # the brand's, verbatim from BRAND.md / brand/*.json; the prompt adds
+        # only the subject.
+        "patchlamp-social": (
+            "Vintage 1940s telephone switchboard room at night. Warm lamplight "
+            "from the left, deep shadows, muted teal and amber palette, slight "
+            "35mm film grain, painterly-photographic, cozy and a little dry, a "
+            "little scuffed. No people unless the subject says so, no text, no "
+            "logos, no screens with readable words."
+        ),
+        "plateful-social": (
+            "Editorial photograph of a small independent restaurant, realistic "
+            "and appetizing, warm natural light, shallow depth of field, the "
+            "restaurant is the protagonist. No text, no logos, no readable "
+            "screens or signage."
+        ),
         "plain": "",
     }
 

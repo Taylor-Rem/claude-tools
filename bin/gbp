@@ -126,7 +126,10 @@ class Creds:
     def __init__(self, args):
         env = dict(os.environ)
         if not env.get("GBP_LOCATION"):
-            slug = getattr(args, "project", None) or workspace_slug()
+            ws = workspace_slug()
+            if ws and getattr(args, "project", None) not in (None, ws):
+                die(f"this workspace is {ws}; it can't reach another project's listing")
+            slug = getattr(args, "project", None) or ws
             if slug:
                 env.update(from_patchlamp(slug))
         self.token = env.get("GBP_ACCESS_TOKEN", "")
@@ -558,7 +561,8 @@ def cmd_post(args):
     elif args.cta == "CALL":
         body["callToAction"] = {"actionType": "CALL"}
     if args.photo:
-        body["media"] = [{"mediaFormat": "PHOTO", "sourceUrl": args.photo if is_url(args.photo) else upload_bytes(creds, args.photo)}]
+        body["media"] = [{"mediaFormat": "PHOTO", "sourceUrl": args.photo} if is_url(args.photo)
+                         else {"mediaFormat": "PHOTO", "dataRef": upload_bytes(creds, args.photo)}]
     _, post = api(creds, "POST", f"{V4}/{creds.v4}/localPosts", body, ok=(200, 201))
     print("Posted to Google.")
     print(f"  {post.get('summary') or args.text}")

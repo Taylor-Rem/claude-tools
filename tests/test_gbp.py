@@ -142,6 +142,14 @@ class GbpTest(unittest.TestCase):
         self.assertEqual(body["media"], [{"mediaFormat": "PHOTO", "sourceUrl": "https://example.com/pho.jpg"}])
         self.assertIn("about a week", r.stdout)
 
+    def test_a_post_with_a_local_photo_carries_the_upload_as_a_data_ref(self):
+        photo = Path(self.tmp.name) / "pho.jpg"
+        photo.write_bytes(b"\xff\xd8\xff" + b"0" * 2048)
+        r = self.run_gbp("post", "Fresh pho every Saturday.", "--photo", str(photo))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        body = [x for x in self.sent("POST") if x["url"].endswith("/localPosts")][0]["body"]
+        self.assertEqual(body["media"], [{"mediaFormat": "PHOTO", "dataRef": {"resourceName": "uploads/AbCd1234"}}])
+
     def test_a_photo_from_the_workspace_goes_through_the_upload_flow(self):
         photo = Path(self.tmp.name) / "pho.jpg"
         photo.write_bytes(b"\xff\xd8\xff" + b"0" * 2048)

@@ -23,6 +23,8 @@
       "Bash(img *)",
       "Bash(site *)",
       "Bash(newsletter *)",
+      "Bash(gbp *)",
+      "Bash(social *)",
       "Bash(shot *)"
     ],
     "deny": [

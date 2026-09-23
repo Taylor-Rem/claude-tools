@@ -1,0 +1,444 @@
+#!/usr/bin/env python3
+"""social — one photo and a line on Facebook, Instagram and Google at once
+(ROADMAP B19, plan ~/projects/plans/10-social-posting.md).
+
+  social                                   # what's connected here, and the last posts
+  social post IMAGE "caption"              # in a client workspace: their Page + Instagram (+ Google if connected)
+  social post BRAND IMAGE "caption"        # outside one: a house brand (patchlamp, plateful) or --project SLUG
+  social post BRAND                        # the oldest queued draft for that brand — B24's "post" reply
+      --only facebook,instagram,google     # a subset (default: every one that is connected)
+      --page ID|NAME                       # when more than one Page is connected
+      --dry-run                            # prepare the image and say what would go where; post nothing
+  social queue                             # house drafts waiting for "post" (~/projects/social/queue/)
+  social queue add BRAND IMAGE "caption" [--pillar P] [--topic T]
+  social queue drop N
+  social connect [BRAND]                   # the signed link (24h) the Page's admin opens to grant it
+  social ls [BRAND]                        # recent posts with their links
+  social doctor
+
+The Page token stays on patchlamp.com: this sends the photo (as a JPEG, at
+most 1440px, which is what Instagram takes) and the caption, and prints
+what each network answered — a link, or its own refusal, one line each.
+Google goes through `gbp post` on the project's Google connection.
+
+Meta's app is in Development mode until App Review (TAYLOR-TODO §1 "Meta
+app"): only our own Page and @patchlamp can be connected until then.
+
+Config, by name, never printed:
+  PATCHLAMP_RELAY_SHARED_SECRET   ~/.config/claude-tools/env
+  PATCHLAMP_URL                   optional; default https://patchlamp.com
+  SOCIAL_DIR                      optional; default ~/projects/social (the house queue and posted.jsonl)
+"""
+
+import argparse
+import base64
+import datetime as dt
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+ENV_FILE = Path(os.environ.get("CLAUDE_TOOLS_ENV", Path.home() / ".config/claude-tools/env"))
+SOCIAL_DIR = Path(os.environ.get("SOCIAL_DIR", Path.home() / "projects/social"))
+HOUSE = ("patchlamp", "plateful")
+NETWORKS = ("facebook", "instagram", "google")
+MAX_SIDE = 1440
+IG_RATIO = (0.8, 1.91)          # Instagram's feed: 4:5 portrait to 1.91:1 landscape
+
+
+def die(msg, code=1):
+    print(f"social: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def read_env():
+    keys = {}
+    if ENV_FILE.exists():
+        for line in ENV_FILE.read_text().splitlines():
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                keys[k.strip()] = v.strip()
+    return keys
+
+
+def base_url():
+    return (os.environ.get("PATCHLAMP_URL") or read_env().get("PATCHLAMP_URL") or "https://patchlamp.com").rstrip("/")
+
+
+def secret():
+    val = os.environ.get("PATCHLAMP_RELAY_SHARED_SECRET") or read_env().get("PATCHLAMP_RELAY_SHARED_SECRET")
+    if not val:
+        die("PATCHLAMP_RELAY_SHARED_SECRET is not in the toolbelt; this needs Taylor (setenv.sh)")
+    return val
+
+
+def workspace_slug():
+    p = Path.cwd() / ".client.json"
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text()).get("slug")
+    except (ValueError, OSError):
+        return None
+
+
+def api(method, path, body=None, ok=(200, 201), timeout=30):
+    req = urllib.request.Request(base_url() + path, method=method, data=json.dumps(body).encode() if body is not None else None,
+                                 headers={"Authorization": f"Bearer {secret()}", "Accept": "application/json",
+                                          "Content-Type": "application/json", "User-Agent": "claude-tools/social"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, json.loads(resp.read().decode() or "{}")
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode(errors="replace")
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            data = {"error": raw[:200]}
+        if exc.code in ok:
+            return exc.code, data
+        if exc.code == 404 and "could not be found" in str(data.get("message", "")):
+            die("patchlamp.com doesn't have the social endpoints yet (B19 is on `dev`; merge the PR to deploy)")
+        die(f"{data.get('error') or data.get('message') or raw[:200]} (HTTP {exc.code})")
+    except urllib.error.URLError as exc:
+        die(f"{method} {path}: {exc.reason}")
+
+
+# ---- which project ----------------------------------------------------------------
+
+def resolve(args, positional):
+    """(slug, remaining positionals). In a workspace the project is fixed; elsewhere the first word is the brand."""
+    ws = workspace_slug()
+    if ws:
+        if getattr(args, "project", None) and args.project != ws:
+            die(f"this workspace is {ws}; it can't post for another project")
+        if positional and positional[0] in HOUSE and len(positional) in (1, 3):
+            die(f"this workspace is {ws}; house brands are posted from ~/projects")
+        return ws, positional
+    if getattr(args, "project", None):
+        return args.project, positional
+    if positional and positional[0] in HOUSE:
+        return positional[0], positional[1:]
+    die(f"say which brand ({' or '.join(HOUSE)}) or pass --project SLUG")
+
+
+# ---- the image ---------------------------------------------------------------------
+
+def magick():
+    return shutil.which("magick") or shutil.which("convert")
+
+
+def prepare(src, workdir):
+    """A JPEG at most MAX_SIDE on the long side, oriented, no metadata. Returns (path, width, height)."""
+    src = Path(src)
+    if not src.is_file():
+        die(f"{src}: no such file")
+    tool = magick()
+    if not tool:
+        die("ImageMagick is not installed (apt install imagemagick)")
+    out = Path(workdir) / (src.stem + ".jpg")
+    r = subprocess.run([tool, str(src) + "[0]", "-auto-orient", "-resize", f"{MAX_SIDE}x{MAX_SIDE}>", "-strip",
+                        "-background", "white", "-alpha", "remove", "-quality", "88", f"jpg:{out}"],
+                       capture_output=True, text=True)
+    if r.returncode != 0 or not out.exists():
+        die(f"couldn't read {src.name} as an image: {r.stderr.strip()[:160]}")
+    ident = shutil.which("identify")
+    w = h = 0
+    if ident:
+        q = subprocess.run([ident, "-format", "%w %h", str(out)], capture_output=True, text=True)
+        try:
+            w, h = (int(x) for x in q.stdout.split()[:2])
+        except ValueError:
+            pass
+    return out, w, h
+
+
+# ---- the house queue ---------------------------------------------------------------
+
+def queue_dir():
+    return SOCIAL_DIR / "queue"
+
+
+def drafts(brand=None):
+    d = queue_dir()
+    out = []
+    for p in sorted(d.glob("*.json")) if d.exists() else []:
+        try:
+            item = json.loads(p.read_text())
+        except ValueError:
+            continue
+        item["_path"] = p
+        if brand is None or item.get("brand") == brand:
+            out.append(item)
+    return out
+
+
+def log_posted(brand, caption, results, draft=None):
+    row = {"date": dt.date.today().isoformat(), "brand": brand, "pillar": (draft or {}).get("pillar"),
+           "topic": (draft or {}).get("topic") or caption.split("\n")[0][:80], "status": "posted",
+           "path": (draft or {}).get("image"), "links": {k: v.get("url") for k, v in results.items() if v.get("ok")}}
+    SOCIAL_DIR.mkdir(parents=True, exist_ok=True)
+    with (SOCIAL_DIR / "posted.jsonl").open("a") as f:
+        f.write(json.dumps(row) + "\n")
+
+
+# ---- commands -----------------------------------------------------------------------
+
+def connected(slug):
+    """(pages, google_connected) for a project."""
+    _, social = api("GET", f"/internal/relay/projects/{slug}/social")
+    _, conns = api("GET", f"/internal/relay/projects/{slug}/connections", ok=(200, 404))
+    google = any(c.get("kind") == "google" and c.get("status") == "connected" for c in conns.get("connections") or [])
+    return social, google
+
+
+def page_line(p):
+    ig = f" + @{p['instagram']} on Instagram" if p.get("instagram") else " (no Instagram linked to it yet)"
+    return f"  Facebook: {p.get('label')}{ig}"
+
+
+def cmd_status(args):
+    slugs = [workspace_slug()] if workspace_slug() else ([args.project] if args.project else list(HOUSE))
+    for slug in slugs:
+        social, google = connected(slug)
+        print(f"{slug}:")
+        pages = social.get("pages") or []
+        for p in pages:
+            print(page_line(p))
+        if not pages:
+            print("  Facebook + Instagram: not connected (`social connect" + ("" if workspace_slug() else f" {slug}") + "`)")
+        print(f"  Google: {'connected (posts go through gbp)' if google else 'not connected'}")
+        for p in (social.get("posts") or [])[:3]:
+            print(f"  last: {p['created_at'][:16]} {p['status']} — {p['caption'][:60]}")
+    if not workspace_slug():
+        q = drafts()
+        print(f"queue: {len(q)} draft(s) waiting" + (" — `social queue`" if q else ""))
+
+
+def cmd_post(args):
+    slug, rest = resolve(args, args.words)
+    draft = None
+    if len(rest) == 0:
+        if slug not in HOUSE or workspace_slug():
+            die('say what to post: social post IMAGE "caption"')
+        waiting = drafts(slug)
+        if not waiting:
+            die(f"nothing queued for {slug} (`social queue add {slug} IMAGE \"caption\"`)")
+        draft = waiting[0]
+        image, caption = draft["image"], draft["caption"]
+    elif len(rest) == 2:
+        image, caption = rest
+    else:
+        die('usage: social post [BRAND] IMAGE "caption"')
+    caption = caption.strip()
+    if not caption:
+        die("the caption is empty")
+    if len(caption) > 2200:
+        die(f"the caption is {len(caption)} characters; Instagram takes 2,200")
+    want = [n.strip() for n in args.only.split(",")] if args.only else list(NETWORKS)
+    bad = [n for n in want if n not in NETWORKS]
+    if bad:
+        die(f"unknown network {', '.join(bad)} (facebook, instagram, google)")
+
+    social, google = connected(slug)
+    pages = social.get("pages") or []
+    meta_nets = [n for n in want if n in ("facebook", "instagram")]
+    if meta_nets and not pages:
+        if args.only:
+            die(f"no Facebook Page is connected on {slug} (`social connect`)")
+        print(f"  Facebook + Instagram: not connected on {slug} — skipped (`social connect`)")
+        meta_nets = []
+    if "google" in want and not google:
+        if args.only == "google":
+            die(f"no Google listing is connected on {slug} (connections google invite)")
+        want.remove("google")
+        if not args.only:
+            print("  Google: not connected — skipped")
+    if not meta_nets and "google" not in want:
+        die("nothing to post to")
+
+    work = tempfile.mkdtemp(prefix="social-")
+    try:
+        jpg, w, h = prepare(image, work)
+        if "instagram" in meta_nets and w and h and not IG_RATIO[0] <= w / h <= IG_RATIO[1]:
+            die(f"the image is {w}x{h}; Instagram takes 4:5 portrait to 1.91:1 landscape. Crop it "
+                f"(`magick IN -gravity center -crop 1:1 OUT`) or post with --only facebook,google")
+        if args.dry_run:
+            print(f"would post {jpg.stat().st_size // 1024} KB, {w}x{h}, to {slug}: "
+                  f"{', '.join(meta_nets + (['google'] if 'google' in want else []))}")
+            for p in pages:
+                print(page_line(p))
+            print(f"caption: {caption}")
+            return
+        results = {}
+        public = None
+        if meta_nets:
+            body = {"image": base64.b64encode(jpg.read_bytes()).decode(), "caption": caption, "networks": meta_nets}
+            if args.page:
+                body["page"] = args.page
+            code, r = api("POST", f"/internal/relay/projects/{slug}/social", body, ok=(201, 409), timeout=180)
+            if code == 409:
+                die(r.get("error", "refused") + "".join(f"\n  {p.get('external_id')}  {p.get('label')}" for p in r.get("pages") or []))
+            results.update((r.get("post") or {}).get("results") or {})
+            public = (r.get("post") or {}).get("image_url")
+        if "google" in want:
+            gbp = shutil.which("gbp") or str(Path(__file__).resolve().parent / "gbp")
+            cmd = [gbp] + ([] if workspace_slug() else ["--project", slug]) + ["post", caption, "--photo", public or str(jpg)]
+            g = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            said = (g.stdout.strip() or g.stderr.strip()).splitlines()
+            results["google"] = {"ok": g.returncode == 0, "url": None,
+                                 **({"said": said[0] if said else "posted"} if g.returncode == 0
+                                    else {"error": (g.stderr.strip() or g.stdout.strip())[:200].replace("gbp: ", "")})}
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+    names = {"facebook": "Facebook", "instagram": "Instagram", "google": "Google"}
+    for net in ("facebook", "instagram", "google"):
+        if net in results:
+            r = results[net]
+            print(f"  {names[net]}: " + ((r.get("url") or r.get("said") or "posted") if r.get("ok") else f"not posted — {r.get('error')}"))
+    good = [n for n, r in results.items() if r.get("ok")]
+    if slug in HOUSE and not workspace_slug() and good:
+        log_posted(slug, caption, results, draft)
+        if draft:
+            draft["_path"].unlink(missing_ok=True)
+    if not good:
+        sys.exit(1)
+
+
+def cmd_queue(args):
+    if workspace_slug():
+        die("the queue is for the house brands; in a workspace, post directly")
+    words = args.words
+    op = words[0] if words else "ls"
+    if op == "ls":
+        q = drafts()
+        if not q:
+            print("no drafts queued")
+        for i, d in enumerate(q, 1):
+            print(f"  {i}. {d['brand']:<10} {d.get('added', '')[:16]}  {d['caption'][:70]}  ({Path(d['image']).name})")
+        return
+    if op == "add":
+        if len(words) != 4 or words[1] not in HOUSE:
+            die(f'usage: social queue add {"|".join(HOUSE)} IMAGE "caption"')
+        brand, src, caption = words[1:]
+        src = Path(src).expanduser().resolve()
+        if not src.is_file():
+            die(f"{src}: no such file")
+        queue_dir().mkdir(parents=True, exist_ok=True)
+        stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        img = queue_dir() / f"{stamp}-{brand}{src.suffix.lower()}"
+        shutil.copy2(src, img)
+        item = {"brand": brand, "image": str(img), "caption": caption.strip(), "pillar": args.pillar, "topic": args.topic,
+                "added": dt.datetime.now().isoformat(timespec="seconds")}
+        (queue_dir() / f"{stamp}-{brand}.json").write_text(json.dumps(item, indent=1) + "\n")
+        print(f"queued for {brand}: {caption.strip()[:70]} — `social post {brand}` puts it up")
+        return
+    if op == "drop" and len(words) == 2 and words[1].isdigit():
+        q = drafts()
+        i = int(words[1])
+        if not 1 <= i <= len(q):
+            die(f"no draft {i}")
+        d = q[i - 1]
+        d["_path"].unlink(missing_ok=True)
+        if str(Path(d["image"]).parent) == str(queue_dir()):
+            Path(d["image"]).unlink(missing_ok=True)
+        print(f"dropped: {d['caption'][:70]}")
+        return
+    die('usage: social queue [ls | add BRAND IMAGE "caption" | drop N]')
+
+
+def cmd_connect(args):
+    slug, _ = resolve(args, args.words)
+    code, r = api("POST", f"/internal/relay/projects/{slug}/connections/meta/grant-url", {}, ok=(200, 503))
+    if code == 503:
+        die(r.get("error", "Meta is not configured on patchlamp.com"))
+    print(f"Open this logged into Facebook as an admin of the {slug} Page (good for 24 hours), and tick the Page and its Instagram account:")
+    print(r["url"])
+    if not r.get("reviewed"):
+        print("(Meta hasn't reviewed our app yet, so this works only for accounts added to the app — ours. Clients wait on App Review, TAYLOR-TODO §1.)")
+
+
+def cmd_ls(args):
+    slug, _ = resolve(args, args.words)
+    _, social = api("GET", f"/internal/relay/projects/{slug}/social")
+    posts = social.get("posts") or []
+    if not posts:
+        print(f"no posts on {slug} yet")
+    for p in posts:
+        print(f"{p['created_at'][:16]}  {p['status']:<8} {p['caption'][:70]}")
+        for net, r in (p.get("results") or {}).items():
+            print(f"    {net}: {r.get('url') if r.get('ok') else 'refused — ' + str(r.get('error'))}")
+
+
+def cmd_doctor(args):
+    bad = 0
+
+    def line(ok, text):
+        nonlocal bad
+        bad += 0 if ok else 1
+        print(f"{'ok ' if ok else 'BAD'} {text}")
+
+    s = os.environ.get("PATCHLAMP_RELAY_SHARED_SECRET") or read_env().get("PATCHLAMP_RELAY_SHARED_SECRET")
+    line(bool(s), "PATCHLAMP_RELAY_SHARED_SECRET in the toolbelt")
+    line(bool(magick()), "ImageMagick (the JPEG Instagram takes)")
+    line(bool(shutil.which("gbp")), "gbp on PATH (the Google leg)")
+    if not s:
+        sys.exit(1)
+    slugs = [workspace_slug()] if workspace_slug() else list(HOUSE)
+    code, r = api("POST", f"/internal/relay/projects/{slugs[0]}/connections/meta/grant-url", {}, ok=(200, 503))
+    line(code == 200, "Meta app keys on patchlamp.com" + ("" if code == 200 else f" — {r.get('error')}"))
+    if code == 200:
+        print(f"    app review: {'approved — clients can connect' if r.get('reviewed') else 'not yet (Development mode: our own Page and @patchlamp only)'}")
+    for slug in slugs:
+        social, google = connected(slug)
+        pages = social.get("pages") or []
+        line(bool(pages), f"{slug}: Facebook Page connected" + (f" — {pages[0].get('label')}" if pages else " (`social connect`)"))
+        if pages:
+            line(any(p.get("instagram") for p in pages), f"{slug}: Instagram linked to the Page"
+                 + (f" — @{pages[0]['instagram']}" if pages[0].get("instagram") else " (Page → Settings → Linked accounts)"))
+        print(f"    {slug}: Google {'connected' if google else 'not connected'}")
+        last = (social.get("posts") or [None])[0]
+        if last:
+            print(f"    {slug}: last post {last['created_at'][:16]} {last['status']}")
+    if not workspace_slug():
+        print(f"    queue: {len(drafts())} draft(s) in {queue_dir()}")
+    sys.exit(1 if bad else 0)
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="social", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--project", help="project slug, outside a client workspace")
+    sub = ap.add_subparsers(dest="cmd")
+    p = sub.add_parser("post")
+    p.add_argument("words", nargs="*")
+    p.add_argument("--only")
+    p.add_argument("--page")
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--project", default=argparse.SUPPRESS)
+    p.set_defaults(fn=cmd_post)
+    q = sub.add_parser("queue")
+    q.add_argument("words", nargs="*")
+    q.add_argument("--pillar")
+    q.add_argument("--topic")
+    q.set_defaults(fn=cmd_queue)
+    for name, fn in (("connect", cmd_connect), ("ls", cmd_ls)):
+        c = sub.add_parser(name)
+        c.add_argument("words", nargs="*")
+        c.add_argument("--project", default=argparse.SUPPRESS)
+        c.set_defaults(fn=fn)
+    d = sub.add_parser("doctor")
+    d.set_defaults(fn=cmd_doctor)
+    args = ap.parse_args()
+    if not args.cmd:
+        return cmd_status(args)
+    args.fn(args)
+
+
+if __name__ == "__main__":
+    main()

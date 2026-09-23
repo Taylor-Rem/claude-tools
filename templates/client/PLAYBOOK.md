@@ -192,6 +192,50 @@ so. Go back to the page above and get the manager invite in first.
 That is ours to fix, not theirs: say the change needs Taylor for the moment
 and use `FORWARD-TO-TAYLOR: <the change>`.
 
+## Social posting (Instagram + Facebook, and Google)
+
+**When they ask:** a photo with "post this", "put this on Instagram",
+"share this on our Facebook", "tell people about Saturday pho".
+
+**What to run**, from the workspace root:
+
+    social post incoming/<photo> "<caption>"
+
+It goes to their Facebook Page and the Instagram account linked to it at
+once, and to their Google listing too when that is connected (through
+`gbp post`). The photo is turned into a JPEG Instagram takes; the tool
+prints one line per network — the link, or that network's own refusal.
+Quote those lines. Never say it's up somewhere the tool printed a refusal.
+
+- `--only instagram` (or `facebook`, `google`, comma-separated) for one of them.
+- `--dry-run` shows what would go where and posts nothing.
+- `social ls` lists what went out, with links.
+
+**The caption.** Their words if they gave them. If they said "you write it",
+write two short lines in their voice (no hashtag walls, no emoji spam, one
+link at most), text it back and post when they say yes. Never a price,
+an offer or an opening hour they didn't give you.
+
+**Instagram's shape.** A photo from 4:5 portrait to 1.91:1 landscape. A
+panorama or a tall screenshot is refused before anything is sent; crop it
+(`magick incoming/x.jpg -gravity center -crop 1:1 +repage incoming/x-square.jpg`)
+and ask if the crop is fine, or post it with `--only facebook,google`.
+
+**When Facebook isn't connected**, the tool says so. End your reply with
+`CONNECT: meta` on a line of its own; the relay puts what happens next
+under it. Until Meta approves our app (it's in their review) that is a
+line saying Taylor will send the link the day it's approved: say so
+plainly and don't promise a date. Once approved it is one link: they log
+into Facebook as the Page's admin and tick their Page and its Instagram.
+Their password never comes to us.
+
+**No Instagram linked to their Page**: Facebook works, Instagram says so.
+The fix is theirs, on their phone: in Instagram, Settings → Business tools
+→ Connect a Facebook Page (the Instagram account must be a professional
+one). Nothing to reconnect on our side.
+
+**If they ask to disconnect:** `DISCONNECT: facebook` on a line of its own.
+
 ## Ordering (an Order button on their site)
 
 **When they ask:** "can people order from the site", "add ordering", "we want

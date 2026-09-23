@@ -23,7 +23,10 @@ def run(*args, env=None):
 class KitTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.env = {"LEADS_STATE": self.tmp.name, "LEADS_LEDGER": str(Path(self.tmp.name) / "ledger.jsonl")}
+        self.env = {"LEADS_STATE": self.tmp.name, "LEADS_LEDGER": str(Path(self.tmp.name) / "ledger.jsonl"),
+                    "LEADS_GROUPS_LOG": str(Path(self.tmp.name) / "leads-from-groups.md"),
+                    "CLAUDE_TOOLS_ENV": str(Path(self.tmp.name) / "no-env"), "LEADS_MAIL_ADDRESS": "",
+                    "GOOGLE_MAPS_API_KEY": ""}
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -64,6 +67,64 @@ class KitTest(unittest.TestCase):
         self.assertEqual(len(r.stdout.strip().splitlines()), 4)
         r = run("doctor", env=self.env)
         self.assertIn("census:", r.stdout)
+
+
+    # -- B25: the remote lane -----------------------------------------------------------
+
+    def test_remote_kit_is_six_messages_that_each_name_a_real_fault(self):
+        r = run("kit", "--remote", "--census-only", "--json", "--no-save", env=self.env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rows = json.loads(r.stdout)
+        self.assertEqual(len(rows), 6)
+        for x in rows:
+            self.assertTrue(x["faults"], x["name"])
+            self.assertFalse(any(f.startswith(("only ", "rating ")) for f in x["faults"]), x["faults"])
+        reachable = [x for x in rows if x["reach"]["instagram"] or x["reach"]["facebook"] or x["reach"]["email"]]
+        self.assertEqual(len(reachable), 6, "messageable leads come first")
+
+    def test_remote_page_fits_one_message_and_is_honest_about_email(self):
+        r = run("kit", "--remote", "--census-only", env=self.env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertLess(len(r.stdout), 3901, "one Telegram message")
+        self.assertIn("Remote kit —", r.stdout)
+        self.assertIn("Free, no strings.", r.stdout)
+        self.assertIn("don't send yet", r.stdout)                 # no postal address, no ready email
+        self.assertNotIn("not their own", r.stdout.split("Email footer")[0].split('"Hi')[1])
+        self.assertNotIn("$", r.stdout)                            # no price in a cold message
+        log = (Path(self.tmp.name) / "leads-from-groups.md").read_text()
+        self.assertEqual(log.count("| remote kit |"), 6)
+        # tomorrow's kit doesn't repeat today's six
+        again = json.loads(run("kit", "--remote", "--census-only", "--json", "--no-save", env=self.env).stdout)
+        first = json.loads((Path(self.tmp.name) / "remote.jsonl").read_text().splitlines()[0])["place_ids"]
+        self.assertFalse(set(first) & {x["place_id"] for x in again})
+        env = dict(self.env, LEADS_MAIL_ADDRESS="PO Box 1, American Fork, UT 84003")
+        r = run("kit", "--remote", "--census-only", "--no-save", "--allow-repeat", env=env)
+        self.assertIn("PO Box 1, American Fork", r.stdout)
+        self.assertNotIn("don't send yet", r.stdout)
+
+    def test_diagnose_a_name_from_a_thread_in_three_lines_and_log_it(self):
+        r = run("diagnose", "Fong Asian Dining", "--group", "Utah Small Businesses", "--fixture", str(FIXTURES), env=self.env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        para = r.stdout.split("\n\n")[0].splitlines()
+        self.assertEqual(len(para), 3, r.stdout)
+        self.assertTrue(para[0].startswith("Fong Asian Dining: "))
+        self.assertIn("only 3 photos", para[1])
+        self.assertIn("Happy to walk you through", para[2])
+        self.assertNotIn("$", r.stdout)
+        log = (Path(self.tmp.name) / "leads-from-groups.md").read_text()
+        self.assertIn("| Fong Asian Dining | ", log)
+        self.assertIn("group: Utah Small Businesses", log)
+
+    def test_diagnose_census_only_with_a_city_and_an_unknown_name(self):
+        r = run("diagnose", "Off Road Mexican, American Fork", "--no-log", env=self.env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("Off Road Mexican Food:", r.stdout)
+        self.assertIn("no website", r.stdout)
+        self.assertIn("census only", r.stdout)
+        r = run("diagnose", "Zzqx Nonexistent Eatery", env=self.env)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("isn't in the census", r.stderr)
+        self.assertFalse((Path(self.tmp.name) / "leads-from-groups.md").exists())
 
 
 if __name__ == "__main__":

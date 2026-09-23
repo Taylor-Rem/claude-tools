@@ -7,6 +7,9 @@ kit); B7 adds logging, follow-ups and the week's numbers on top.
   leads kit --last             # reprint the last kit without touching Google
   leads kit --census-only      # no Places calls: what the census alone knows
   leads candidates [--n 20]    # the ranked pool the kit picks from (no spend)
+  leads kit --remote           # today's six ready-to-send messages (ROADMAP B25): DM, email, faults
+  leads diagnose "Name[, City]" [--group "Utah Small Business Owners"]
+                               # three lines to paste under a group post, and the lead logged
   leads doctor
 
 The pick: marketplace-only independents from the census
@@ -33,6 +36,18 @@ Config, by name, never printed:
   LEADS_DB              the census (default plateful/plateful-sales/wasatch.db)
   LEADS_HOME            "lat,lng" of home (default American Fork)
   LEADS_STATE           state dir (default ~/.local/state/claude-tools/leads)
+  LEADS_MAIL_ADDRESS    the postal address a cold email must carry (CAN-SPAM);
+                        not a secret, kept in the toolbelt env beside the keys.
+                        Without it every email draft says it isn't ready to send.
+  LEADS_GROUPS_LOG      where remote and group-thread leads are logged until B7
+                        (default ~/projects/social/leads-from-groups.md)
+
+The remote lane (B25, plan ~/projects/plans/09-social-strategy.md § Facebook
+groups): same census and diagnostic, delivered as messages instead of
+addresses. The census holds no owner names or email addresses; what it does
+hold is each place's top search results, which is where an Instagram handle
+or a Facebook page is found. Leads with one are picked first, and the draft
+says which channel to use. Owner names are not claimed.
 """
 
 import argparse
@@ -137,7 +152,8 @@ def census_candidates(min_reviews=25):
     rows = conn.execute("""
         SELECT r.place_id, p.name, p.address, p.locality, p.phone, p.website, p.has_website,
                p.rating, p.reviews, p.lat, p.lng, p.primary_type, p.google_maps_uri, p.refreshed_at,
-               r.on_doordash, r.on_uber, r.on_grubhub, r.status, r.last_action_date, r.next_followup
+               r.on_doordash, r.on_uber, r.on_grubhub, r.status, r.last_action_date, r.next_followup,
+               r.parasite_url, r.serp_top3, r.contact_name, r.contact_email, r.city
         FROM restaurants r JOIN place_cache p ON p.place_id = r.place_id
         WHERE r.channel_class = 'marketplace-only'
           AND COALESCE(r.is_chain, 0) = 0
@@ -361,6 +377,8 @@ def faults(c, details, today):
             out.append(f"newest review is {newest // 30} months old")
         if not d.get("nationalPhoneNumber"):
             out.append("no phone on Google")
+    if c.get("parasite_url") and not (details and website and not marketplace_link(website)):
+        out.append(f"searching the name brings up {host_of(c['parasite_url'])}, a menu page they don't control")
     if n_reviews is not None and n_reviews < 100:
         out.append(f"only {n_reviews} reviews")
     if rating is not None and rating < 4.0:
@@ -522,9 +540,385 @@ def render(order, for_date, today, mode, note, skipped, census_date, loop, short
     return "\n".join(lines) + "\n"
 
 
+# ---- the remote lane (B25) -------------------------------------------------------
+
+GROUPS_LOG = Path(os.environ.get("LEADS_GROUPS_LOG", PROJECTS / "social/leads-from-groups.md"))
+SIGNOFF = "Taylor"
+IG_SKIP = {"p", "reel", "reels", "explore", "stories", "tv", "accounts", "popular"}
+FB_SKIP = {"groups", "events", "pages", "search", "watch", "marketplace", "hashtag", "people", "sharer", "profile.php"}
+TEXT_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
+TEXT_SEARCH_COST_USD = 0.032
+
+
+def mail_address():
+    return os.environ.get("LEADS_MAIL_ADDRESS") or _env_file(ENV_FILE).get("LEADS_MAIL_ADDRESS")
+
+
+def reach(c):
+    """Where the owner can be messaged, from the census's own search results: {'instagram', 'facebook', 'email'}."""
+    out = {"instagram": None, "facebook": None, "email": (c.get("contact_email") or "").strip() or None}
+    try:
+        top = json.loads(c.get("serp_top3") or "[]")
+    except ValueError:
+        top = []
+    for t in top:
+        url = t.get("url") or ""
+        m = re.match(r"^https?://(?:www\.|m\.)?instagram\.com/([A-Za-z0-9_.]+)", url)
+        if m and not out["instagram"] and m.group(1).lower() not in IG_SKIP:
+            out["instagram"] = m.group(1)
+        m = re.match(r"^https?://(?:www\.|m\.|web\.)?facebook\.com/([^/?#]+)", url)
+        if m and not out["facebook"] and m.group(1).lower() not in FB_SKIP:
+            out["facebook"] = f"facebook.com/{m.group(1)}"
+    return out
+
+
+def clean_name(name):
+    """'Pho 99 - Murray' → 'Pho 99'; 'WHISTLE WOK' → 'Whistle Wok'. A greeting reads wrong otherwise."""
+    n = re.split(r"\s+[-–|]\s+", name or "", maxsplit=1)[0].strip() or name or ""
+    return n.title() if n.isupper() else n
+
+
+def to_them(fault):
+    """The listing's faults are written about the place; a message is written to it."""
+    return (fault.replace(" not their own", " not your own").replace("they don't control", "you don't control")
+            .replace("Google says closed", "Google says you're closed"))
+
+
+def chain_names():
+    """Names at three or more places in the census: chains the census didn't flag."""
+    conn = sqlite3.connect(f"file:{CENSUS}?mode=ro", uri=True)
+    rows = conn.execute("SELECT lower(name), count(*) FROM place_cache GROUP BY lower(name) HAVING count(*) >= 3").fetchall()
+    conn.close()
+    return {r[0] for r in rows}
+
+
+def lead_faults(c, details, today):
+    """The faults a message may name: things on the listing, not the review count or the rating."""
+    fs, summary = faults(c, details, today)
+    return [f for f in fs if not re.match(r"^(only \d+ reviews|rating )", f)], summary
+
+
+def dm_text(c, fs):
+    """The Instagram / Facebook message, from Taylor's phone. Two faults at most; no price, no pitch."""
+    name = clean_name(c["name"])
+    shown = [to_them(f) for f in fs[:2]]
+    what = " — and ".join(shown)
+    fix = "Both are easy to fix." if len(shown) > 1 else "It's easy to fix."
+    return (f"Hi {name} team — I'm Taylor, a small-business owner in American Fork; I fix Google listings for "
+            f"local restaurants. I looked yours up: {what}. {fix} Want me to send you exactly what to change? "
+            f"Free, no strings.")
+
+
+def email_draft(c, fs):
+    name = clean_name(c["name"])
+    subject = f"{name} on Google — {'two quick fixes' if len(fs) > 1 else 'a quick fix'}"
+    return subject, dm_text(c, fs).replace(f"Hi {name} team — I'm Taylor,", f"Hi {name} team,\n\nI'm Taylor Remund —", 1)
+
+
+def email_footer():
+    addr = mail_address()
+    return ("— Taylor Remund · Patchlamp (Plateful LLC) · founder@patchlamp.com · "
+            + (addr if addr else "[POSTAL ADDRESS — required by CAN-SPAM; not set, so don't send yet: TAYLOR-TODO §1]")
+            + "\nIf you'd rather not hear from me, reply \"no thanks\" and I won't write again.")
+
+
+def contacted(days=REPEAT_WEEKS * 7):
+    """place_id -> date for leads messaged (remote kits) or kitted (Saturday) recently."""
+    since = dt.datetime.now(TZ).date() - dt.timedelta(days=days)
+    seen = {}
+    for name in ("remote.jsonl", "kits.jsonl"):
+        p = STATE / name
+        if not p.exists():
+            continue
+        for line in p.read_text().splitlines():
+            try:
+                k = json.loads(line)
+                d = dt.date.fromisoformat((k.get("for") or k.get("ts") or "")[:10])
+            except (ValueError, TypeError):
+                continue
+            if d >= since:
+                for pid in k.get("place_ids", []):
+                    seen[pid] = d.isoformat()
+    return seen
+
+
+def log_leads(rows):
+    """Append to social/leads-from-groups.md (a markdown table; B7 replaces it)."""
+    try:
+        GROUPS_LOG.parent.mkdir(parents=True, exist_ok=True)
+        new = not GROUPS_LOG.exists()
+        with open(GROUPS_LOG, "a") as f:
+            if new:
+                f.write("# Leads from the groups and the remote kit (B25)\n\n"
+                        "One row per lead: where the name came from, how to reach them, what was wrong. "
+                        "Fill \"what happened\" as it happens; `leads` (B7) takes this over.\n\n"
+                        "| date | name | city | source | reach | what was wrong | what happened |\n"
+                        "|---|---|---|---|---|---|---|\n")
+            for r in rows:
+                cells = [r["date"], r["name"], r.get("city") or "", r["source"], r.get("reach") or "", r.get("wrong") or "", ""]
+                f.write("| " + " | ".join(str(x).replace("|", "/").replace("\n", " ") for x in cells) + " |\n")
+    except OSError as exc:
+        print(f"leads: couldn't write {GROUPS_LOG} ({exc})", file=sys.stderr)
+
+
+def reach_line(rc):
+    bits = []
+    if rc["instagram"]:
+        bits.append(f"Instagram @{rc['instagram']}")
+    if rc["facebook"]:
+        bits.append(rc["facebook"])
+    if rc["email"]:
+        bits.append(rc["email"])
+    return " · ".join(bits)
+
+
+def build_remote(args):
+    today = dt.datetime.now(TZ).date()
+    key, where = (None, None) if args.census_only else places_key()
+    places = Places(key, where, fixture=args.fixture, refresh=args.refresh)
+    cands = census_candidates(args.min_reviews)
+    skip = {} if args.allow_repeat else contacted()
+    chains = chain_names()
+    pool = [c for c in cands if c["miles"] <= args.radius and c["place_id"] not in skip
+            and (c["name"] or "").lower() not in chains]
+    for c in pool:
+        c["reach"] = reach(c)
+    # messageable first (a handle or an address), then nearest
+    pool.sort(key=lambda c: (not (c["reach"]["instagram"] or c["reach"]["facebook"] or c["reach"]["email"]), c["miles"]))
+    picks = []
+    for c in pool:
+        if len(picks) >= args.n:
+            break
+        details = places.get(c["place_id"]) if (key or args.fixture) else None
+        if places.failed and not args.fixture:
+            details = None
+        if details and details.get("businessStatus") not in (None, "OPERATIONAL"):
+            continue
+        c = dict(c, details=details)
+        if details:
+            c["name"] = (details.get("displayName") or {}).get("text") or c["name"]
+            c["maps"] = clean_maps(details.get("googleMapsUri") or c["google_maps_uri"])
+        else:
+            c["maps"] = clean_maps(c["google_maps_uri"])
+        c["faults"], c["summary"] = lead_faults(c, details, today)
+        if not c["faults"]:
+            continue          # a message has to name something real that's wrong
+        c["summary"] = c["summary"].replace(" · (census only)", "")
+        picks.append(c)
+    if places.calls:
+        ledger_append({"ts": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()), "kind": "places_details",
+                       "tool": "leads", "calls": places.calls, "cost_usd": round(places.calls * DETAILS_COST_USD, 3),
+                       "billed_to": f"google:GOOGLE_MAPS_API_KEY({where})", "project": "global", "for": f"remote {today}"})
+    mode = "fixture" if args.fixture else "google" if (key and not places.failed) else "census"
+    page = render_remote(picks, today, mode, places.failed, census_stamp(cands))
+    if not args.fixture and not args.no_save:
+        (STATE / "remote").mkdir(parents=True, exist_ok=True)
+        (STATE / "remote" / f"{today.isoformat()}.md").write_text(page)
+        with open(STATE / "remote.jsonl", "a") as f:
+            f.write(json.dumps({"ts": dt.datetime.now(TZ).isoformat(timespec="seconds"), "for": today.isoformat(),
+                                "place_ids": [p["place_id"] for p in picks], "names": [p["name"] for p in picks], "mode": mode}) + "\n")
+        log_leads([{"date": today.isoformat(), "name": clean_name(p["name"]), "city": p.get("locality") or p.get("city"), "source": "remote kit",
+                    "reach": reach_line(p["reach"]) or p.get("phone"), "wrong": "; ".join(p["faults"][:3])} for p in picks])
+    return page, picks
+
+
+def render_remote(picks, today, mode, note, census_date, compact=False):
+    """One Telegram message (4,096 characters): over 3,900 and the per-lead email lines go."""
+    if not compact:
+        page = render_remote(picks, today, mode, note, census_date, compact=True)
+        full = _render_remote(picks, today, mode, note, census_date, emails=True)
+        return full if len(full) <= 3900 else page
+    return _render_remote(picks, today, mode, note, census_date, emails=False)
+
+
+def _render_remote(picks, today, mode, note, census_date, emails):
+    lines = [f"Remote kit — {today.strftime('%a %-d %b')} · {len(picks)} messages to send from your phone"]
+    if mode == "census":
+        lines.append(f"(census {census_date} only — no Places key here, so hours, photos and reviews aren't checked; TAYLOR-TODO §1)")
+    elif mode == "fixture":
+        lines.append("(FIXTURE listings — a test, not Google)")
+    else:
+        lines.append(f"(Google listings read today; census {census_date})")
+    if note:
+        lines.append(f"({note})")
+    lines.append("")
+    for i, p in enumerate(picks, 1):
+        rc = p["reach"]
+        lines.append(f"{i}. {clean_name(p['name'])} — {p.get('locality') or p.get('city') or ''} · {p['summary']}")
+        if rc["instagram"]:
+            lines.append(f"   DM on Instagram: instagram.com/{rc['instagram']}")
+        elif rc["facebook"]:
+            lines.append(f"   Message on Facebook: {rc['facebook']}")
+        elif rc["email"]:
+            lines.append(f"   Email: {rc['email']}")
+        else:
+            lines.append(f"   No handle or address found — call {p.get('phone') or 'them'}; the message is the opener")
+        lines.append(f"   \"{dm_text(p, p['faults'])}\"")
+        if emails:
+            subject, _ = email_draft(p, p["faults"])
+            to = rc["email"] or ("their FB About" if rc["facebook"] else "none known")
+            lines.append(f"   Email (to: {to}): \"{subject}\" + the message + footer")
+        if p.get("maps"):
+            lines.append(f"   {p['maps']}")
+        lines.append("")
+    lines += ["Email footer (every cold email, from founder@):", email_footer(), "",
+              "No owner names in the census; greet the team. Logged to social/leads-from-groups.md."]
+    return "\n".join(lines) + "\n"
+
+
+def norm(text):
+    text = re.sub(r"[^a-z0-9 ]+", " ", (text or "").lower().replace("&", " and "))
+    return [w for w in text.split() if w not in {"the", "restaurant", "and", "cafe", "grill", "llc", "co"}]
+
+
+def census_lookup(name, city=None):
+    """Every place in the census whose name matches, best first: (score, row)."""
+    if not CENSUS.exists():
+        die(f"no census at {CENSUS} (LEADS_DB)")
+    conn = sqlite3.connect(f"file:{CENSUS}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("""
+        SELECT p.place_id, p.name, p.address, p.locality, p.phone, p.website, p.has_website, p.rating, p.reviews,
+               p.lat, p.lng, p.primary_type, p.google_maps_uri, p.refreshed_at, p.business_status,
+               r.on_doordash, r.on_uber, r.on_grubhub, r.channel_class, r.parasite_url, r.serp_top3,
+               r.contact_name, r.contact_email, r.city
+        FROM place_cache p LEFT JOIN restaurants r ON r.place_id = p.place_id""").fetchall()
+    conn.close()
+    want = norm(name)
+    if not want:
+        return []
+    wc = " ".join(norm(city)) if city else None
+    out = []
+    for r in rows:
+        have = norm(r["name"])
+        if not have:
+            continue
+        hit = len(set(want) & set(have))
+        if hit == 0:
+            continue
+        score = hit / max(len(set(want)), 1) + 0.5 * hit / max(len(set(have)), 1)
+        if " ".join(want) == " ".join(have):
+            score += 1
+        where = " ".join(norm((r["locality"] or "") + " " + (r["city"] or "") + " " + (r["address"] or "")))
+        if wc:
+            score += 0.6 if wc in where else -0.6
+        out.append((round(score, 3), dict(r)))
+    out.sort(key=lambda x: (-x[0], -(x[1]["reviews"] or 0)))
+    return [x for x in out if x[0] >= 0.9]
+
+
+def text_search(key, query):
+    """Places Text Search (New) for a name the census doesn't have: its place id, or None."""
+    body = json.dumps({"textQuery": query + " Utah", "maxResultCount": 1}).encode()
+    req = urllib.request.Request(TEXT_SEARCH_URL, data=body, method="POST", headers={
+        "X-Goog-Api-Key": key, "X-Goog-FieldMask": "places.id", "Content-Type": "application/json",
+        "User-Agent": "claude-tools/leads"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            places = json.loads(resp.read().decode()).get("places") or []
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+    return places[0]["id"] if places else None
+
+
+FIX_HINTS = [
+    ("no website", "A one-page site with the menu and hours fixes the first one; Google links it the day it's up."),
+    ("website link is a", "Pointing the website link at the restaurant's own page (menu, hours, order) keeps people off the apps' fees."),
+    ("searching the name brings up", "A page of the restaurant's own with the menu pushes those scraper sites down within a few weeks."),
+    ("no hours", "Hours go in under Google Maps → the listing → Edit profile → Hours; two minutes for the owner."),
+    ("closed Saturdays", "If it's open Saturdays, that's Edit profile → Hours on Google Maps; it's costing weekend searches."),
+    ("no photos", "Ten real photos of the food and the room is the single biggest lift on a listing."),
+    ("only ", "Ten real photos of the food and the room is the single biggest lift on a listing."),
+    ("★ review", "A short, polite owner reply to the recent low review reads well to everyone who sees it after."),
+    ("months old", "Asking a few regulars for a review this week makes the listing look alive again."),
+    ("no phone", "Add the phone number under Edit profile → Contact."),
+]
+
+
+def diagnosis_lines(c, fs, summary):
+    """Three lines for a group thread: what's good, what's wrong, the easiest fix. No pitch."""
+    name = clean_name(c["name"])
+    rating, n = c.get("rating"), c.get("reviews")
+    d = c.get("details") or {}
+    if d:
+        rating, n = d.get("rating", rating), d.get("userRatingCount", n)
+    good = f"{rating}★ from {n:,} reviews" if rating and n else "people are finding it"
+    first = f"{name}: {good}{', people like it' if (rating or 0) >= 4.2 else ''}."
+    if not fs:
+        return [first, "On Google: nothing obviously wrong — hours, photos and website all look right from here.",
+                "Nice work; the listing's doing its job."]
+    second = "On Google: " + "; ".join(fs[:3]) + "."
+    hint = next((h for k, h in FIX_HINTS if k in fs[0]), "Each of those is a few minutes in the Business Profile.")
+    return [first, second, hint + " Happy to walk you through any of it."]
+
+
+def cmd_diagnose(args):
+    raw = " ".join(args.name).strip()
+    if not raw:
+        die('say which business: leads diagnose "Name, City"')
+    name, _, city = raw.partition(",")
+    today = dt.datetime.now(TZ).date()
+    key, where = places_key()
+    places = Places(key, where, fixture=args.fixture)
+    hits = census_lookup(name.strip(), city.strip() or None)
+    c = None
+    if hits:
+        c = hits[0][1]
+    elif key and not args.fixture:
+        pid = text_search(key, raw)
+        if pid:
+            ledger_append({"ts": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()), "kind": "places_text_search",
+                           "tool": "leads", "calls": 1, "cost_usd": TEXT_SEARCH_COST_USD,
+                           "billed_to": f"google:GOOGLE_MAPS_API_KEY({where})", "project": "global"})
+            c = {"place_id": pid, "name": raw, "google_maps_uri": ""}
+    if not c:
+        die(f"\"{raw}\" isn't in the census" + ("" if key else " and there's no Places key to look it up (TAYLOR-TODO §1)")
+            + "; send the Google Maps link or the city")
+    details = places.get(c["place_id"]) if (key or args.fixture) else None
+    if places.failed and not args.fixture:
+        details = None
+    if details:
+        c["name"] = (details.get("displayName") or {}).get("text") or c["name"]
+        c["locality"] = c.get("locality") or ""
+    c["details"] = details
+    fs, summary = lead_faults(c, details, today)
+    for line in diagnosis_lines(c, fs, summary):
+        print(line)
+    print()
+    rc = reach(c)
+    print(f"({c.get('locality') or c.get('city') or ''} · {summary.replace(' · (census only)', '')}"
+          + (f" · reach: {reach_line(rc)}" if reach_line(rc) else "")
+          + ("" if details else " · census only, hours/photos/reviews not checked")
+          + (f" · also matched: {', '.join(h[1]['name'] + ' (' + (h[1]['locality'] or '?') + ')' for h in hits[1:3])}" if len(hits) > 1 else "")
+          + ")")
+    if places.calls:
+        ledger_append({"ts": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()), "kind": "places_details",
+                       "tool": "leads", "calls": places.calls, "cost_usd": round(places.calls * DETAILS_COST_USD, 3),
+                       "billed_to": f"google:GOOGLE_MAPS_API_KEY({where})", "project": "global", "for": "diagnose"})
+    if not args.no_log:
+        log_leads([{"date": today.isoformat(), "name": clean_name(c["name"]), "city": c.get("locality") or c.get("city"),
+                    "source": f"group: {args.group}" if args.group else "group thread",
+                    "reach": reach_line(rc), "wrong": "; ".join(fs[:3])}])
+
+
 # ---- commands -------------------------------------------------------------------
 
 def cmd_kit(args):
+    if args.remote:
+        if args.last:
+            kits = sorted((STATE / "remote").glob("*.md")) if (STATE / "remote").exists() else []
+            if not kits:
+                die("no remote kit yet; run `leads kit --remote`")
+            print(kits[-1].read_text(), end="")
+            return
+        if args.radius == 10.0:
+            args.radius = 30.0
+        page, picks = build_remote(args)
+        if args.json:
+            print(json.dumps([{k: v for k, v in p.items() if k != "details"} for p in picks], indent=1, default=str))
+            return
+        print(page, end="")
+        return
     if args.last:
         kits = sorted((STATE / "kits").glob("*.md")) if (STATE / "kits").exists() else []
         if not kits:
@@ -589,6 +983,8 @@ def cmd_doctor(args):
     cached = len(list((STATE / "details").glob("*.json"))) if (STATE / "details").exists() else 0
     print(f"  cached listings: {cached}  ledger: {LEDGER}")
     print(f"next Saturday: {next_saturday()}")
+    print(f"remote lane: {GROUPS_LOG} {'exists' if GROUPS_LOG.exists() else '(created on first lead)'}; "
+          f"postal address for cold email: {'set' if mail_address() else 'NOT set — drafts say not ready (TAYLOR-TODO §1)'}")
     sys.exit(0 if ok else 1)
 
 
@@ -608,7 +1004,15 @@ def main():
     k.add_argument("--no-save", action="store_true")
     k.add_argument("--json", action="store_true")
     k.add_argument("--fixture", help="dir of <place_id>.json Place Details (tests)")
+    k.add_argument("--remote", action="store_true", help="today's six ready-to-send messages, not Saturday's counters (B25; radius 30)")
     k.set_defaults(fn=cmd_kit)
+
+    g = sub.add_parser("diagnose", help="three lines on a business's Google listing, for a group thread")
+    g.add_argument("name", nargs="+", help='"Name" or "Name, City"')
+    g.add_argument("--group", help="the group the name came from (logged)")
+    g.add_argument("--no-log", action="store_true")
+    g.add_argument("--fixture", help="dir of <place_id>.json Place Details (tests)")
+    g.set_defaults(fn=cmd_diagnose)
 
     c = sub.add_parser("candidates", help="the pool the kit picks from (no spend)")
     c.add_argument("--n", type=int, default=20)

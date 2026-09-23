@@ -77,6 +77,11 @@ def write_exclude():
     (GIT_DIR / "info").mkdir(exist_ok=True)
     lines = ["*"] + [f"!/{t}" for t in TRACKED] + ["!/plans/**", "!/mac/**", "!/requests/**", "!/social/**", "!/flint/**"]
     (GIT_DIR / "info" / "exclude").write_text("\n".join(lines) + "\n")
+    # When both sides add a line at the same spot (two HISTORY log lines, two
+    # TODO entries), keep both instead of one side's whole file: git's union
+    # driver. A duplicated row is visible; a dropped line was not (2026-09-21
+    # TODO, 2026-09-23 HISTORY). Binary files (social/mock) are left to git.
+    (GIT_DIR / "info" / "attributes").write_text("*.md merge=union\n*.jsonl merge=union\n")
 
 
 ITEM_RE = re.compile(r"^- \[( |~|x)\] \*\*(.{12,80}?)(?:\*\*|$)", re.M)
@@ -325,7 +330,7 @@ def cmd_sync(args):
         return
     # both moved: replay local on top of the web's version; on a clash the local line wins
     r = git("rebase", f"origin/{BRANCH}", check=False)
-    if r.returncode:
+    if r.returncode:   # a clash the union driver couldn't take (binary, deleted file)
         git("checkout", "--theirs", "--", *tracked_paths(), check=False)
         git("add", "--", *tracked_paths())
         r2 = git("rebase", "--continue", check=False)

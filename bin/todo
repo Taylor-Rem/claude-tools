@@ -54,9 +54,10 @@ BRANCH = "main"
 # Everything the side-car mirrors, relative to WORK_TREE. TAYLOR-TODO.md is
 # the web page's file; the rest is the plan Cowork reads on the MacBook.
 TRACKED = [TODO_FILE.name, "ROADMAP.md", "VISION.md", "HISTORY.md", "CLAUDE.md",
-           "COWORK.md", "plans", "mac", "requests", "social"]
+           "COWORK.md", "plans", "mac", "requests", "social", "flint"]
 # `social` (added 2026-09-23, Flint): the group posts, the boards and the
 # day-1 mock posts, so Cowork can post them from the Mac (ROADMAP B24).
+# `flint` (2026-09-23): Cowork ↔ Flint mail — inbox/ (Cowork writes), outbox/ (Flint writes).
 # The request box (plans/01-cowork-bridge.md, B17): Cowork drops
 # requests/<name>.md in the shared repo; each sync starts one unanswered
 # request as a headless claude session in WORK_TREE and the reply lands in
@@ -74,7 +75,7 @@ def tracked_paths():
 def write_exclude():
     """Only the tracked docs are ever seen by the side-car; everything else is excluded."""
     (GIT_DIR / "info").mkdir(exist_ok=True)
-    lines = ["*"] + [f"!/{t}" for t in TRACKED] + ["!/plans/**", "!/mac/**", "!/requests/**", "!/social/**"]
+    lines = ["*"] + [f"!/{t}" for t in TRACKED] + ["!/plans/**", "!/mac/**", "!/requests/**", "!/social/**", "!/flint/**"]
     (GIT_DIR / "info" / "exclude").write_text("\n".join(lines) + "\n")
 
 

@@ -19,7 +19,7 @@ def run(*args, env=None):
     return subprocess.run([sys.executable, str(LEADS), *args], capture_output=True, text=True, env=e)
 
 
-@unittest.skipUnless((Path.home() / "projects/plateful/plateful-sales/wasatch.db").exists(), "needs the census")
+@unittest.skipUnless((Path.home() / "projects/client-leads/wasatch.db").exists(), "needs the census")
 class KitTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

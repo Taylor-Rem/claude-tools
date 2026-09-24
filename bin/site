@@ -243,9 +243,9 @@ def restamp(ws, meta):
 
 def set_live_url(ws, meta, url, force=False):
     """live_url is the one URL the allowlist lets a session curl. Take it when
-    it's empty or still the Plateful default; otherwise only with --primary."""
+    it's empty; otherwise only with --primary."""
     cur = meta.get("live_url") or ""
-    if cur and not force and not cur.endswith(".plateful.fyi/") and cur != url:
+    if cur and not force and cur != url:
         say(f"  live_url stays {cur} (use --primary to make {url} the one the "
             f"allowlist can curl; multi-site allowlists are a `client` follow-up)")
         return False

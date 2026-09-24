@@ -24,7 +24,7 @@ B25 (the remote lane), B7 (the pipeline: log, follow-ups, the week).
   leads doctor
 
 The pick: marketplace-only independents from the census
-(plateful/plateful-sales/wasatch.db: on DoorDash/Uber/Grubhub with no ordering
+(client-leads/wasatch.db: on DoorDash/Uber/Grubhub with no ordering
 of their own), operational, with a phone, at least --min-reviews reviews,
 nearest to home first, skipping anyone kitted in the last eight weeks. Each
 candidate's Google listing is read through Place Details (Places API New) until
@@ -41,10 +41,9 @@ replies to reviews are not in the Places API, so "unanswered" is not claimed;
 that arrives with the Business Profile connection (B11/B12).
 
 Config, by name, never printed:
-  GOOGLE_MAPS_API_KEY   ~/.config/claude-tools/env (setenv.sh); falls back to
-                        plateful/plateful/.env. Without it the kit is census-only
-                        and says so on its first line.
-  LEADS_DB              the census (default plateful/plateful-sales/wasatch.db)
+  GOOGLE_MAPS_API_KEY   ~/.config/claude-tools/env (setenv.sh). Without it the
+                        kit is census-only and says so on its first line.
+  LEADS_DB              the census (default client-leads/wasatch.db)
   LEADS_HOME            "lat,lng" of home (default American Fork)
   LEADS_STATE           state dir (default ~/.local/state/claude-tools/leads)
   LEADS_MAIL_ADDRESS    the postal address a cold email must carry (CAN-SPAM);
@@ -81,8 +80,7 @@ from zoneinfo import ZoneInfo
 
 ENV_FILE = Path(os.environ.get("CLAUDE_TOOLS_ENV", Path.home() / ".config/claude-tools/env"))
 PROJECTS = Path(os.environ.get("PROJECTS_DIR", Path.home() / "projects"))
-CENSUS = Path(os.environ.get("LEADS_DB", PROJECTS / "plateful/plateful-sales/wasatch.db"))
-PLATEFUL_ENV = PROJECTS / "plateful/plateful/.env"
+CENSUS = Path(os.environ.get("LEADS_DB", PROJECTS / "client-leads/wasatch.db"))
 STATE = Path(os.environ.get("LEADS_STATE", Path.home() / ".local/state/claude-tools/leads"))
 LEDGER = Path(os.environ.get("LEADS_LEDGER", Path.home() / ".local/state/claude-tools/ledger.jsonl"))
 TZ = ZoneInfo("America/Denver")
@@ -123,13 +121,10 @@ def _env_file(path):
 
 
 def places_key():
-    """(key, where) — the toolbelt first, then Plateful's own .env. Never printed."""
+    """(key, where) — the toolbelt env. Never printed."""
     val = os.environ.get("GOOGLE_MAPS_API_KEY") or _env_file(ENV_FILE).get("GOOGLE_MAPS_API_KEY")
     if val:
         return val, "toolbelt"
-    val = _env_file(PLATEFUL_ENV).get("GOOGLE_MAPS_API_KEY")
-    if val:
-        return val, "plateful/.env"
     return None, None
 
 
@@ -535,7 +530,7 @@ def render(order, for_date, today, mode, note, skipped, census_date, loop, short
         phone = p.get("phone") or "no phone"
         lines.append(f"{i}. {p['name']} — {p['miles']} mi · {short_address(p['address'])} · {opens} · {phone}")
         lines.append(f"   Google: {p['summary']}")
-        lines.append(f"   Wrong: {' · '.join(p['faults']) if p['faults'] else 'nothing obvious — lead with the fee math'}")
+        lines.append(f"   Wrong: {' · '.join(p['faults']) if p['faults'] else 'nothing obvious — lead with the text-Patch line'}")
         if p.get("maps"):
             lines.append(f"   {p['maps']}")
         lines.append("")
@@ -549,7 +544,7 @@ def render(order, for_date, today, mode, note, skipped, census_date, loop, short
         "Open with the fault, not the pitch: \"Your Google listing is where people find you and it's got <the thing above>. "
         "Text me the fix and it's live today, free. If you want it kept right, that's $99 a month and I'm on the hook for all of it.\"",
         "The line to test: \"Text Patch and it's done. Your Google listing, your menu, your hours, changed in a minute by a number you text. It's AI, with someone on the hook.\"",
-        "Marketplace-only close: \"You're on DoorDash and Uber Eats — on a $6k month they keep about $1,500. The same orders through your own page cost about $480 all-in, and you keep every customer's name.\" Ordering is 4% instead of 25%; founding offer 0% platform fee for three months, the monthly never discounted.",
+        "Ordering is not on offer (VISION § Decided, 2026-09-24): if they ask about their own ordering page, say not yet, plainly, and sell the listing.",
         "",
         "Log every conversation by text: \"log <name> talked|interested|… <note>\" (`leads log`). Owner replies to reviews aren't in the Places API — glance at the listing for unanswered ones.",
     ]
@@ -840,7 +835,7 @@ def text_search(key, query):
 
 FIX_HINTS = [
     ("no website", "A one-page site with the menu and hours fixes the first one; Google links it the day it's up."),
-    ("website link is a", "Pointing the website link at the restaurant's own page (menu, hours, order) keeps people off the apps' fees."),
+    ("website link is a", "Pointing the website link at the restaurant's own page (menu, hours) keeps people off the apps' fees."),
     ("searching the name brings up", "A page of the restaurant's own with the menu pushes those scraper sites down within a few weeks."),
     ("no hours", "Hours go in under Google Maps → the listing → Edit profile → Hours; two minutes for the owner."),
     ("closed Saturdays", "If it's open Saturdays, that's Edit profile → Hours on Google Maps; it's costing weekend searches."),

@@ -2,12 +2,11 @@
 """client — stamp and inspect client workspaces (~/projects/clients/<slug>).
 
 A client workspace is where the relay runs Claude for one client: their git
-repos under repos/, texted photos in incoming/, optionally a Plateful
-restaurant reachable with `pf`. The workspace's CLAUDE.md and
+repos under repos/ and texted photos in incoming/. The workspace's CLAUDE.md and
 .claude/settings.json are the permission boundary; this tool writes them from
 templates/client/ in the claude-tools repo.
 
-  client new <slug> --name "Name" [--plateful SUB] [--live-url URL] [--shared-key] [--restamp]
+  client new <slug> --name "Name" [--live-url URL] [--shared-key] [--restamp]
   client ls
   client doctor [slug]
   client snippet <slug>          # the config.json project entry to paste
@@ -151,8 +150,6 @@ def render_settings(meta):
     tpl = json.loads((TEMPLATES / "settings.json").read_text())
     rules = tpl.pop("_rules")
     allow = list(tpl["permissions"]["allow"]) + rules["repos"]
-    if meta.get("plateful"):
-        allow += rules["plateful"]
     for url in site_urls(meta):
         allow += [r.format(url=url.rstrip("/")) for r in rules["live_url"]]
     tpl["permissions"]["allow"] = allow
@@ -161,20 +158,13 @@ def render_settings(meta):
 
 def render_claude_md(meta, notes=""):
     md = (TEMPLATES / "CLAUDE.md").read_text()
-    if meta.get("plateful"):
-        bullet = (f"- Their restaurant **{meta['name']}** on Plateful (`{meta['plateful']}`), "
-                  f"reachable with `pf` (see below).\n")
-        section = (TEMPLATES / "PLATEFUL.md").read_text()
-    else:
-        bullet, section = "", ""
-    md = md.replace("{{PLATEFUL_BULLET}}", bullet).replace("{{PLATEFUL_SECTION}}", section)
     if not meta.get("live_url"):
         md = md.replace("{{LIVE_URL}}", "https://<the live site>/")   # no site yet: the example still reads
-    for k in ("name", "slug", "plateful", "live_url"):
+    for k in ("name", "slug", "live_url"):
         md = md.replace("{{" + k.upper() + "}}", meta.get(k) or "")
-    tools = ["`git -C repos/<name>`", "`img`", "`site`", "`shot`", "`newsletter`", "`gbp`", "`social`"] + (["`pf`"] if meta.get("plateful") else [])
+    tools = ["`git -C repos/<name>`", "`img`", "`site`", "`shot`", "`newsletter`", "`gbp`", "`social`"]
     md = md.replace("{{TOOLS}}", ", ".join(tools))
-    if meta.get("live_url") and not meta.get("plateful"):
+    if meta.get("live_url"):
         check = f"`curl -s {meta['live_url']}PAGE` — no .html on the end, the host redirects those — is allowed; the change is there as soon as `site publish` says so"
     else:
         check = ("the allowlist gains a curl rule for a site's URL when `site new` creates it; "
@@ -204,8 +194,6 @@ def stamp(ws, meta):
 
 def snippet(slug, meta):
     entry = {"type": "client", "name": meta["name"]}
-    if meta.get("plateful"):
-        entry["plateful"] = meta["plateful"]
     if meta.get("live_url"):
         entry["live_url"] = meta["live_url"]
     entry["agent"] = {"model": "opus"}
@@ -222,20 +210,13 @@ def cmd_new(a):
             f"(repos/ and incoming/ are never touched)")
     old = read_meta(ws) if stamped else {}
     meta = {"slug": a.slug, "name": a.name or old.get("name") or a.slug,
-            "plateful": a.plateful or old.get("plateful"),
             "live_url": a.live_url or old.get("live_url"),
             "sites": a.sites if a.sites is not None else old.get("sites", 1),   # the tier's count (plan 02); `site new` enforces it
             "auth": None if a.shared_key else (old.get("auth") or key_name(a.slug))}
-    if meta["plateful"] and not meta["live_url"]:
-        meta["live_url"] = f"https://{meta['plateful']}.plateful.fyi/"   # their public site
     stamp(ws, meta)
     print(f"{'restamped' if stamped else 'created'} {ws}")
     print(f"  repos: {', '.join(repos_of(ws)) or '(none yet — site new <slug> from inside it, or clone into repos/)'}"
           f" · sites allowed: {meta['sites']}")
-    if meta["plateful"]:
-        print(f"  plateful: {meta['plateful']} (needs PLATEFUL_KEY_{meta['plateful'].upper().replace('-', '_')} "
-              f"in the toolbelt: pf keys create -r {meta['plateful']} --name relay "
-              f"--scopes menu:read,menu:write,media:write,orders:read --save ...)")
     if meta["auth"]:
         state = "already in the toolbelt" if toolbelt_has(meta["auth"]) else "NOT in the toolbelt yet"
         print(f"\nAnthropic key ({state}): in console.anthropic.com make a workspace relay-{a.slug} with a "
@@ -262,8 +243,6 @@ def cmd_ls(a):
         m = read_meta(ws)
         rv = relay_view(ws.name, cfg)
         flags = []
-        if m.get("plateful"):
-            flags.append(f"plateful={m['plateful']}")
         if m.get("live_url"):
             flags.append(m["live_url"])
         status = rv["status"] if rv else "not in the relay"
@@ -341,7 +320,7 @@ def main():
     ap = argparse.ArgumentParser(prog="client", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     n = sub.add_parser("new", help="create (or --restamp) a client workspace")
-    n.add_argument("slug"); n.add_argument("--name"); n.add_argument("--plateful", metavar="SUBDOMAIN")
+    n.add_argument("slug"); n.add_argument("--name")
     n.add_argument("--live-url"); n.add_argument("--restamp", action="store_true")
     n.add_argument("--shared-key", action="store_true", help="no key of its own: the relay's defaults.client_auth pays")
     n.add_argument("--sites", type=int, metavar="N", help="how many sites this client's plan covers (default 1; kept on --restamp)")

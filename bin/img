@@ -3,7 +3,7 @@
 img — Claude's image toolbelt. Stock photos (Pexels) and generation (Gemini).
 
     img stock "chicken tikka masala" [-n 5] [--orientation landscape] [--out DIR] [--page 2]
-    img gen "prompt" [--style plateful-menu] [--quality menu|hero|pro|draft] [--aspect 4:3] [--ref photo.jpg] [--out FILE]
+    img gen "prompt" [--style menu] [--quality menu|hero|pro|draft] [--aspect 4:3] [--ref photo.jpg] [--out FILE]
     img edit photo.jpg "put a party hat on him" [--quality ...] [--out FILE]   # instructed edit of a real photo
     img video "prompt" [--engine grok|veo] [--quality draft|good|pro] [--seconds N] [--aspect 16:9|9:16] [--ref first-frame.jpg] [--dry-run]
     img video "prompt" --length 22 [--then "..." --then "..."]   # veo: 8s + extensions, stitched by Veo
@@ -64,9 +64,9 @@ GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:ge
 
 # Which model for which job. Prices are paid-tier per image (Sept 2026).
 #   draft  — throwaway: exploring prompts/styles, checking composition.
-#   menu   — DEFAULT. Menu items, about/gallery shots. Plateful serves 800px
-#            medium variants so 1K is all the pixels that will ever be shown.
-#   hero   — full-width banners (Plateful hero = 1200w): needs 2K.
+#   menu   — DEFAULT. Menu items, about/gallery shots. A site shows these at
+#            ~800px, so 1K is all the pixels that will ever be shown.
+#   hero   — full-width banners (~1200w): needs 2K.
 #   pro    — anything with text/logos, a paying client's hero, or when flash
 #            has missed the brief twice. ~2x the price; don't default to it.
 QUALITY = {
@@ -187,7 +187,7 @@ WATCH_PROMPT = (
     "said.{ask}"
 )
 
-# Pexels src sizes. large2x = 1880w, comfortably under Plateful's 2000px original cap.
+# Pexels src sizes. large2x = 1880w, comfortably under a 2000px original cap.
 PEXELS_SIZES = ("original", "large2x", "large", "medium", "small", "portrait", "landscape", "tiny")
 
 
@@ -300,13 +300,13 @@ def write_sidecar(path, meta):
 
 def default_styles():
     return {
-        "plateful-menu": (
+        "menu": (
             "Professional restaurant menu food photography. Single plated dish, "
             "shot from a 45-degree angle, soft natural window light from the left, "
             "neutral matte ceramic plate on a light oak table, shallow depth of "
             "field, appetizing and realistic, no text, no hands, no utensils in frame."
         ),
-        "plateful-hero": (
+        "hero": (
             "Wide editorial restaurant photograph, warm inviting interior or a "
             "spread of dishes on a table, soft natural light, realistic, no text."
         ),
@@ -320,7 +320,7 @@ def default_styles():
             "little scuffed. No people unless the subject says so, no text, no "
             "logos, no screens with readable words."
         ),
-        "plateful-social": (
+        "restaurant-social": (
             "Editorial photograph of a small independent restaurant, realistic "
             "and appetizing, warm natural light, shallow depth of field, the "
             "restaurant is the protagonist. No text, no logos, no readable "
@@ -454,7 +454,7 @@ def cmd_edit(args):
         ledger_append(args.ledger, {
             "ts": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()), "kind": "image",
             "model": model, "quality": args.quality, "cost_usd": q["usd"], "billed_to": f"gemini:{key_name}",
-            "project": os.environ.get("PF_RESTAURANT") or os.getcwd(), "path": str(path), "edit_of": str(src.resolve()),
+            "project": os.getcwd(), "path": str(path), "edit_of": str(src.resolve()),
         })
     wh = image_size(path)
     print(f"  {path}  {f'{wh[0]}x{wh[1]}' if wh else '?'}")
@@ -523,7 +523,7 @@ def cmd_gen(args):
                 "quality": args.quality,
                 "cost_usd": q["usd"],
                 "billed_to": f"gemini:{key_name}",
-                "project": os.environ.get("PF_RESTAURANT") or os.getcwd(),
+                "project": os.getcwd(),
                 "path": str(path),
             })
         wh = image_size(path)
@@ -961,7 +961,7 @@ def cmd_video(args):
             "seconds": total_seconds, "cost_usd": round(cost, 3),
             "billed_to": f"gemini:{key_name}",
             "who": who, "who_label": label, "paid": paid_run,
-            "project": os.environ.get("PF_RESTAURANT") or os.getcwd(),
+            "project": os.getcwd(),
             "path": str(path),
         })
     print(f"  {path}  {mb:.1f}MB")
@@ -1108,7 +1108,7 @@ def cmd_video_grok(args):
             "seconds": seconds, "cost_usd": round(cost, 3),
             "billed_to": f"xai:{key_name}",
             "who": who, "who_label": label, "paid": paid_run,
-            "project": os.environ.get("PF_RESTAURANT") or os.getcwd(),
+            "project": os.getcwd(),
             "path": str(path),
         })
     print(f"  {path}  {mb:.1f}MB")
@@ -1164,7 +1164,7 @@ def cmd_credit(args):
         "kind": "video_credit", "who": args.who, "who_label": args.label or None,
         "usd": usd, "cost_usd": 0.0, "note": args.note or None,
         "proof": str(proof.resolve()) if proof else None,
-        "project": os.environ.get("PF_RESTAURANT") or os.getcwd(),
+        "project": os.getcwd(),
     })
     verb = "credited" if usd >= 0 else "clawed back"
     print(f"  {args.label or args.who}: {verb} ${abs(usd):.2f}"

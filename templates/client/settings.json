@@ -34,8 +34,6 @@
       "Bash(*$HOME*)",
       "Bash(*$ANTHROPIC*)",
       "Bash(*$GEMINI*)",
-      "Bash(*$PLATEFUL*)",
-      "Bash(*$PF_*)",
       "Bash(*_API_KEY*)",
       "Bash(*_TOKEN*)",
       "Bash(*printenv*)",
@@ -66,13 +64,11 @@
       "Bash(bash:*)",
       "Bash(sh:*)",
       "Bash(env:*)",
-      "Bash(pf keys:*)",
       "Read(~/.config/**)",
       "Read(~/.ssh/**)",
       "Read(~/.claude/**)",
       "Read(~/.claude.json)",
       "Read(~/projects/sms-relay/**)",
-      "Read(~/projects/plateful/**)",
       "Read(~/projects/claude-tools/**)",
       "Read(~/projects/rem-portfolio/**)",
       "Read(~/projects/rooms/**)",
@@ -114,9 +110,6 @@
       "Bash(magick * repos/*)",
       "Bash(identify incoming/*)",
       "Bash(identify repos/*)"
-    ],
-    "plateful": [
-      "Bash(pf *)"
     ],
     "live_url": [
       "Bash(curl -s {url}*)",

@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Photos — {{NAME}}</title>
+  <meta name="description" content="Photos from {{NAME}}.">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+
+  <header class="site-header">
+    <a class="wordmark" href="index.html">{{NAME}}</a>
+    <nav class="site-nav" aria-label="Site">
+      <a href="index.html">Home</a>
+      <a href="index.html#services">Services</a>
+      <a href="index.html#booking">Book</a>
+      <a href="index.html#quote">Quote</a>
+      <a href="photos.html" aria-current="page">Photos</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero page-hero">
+      <h1 class="hero-title">Photos</h1>
+    </section>
+    <section class="section">
+      <div class="section-inner reveal">
+        <p class="kicker">Gallery</p>
+        <h2>Recent work</h2>
+        <!-- Each photo is one <li>. To add a real one, put the JPG in images/ and
+             use <img src="images/…" width height loading="lazy" alt="…">
+             (CLAUDE.md, "How to add a photo"). These drawings stand in until there are real ones. -->
+        <ul class="photo-grid">
+          <li>
+            <svg viewBox="0 0 400 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Placeholder: a finished job">
+              <rect width="400" height="300" fill="#dfe7e4"/>
+              <rect x="50" y="70" width="300" height="160" rx="24" fill="#6fb3c4"/>
+              <path d="M70 130 q30 -14 60 0 t60 0 t60 0 t60 0" fill="none" stroke="#e8f4f6" stroke-width="6" stroke-linecap="round"/>
+              <path d="M70 180 q30 -14 60 0 t60 0 t60 0 t60 0" fill="none" stroke="#e8f4f6" stroke-width="6" stroke-linecap="round"/>
+            </svg>
+            <p class="muted">Placeholder: a finished job</p>
+          </li>
+          <li>
+            <svg viewBox="0 0 400 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Placeholder: before and after">
+              <rect width="400" height="300" fill="#e6e1d8"/>
+              <circle cx="200" cy="160" r="95" fill="#8a7f70"/>
+              <circle cx="200" cy="160" r="75" fill="#7cc0cf"/>
+              <path d="M170 70 q10 -20 0 -40 M200 70 q10 -20 0 -40 M230 70 q10 -20 0 -40" fill="none" stroke="#b9b2a6" stroke-width="5" stroke-linecap="round"/>
+            </svg>
+            <p class="muted">Placeholder: before and after</p>
+          </li>
+          <li>
+            <svg viewBox="0 0 400 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Placeholder: the team at work">
+              <rect width="400" height="300" fill="#dfe3e8"/>
+              <rect x="120" y="110" width="160" height="100" rx="14" fill="#4f5b66"/>
+              <circle cx="160" cy="160" r="30" fill="#8795a1"/>
+              <rect x="280" y="145" width="60" height="26" fill="#8795a1"/>
+              <rect x="60" y="145" width="60" height="26" fill="#8795a1"/>
+            </svg>
+            <p class="muted">Placeholder: the team at work</p>
+          </li>
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <!-- Keep this footer identical on every page. -->
+    <p class="copyright">&copy; {{YEAR}} {{NAME}} · <a href="/admin">Owner sign-in</a></p>
+  </footer>
+
+  <script src="js/main.js"></script>
+</body>
+</html>

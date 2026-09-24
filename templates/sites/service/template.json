@@ -1,0 +1,12 @@
+{
+  "title": "Service and booking",
+  "summary": "a service business: what they do, a booking calendar, a quote form, and an /admin page with the bookings and quote requests",
+  "pages": "index.html (hero, services, booking calendar, quote form, hours) and photos.html",
+  "db": true,
+  "collections": [
+    "submissions",
+    "bookings"
+  ],
+  "demo": "https://demo-service.pages.dev/",
+  "workspace": "demo-service"
+}

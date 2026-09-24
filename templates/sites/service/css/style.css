@@ -5,14 +5,14 @@
    ========================================================================== */
 
 :root {
-  /* Color — warm off-white ground, dark ink, one accent */
-  --bg: #faf8f4;
+  /* Color — cool clean ground, deep ink, one water-blue accent */
+  --bg: #f5f8f9;
   --bg-raised: #ffffff;
-  --bg-line: #e6e1d8;
-  --ink: #1d1b17;
-  --ink-dim: #6b665c;
-  --accent: #b4532a;       /* links, highlights, buttons */
-  --accent-dim: #8f3f1e;   /* hover */
+  --bg-line: #dbe4e7;
+  --ink: #14212a;
+  --ink-dim: #5a6a73;
+  --accent: #1d6f8c;       /* links, highlights, buttons */
+  --accent-dim: #155468;   /* hover */
 
   /* Type — system fonts, so nothing loads from a third party */
   --font-display: Georgia, "Times New Roman", serif;

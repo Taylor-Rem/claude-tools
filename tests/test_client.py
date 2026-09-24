@@ -67,6 +67,18 @@ class ClientTiers(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("hosting, light, starter", r.stderr + r.stdout)
 
+    def test_new_keeps_the_template_they_picked(self):
+        r = self.run_client("new", "poolco", "--name", "Pool Co", "--template", "service", "--shared-key")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("template: service", r.stdout)
+        meta = lambda: json.loads((self.clients / "poolco" / ".client.json").read_text())
+        self.assertEqual(meta()["template"], "service")
+        self.run_client("new", "poolco", "--restamp", "--shared-key")
+        self.assertEqual(meta()["template"], "service", "a restamp keeps it")
+        r = self.run_client("new", "oddco", "--name", "Odd", "--template", "marketplace", "--shared-key")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("not a kind of site", r.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

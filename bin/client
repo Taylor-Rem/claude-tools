@@ -6,7 +6,7 @@ repos under repos/ and texted photos in incoming/. The workspace's CLAUDE.md and
 .claude/settings.json are the permission boundary; this tool writes them from
 templates/client/ in the claude-tools repo.
 
-  client new <slug> --name "Name" [--live-url URL] [--tier T] [--shared-key] [--restamp]
+  client new <slug> --name "Name" [--live-url URL] [--tier T] [--template TYPE] [--shared-key] [--restamp]
   client ls
   client doctor [slug]
   client snippet <slug>          # the config.json project entry to paste
@@ -283,8 +283,14 @@ def cmd_new(a):
             "auth": None if a.shared_key else (old.get("auth") or key_name(a.slug))}
     if old.get("contact_email"):
         meta["contact_email"] = old["contact_email"]      # `newsletter setup --contact` wrote it; a restamp keeps it
+    template = a.template or old.get("template")
+    if template:
+        known = sorted(d.name for d in (HERE / "templates" / "sites").iterdir() if d.is_dir() and not d.name.startswith("_"))
+        if template not in known:
+            die(f"--template {template!r}: not a kind of site ({', '.join(known)})")
+        meta["template"] = template                       # the kind of site they chose on /start; `site new` uses it
     stamp(ws, meta)
-    print(f"{'restamped' if stamped else 'created'} {ws}")
+    print(f"{'restamped' if stamped else 'created'} {ws}" + (f" · template: {meta['template']}" if meta.get("template") else ""))
     print(f"  repos: {', '.join(repos_of(ws)) or '(none yet — site new <slug> from inside it, or clone into repos/)'}"
           f" · sites allowed: {meta['sites']}")
     if meta["auth"]:
@@ -407,6 +413,8 @@ def main():
     n.add_argument("--live-url"); n.add_argument("--restamp", action="store_true")
     n.add_argument("--shared-key", action="store_true", help="no key of its own: the relay's defaults.client_auth pays")
     n.add_argument("--sites", type=int, metavar="N", help="how many sites this client's plan covers (default 1; kept on --restamp)")
+    n.add_argument("--template", metavar="TYPE", help="the kind of site they picked on /start (business, service, …); "
+                   "`site new` in the workspace uses it (kept on --restamp)")
     n.add_argument("--tier", metavar="T", help="hosting|light|starter|standard|elite|elite_plus: sites from the tier (--sites wins)")
     n.set_defaults(fn=cmd_new)
     sub.add_parser("ls", help="list client workspaces").set_defaults(fn=cmd_ls)

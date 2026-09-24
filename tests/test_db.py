@@ -25,7 +25,7 @@ ROOT = HERE.parent
 DB = ROOT / "bin" / "db"
 CLIENT = ROOT / "bin" / "client"
 FAKE = HERE / "fixtures" / "db" / "fake-wrangler"
-TEMPLATE = ROOT / "templates" / "site"
+TEMPLATE = ROOT / "templates" / "sites" / "_shell"
 
 
 def load_site():
@@ -352,7 +352,7 @@ class SitePublishLayout(unittest.TestCase):
         shutil.copytree(TEMPLATE / "functions", repo / "functions")
         shutil.copytree(TEMPLATE / "migrations", repo / "migrations")
         for f in ("index.html", "404.html", "_headers", "CLAUDE.md", "README.md"):
-            shutil.copy(TEMPLATE / f, repo / f)
+            shutil.copy(ROOT / "templates" / "sites" / "business" / f, repo / f)
         (repo / "wrangler.toml").write_text(toml("acme-site", "uuid-1"))
         subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
         subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)

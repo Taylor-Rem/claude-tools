@@ -22,7 +22,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 FAKE = HERE / "fixtures" / "db" / "fake-wrangler"
-SHELL = ROOT / "templates" / "site"
+SHELL = ROOT / "templates" / "sites" / "_shell"
 COLLECTIONS = ROOT / "templates" / "collections"
 
 

@@ -1,0 +1,9 @@
+{
+  "title": "Business",
+  "summary": "the brochure: who they are, what they do, photos, where and when to find them",
+  "pages": "index.html (hero, about, details: where, hours, contact) and photos.html",
+  "db": false,
+  "collections": [],
+  "demo": "https://demo-business.pages.dev/",
+  "workspace": "demo-business"
+}

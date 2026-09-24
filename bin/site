@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """site — client websites, run from inside a client workspace.
 
-A client site is a public repo under our GitHub org (from the template in
-claude-tools/templates/site/, cloned into ./repos/<name>) — the repo is the
+A client site is a public repo under our GitHub org (from one of the
+templates in claude-tools/templates/sites/<type>/, cloned into ./repos/<name>) — the repo is the
 record and what the client gets on exit — served by **Cloudflare Pages**:
 one Pages project per site, created by API, content pushed by direct upload
 (`site publish`) after every push. No build, no shared deploy, nothing to
@@ -10,7 +10,8 @@ click per client; a custom domain is one API call plus two DNS lines. The
 older GitHub Pages path is still here behind `--gh-pages` / for repos made
 before 2026-09-16 and goes away once Bleu Grave has moved.
 
-  site new <name> [--tagline "…"] [--primary] [--db [--owner EMAIL]] [--no-wait] [--dry-run] [--gh-pages]
+  site new <name> [--template TYPE] [--tagline "…"] [--primary] [--db [--owner EMAIL]] [--no-wait] [--dry-run] [--gh-pages]
+  site templates                       # the kinds of site `--template` takes, and what each is
   site data <name> [--owner EMAIL] [--dry-run]   # give a site its own database + /admin (PLAYBOOK § Data)
   site publish [<name>] [--dry-run]    # HEAD of ./repos/<name> -> its Pages project (must be committed + pushed)
   site ls                              # repos in ./repos with where they're served
@@ -19,7 +20,7 @@ before 2026-09-16 and goes away once Bleu Grave has moved.
   site transfer <name> <github-user> [--keep]  # hand the repo to the client             (SITE_ADMIN=1)
   site retire <name> [--delete-repo] [--keep-local]  # take a site down: Pages project + registry row (+ repo)  (SITE_ADMIN=1)
   site stamp <name>                    # (GitHub Pages only) build id into version.json + every page
-  site template push                   # mirror templates/site to <org>/site-template
+  site template push [--template T]    # mirror templates/sites/<T> to <org>/site-template(-<T>)
   site doctor                          # auth, org, template, Cloudflare, and each repo
 
 Everything but `template` and `doctor` runs only inside a client workspace
@@ -34,7 +35,7 @@ The data layer (plan 12 § B29): `site data` (or `new --db`) creates one
 Cloudflare D1 database named after the Pages project, records its id in the
 registry, writes the binding into the repo's wrangler.toml, copies the
 Functions shell (functions/: the owner's /admin with a magic-link sign-in,
-the /api/* pattern) and migrations/ from templates/site, sets the Pages
+the /api/* pattern) and migrations/ from templates/sites/_shell, sets the Pages
 secrets SESSION_SECRET (random, never printed) and ADMIN_EMAIL, registers the
 owner as the project's contact on patchlamp.com (the sign-in link is emailed
 through its form endpoint, so the site holds no mail key), applies the
@@ -42,6 +43,17 @@ migrations (`db migrate`), commits, pushes and publishes. `site publish`
 then deploys functions/ and wrangler.toml beside the static files, which stay
 static: Pages runs a Function only for the paths functions/ has. `db` is the
 tool for the database itself.
+
+Templates (plan 12 § B30): templates/sites/<type>/ is one kind of site —
+business (the default, and what every site before 2026-09-24 came from),
+service, portfolio, nonprofit, store, restaurant — each with a
+template.json (title, summary, pages, and for a type that needs one
+`"db": true` and the collections it starts with). `site new --template
+service` makes the database too (as --db) and adds its collections. Each
+type's live demo is a client workspace clients/demo-<type> (testaurant for
+the restaurant): the demo is that template with demo content, so a demo
+that works is a template that works. templates/sites/_shell/ is the data
+layer's shared shell (functions/, migrations/), the same for every type.
 
 Config, by name, never printed:
   CLOUDFLARE_API_TOKEN   ~/.config/claude-tools/env — Account: Cloudflare Pages Edit (+ D1 Edit for the data layer)
@@ -65,7 +77,10 @@ import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent.parent
-TEMPLATE_DIR = HERE / "templates" / "site"
+SITES_DIR = HERE / "templates" / "sites"
+SHELL_DIR = SITES_DIR / "_shell"                  # the data layer's functions/ + migrations/, every type's
+DEFAULT_TEMPLATE = "business"
+TEMPLATE_DIR = SITES_DIR / DEFAULT_TEMPLATE       # set per call by use_template()
 ENV_FILE = Path(os.environ.get("CLAUDE_TOOLS_ENV", Path.home() / ".config/claude-tools/env"))
 CLIENT_BIN = HERE / "bin" / "client"
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
@@ -78,7 +93,8 @@ WRANGLER = HERE / "node_modules" / ".bin" / "wrangler"
 NON_SITE = {"CLAUDE.md", "README.md", ".claude", "tools", ".gitignore", ".nojekyll",
             "CNAME", ".github", "version.json", "shots",
             "functions", "migrations", "wrangler.toml", ".dev.vars", ".wrangler", "seed.sql"}   # in the repo, not on the site
-DATA_PARTS = ("functions", "migrations")          # in templates/site, copied only for a site with a database
+DATA_PARTS = ("functions", "migrations")          # in templates/sites/_shell, copied only for a site with a database
+TEMPLATE_META = "template.json"                   # in each type's folder; about the template, never copied
 DB_BIN = HERE / "bin" / "db"
 NEWSLETTER_BIN = HERE / "bin" / "newsletter"
 COMPAT_DATE = "2026-09-01"                        # Workers runtime date for the site's Functions
@@ -388,10 +404,45 @@ def site_entry(meta, name):
     return registry_load().get(meta["slug"], {}).get(name)
 
 
-def site_register(meta, name, project, domains=None):
+def templates():
+    """{type: template.json} for every kind of site in templates/sites/."""
+    out = {}
+    for d in sorted(SITES_DIR.iterdir()) if SITES_DIR.is_dir() else []:
+        if d.is_dir() and not d.name.startswith("_") and (d / "index.html").exists():
+            try:
+                info = json.loads((d / TEMPLATE_META).read_text()) if (d / TEMPLATE_META).exists() else {}
+            except ValueError:
+                info = {"summary": f"({TEMPLATE_META} doesn't parse)"}
+            out[d.name] = info
+    return out
+
+
+def use_template(kind):
+    """Point TEMPLATE_DIR at templates/sites/<kind>; its template.json."""
+    global TEMPLATE_DIR
+    kind = kind or DEFAULT_TEMPLATE
+    have = templates()
+    if kind not in have:
+        die(f"no template {kind!r}: {', '.join(have) or 'none found'} (site templates)")
+    TEMPLATE_DIR = SITES_DIR / kind
+    return have[kind]
+
+
+def cmd_templates(a):
+    for kind, info in templates().items():
+        extra = f" — database: {', '.join(info.get('collections') or [])}" if info.get("db") else ""
+        say(f"{kind:<11} {info.get('summary', '')}{extra}")
+        demo = info.get("demo")
+        if demo:
+            say(f"{'':<11} demo: {demo}")
+
+
+def site_register(meta, name, project, domains=None, template=None):
     reg = registry_load()
     row = reg.setdefault(meta["slug"], {}).setdefault(name, {})
     row.update({"host": "cloudflare", "project": project})
+    if template:
+        row["template"] = template
     if domains is not None:
         row["domains"] = domains
     if not DRY:
@@ -476,10 +527,15 @@ def cmd_new(a):
     dest = ws / "repos" / name
     if dest.exists():
         die(f"repos/{name} already exists")
-    if not TEMPLATE_DIR.is_dir():
-        die(f"template missing at {TEMPLATE_DIR}")
+    kind = a.template or meta.get("template") or DEFAULT_TEMPLATE
+    tinfo = use_template(kind)
+    if tinfo.get("db") and not a.db:
+        if a.gh_pages:
+            die(f"the {kind} template needs a database, which needs a Cloudflare site; drop --gh-pages")
+        a.db = True
+        say(f"  the {kind} template keeps {', '.join(tinfo.get('collections') or [])} in a database of the site's own: --db")
     src, _ = token_source()
-    say(f"site new {name} for {meta['name']} ({meta['slug']}) under {o}, auth: {src}")
+    say(f"site new {name} for {meta['name']} ({meta['slug']}) under {o}, template {kind}, auth: {src}")
 
     code, _, err = gh("repo", "view", slug, "--json", "name", check=False)
     if code == 0 and not DRY:
@@ -516,12 +572,14 @@ def cmd_new(a):
         "TAGLINE": a.tagline or f"A short line about what {meta['name']} does.",
     }
     if DRY:
-        say(f"  would create public repo {slug} from {TEMPLATE_DIR}")
+        say(f"  would create public repo {slug} from {TEMPLATE_DIR} (template {kind})")
         say(f"  would clone it to repos/{name}, fill {', '.join(f'{{{{{k}}}}}' for k in values)}")
         if cloudflare:
             say(f"  would create Cloudflare Pages project {name}, register it, publish, and expect {url}")
         if a.db:
             say(f"  would give it a database: site data {name}" + (f" --owner {a.owner}" if a.owner else ""))
+            for c in tinfo.get("collections") or []:
+                say(f"  would add the {c} collection: db add {c}")
         else:
             say(f"  would enable GitHub Pages from main:/ and expect {url}")
         set_live_url(ws, meta, url, a.primary)
@@ -537,7 +595,7 @@ def cmd_new(a):
     # 2. the files, from the local template, placeholders filled before the first commit
     (ws / "repos").mkdir(exist_ok=True)
     shutil.copytree(TEMPLATE_DIR, dest, symlinks=False,
-                    ignore=lambda d, names: [n for n in names if Path(d) == TEMPLATE_DIR and n in DATA_PARTS])
+                    ignore=lambda d, names: [n for n in names if Path(d) == TEMPLATE_DIR and n in DATA_PARTS + (TEMPLATE_META,)])
     unfilled = []
     for p in dest.rglob("*"):
         if not p.is_file() or ".git" in p.parts[len(dest.parts):][:1]:
@@ -558,7 +616,7 @@ def cmd_new(a):
     git(dest, "init", "-q", "-b", "main")
     git(dest, "add", "-A")
     git(dest, "-c", "user.name=Patch (claude-tools site)", "-c", "user.email=noreply@anthropic.com",
-        "commit", "-q", "-m", f"New site for {meta['name']} from the site template")
+        "commit", "-q", "-m", f"New site for {meta['name']} from the {kind} template")
     git(dest, "remote", "add", "origin", f"git@github.com:{slug}.git")
     git(dest, "push", "-q", "-u", "origin", "main")
     say(f"  pushed repos/{name} (main)")
@@ -566,7 +624,7 @@ def cmd_new(a):
     # 4. the host
     if cloudflare:
         cf_ensure_project(name)
-        site_register(meta, name, name)
+        site_register(meta, name, name, template=kind)
         say(f"  registered {meta['slug']}/{name} -> Pages project {name}")
     else:
         code, out, err = gh("api", "-X", "POST", f"repos/{slug}/pages", "--input", "-",
@@ -588,6 +646,15 @@ def cmd_new(a):
     # 6. the data layer, then publish / is it up?
     if a.db:
         enable_data(ws, name, a.owner)
+        for c in tinfo.get("collections") or []:
+            r = subprocess.run([str(DB_BIN), "add", c, "--site", name], capture_output=True, text=True, cwd=str(ws))
+            say(f"  db add {c}: " + ("ok" if r.returncode == 0 else f"FAILED {(r.stderr or r.stdout).strip()[:200]}"))
+        git(dest, "add", "-A", "functions", "migrations")
+        _, staged = git(dest, "diff", "--cached", "--name-only", check=False)
+        if staged.strip():
+            git(dest, "-c", "user.name=Patch (claude-tools site)", "-c", "user.email=noreply@anthropic.com",
+                "commit", "-q", "-m", f"The {kind} template's lists: {', '.join(tinfo.get('collections') or [])}")
+            git(dest, "push", "-q")
     if cloudflare:
         cmd_publish(argparse.Namespace(name=name, dry_run=False))
         live = True
@@ -672,7 +739,7 @@ def cmd_publish(a):
     say(f"  production: {prod} {'— serving' if up else '— not serving yet (check in a minute)'}"
         + (f"  Cache-Control: {cc}" if cc else ""))
     if cc and "no-cache" not in cc and "max-age=0" not in cc:
-        say("  WARN HTML is cacheable: copy templates/site/_headers into the repo root")
+        say("  WARN HTML is cacheable: copy templates/sites/business/_headers into the repo root")
     if live:
         say(f"  live:       {live}  (custom domain; the same deployment)")
     say(f"published {name} @ {sha}: {subject}")
@@ -795,10 +862,10 @@ def enable_data(ws, name, owner=None, dry=False):
     # 2. the files: the Functions shell and the first migration (never overwriting), the binding
     written = []
     for part in DATA_PARTS:
-        for f in sorted((TEMPLATE_DIR / part).rglob("*")):
+        for f in sorted((SHELL_DIR / part).rglob("*")):
             if not f.is_file():
                 continue
-            dest = d / f.relative_to(TEMPLATE_DIR)
+            dest = d / f.relative_to(SHELL_DIR)
             if dest.exists():
                 continue
             if not dry:
@@ -1242,9 +1309,9 @@ def cmd_template(a):
     if a.action != "push":
         die("site template push is the only template action")
     o = owner()
-    slug = f"{o}/{template_repo()}"
-    if not TEMPLATE_DIR.is_dir():
-        die(f"template missing at {TEMPLATE_DIR}")
+    kind = a.template or DEFAULT_TEMPLATE
+    use_template(kind)
+    slug = f"{o}/{template_repo()}" + ("" if kind == DEFAULT_TEMPLATE else f"-{kind}")
     _, sha = git(HERE, "rev-parse", "--short", "HEAD", check=False)
     code, _, _ = gh("repo", "view", slug, "--json", "name", check=False)
     if code != 0:
@@ -1259,21 +1326,21 @@ def cmd_template(a):
         for p in list(work.iterdir()):
             if p.name != ".git":
                 shutil.rmtree(p) if p.is_dir() else p.unlink()
-        shutil.copytree(TEMPLATE_DIR, work, dirs_exist_ok=True)
+        shutil.copytree(TEMPLATE_DIR, work, dirs_exist_ok=True, ignore=shutil.ignore_patterns(TEMPLATE_META))
         (work / "TEMPLATE.md").write_text(
             f"# site-template\n\nThe files `site new` copies for a new client site, mirrored from "
-            f"`claude-tools/templates/site/` (commit {sha or '?'}). The `{{{{NAME}}}}`-style placeholders are "
+            f"`claude-tools/templates/sites/{kind}/` (commit {sha or '?'}). The `{{{{NAME}}}}`-style placeholders are "
             f"filled at creation; edit the source in claude-tools, then `site template push`.\n")
         git(work, "add", "-A")
         _, status = git(work, "status", "--porcelain", check=False)
         if not status.strip():
-            say(f"{slug} already matches templates/site")
+            say(f"{slug} already matches templates/sites/{kind}")
         else:
             _, branch = git(work, "rev-parse", "--abbrev-ref", "HEAD", check=False)
             git(work, "-c", "user.name=Patch (claude-tools site)", "-c", "user.email=noreply@anthropic.com",
-                "commit", "-q", "-m", f"Sync from claude-tools templates/site ({sha or 'local'})")
+                "commit", "-q", "-m", f"Sync from claude-tools templates/sites/{kind} ({sha or 'local'})")
             git(work, "push", "-q", "-u", "origin", branch if branch not in ("", "HEAD") else "main")
-            say(f"  pushed templates/site to {slug}")
+            say(f"  pushed templates/sites/{kind} to {slug}")
     gh("api", "-X", "PATCH", f"repos/{slug}", "--input", "-", stdin=json.dumps({"is_template": True}))
     say(f"  https://github.com/{slug} is a template repo")
 
@@ -1310,21 +1377,28 @@ def cmd_doctor(a):
             say(f"  template mirror {tslug}: {'present' if code == 0 else 'absent (site template push)'}")
         else:
             fail(f"SITE_ORG={o} is not reachable on GitHub")
-    say("== template")
-    if TEMPLATE_DIR.is_dir():
+    say("== templates")
+    kinds = templates()
+    if DEFAULT_TEMPLATE not in kinds:
+        fail(f"no {DEFAULT_TEMPLATE} template at {SITES_DIR / DEFAULT_TEMPLATE}")
+    for kind in kinds:
+        tdir = SITES_DIR / kind
         found = set()
-        for p in TEMPLATE_DIR.rglob("*"):
+        for p in tdir.rglob("*"):
             if p.is_file():
                 try:
                     found |= set(re.findall(r"{{([A-Z_]+)}}", p.read_text(encoding="utf-8")))
                 except UnicodeDecodeError:
                     pass
-        say(f"  {TEMPLATE_DIR}: placeholders {', '.join(sorted(found))}")
+        say(f"  {kind}: placeholders {', '.join(sorted(found))}")
         unknown = found - {"NAME", "REPO", "URL", "OWNER", "YEAR", "TAGLINE"}
         if unknown:
-            fail(f"placeholders `site new` doesn't fill: {', '.join(sorted(unknown))}")
-    else:
-        fail(f"no template at {TEMPLATE_DIR}")
+            fail(f"{kind}: placeholders `site new` doesn't fill: {', '.join(sorted(unknown))}")
+        for c in kinds[kind].get("collections") or []:
+            if not (HERE / "templates" / "collections" / c / "collection.json").exists():
+                fail(f"{kind}: template.json names a collection that doesn't exist: {c}")
+    if not (SHELL_DIR / "functions" / "_lib" / "core.js").exists():
+        fail(f"the data layer's shell is missing at {SHELL_DIR}")
     say(f"  client tool: {CLIENT_BIN if CLIENT_BIN.exists() else shutil.which('client') or 'MISSING'}")
     say("== cloudflare")
     tok, acct = cf_creds(required=False)
@@ -1366,7 +1440,7 @@ def cmd_doctor(a):
                     problem = binding_problem(d, entry)
                     (fail if problem else say)(f"  repos/{n}: database " + (problem or f"{entry['d1']['name']} bound as DB (db doctor for the rest)"))
                 if cc and "no-cache" not in cc and "max-age=0" not in cc:
-                    fail(f"repos/{n}: HTML is cacheable (copy templates/site/_headers into the repo root)")
+                    fail(f"repos/{n}: HTML is cacheable (copy templates/sites/business/_headers into the repo root)")
                 for dm in cf_domains(proj):
                     ok_ = dm.get("status") == "active"
                     (say if ok_ else fail)(f"  repos/{n}: domain {dm['name']} {dm.get('status')}"
@@ -1393,6 +1467,8 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     n = sub.add_parser("new", help="create a site: repo from the template, Cloudflare Pages project, first publish, URL into the workspace")
     n.add_argument("name", help="repo name, e.g. <slug>-site")
+    n.add_argument("--template", metavar="TYPE", help="the kind of site (site templates lists them; default business, "
+                   "or the workspace's .client.json template)")
     n.add_argument("--tagline", help="one line under the name on the home page")
     n.add_argument("--primary", action="store_true", help="make this the workspace's live_url even if one is set")
     n.add_argument("--no-wait", action="store_true", help="don't wait for the first Pages build")
@@ -1401,6 +1477,7 @@ def main():
     n.add_argument("--db", action="store_true", help="give it its own database and /admin (site data) before the first publish")
     n.add_argument("--owner", help="with --db: the email that signs in to /admin (default: the workspace's contact)")
     n.set_defaults(fn=cmd_new)
+    sub.add_parser("templates", help="the kinds of site --template takes").set_defaults(fn=cmd_templates)
     dt = sub.add_parser("data", help="give a site its own D1 database, /admin with an emailed sign-in, and the Functions shell")
     dt.add_argument("name", help="repo name under ./repos")
     dt.add_argument("--owner", help="the email that signs in to /admin (default: the workspace's contact)")
@@ -1433,8 +1510,9 @@ def main():
     rt.add_argument("--keep-local", action="store_true", help="keep repos/<name> in the workspace")
     rt.add_argument("--dry-run", action="store_true")
     rt.set_defaults(fn=cmd_retire)
-    tp = sub.add_parser("template", help="`site template push` mirrors templates/site to <org>/site-template")
-    tp.add_argument("action", choices=["push"]); tp.set_defaults(fn=cmd_template)
+    tp = sub.add_parser("template", help="`site template push` mirrors templates/sites/<T> to <org>/site-template(-<T>)")
+    tp.add_argument("action", choices=["push"]); tp.add_argument("--template", metavar="TYPE")
+    tp.set_defaults(fn=cmd_template)
     sub.add_parser("doctor", help="check auth, org, template, and this workspace's sites").set_defaults(fn=cmd_doctor)
     a = ap.parse_args()
     a.fn(a)

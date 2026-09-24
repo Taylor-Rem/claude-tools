@@ -145,17 +145,17 @@ class DbTest(unittest.TestCase):
         self.assertFalse((self.repo / "migrations" / "0004_submissions.sql").exists())
 
     def test_a_scaffold_is_refused_so_nothing_is_promised_from_it(self):
-        for name in ("catalog", "orders", "posts", "subscribers"):
+        for name in ("posts", "subscribers"):
             r = self.db("add", name)
             self.assertNotEqual(r.returncode, 0)
             self.assertIn("scaffold", r.stderr)
-        self.assertFalse((self.repo / "migrations" / "0002_catalog.sql").exists())
+        self.assertFalse((self.repo / "migrations" / "0002_posts.sql").exists())
 
     def test_collections_lists_ready_scaffold_and_added(self):
         self.db("add", "submissions")
         out = self.db("collections").stdout
         self.assertRegex(out, r"submissions\s+added")
-        self.assertRegex(out, r"catalog\s+scaffold")
+        self.assertRegex(out, r"posts\s+scaffold")
         self.assertRegex(out, r"bookings\s{2,}times the owner opens")
         self.assertRegex(out, r"records\s{2,}the generic list")
 
@@ -220,6 +220,94 @@ class DbTest(unittest.TestCase):
         cols = {r["name"] for t in ("bookings", "booking_slots") for r in con.execute(f"PRAGMA table_info({t})")}
         for col in _re.findall(r'(?:name: "|\["(?=[a-z_]+", "[A-Z]))([a-z_]+)"', view):
             self.assertIn(col, cols, col)
+
+    def test_add_catalog_wires_products_hours_orders_and_prints_the_shop(self):
+        r = self.db("add", "catalog")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        for m in ("0002_catalog.sql", "0003_orders.sql"):
+            self.assertTrue((self.repo / "migrations" / m).exists(), m)
+        reg = (self.repo / "functions" / "_admin" / "collections.js").read_text()
+        self.assertIn("export default { catalog, hours, orders };", reg)
+        self.assertIn("data-shop", r.stdout)
+        cols = {t: {c["name"] for c in json.loads(self.db("query", f"PRAGMA table_info({t})", "--json").stdout)}
+                for t in ("products", "hours", "orders")}
+        import re as _re
+        src = ROOT / "templates" / "collections" / "catalog" / "functions"
+        views = {"catalog": "products", "hours": "hours", "orders": "orders"}
+        for v, table in views.items():
+            text = (src / "_admin" / f"{v}.js").read_text()
+            for col in _re.findall(r'(?:name: "|\["(?=[a-z_]+", "[A-Z]))([a-z_]+)"', text):
+                self.assertIn(col, cols[table], f"{v}: {col}")
+        ins = (src / "api" / "checkout.js").read_text()
+        m = _re.search(r"INSERT INTO orders \(([^)]+)\)", ins)
+        self.assertTrue({c.strip() for c in m.group(1).split(",")} <= cols["orders"])
+
+    def test_the_catalog_functions_run(self):
+        """checkout.js and stripe-webhook.js under node, with a stand-in D1 and
+        Stripe: prices come from the database, no key means 'off', and only a
+        correctly signed, fresh event marks an order paid."""
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("no node")
+        work = Path(self.tmp.name) / "fn"
+        shutil.copytree(TEMPLATE / "functions", work / "functions")
+        shutil.copytree(ROOT / "templates" / "collections" / "catalog" / "functions", work / "functions", dirs_exist_ok=True)
+        script = work / "run.mjs"
+        script.write_text(r"""
+import { onRequestPost as checkout } from "./functions/api/checkout.js";
+import { onRequestGet as catalog, checkoutMode } from "./functions/api/catalog.js";
+import { onRequestPost as hook, verify } from "./functions/api/stripe-webhook.js";
+import { createHmac } from "node:crypto";
+const out = {}; const runs = [];
+const db = { prepare(sql) { const st = { args: [], bind(...a) { st.args = a; return st; },
+  async first() { runs.push([sql, st.args]); return { n: 0 }; },
+  async all() { runs.push([sql, st.args]); if (/FROM products/.test(sql) && /IN \(/.test(sql)) return { results: [{ id: 3, name: "Pho", price_cents: 1400 }] };
+    if (/FROM products/.test(sql)) return { results: [{ id: 3, name: "Pho", price_cents: 1400, status: "on sale" }] }; return { results: [0,1,2,3,4,5,6].map((d) => ({ weekday: d, opens: "00:00", closes: "23:59" })) }; },
+  async run() { runs.push([sql, st.args]); return { meta: { changes: 1, last_row_id: 1 } }; } }; return st; } };
+let stripeBody = null;
+globalThis.fetch = async (url, init) => { stripeBody = init.body.toString(); return new Response(JSON.stringify({ id: "cs_test_1", url: "https://checkout.stripe.com/x" }), { status: 200 }); };
+const req = (body, headers = {}) => new Request("https://shop.example/api/checkout", { method: "POST", headers: { "content-type": "application/json", ...headers }, body });
+let r = await checkout({ request: req(JSON.stringify({ items: [{ id: 3, qty: 2 }], name: "Sam", email: "s@x.test" })), env: { DB: db } });
+out.off = [r.status, (await r.json()).checkout];
+const env = { DB: db, STRIPE_SECRET_KEY: "sk_test_abc", STRIPE_WEBHOOK_SECRET: "whsec_1", TIMEZONE: "America/Denver" };
+out.mode = [checkoutMode({}), checkoutMode(env), checkoutMode({ STRIPE_SECRET_KEY: "sk_live_x" })];
+r = await checkout({ request: req(JSON.stringify({ items: [{ id: 3, qty: 2, price_cents: 1 }], name: "Sam", email: "s@x.test" })), env });
+out.ok = await r.json();
+out.stripe = Object.fromEntries(new URLSearchParams(stripeBody));
+out.order = runs.find(([s]) => s.startsWith("INSERT INTO orders"))[1];
+r = await checkout({ request: req(JSON.stringify({ items: [], name: "Sam", email: "s@x.test" })), env });
+out.empty = r.status;
+r = await catalog({ env }); out.catalog = await r.json();
+const payload = JSON.stringify({ type: "checkout.session.completed", data: { object: { id: "cs_test_1", payment_status: "paid", amount_total: 2800, customer_details: { email: "s@x.test" } } } });
+const t = Math.floor(Date.now() / 1000);
+const sig = (secret, at) => `t=${at},v1=` + createHmac("sha256", secret).update(`${at}.${payload}`).digest("hex");
+out.verify = [await verify(payload, sig("whsec_1", t), "whsec_1"), await verify(payload, sig("whsec_2", t), "whsec_1"),
+              await verify(payload, sig("whsec_1", t - 600), "whsec_1"), await verify(payload, "", "whsec_1")];
+runs.length = 0;
+r = await hook({ request: new Request("https://shop.example/api/stripe-webhook", { method: "POST", headers: { "stripe-signature": sig("whsec_1", t) }, body: payload }), env });
+out.hook = [r.status, runs.map(([s, a]) => [s.slice(0, 30), a[a.length - 1]])];
+r = await hook({ request: new Request("https://shop.example/api/stripe-webhook", { method: "POST", headers: { "stripe-signature": sig("nope", t) }, body: payload }), env });
+out.forged = r.status;
+console.log(JSON.stringify(out));
+""")
+        r = subprocess.run([node, str(script)], capture_output=True, text=True, cwd=work)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        out = json.loads(r.stdout)
+        self.assertEqual(out["off"], [503, "off"])
+        self.assertEqual(out["mode"], ["off", "test", "live"])
+        self.assertEqual(out["ok"]["url"], "https://checkout.stripe.com/x")
+        self.assertEqual(out["stripe"]["line_items[0][price_data][unit_amount]"], "1400", "the price is the database's")
+        self.assertEqual(out["stripe"]["line_items[0][quantity]"], "2")
+        self.assertEqual(out["stripe"]["mode"], "payment")
+        self.assertEqual(out["order"][0], "cs_test_1")
+        self.assertEqual(out["order"][6], 2800)
+        self.assertEqual(out["empty"], 422)
+        self.assertEqual(out["catalog"]["checkout"], "test")
+        self.assertTrue(out["catalog"]["open_now"])
+        self.assertEqual(out["verify"], [True, False, False, False])
+        self.assertEqual(out["hook"][0], 200)
+        self.assertEqual(out["hook"][1], [["UPDATE orders SET status = 'pa", "cs_test_1"]])
+        self.assertEqual(out["forged"], 400)
 
     # -- read / write ----------------------------------------------------------
 

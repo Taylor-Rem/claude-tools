@@ -1,4 +1,4 @@
 {
-  "status": "scaffold",
-  "summary": "products, variants and hours, sold through Stripe Checkout on the client's own account (scaffold: B30's demo-store finishes it)"
+  "status": "ready",
+  "summary": "what the site sells (or a menu) with prices and pickup hours, paid through Stripe Checkout on the owner's own account, orders on /admin"
 }

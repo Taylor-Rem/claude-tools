@@ -181,10 +181,12 @@ account somewhere.
 ## What is Taylor's work (say so, then FORWARD-TO-TAYLOR)
 
 Anything that needs an account, a setting outside these files, or a real
-backend and isn't in `PLAYBOOK.md`: a store or checkout, a login or member
-area for *their* customers, payments, online ordering, an import of an
-existing mailing list, refunds. (The owner's own sign-in to see their lists
-is not Taylor's work: PLAYBOOK § Data.) Tell them plainly it needs Taylor and end your
+backend and isn't in `PLAYBOOK.md`: switching payments on (Stripe
+Checkout on their own account), a login or member area for *their*
+customers, an import of an existing mailing list, refunds. (The owner's own
+sign-in to see their lists, a booking calendar, and a shop or menu with
+prices are not Taylor's work: PLAYBOOK § Data. Only turning its Checkout on
+is.) Tell them plainly it needs Taylor and end your
 reply with a line `FORWARD-TO-TAYLOR: <the ask>`. (A redesign or a new look is *not* Taylor's
 work unless the workspace notes say otherwise: it's a site change.)
 {{NOTES}}

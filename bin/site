@@ -12,6 +12,7 @@ before 2026-09-16 and goes away once Bleu Grave has moved.
 
   site new <name> [--template TYPE] [--tagline "…"] [--primary] [--db [--owner EMAIL]] [--no-wait] [--dry-run] [--gh-pages]
   site templates                       # the kinds of site `--template` takes, and what each is
+  site checkout <name> --key-from NAME [--webhook] [--live] | --off   # Stripe Checkout on a catalog site (SITE_ADMIN=1)
   site data <name> [--owner EMAIL] [--dry-run]   # give a site its own database + /admin (PLAYBOOK § Data)
   site publish [<name>] [--dry-run]    # HEAD of ./repos/<name> -> its Pages project (must be committed + pushed)
   site ls                              # repos in ./repos with where they're served
@@ -920,6 +921,71 @@ def enable_data(ws, name, owner=None, dry=False):
         say(f"  committed and pushed repos/{name}")
 
 
+def stripe_post(key, path, fields):
+    """POST to Stripe's API with the owner's key (never printed); the JSON answer."""
+    import urllib.parse
+    req = urllib.request.Request(f"https://api.stripe.com/v1{path}", method="POST",
+                                 data=urllib.parse.urlencode(fields).encode(),
+                                 headers={"Authorization": f"Bearer {key}", "User-Agent": "claude-tools site"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read().decode())
+    except urllib.error.HTTPError as exc:
+        try:
+            msg = json.loads(exc.read().decode()).get("error", {}).get("message")
+        except ValueError:
+            msg = None
+        die(f"Stripe refused it ({exc.code}): {msg or 'no message'}")
+
+
+def cmd_checkout(a):
+    """Switch a site's Checkout on (or off): the owner's Stripe key as a Pages
+    secret, and with --webhook the endpoint Stripe calls when an order is paid."""
+    global DRY
+    DRY = a.dry_run
+    require_admin("checkout")
+    ws, meta = workspace()
+    entry = site_entry(meta, a.name)
+    if not entry or entry.get("host") != "cloudflare" or not (entry.get("d1") or {}).get("id"):
+        die(f"repos/{a.name} needs a database and the catalog first: site data {a.name} && db add catalog")
+    project = entry["project"]
+    if a.off:
+        say(f"  {'would remove' if DRY else 'removing'} STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET from {project}")
+        if not DRY:
+            env = {"STRIPE_SECRET_KEY": None, "STRIPE_WEBHOOK_SECRET": None}
+            cf_api("PATCH", f"/pages/projects/{project}",
+                   {"deployment_configs": {"production": {"env_vars": env}, "preview": {"env_vars": env}}})
+    else:
+        if not a.key_from:
+            die("--key-from NAME: the toolbelt key holding the owner's Stripe secret key (setenv.sh NAME first)")
+        key = os.environ.get(a.key_from) or read_env().get(a.key_from)
+        if not key:
+            die(f"{a.key_from} is not in the toolbelt: ~/.config/claude-tools/setenv.sh {a.key_from}")
+        mode = "live" if key.startswith(("sk_live_", "rk_live_")) else "test" if key.startswith(("sk_test_", "rk_test_")) else None
+        if not mode:
+            die(f"{a.key_from} doesn't look like a Stripe secret key (sk_test_… or sk_live_…)")
+        if mode == "live" and not a.live:
+            die("that's a live key: real cards, real money. Say --live if that's what the owner wants.")
+        env = {"STRIPE_SECRET_KEY": {"type": "secret_text", "value": key}}
+        url = (meta.get("live_url") if meta.get("live_url") and entry.get("domains") else None) or f"https://{project}.pages.dev/"
+        if a.webhook:
+            hook = f"{url.rstrip('/')}/api/stripe-webhook"
+            if DRY:
+                say(f"  would create the Stripe webhook {hook} (checkout.session.completed)")
+            else:
+                res = stripe_post(key, "/webhook_endpoints", {"url": hook, "enabled_events[]": "checkout.session.completed",
+                                                              "description": f"{meta['name']} — orders (Patchlamp site)"})
+                env["STRIPE_WEBHOOK_SECRET"] = {"type": "secret_text", "value": res["secret"]}
+                say(f"  Stripe webhook {res.get('id')} → {hook}")
+        say(f"  {'would set' if DRY else 'setting'} {', '.join(env)} on {project} ({mode} mode; values never shown)")
+        if not DRY:
+            cf_api("PATCH", f"/pages/projects/{project}",
+                   {"deployment_configs": {"production": {"env_vars": env}, "preview": {"env_vars": env}}})
+    # secrets reach a Function only from the next deployment on
+    cmd_publish(argparse.Namespace(name=a.name, dry_run=DRY))
+    say(f"checkout for {a.name}: {'off' if a.off else 'on'} — `curl -s <url>api/catalog` says which mode")
+
+
 def cmd_data(a):
     global DRY
     DRY = a.dry_run
@@ -1478,6 +1544,13 @@ def main():
     n.add_argument("--owner", help="with --db: the email that signs in to /admin (default: the workspace's contact)")
     n.set_defaults(fn=cmd_new)
     sub.add_parser("templates", help="the kinds of site --template takes").set_defaults(fn=cmd_templates)
+    ck = sub.add_parser("checkout", help="(SITE_ADMIN=1) switch a site's Stripe Checkout on with the owner's key, or --off")
+    ck.add_argument("name"); ck.add_argument("--key-from", metavar="NAME", help="toolbelt key holding the Stripe secret key")
+    ck.add_argument("--webhook", action="store_true", help="also create the Stripe webhook that marks orders paid")
+    ck.add_argument("--live", action="store_true", help="allow a live key (real money)")
+    ck.add_argument("--off", action="store_true", help="remove the key and webhook secret")
+    ck.add_argument("--dry-run", action="store_true")
+    ck.set_defaults(fn=cmd_checkout)
     dt = sub.add_parser("data", help="give a site its own D1 database, /admin with an emailed sign-in, and the Functions shell")
     dt.add_argument("name", help="repo name under ./repos")
     dt.add_argument("--owner", help="the email that signs in to /admin (default: the workspace's contact)")

@@ -560,7 +560,7 @@ def cmd_add(a):
         return
     if not a.no_migrate:
         cmd_migrate(argparse.Namespace(site=site.name, local=a.local, dry_run=False))
-    form = next((src / f for f in ("form.html", "booking.html") if (src / f).exists()), src / "form.html")
+    form = next((src / f for f in ("form.html", "booking.html", "shop.html") if (src / f).exists()), src / "form.html")
     say(f"\nnext: {src.name}'s README is the rest ({src / 'README.md'}); in short: "
         + ("put the block below on the page, " if form.exists() else "")
         + f"commit, `git -C repos/{site.name} push`, `site publish {site.name}`, then prove it on the live site.")

@@ -180,6 +180,16 @@ their email, works once, for 15 minutes.
   publish: the calendar reads the database as the page loads. Say the date
   back. "Close Friday 1pm" → `UPDATE booking_slots SET status = 'closed'
   WHERE id = <id>`.
+- "sell these six things" / "put the menu online with prices" → `db add
+  catalog` (a restaurant's menu is the same thing), paste the shop block it
+  prints into a `<section id="shop">`, one `products` row per item (prices
+  in cents), `hours` rows if they take pickups, commit, push, publish. The
+  catalog README (`claude-tools/templates/collections/catalog/README.md`)
+  has the texts. The page shows everything at once with the button
+  "Checkout: test mode, not switched on" — paying online is Taylor's step
+  (their own Stripe account): tell them so and FORWARD-TO-TAYLOR. "The pho
+  is $14 now", "we're out of the cake", "we close at 8 Sundays" are one
+  `db exec` each, no publish. Never quote a percentage or a fee for orders.
 - "send me all of it" / "I'm moving the site" → `db export`, then
   `SEND-FILE: exports/<date>/<table>.csv | everything in <list>`. The CSVs
   and JSON are the handover.
@@ -192,7 +202,8 @@ their email, works once, for 15 minutes.
 - A login for *their* customers or members (accounts, a members' area):
   not yet. FORWARD-TO-TAYLOR if they need it.
 - More than one person signing in to `/admin`: one owner address for now.
-- Online payments, a store: being built, not offered yet. FORWARD-TO-TAYLOR.
+- Taking payments. The shop itself you set up (next point); switching its
+  Checkout on is Taylor's (their own Stripe key): FORWARD-TO-TAYLOR.
 - Taking payment for a booking, reminders by text, syncing a Google
   Calendar: the calendar takes requests only. Say so.
 - File uploads through a form.

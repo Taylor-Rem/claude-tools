@@ -1,0 +1,36 @@
+#!/usr/bin/env python3
+"""A stand-in for `wrangler d1 execute` in the db tests: D1 is SQLite, so each
+database is a file in $FAKE_D1_DIR/<name>.sqlite and the output is shaped
+like wrangler's --json (one result object per statement). Every call is
+logged to $FAKE_D1_LOG. Nothing else of wrangler is imitated."""
+import json, os, sqlite3, sys
+from pathlib import Path
+
+args = sys.argv[1:]
+with open(os.environ["FAKE_D1_LOG"], "a") as f:
+    f.write(json.dumps({"args": args, "cwd": os.getcwd()}) + "\n")
+if args[:2] != ["d1", "execute"]:
+    print(f"fake wrangler: only d1 execute ({args})", file=sys.stderr); sys.exit(2)
+name = args[2]
+opt = {a.split("=", 1)[0]: a.split("=", 1)[1] for a in args if a.startswith("--") and "=" in a}
+sql = opt["--command"] if "--command" in opt else Path(opt["--file"]).read_text()
+where = "local" if "--local" in args else "remote"
+db = sqlite3.connect(Path(os.environ["FAKE_D1_DIR"]) / f"{name}.{where}.sqlite")
+db.row_factory = sqlite3.Row
+stmts, cur = [], ""
+for line in sql.splitlines(keepends=True):
+    cur += line
+    if sqlite3.complete_statement(cur):
+        stmts.append(cur.strip()); cur = ""
+if cur.strip():
+    stmts.append(cur.strip())
+out = []
+try:
+    for s in stmts:
+        c = db.execute(s)
+        rows = [dict(r) for r in c.fetchall()] if c.description else []
+        out.append({"results": rows, "success": True, "meta": {"changes": c.rowcount if c.rowcount > 0 else 0, "last_row_id": c.lastrowid}})
+    db.commit()
+except sqlite3.Error as e:
+    print(f"✘ [ERROR] {e}", file=sys.stderr); sys.exit(1)
+print(json.dumps(out))

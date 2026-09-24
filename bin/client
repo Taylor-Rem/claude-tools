@@ -130,6 +130,30 @@ def patch_built(slug, repo):
     return any(e.get("repo") == repo or name == repo for name, e in entries.items()) if entries else False
 
 
+def binding_problem(ws, repo, entry):
+    """A site with a database (sites.json `d1`) must bind exactly that database in
+    its repo's wrangler.toml, and a repo with functions/ must have one. None = fine."""
+    import tomllib
+    d = ws / "repos" / repo
+    d1 = (entry or {}).get("d1") or {}
+    if not d1.get("id"):
+        return "functions/ but no database in sites.json (site data " + repo + ")" if (d / "functions").is_dir() else None
+    p = d / "wrangler.toml"
+    if not p.exists():
+        return f"sites.json gives it D1 {d1.get('name')} but the repo has no wrangler.toml (site data {repo})"
+    try:
+        conf = tomllib.loads(p.read_text())
+    except tomllib.TOMLDecodeError as exc:
+        return f"wrangler.toml doesn't parse ({exc})"
+    for b in conf.get("d1_databases") or []:
+        if b.get("binding") == "DB":
+            if b.get("database_id") == d1["id"] and b.get("database_name") == d1.get("name"):
+                return None
+            return (f"wrangler.toml binds {b.get('database_name')} ({b.get('database_id')}), "
+                    f"sites.json says {d1.get('name')} ({d1['id']})")
+    return f"sites.json gives it D1 {d1.get('name')} but wrangler.toml has no DB binding"
+
+
 def site_urls(meta):
     """Every URL a client session may check: live_url, plus each site `site new`
     made for this workspace (its pages.dev address and any domain on it)."""
@@ -195,7 +219,7 @@ def render_claude_md(meta, notes=""):
         md = md.replace("{{LIVE_URL}}", "https://<the live site>/")   # no site yet: the example still reads
     for k in ("name", "slug", "live_url"):
         md = md.replace("{{" + k.upper() + "}}", meta.get(k) or "")
-    tools = ["`git -C repos/<name>`", "`img`", "`site`", "`shot`", "`newsletter`", "`gbp`", "`social`"]
+    tools = ["`git -C repos/<name>`", "`img`", "`site`", "`db`", "`shot`", "`newsletter`", "`gbp`", "`social`"]
     md = md.replace("{{TOOLS}}", ", ".join(tools))
     if meta.get("live_url"):
         check = f"`curl -s {meta['live_url']}PAGE` — no .html on the end, the host redirects those — is allowed; the change is there as soon as `site publish` says so"
@@ -257,6 +281,8 @@ def cmd_new(a):
             "live_url": a.live_url or old.get("live_url"),
             "sites": a.sites if a.sites is not None else tier_sites(a.tier) or old.get("sites", 1),   # the tier's count (plan 02); `site new` enforces it
             "auth": None if a.shared_key else (old.get("auth") or key_name(a.slug))}
+    if old.get("contact_email"):
+        meta["contact_email"] = old["contact_email"]      # `newsletter setup --contact` wrote it; a restamp keeps it
     stamp(ws, meta)
     print(f"{'restamped' if stamped else 'created'} {ws}")
     print(f"  repos: {', '.join(repos_of(ws)) or '(none yet — site new <slug> from inside it, or clone into repos/)'}"
@@ -334,6 +360,15 @@ def cmd_doctor(a):
                 probs.append("no CLAUDE.md")          # a repo that isn't a Patch-built site (James's app) is its owner's business
             print(f"  repo {r}: {'ok' if not probs else 'WARN ' + '; '.join(probs)}")
             ok = ok and not probs
+            try:
+                entry = json.loads(SITES.read_text()).get(ws.name, {}).get(r) if SITES.exists() else None
+            except ValueError:
+                entry = None
+            bad = binding_problem(ws, r, entry)
+            if bad:
+                print(f"  FAIL repo {r}: database binding: {bad}"); ok = False
+            elif (entry or {}).get("d1"):
+                print(f"  repo {r}: database {entry['d1']['name']} bound as DB (db doctor checks the rest)")
         m = read_meta(ws)
         rv = relay_view(ws.name, relay_config())
         if rv is None:

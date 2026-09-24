@@ -30,8 +30,8 @@ how to change it, and how to check a change is live.
 - **No trackers, no analytics, no cookie banners, no checkout.** The only
   forms allowed are the ones that post to patchlamp.com (`newsletter form`
   prints the sign-up box; contact/booking forms follow the workspace
-  `PLAYBOOK.md`) — nothing on this site ever stores visitor information
-  itself.
+  `PLAYBOOK.md`) or, once the site has a database, to its own `/api/…`
+  (below) — nothing else on this site stores visitor information.
 - Placeholder content is marked with `REPLACE-ME` comments. Placeholders
   must look like placeholders; never invent facts, prices, hours, or quotes.
 
@@ -92,6 +92,30 @@ publish again. Never force-push, never rewrite history. This is standing
 permission from Taylor: don't ask "should I push?" for anything the client
 asked for. Do stop if a change would break a rule in this file or delete
 something the request didn't clearly ask to delete.
+
+## The server side (only once the site has a database)
+
+A site gets a database with `site data {{REPO}}` (PLAYBOOK § Data). Then
+this repo also holds:
+
+- `wrangler.toml` — the binding to this site's own D1 database (`DB`) and
+  a few plain settings. Written by `site`; don't edit the binding (`client
+  doctor` fails if it stops matching the registry).
+- `migrations/NNNN_*.sql` — the tables, applied in order by `db migrate`.
+  Never edit one that's applied; add the next number.
+- `functions/` — plain JavaScript that Cloudflare runs for `/admin/*` and
+  `/api/*` only; every other page stays a static file. `_lib/core.js` is
+  shared (the owner's sign-in, page layout); `admin/` is the owner's
+  console; `api/<collection>.js` takes a form's posts; `_admin/<name>.js`
+  says how `/admin/<name>` shows a list (title, columns, statuses) and
+  `_admin/collections.js` lists them. Add a collection with `db add`,
+  change a list's title or columns in its `_admin` file, nothing else by
+  hand without a reason. No packages, no build step, no secrets in these
+  files (the sign-in secret and owner address are Pages secrets).
+
+`site publish` deploys all of it together, so what's live is what's in
+git. A new migration goes live with `db migrate` *before* the publish that
+needs it. `/admin` pages are never indexed and never cached.
 
 ## Hosting (for Taylor)
 

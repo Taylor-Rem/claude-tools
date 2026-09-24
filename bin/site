@@ -10,7 +10,8 @@ click per client; a custom domain is one API call plus two DNS lines. The
 older GitHub Pages path is still here behind `--gh-pages` / for repos made
 before 2026-09-16 and goes away once Bleu Grave has moved.
 
-  site new <name> [--tagline "…"] [--primary] [--no-wait] [--dry-run] [--gh-pages]
+  site new <name> [--tagline "…"] [--primary] [--db [--owner EMAIL]] [--no-wait] [--dry-run] [--gh-pages]
+  site data <name> [--owner EMAIL] [--dry-run]   # give a site its own database + /admin (PLAYBOOK § Data)
   site publish [<name>] [--dry-run]    # HEAD of ./repos/<name> -> its Pages project (must be committed + pushed)
   site ls                              # repos in ./repos with where they're served
   site domain <name> [example.com]     # custom domain on the project + the DNS lines   (SITE_ADMIN=1)
@@ -29,8 +30,21 @@ recorded in ~/.config/claude-tools/sites.json by `site new` / `site adopt`
 client's project. domain, adopt, transfer and retire are Taylor's work: they refuse
 unless SITE_ADMIN=1 is in the environment, which a client session can't set.
 
+The data layer (plan 12 § B29): `site data` (or `new --db`) creates one
+Cloudflare D1 database named after the Pages project, records its id in the
+registry, writes the binding into the repo's wrangler.toml, copies the
+Functions shell (functions/: the owner's /admin with a magic-link sign-in,
+the /api/* pattern) and migrations/ from templates/site, sets the Pages
+secrets SESSION_SECRET (random, never printed) and ADMIN_EMAIL, registers the
+owner as the project's contact on patchlamp.com (the sign-in link is emailed
+through its form endpoint, so the site holds no mail key), applies the
+migrations (`db migrate`), commits, pushes and publishes. `site publish`
+then deploys functions/ and wrangler.toml beside the static files, which stay
+static: Pages runs a Function only for the paths functions/ has. `db` is the
+tool for the database itself.
+
 Config, by name, never printed:
-  CLOUDFLARE_API_TOKEN   ~/.config/claude-tools/env — Account: Cloudflare Pages Edit
+  CLOUDFLARE_API_TOKEN   ~/.config/claude-tools/env — Account: Cloudflare Pages Edit (+ D1 Edit for the data layer)
   CLOUDFLARE_ACCOUNT_ID  same file. Both required for new/publish/domain.
   GITHUB_TOKEN   passed to gh as GH_TOKEN; when absent, gh's own login is used.
   SITE_ORG       the GitHub owner repos are created under (`setenv.sh SITE_ORG`).
@@ -62,7 +76,12 @@ CF_API = "https://api.cloudflare.com/client/v4"
 REGISTRY = ENV_FILE.parent / "sites.json"          # slug -> repo -> {host, project, domains}; not in any workspace
 WRANGLER = HERE / "node_modules" / ".bin" / "wrangler"
 NON_SITE = {"CLAUDE.md", "README.md", ".claude", "tools", ".gitignore", ".nojekyll",
-            "CNAME", ".github", "version.json", "shots"}   # in the repo, not on the site
+            "CNAME", ".github", "version.json", "shots",
+            "functions", "migrations", "wrangler.toml", ".dev.vars", ".wrangler"}   # in the repo, not on the site
+DATA_PARTS = ("functions", "migrations")          # in templates/site, copied only for a site with a database
+DB_BIN = HERE / "bin" / "db"
+NEWSLETTER_BIN = HERE / "bin" / "newsletter"
+COMPAT_DATE = "2026-09-01"                        # Workers runtime date for the site's Functions
 DRY = False
 
 
@@ -380,7 +399,7 @@ def site_register(meta, name, project, domains=None):
     return row
 
 
-def wrangler(*args, env_extra=None):
+def wrangler(*args, env_extra=None, cwd=None):
     """Run wrangler from claude-tools' node_modules with the Cloudflare creds in
     its environment (never on the command line). Returns (code, output)."""
     if not WRANGLER.exists():
@@ -394,19 +413,31 @@ def wrangler(*args, env_extra=None):
     if DRY:
         say("  would run: wrangler " + " ".join(args))
         return 0, ""
-    r = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=str(HERE))
+    r = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=str(cwd or HERE))
     return r.returncode, (r.stdout + "\n" + r.stderr).strip()
 
 
-def export_tree(repo, dest):
+def export_tree(repo, dest, server=None):
     """The committed tree of HEAD, minus the files that are about the repo
     rather than on the site. The working copy is never published: what's
-    served is exactly what's in git."""
+    served is exactly what's in git. With `server` (a directory), a site with
+    a database is laid out the way `wrangler pages deploy` wants it:
+    server/functions/ and server/wrangler.toml beside dest (the static files),
+    and never inside it — the Functions' source and the migrations are not
+    pages."""
     archive = subprocess.run(["git", "-C", str(repo), "archive", "--format=tar", "HEAD"],
                              capture_output=True)
     if archive.returncode != 0:
         die(f"git archive failed: {archive.stderr.decode().strip()}")
     subprocess.run(["tar", "-x", "-C", str(dest)], input=archive.stdout, check=True)
+    if server is not None and (dest / "functions").is_dir():
+        shutil.move(str(dest / "functions"), str(server / "functions"))
+        toml = (dest / "wrangler.toml").read_text() if (dest / "wrangler.toml").exists() else ""
+        rel = os.path.relpath(dest, server)
+        toml = re.sub(r'(?m)^pages_build_output_dir\s*=.*$', f'pages_build_output_dir = "{rel}"', toml)
+        if "pages_build_output_dir" not in toml:
+            toml = f'pages_build_output_dir = "{rel}"\n' + toml
+        (server / "wrangler.toml").write_text(toml)
     for name in NON_SITE:
         p = dest / name
         if p.is_dir():
@@ -466,6 +497,11 @@ def cmd_new(a):
             f"Standard and up — tell the client plainly and FORWARD-TO-TAYLOR it (PLAYBOOK.md 'A second "
             f"website'). Taylor: SITE_ADMIN=1 site new {name}, or client new {meta['slug']} --restamp --sites N.")
     cloudflare = not a.gh_pages
+    if a.db and not cloudflare:
+        die("--db needs a Cloudflare site (the database is bound to the Pages project); drop --gh-pages")
+    if a.db and not DRY:
+        d1_check()                                   # the token must manage D1 before anything is made
+        data_owner(ws, meta, a.owner)
     if cloudflare:
         cf_creds()                                   # fail before creating anything
         if cf_project(name):
@@ -484,6 +520,8 @@ def cmd_new(a):
         say(f"  would clone it to repos/{name}, fill {', '.join(f'{{{{{k}}}}}' for k in values)}")
         if cloudflare:
             say(f"  would create Cloudflare Pages project {name}, register it, publish, and expect {url}")
+        if a.db:
+            say(f"  would give it a database: site data {name}" + (f" --owner {a.owner}" if a.owner else ""))
         else:
             say(f"  would enable GitHub Pages from main:/ and expect {url}")
         set_live_url(ws, meta, url, a.primary)
@@ -498,7 +536,8 @@ def cmd_new(a):
 
     # 2. the files, from the local template, placeholders filled before the first commit
     (ws / "repos").mkdir(exist_ok=True)
-    shutil.copytree(TEMPLATE_DIR, dest, symlinks=False)
+    shutil.copytree(TEMPLATE_DIR, dest, symlinks=False,
+                    ignore=lambda d, names: [n for n in names if Path(d) == TEMPLATE_DIR and n in DATA_PARTS])
     unfilled = []
     for p in dest.rglob("*"):
         if not p.is_file() or ".git" in p.parts[len(dest.parts):][:1]:
@@ -546,7 +585,9 @@ def cmd_new(a):
     set_live_url(ws, meta, url, a.primary)
     restamp(ws, meta)
 
-    # 6. publish / is it up?
+    # 6. the data layer, then publish / is it up?
+    if a.db:
+        enable_data(ws, name, a.owner)
     if cloudflare:
         cmd_publish(argparse.Namespace(name=name, dry_run=False))
         live = True
@@ -593,15 +634,23 @@ def cmd_publish(a):
         die(f"repos/{name} has unpushed commits; git -C repos/{name} push first, then publish")
     _, sha = git(d, "rev-parse", "--short", "HEAD", check=False)
     _, subject = git(d, "log", "-1", "--format=%s", check=False)
+    server = (d / "functions").is_dir()
+    if server:
+        problem = binding_problem(d, entry)
+        if problem:
+            die(f"repos/{name} has functions/ but {problem}. `site data {name}` sets the database up; "
+                f"`client doctor` / `db doctor` say what's off.")
 
     cf_ensure_project(project)
     with tempfile.TemporaryDirectory(prefix=f"site-publish-{name}-") as tmp:
-        out = Path(tmp) / "site"
+        root = Path(tmp)
+        out = root / "public"
         out.mkdir()
-        n = export_tree(d, out)
-        say(f"publishing repos/{name} @ {sha} ({n} files) -> {project}")
+        n = export_tree(d, out, server=root if server else None)
+        say(f"publishing repos/{name} @ {sha} ({n} files{', with its Functions and database binding' if server else ''}) -> {project}")
         code, log = wrangler("pages", "deploy", str(out), "--project-name", project, "--branch", "main",
-                             "--commit-hash", sha, "--commit-message", subject[:200], "--commit-dirty=false")
+                             "--commit-hash", sha, "--commit-message", subject[:200], "--commit-dirty=false",
+                             cwd=root)
     if DRY:
         say("dry run: nothing published")
         return
@@ -627,6 +676,199 @@ def cmd_publish(a):
     if live:
         say(f"  live:       {live}  (custom domain; the same deployment)")
     say(f"published {name} @ {sha}: {subject}")
+
+
+# ---------------------------------------------------------------- the data layer (B29)
+
+def d1_check():
+    """Die with the TODO pointer unless the token can manage D1."""
+    try:
+        cf_api("GET", "/d1/database?per_page=1")
+    except SystemExit:
+        die("the toolbelt's Cloudflare token can't manage D1 databases yet (it needs Account · D1 · Edit "
+            "beside Pages Edit): TAYLOR-TODO §1 \"Give the Cloudflare token D1\". Nothing was created.")
+
+
+def data_owner(ws, meta, owner):
+    """The one address that signs in to /admin: --owner, else the workspace's contact."""
+    owner = (owner or meta.get("contact_email") or "").strip().lower()
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[a-z]{2,}$", owner):
+        die("who signs in to /admin? --owner EMAIL (the owner's address; the sign-in link is emailed there "
+            "and it becomes the site's contact address on patchlamp.com)")
+    return owner
+
+
+def wrangler_toml(project, meta, db_name, db_id):
+    return f"""# Written by `site data` (claude-tools). The database binding must match the
+# site registry (`client doctor` and `db doctor` check it): change it only
+# through `site`. `site publish` deploys this file with functions/, so what is
+# bound is what's in git. Local preview with a local database:
+# `wrangler pages dev` in this folder (secrets for it go in .dev.vars, which is
+# never committed); `db --local …` works on the same copy.
+name = {json.dumps(project)}
+pages_build_output_dir = "."
+compatibility_date = "{COMPAT_DATE}"
+
+[vars]
+PATCHLAMP_SLUG = {json.dumps(meta["slug"])}
+PATCHLAMP_URL = "https://patchlamp.com"
+SITE_NAME = {json.dumps(meta["name"])}
+TIMEZONE = "America/Denver"
+
+[[d1_databases]]
+binding = "DB"
+database_name = {json.dumps(db_name)}
+database_id = {json.dumps(db_id)}
+"""
+
+
+def binding_problem(repo, entry):
+    """None when repo/wrangler.toml binds DB to the registry's database; else what's wrong."""
+    d1 = (entry or {}).get("d1") or {}
+    if not d1.get("id"):
+        return "the registry has no database for it"
+    p = repo / "wrangler.toml"
+    if not p.exists():
+        return "there is no wrangler.toml"
+    import tomllib
+    try:
+        conf = tomllib.loads(p.read_text())
+    except tomllib.TOMLDecodeError as exc:
+        return f"wrangler.toml doesn't parse ({exc})"
+    for b in conf.get("d1_databases") or []:
+        if b.get("binding") == "DB":
+            if b.get("database_id") != d1["id"] or b.get("database_name") != d1.get("name"):
+                return (f"wrangler.toml binds {b.get('database_name')} ({b.get('database_id')}) and the registry "
+                        f"says {d1.get('name')} ({d1['id']})")
+            return None
+    return "wrangler.toml has no DB binding"
+
+
+def ensure_d1(db_name):
+    """(id, created?) for the D1 database with this name, made on first use."""
+    found = [x for x in (cf_api("GET", f"/d1/database?name={db_name}") or []) if x.get("name") == db_name]
+    if found:
+        return found[0]["uuid"], False
+    res = cf_api("POST", "/d1/database", {"name": db_name, "primary_location_hint": "wnam"})
+    return (res or {}).get("uuid") or "(dry-run)", True
+
+
+def set_secrets(project, owner):
+    """SESSION_SECRET (made here, once, never printed) and ADMIN_EMAIL on the Pages project."""
+    p = cf_project(project) or {}
+    have = ((p.get("deployment_configs") or {}).get("production") or {}).get("env_vars") or {}
+    env = {"ADMIN_EMAIL": {"type": "secret_text", "value": owner}}
+    if "SESSION_SECRET" not in have:
+        import secrets
+        env["SESSION_SECRET"] = {"type": "secret_text", "value": secrets.token_hex(32)}
+    cf_api("PATCH", f"/pages/projects/{project}",
+           {"deployment_configs": {"production": {"env_vars": env}, "preview": {"env_vars": env}}})
+    return sorted(env)
+
+
+def enable_data(ws, name, owner=None, dry=False):
+    """Give ./repos/<name> its own D1 database and the /admin shell. Safe to re-run:
+    an existing database, files and session secret are kept."""
+    _, meta = workspace()                          # fresh: `newsletter setup` may have written contact_email
+    d = repo_dir(ws, name)
+    entry = site_entry(meta, name)
+    if not entry or entry.get("host") != "cloudflare":
+        die(f"repos/{name} isn't a Cloudflare site in the registry; a database needs one (SITE_ADMIN=1 site adopt {name})")
+    project = entry["project"]
+    owner = data_owner(ws, meta, owner)
+    if not dry:
+        d1_check()
+    say(f"site data {name}: a database for {meta['name']} on Pages project {project}, /admin for {owner}")
+
+    # 1. the database
+    db_name = (entry.get("d1") or {}).get("name") or project
+    if dry:
+        say(f"  would find or create D1 database {db_name} and record its id in {REGISTRY}")
+        db_id = (entry.get("d1") or {}).get("id") or "<new id>"
+    else:
+        db_id, made = ensure_d1(db_name)
+        say(f"  {'created' if made else 'found'} D1 database {db_name} ({db_id})")
+        reg = registry_load()
+        reg.setdefault(meta["slug"], {}).setdefault(name, {})["d1"] = {"name": db_name, "id": db_id, "owner": owner}
+        registry_save(reg)
+
+    # 2. the files: the Functions shell and the first migration (never overwriting), the binding
+    written = []
+    for part in DATA_PARTS:
+        for f in sorted((TEMPLATE_DIR / part).rglob("*")):
+            if not f.is_file():
+                continue
+            dest = d / f.relative_to(TEMPLATE_DIR)
+            if dest.exists():
+                continue
+            if not dry:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy(f, dest)
+            written.append(str(dest.relative_to(d)))
+    toml = wrangler_toml(project, meta, db_name, db_id)
+    if not (d / "wrangler.toml").exists() or binding_problem(d, {"d1": {"name": db_name, "id": db_id}}):
+        if not dry:
+            (d / "wrangler.toml").write_text(toml)
+        written.append("wrangler.toml")
+    gi = d / ".gitignore"
+    lines = gi.read_text().splitlines() if gi.exists() else []
+    extra = [x for x in (".wrangler/", ".dev.vars") if x not in lines]
+    if extra:
+        if not dry:
+            gi.write_text("\n".join(lines + extra) + "\n")
+        written.append(".gitignore")
+    say(f"  {'would write' if dry else 'wrote'} in repos/{name}: {', '.join(written) or 'nothing (all there)'}")
+
+    # 3. the owner: patchlamp.com's contact for this project is where the sign-in link goes
+    cmd = [str(NEWSLETTER_BIN), "setup", "--contact", owner]
+    if dry:
+        say(f"  would run: newsletter setup --contact {owner}   (the sign-in email's address)")
+        say(f"  would set Pages secrets SESSION_SECRET (random, never shown) and ADMIN_EMAIL on {project}")
+        say(f"  would run: db migrate, then commit, push and publish")
+        return
+    r = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ws))
+    if r.returncode != 0:
+        say(f"  WARN newsletter setup failed ({(r.stderr or r.stdout).strip()[:200]}): the sign-in email has "
+            f"nowhere to go until `newsletter setup --contact {owner}` works")
+    else:
+        say(f"  patchlamp.com: {meta['slug']} registered, contact {owner} (the sign-in link is emailed there)")
+
+    # 4. secrets
+    names = set_secrets(project, owner)
+    say(f"  Pages secrets set on {project}: {', '.join(names)} (values never shown)")
+
+    # 5. tables
+    r = subprocess.run([str(DB_BIN), "migrate", "--site", name], capture_output=True, text=True, cwd=str(ws))
+    say("  " + (r.stdout.strip() or r.stderr.strip()).replace("\n", "\n  "))
+    if r.returncode != 0:
+        die("db migrate failed; fix that, then run `site data` again (it keeps what's done)")
+
+    # 6. commit + push (publish is the caller's next step)
+    git(d, "add", "-A", "functions", "migrations", "wrangler.toml", ".gitignore")
+    _, staged = git(d, "diff", "--cached", "--name-only", check=False)
+    if staged.strip():
+        git(d, "-c", "user.name=Patch (claude-tools site)", "-c", "user.email=noreply@anthropic.com",
+            "commit", "-q", "-m", "A database for the site: /admin with an emailed sign-in link, migrations, the D1 binding")
+        git(d, "push", "-q")
+        say(f"  committed and pushed repos/{name}")
+
+
+def cmd_data(a):
+    global DRY
+    DRY = a.dry_run
+    ws, meta = workspace()
+    enable_data(ws, a.name, a.owner, dry=a.dry_run)
+    if a.dry_run:
+        say("dry run: nothing created")
+        return
+    cmd_publish(argparse.Namespace(name=a.name, dry_run=False))
+    entry = site_entry(workspace()[1], a.name) or {}
+    url = f"https://{entry.get('project', a.name)}.pages.dev/"
+    say()
+    say(f"database: D1 {(entry.get('d1') or {}).get('name')} bound as DB; `db doctor` checks it")
+    say(f"admin:    {url}admin (the owner types their email and gets a one-time link)")
+    say(f"next:     db add submissions (a form's posts in a list) or db add records (a list the owner keeps); "
+        f"db collections shows them all")
 
 
 def cmd_adopt(a):
@@ -1096,6 +1338,12 @@ def cmd_doctor(a):
             fail("Cloudflare token or account id is refused (see the line above)")
         say(f"  wrangler: {'present' if WRANGLER.exists() else 'MISSING (claude-tools/install.sh)'}")
         say(f"  registry: {REGISTRY} ({sum(len(v) for v in registry_load().values())} site(s))")
+        try:
+            cf_api("GET", "/d1/database?per_page=1")
+            say("  D1: the token can manage databases (site data / --db)")
+        except SystemExit:
+            say("  note: the token can't manage D1 yet, so `site data` / `--db` refuse "
+                "(TAYLOR-TODO §1 \"Give the Cloudflare token D1\")")
     if (Path.cwd() / ".client.json").exists():
         ws, meta = workspace()
         say(f"== workspace {meta['slug']} ({meta['name']}) live_url={meta.get('live_url') or '-'}")
@@ -1114,6 +1362,9 @@ def cmd_doctor(a):
                 cc = curl_header(url, "Cache-Control")
                 say(f"  repos/{n}: {slug} -> {url} last publish {(dep.get('created_on') or '-')[:19]} "
                     f"Cache-Control: {cc or '-'}")
+                if entry.get("d1") or (d / "functions").is_dir():
+                    problem = binding_problem(d, entry)
+                    (fail if problem else say)(f"  repos/{n}: database " + (problem or f"{entry['d1']['name']} bound as DB (db doctor for the rest)"))
                 if cc and "no-cache" not in cc and "max-age=0" not in cc:
                     fail(f"repos/{n}: HTML is cacheable (copy templates/site/_headers into the repo root)")
                 for dm in cf_domains(proj):
@@ -1147,7 +1398,14 @@ def main():
     n.add_argument("--no-wait", action="store_true", help="don't wait for the first Pages build")
     n.add_argument("--dry-run", action="store_true", help="check everything and print the plan; create nothing")
     n.add_argument("--gh-pages", action="store_true", help="serve from GitHub Pages instead of Cloudflare (legacy)")
+    n.add_argument("--db", action="store_true", help="give it its own database and /admin (site data) before the first publish")
+    n.add_argument("--owner", help="with --db: the email that signs in to /admin (default: the workspace's contact)")
     n.set_defaults(fn=cmd_new)
+    dt = sub.add_parser("data", help="give a site its own D1 database, /admin with an emailed sign-in, and the Functions shell")
+    dt.add_argument("name", help="repo name under ./repos")
+    dt.add_argument("--owner", help="the email that signs in to /admin (default: the workspace's contact)")
+    dt.add_argument("--dry-run", action="store_true")
+    dt.set_defaults(fn=cmd_data)
     pb = sub.add_parser("publish", help="HEAD of ./repos/<name> -> its Cloudflare Pages project (commit + push first)")
     pb.add_argument("name", nargs="?", help="repo name under ./repos (optional when there is one)")
     pb.add_argument("--dry-run", action="store_true")

@@ -1,0 +1,4 @@
+{
+  "status": "ready",
+  "summary": "what people send from a form on the site (quote requests, contact, bookings by message), kept in a list on /admin, still emailed to the owner"
+}

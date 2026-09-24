@@ -95,8 +95,100 @@ us from the site", "an RSVP".
 **Afterwards:** "did anyone fill in the form" → `newsletter forms` (or
 `--form booking`). Read them what came in.
 
-**What you can't do:** file uploads, payments, a calendar, anything that
-needs a login. Say so and FORWARD-TO-TAYLOR.
+**What you can't do:** file uploads, payments, a calendar. If they want
+to *see* what came in themselves, in a list, that's the next page (Data).
+Say so for the rest and FORWARD-TO-TAYLOR.
+
+---
+
+## Data: a list they can see and sign in to
+
+**When they ask:** "keep quote requests in a list I can see", "let me log
+in to see them", "I want to see my customers", "keep a list of our jobs",
+"somewhere I can mark who I've called back".
+
+**When it's the right tool.** A form on its own is *not* a reason — the
+page above already emails each post and `newsletter forms` reads them back.
+Give the site a database when they want a list they look at themselves, a
+queue they work through (new, replied, done), or a record they keep
+(customers, jobs). One database per site, the site's own: nobody else's
+site can reach it, and it goes with the site if they ever leave.
+
+**What to say:**
+
+> Easy. Everything people send through your form will go into a private
+> list on your site that only you can open: go to <live url>admin, type
+> your email, and you'll get a link that signs you in. You can mark each
+> one replied or done and add notes; you'll still get the email for each
+> one too.
+
+**What it costs them:** nothing extra — it's part of the plan.
+
+**What to run** (from the workspace root):
+
+1. No database on the site yet: `site data <name> --owner <their email>`.
+   It makes the database, puts the sign-in page at `/admin` for that one
+   address, makes that address the one form emails go to, and publishes.
+   Re-running it is safe (a new `--owner` changes who signs in). If it
+   says the Cloudflare token can't manage databases, tell them it needs
+   Taylor for a moment and `FORWARD-TO-TAYLOR: <client> wants <the list>;
+   site data is blocked on the token`.
+2. The list: `db add submissions` for what a form sends; `db add records`
+   for a list they keep by hand (customers, jobs). `db collections` shows
+   what exists; one marked *scaffold* is not built yet — don't offer it.
+   `db add` prints the form to use and the collection's README says the
+   rest.
+3. Point the form at the site: the form's `action` becomes
+   `/api/submissions`, with `<input type="hidden" name="_form"
+   value="quote">` (their word for it). Keep the field names and the
+   `website` honeypot. Rename the list to their word: `title` in
+   `repos/<name>/functions/_admin/submissions.js` ("Quote requests").
+4. `shot`, commit, push, `site publish <name>`.
+5. Prove it on the live site: `curl -s <live url>api/submissions -X POST
+   -H 'accept: application/json' -d _form=quote -d name="Test from Patch"
+   -d message=test` answers `{"ok":true,…}`; `db query "SELECT id, name,
+   created_at FROM submissions ORDER BY id DESC LIMIT 3"` shows it; then
+   `db exec "DELETE FROM submissions WHERE name = 'Test from Patch'"`.
+   `db doctor` must be green.
+
+Then tell them the address (`<live url>admin`) and that the link comes to
+their email, works once, for 15 minutes.
+
+**Afterwards, on request:**
+
+- "what came in this week?" → `db query "SELECT id, created_at, name,
+  email, message, status FROM submissions ORDER BY id DESC LIMIT 20"` and
+  read it to them in plain words.
+- "mark the Johnson one done" → `db exec "UPDATE submissions SET
+  status = 'done' WHERE id = <id>"` (they can do it on `/admin` too).
+- "a list of my customers" → `db add records`, then a named list as the
+  records README says (a copy of the view with `filter: { kind:
+  "customer" }`).
+- a spreadsheet of customers they already have → `db import records
+  incoming/<file>.csv` (the header row must match the columns; `--dry-run`
+  first).
+- "send me all of it" / "I'm moving the site" → `db export`, then
+  `SEND-FILE: exports/<date>/<table>.csv | everything in <list>`. The CSVs
+  and JSON are the handover.
+- "I can't get in" → the link goes to the owner address only (`db
+  doctor` shows it), works once, for 15 minutes; check spam. A new
+  address is `site data <name> --owner <new>`.
+
+**What you can't do (say so plainly, offer the nearest thing):**
+
+- A login for *their* customers or members (accounts, a members' area):
+  not yet. FORWARD-TO-TAYLOR if they need it.
+- More than one person signing in to `/admin`: one owner address for now.
+- Online payments, a store, a booking calendar: being built, not offered
+  yet. FORWARD-TO-TAYLOR.
+- File uploads through a form.
+- Wiping the list: `db exec` refuses DROP and a DELETE with no WHERE
+  unless `--yes`. Only when the owner asked for exactly that, and `db
+  export` first.
+
+**Rules.** What's in the database is the owner's customers' details: read
+it only to the owner, never put it on a public page, never paste it into
+a post. Exports stay in this workspace and go only to the owner.
 
 ---
 

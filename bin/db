@@ -1,0 +1,691 @@
+#!/usr/bin/env python3
+"""db — a client site's own database (Cloudflare D1), run from inside a client workspace.
+
+A site that needs more than pages (a quote queue the owner reads on /admin,
+a customer list, bookings) gets one D1 database, bound to that site's own
+Pages project, by `site data <name>` (or `site new <name> --db`). This tool
+is how Patch works with it. It only ever touches the database of a site in
+*this* workspace: which one comes from the site registry
+(~/.config/claude-tools/sites.json, written by `site`, outside any
+workspace), never from an argument.
+
+  db migrate [--dry-run]                 # apply repos/<site>/migrations/*.sql not yet applied, in order
+  db query "SELECT …" [--json]           # read (SELECT / WITH / PRAGMA / EXPLAIN only)
+  db exec "UPDATE …" [--yes] [--dry-run] # write; DROP, and DELETE with no WHERE, need --yes
+  db export                              # every table -> exports/<date>/<table>.csv + .json (the handover)
+  db import TABLE FILE.csv|FILE.json [--dry-run]
+  db add COLLECTION [--no-migrate]       # a standard collection: migration + Function + /admin view
+  db collections                         # what can be added, what this site has
+  db doctor                              # token, binding, migrations applied, secrets, /admin wiring
+
+Every command takes --site NAME when the workspace has more than one site
+with a database, and --local to work on the local copy `wrangler pages dev`
+uses (repos/<site>/.wrangler/, for trying a change before it goes live).
+Collections live in claude-tools/templates/collections/<name>/ (a README
+each); PLAYBOOK.md § Data is when to use which.
+
+Migrations are recorded in `d1_migrations`, the table wrangler's own
+`d1 migrations apply` uses, so whoever takes the repo over can keep going
+with plain wrangler.
+
+Config, by name, never printed:
+  CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID   ~/.config/claude-tools/env (Account: D1 Edit)
+  DB_WRANGLER   tests only: a stand-in for wrangler
+"""
+
+import argparse
+import csv
+import datetime
+import io
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import tomllib
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent.parent
+ENV_FILE = Path(os.environ.get("CLAUDE_TOOLS_ENV", Path.home() / ".config/claude-tools/env"))
+REGISTRY = ENV_FILE.parent / "sites.json"
+COLLECTIONS = HERE / "templates" / "collections"
+WRANGLER = Path(os.environ.get("DB_WRANGLER") or HERE / "node_modules" / ".bin" / "wrangler")
+FAKE = bool(os.environ.get("DB_WRANGLER"))
+CF_API = "https://api.cloudflare.com/client/v4"
+SYSTEM_TABLES = ("d1_migrations", "admin_tokens", "admin_sessions")   # infrastructure, not the owner's data
+READ_START = ("select", "with", "pragma", "explain")
+WRITE_WORDS = re.compile(r"\b(insert|update|delete|drop|alter|create|replace|attach|detach|vacuum|reindex)\b", re.I)
+MIGRATIONS_TABLE = ("CREATE TABLE IF NOT EXISTS d1_migrations(id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                    "name TEXT UNIQUE, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL);")
+
+
+def die(msg, code=1):
+    print(f"db: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def say(msg=""):
+    print(msg, flush=True)
+
+
+def read_env():
+    keys = {}
+    if ENV_FILE.exists():
+        for line in ENV_FILE.read_text().splitlines():
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                keys[k.strip()] = v.strip()
+    return keys
+
+
+def cf_creds():
+    env = read_env()
+    return (os.environ.get("CLOUDFLARE_API_TOKEN") or env.get("CLOUDFLARE_API_TOKEN"),
+            os.environ.get("CLOUDFLARE_ACCOUNT_ID") or env.get("CLOUDFLARE_ACCOUNT_ID"))
+
+
+def cf_get(path):
+    """GET on the account; (status, result or error text). Never raises."""
+    tok, acct = cf_creds()
+    if not (tok and acct):
+        return 0, "CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID are not in the toolbelt"
+    req = urllib.request.Request(f"{CF_API}/accounts/{acct}{path}", headers={
+        "Authorization": f"Bearer {tok}", "User-Agent": "claude-tools db"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return r.status, json.loads(r.read().decode()).get("result")
+    except urllib.error.HTTPError as exc:
+        try:
+            errs = json.loads(exc.read().decode()).get("errors", [])
+            return exc.code, "; ".join(str(e.get("message")) for e in errs) or f"HTTP {exc.code}"
+        except ValueError:
+            return exc.code, f"HTTP {exc.code}"
+    except (urllib.error.URLError, OSError) as exc:
+        return 0, str(exc)
+
+
+# ---------------------------------------------------------------- where we are
+
+class Site:
+    """The one site (and so the one database) this command works on."""
+
+    def __init__(self, ws, meta, name, row):
+        self.ws, self.meta, self.name, self.row = ws, meta, name, row
+        self.repo = ws / "repos" / name
+        self.d1 = row.get("d1") or {}
+        self.db_name = self.d1.get("name")
+        self.project = row.get("project")
+
+
+def workspace():
+    ws = Path.cwd()
+    p = ws / ".client.json"
+    if not p.exists():
+        die("not in a client workspace (no .client.json here). Run this from ~/projects/clients/<slug>.")
+    try:
+        meta = json.loads(p.read_text())
+    except ValueError as exc:
+        die(f".client.json is not valid JSON: {exc}")
+    if not meta.get("slug"):
+        die(".client.json has no slug")
+    return ws, meta
+
+
+def registry():
+    try:
+        return json.loads(REGISTRY.read_text()) if REGISTRY.exists() else {}
+    except ValueError:
+        die(f"{REGISTRY} is not valid JSON")
+
+
+def the_site(a, need=True):
+    ws, meta = workspace()
+    mine = registry().get(meta["slug"], {})
+    with_db = {n: r for n, r in mine.items() if (r.get("d1") or {}).get("name")}
+    if a.site:
+        if a.site not in mine:
+            die(f"{a.site!r} isn't one of this workspace's sites ({', '.join(sorted(mine)) or 'none'})")
+        if a.site not in with_db:
+            die(f"{a.site} has no database yet: `site data {a.site}` adds one (PLAYBOOK.md § Data)")
+        name = a.site
+    elif not with_db:
+        if not need:
+            return None
+        die("no site in this workspace has a database yet. A form alone doesn't need one; a list the "
+            "owner reads, a queue, a catalog does: `site data <site>` (PLAYBOOK.md § Data).")
+    elif len(with_db) > 1:
+        die(f"more than one site here has a database ({', '.join(sorted(with_db))}); say which with --site NAME")
+    else:
+        name = next(iter(with_db))
+    s = Site(ws, meta, name, with_db[name])
+    if not (s.repo / ".git").exists():
+        die(f"repos/{name} is not here (the registry has it; clone it back or ask Taylor)")
+    return s
+
+
+# ---------------------------------------------------------------- wrangler d1
+
+def wrangler_env(local=False):
+    env = dict(os.environ)
+    if not FAKE and not local:
+        tok, acct = cf_creds()
+        if not (tok and acct):
+            die("CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID are not in the toolbelt (Taylor: setenv.sh)")
+        env.update({"CLOUDFLARE_API_TOKEN": tok, "CLOUDFLARE_ACCOUNT_ID": acct})
+    env.update({"WRANGLER_SEND_METRICS": "false", "CI": "1", "NO_COLOR": "1"})
+    return env
+
+
+def d1(site, local, *, command=None, file=None):
+    """Run SQL on the site's database; the list of per-statement results."""
+    if not WRANGLER.exists():
+        die(f"wrangler is not installed at {WRANGLER} (claude-tools/install.sh)")
+    args = [str(WRANGLER), "d1", "execute", site.db_name, "--local" if local else "--remote", "--json", "--yes"]
+    # --command=… in one word: SQL that starts with a `--` comment would otherwise be read as flags
+    args += [f"--command={command}"] if command is not None else [f"--file={file}"]
+    r = subprocess.run(args, capture_output=True, text=True, env=wrangler_env(local), cwd=str(site.repo))
+    if r.returncode != 0:
+        msg = (r.stderr.strip() or r.stdout.strip()).splitlines()
+        text = "\n".join(line for line in msg if line.strip())[-800:]
+        if "Authentication error" in text or "10000" in text:
+            die("Cloudflare refused the D1 call: the toolbelt token has no D1 permission "
+                "(TAYLOR-TODO §1 \"Give the Cloudflare token D1\")")
+        die(f"the database refused it:\n{text}")
+    try:
+        out = json.loads(r.stdout)
+    except ValueError:
+        die(f"wrangler said something that isn't JSON:\n{r.stdout[-500:]}")
+    return out if isinstance(out, list) else [out]
+
+
+def rows_of(results):
+    rows = []
+    for res in results:
+        rows.extend(res.get("results") or [])
+    return rows
+
+
+def run_sql(site, local, sql):
+    """Many statements in one wrangler call: as --command (one batch), or through a
+    file when it's too long for a command line."""
+    if len(sql) < 100_000:
+        return d1(site, local, command=sql)
+    with tempfile.NamedTemporaryFile("w", suffix=".sql", delete=False) as f:
+        f.write(sql)
+        path = f.name
+    try:
+        return d1(site, local, file=path)
+    finally:
+        os.unlink(path)
+
+
+def lit(v):
+    if v is None:
+        return "NULL"
+    if isinstance(v, bool):
+        return "1" if v else "0"
+    if isinstance(v, (int, float)):
+        return repr(v)
+    if isinstance(v, (dict, list)):
+        v = json.dumps(v)
+    return "'" + str(v).replace("'", "''") + "'"
+
+
+def ident(name):
+    if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name or ""):
+        die(f"{name!r} isn't a plain table or column name")
+    return name
+
+
+def split_statements(sql):
+    """Statements in a string, split on ; outside quotes (for the safety checks)."""
+    out, cur, q = [], [], None
+    for ch in sql:
+        if q:
+            cur.append(ch)
+            if ch == q:
+                q = None
+        elif ch in "'\"`":
+            q = ch
+            cur.append(ch)
+        elif ch == ";":
+            out.append("".join(cur).strip())
+            cur = []
+        else:
+            cur.append(ch)
+    out.append("".join(cur).strip())
+    return [s for s in out if s]
+
+
+def strip_strings(sql):
+    return re.sub(r"'(?:[^']|'')*'", "''", sql)
+
+
+# ---------------------------------------------------------------- migrations
+
+def repo_migrations(site):
+    d = site.repo / "migrations"
+    return sorted(p for p in d.glob("*.sql")) if d.is_dir() else []
+
+
+def applied(site, local, create):
+    if create:
+        d1(site, local, command=MIGRATIONS_TABLE)
+        return [r["name"] for r in rows_of(d1(site, local, command="SELECT name FROM d1_migrations ORDER BY id"))]
+    tables = rows_of(d1(site, local, command="SELECT name FROM sqlite_master WHERE type='table' AND name='d1_migrations'"))
+    if not tables:
+        return []
+    return [r["name"] for r in rows_of(d1(site, local, command="SELECT name FROM d1_migrations ORDER BY id"))]
+
+
+def cmd_migrate(a):
+    site = the_site(a)
+    files = repo_migrations(site)
+    if not files:
+        die(f"repos/{site.name}/migrations/ has no .sql files (site data {site.name} puts the first one there)")
+    done = set(applied(site, a.local, create=not a.dry_run))
+    todo = [p for p in files if p.name not in done]
+    where = "local copy" if a.local else f"D1 {site.db_name}"
+    if not todo:
+        say(f"{where}: all {len(files)} migration(s) applied")
+        return
+    for p in todo:
+        sql = p.read_text().rstrip() + f"\nINSERT INTO d1_migrations (name) VALUES ({lit(p.name)});\n"
+        if a.dry_run:
+            say(f"-- would apply {p.name} to {where}\n{sql}")
+            continue
+        run_sql(site, a.local, sql)
+        say(f"applied {p.name} to {where}")
+    if a.dry_run:
+        say(f"dry run: {len(todo)} to apply, nothing changed")
+
+
+# ---------------------------------------------------------------- read / write
+
+def print_rows(rows):
+    if not rows:
+        say("(no rows)")
+        return
+    cols = list(rows[0].keys())
+    cell = lambda v: "" if v is None else str(v).replace("\n", " ")
+    width = {c: min(40, max(len(c), *(len(cell(r.get(c))) for r in rows))) for c in cols}
+    say("  ".join(c.ljust(width[c]) for c in cols))
+    for r in rows:
+        say("  ".join(cell(r.get(c))[:40].ljust(width[c]) for c in cols))
+    say(f"({len(rows)} row{'s' if len(rows) != 1 else ''})")
+
+
+def cmd_query(a):
+    stmts = split_statements(a.sql)
+    if len(stmts) != 1:
+        die("one statement at a time")
+    s = stmts[0]
+    if not s.lower().startswith(READ_START) or WRITE_WORDS.search(strip_strings(s)):
+        die("db query only reads (SELECT / WITH / PRAGMA / EXPLAIN); a change is `db exec`")
+    site = the_site(a)
+    rows = rows_of(d1(site, a.local, command=s))
+    if a.json:
+        say(json.dumps(rows, indent=2))
+    else:
+        print_rows(rows)
+
+
+def dangerous(stmt):
+    s = strip_strings(stmt).lower()
+    if re.match(r"\s*drop\b", s):
+        return "it drops something"
+    if re.match(r"\s*delete\s+from\s+\S+\s*$", s):
+        return "it deletes every row (no WHERE)"
+    if re.search(r"\bd1_migrations\b", s):
+        return "it touches d1_migrations (the record of what's applied)"
+    if re.match(r"\s*alter\s+table\s+\S+\s+drop\b", s):
+        return "it drops a column"
+    return None
+
+
+def cmd_exec(a):
+    stmts = split_statements(a.sql)
+    if not stmts:
+        die("nothing to run")
+    risky = [(s, why) for s in stmts if (why := dangerous(s))]
+    if risky and not a.yes:
+        die("refused: " + "; ".join(f"{why} ({s[:60]})" for s, why in risky)
+            + ". If the owner asked for exactly that, run it again with --yes. Export first (db export).")
+    site = the_site(a)
+    sql = ";\n".join(stmts) + ";\n"
+    if a.dry_run:
+        say(f"-- would run on {'the local copy' if a.local else 'D1 ' + site.db_name}\n{sql}")
+        return
+    res = run_sql(site, a.local, sql)
+    counted = [r["meta"]["changes"] for r in res if "changes" in (r.get("meta") or {})]   # the local copy doesn't count
+    rows = rows_of(res)
+    if rows:
+        print_rows(rows)
+    n = sum(int(c or 0) for c in counted)
+    say(f"ok: {len(stmts)} statement{'s' if len(stmts) != 1 else ''}"
+        + (f", {n} row{'s' if n != 1 else ''} changed" if counted else ""))
+
+
+# ---------------------------------------------------------------- export / import
+
+def tables(site, local):
+    names = [r["name"] for r in rows_of(d1(site, local, command=(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' "
+        "AND name NOT LIKE '_cf_%' ORDER BY name")))]
+    return [n for n in names if n not in SYSTEM_TABLES]
+
+
+def columns(site, local, table):
+    return [r["name"] for r in rows_of(d1(site, local, command=f"PRAGMA table_info({ident(table)})"))]
+
+
+def cmd_export(a):
+    site = the_site(a)
+    day = datetime.date.today().isoformat()
+    out = site.ws / "exports" / day
+    out.mkdir(parents=True, exist_ok=True)
+    names = tables(site, a.local)
+    if not names:
+        say("the database has no tables yet (db add <collection>)")
+        return
+    for t in names:
+        cols = columns(site, a.local, t)
+        rows, offset = [], 0
+        while True:
+            page = rows_of(d1(site, a.local, command=f"SELECT * FROM {ident(t)} ORDER BY rowid LIMIT 1000 OFFSET {offset}"))
+            rows.extend(page)
+            if len(page) < 1000:
+                break
+            offset += 1000
+        with open(out / f"{t}.csv", "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
+            w.writeheader()
+            w.writerows(rows)
+        (out / f"{t}.json").write_text(json.dumps(rows, indent=2, ensure_ascii=False) + "\n")
+        say(f"  {t}: {len(rows)} row{'s' if len(rows) != 1 else ''} -> exports/{day}/{t}.csv, .json")
+    say(f"exported {len(names)} table{'s' if len(names) != 1 else ''} to exports/{day}/ "
+        f"(left out: {', '.join(SYSTEM_TABLES)}, the sign-in and migration bookkeeping)")
+
+
+def cmd_import(a):
+    path = Path(a.file)
+    if not path.is_file() or path.resolve().is_relative_to(Path.home() / ".config"):
+        die(f"no such file: {a.file}")
+    if path.suffix.lower() == ".json":
+        data = json.loads(path.read_text())
+        if not isinstance(data, list) or not all(isinstance(r, dict) for r in data):
+            die("a JSON import is a list of objects, one per row")
+    elif path.suffix.lower() == ".csv":
+        data = list(csv.DictReader(io.StringIO(path.read_text())))
+    else:
+        die("import takes a .csv (with a header row) or a .json file")
+    if not data:
+        die("the file has no rows")
+    site = the_site(a)
+    table = ident(a.table)
+    have = columns(site, a.local, table)
+    if not have:
+        die(f"no table {table} in the database (db query \"SELECT name FROM sqlite_master\")")
+    if table in SYSTEM_TABLES:
+        die(f"{table} is the sign-in machinery, not something to import into")
+    cols = [c for c in data[0].keys()]
+    extra = [c for c in cols if c not in have]
+    if extra:
+        die(f"{table} has no column(s) {', '.join(extra)} (it has {', '.join(have)})")
+    stmts = [f"INSERT INTO {table} ({', '.join(ident(c) for c in cols)}) VALUES "
+             f"({', '.join(lit(r.get(c) if r.get(c) != '' else None) for c in cols)});" for r in data]
+    if a.dry_run:
+        say("\n".join(stmts[:5]) + (f"\n-- … {len(stmts) - 5} more" if len(stmts) > 5 else ""))
+        say(f"dry run: {len(stmts)} row(s) into {table}, nothing changed")
+        return
+    for i in range(0, len(stmts), 500):
+        run_sql(site, a.local, "\n".join(stmts[i:i + 500]) + "\n")
+    say(f"imported {len(stmts)} row{'s' if len(stmts) != 1 else ''} into {table}")
+
+
+# ---------------------------------------------------------------- collections
+
+REGISTRY_JS = """// The lists /admin shows, one view file per collection in this folder.
+// `db add <collection>` writes this file; edit a view's title or columns in
+// its own file, not here. A second list on the same table (customers and
+// jobs on `records`) is a copy of the view with a `filter`, imported here.
+{imports}
+export default {{ {names} }};
+"""
+
+
+def collection_info(name):
+    d = COLLECTIONS / name
+    if not re.match(r"^[a-z][a-z0-9-]*$", name) or not (d / "collection.json").exists():
+        return None
+    info = json.loads((d / "collection.json").read_text())
+    info["dir"] = d
+    return info
+
+
+def registered_views(repo):
+    p = repo / "functions" / "_admin" / "collections.js"
+    if not p.exists():
+        return []
+    return re.findall(r'import\s+([A-Za-z_]\w*)\s+from\s+"\./([\w-]+)\.js";', p.read_text())
+
+
+def write_views(repo, views):
+    imports = "\n".join(f'import {var} from "./{mod}.js";' for var, mod in views)
+    (repo / "functions" / "_admin" / "collections.js").write_text(
+        REGISTRY_JS.format(imports=imports, names=", ".join(var for var, _ in views)))
+
+
+def cmd_collections(a):
+    site = the_site(a, need=False)
+    have = {mod for _, mod in registered_views(site.repo)} if site else set()
+    migs = " ".join(p.name for p in repo_migrations(site)) if site else ""
+    for d in sorted(COLLECTIONS.iterdir()):
+        info = collection_info(d.name)
+        if not info:
+            continue
+        mark = "added" if d.name in have or f"_{d.name}.sql" in migs else ("" if info["status"] == "ready" else "scaffold")
+        say(f"{d.name:<12} {mark:<9} {info['summary']}")
+    if not site:
+        say("\n(no site here has a database yet: site data <site>)")
+
+
+def cmd_add(a):
+    info = collection_info(a.collection)
+    if not info:
+        die(f"no collection {a.collection!r} (db collections lists them)")
+    if info["status"] != "ready":
+        die(f"{a.collection} is a scaffold, not built yet ({info['summary']}). Don't offer it; "
+            f"PLAYBOOK.md § Data says what to tell the client.")
+    site = the_site(a)
+    repo, src = site.repo, info["dir"]
+    if not (repo / "functions" / "_lib" / "core.js").exists():
+        die(f"repos/{site.name} has no functions/_lib/core.js: run `site data {site.name}` first")
+    added = []
+    # the migration(s), numbered after what's there
+    existing = repo_migrations(site)
+    if any(p.name.split("_", 1)[-1] == m.name.split("_", 1)[-1] for p in existing for m in (src / "migrations").glob("*.sql")):
+        say(f"  migration for {a.collection} already in repos/{site.name}/migrations/")
+    else:
+        n = max([int(m.group(1)) for p in existing if (m := re.match(r"^(\d+)_", p.name))] or [0])
+        for m in sorted((src / "migrations").glob("*.sql")):
+            n += 1
+            dest = repo / "migrations" / f"{n:04d}_{m.name.split('_', 1)[-1]}"
+            if not a.dry_run:
+                dest.parent.mkdir(exist_ok=True)
+                shutil.copy(m, dest)
+            added.append(str(dest.relative_to(site.ws)))
+    # the Function(s) and the view
+    fsrc = src / "functions"
+    if fsrc.is_dir():
+        for f in sorted(fsrc.rglob("*")):
+            if not f.is_file():
+                continue
+            dest = repo / "functions" / f.relative_to(fsrc)
+            if dest.exists():
+                say(f"  kept {dest.relative_to(site.ws)} (already there)")
+                continue
+            if not a.dry_run:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy(f, dest)
+            added.append(str(dest.relative_to(site.ws)))
+    # wire the view into /admin
+    if (fsrc / "_admin" / f"{a.collection}.js").exists():
+        views = registered_views(repo)
+        if a.collection not in {mod for _, mod in views}:
+            var = re.sub(r"\W", "_", a.collection)
+            if not a.dry_run:
+                write_views(repo, views + [(var, a.collection)])
+            added.append(f"repos/{site.name}/functions/_admin/collections.js (+{a.collection})")
+    say(("would add" if a.dry_run else "added") + f" {a.collection} to repos/{site.name}:")
+    for x in added:
+        say(f"  {x}")
+    if a.dry_run:
+        say("dry run: nothing written")
+        return
+    if not a.no_migrate:
+        cmd_migrate(argparse.Namespace(site=site.name, local=a.local, dry_run=False))
+    form = src / "form.html"
+    say(f"\nnext: {src.name}'s README is the rest ({src / 'README.md'}); in short: "
+        + ("put the form below on the page, " if form.exists() else "")
+        + f"commit, `git -C repos/{site.name} push`, `site publish {site.name}`, then prove it on the live site.")
+    if form.exists():
+        say("\n" + form.read_text())
+
+
+# ---------------------------------------------------------------- doctor
+
+def toml_binding(repo):
+    p = repo / "wrangler.toml"
+    if not p.exists():
+        return None, "no wrangler.toml"
+    try:
+        conf = tomllib.loads(p.read_text())
+    except tomllib.TOMLDecodeError as exc:
+        return None, f"wrangler.toml doesn't parse ({exc})"
+    for b in conf.get("d1_databases") or []:
+        if b.get("binding") == "DB":
+            return b, None
+    return None, "wrangler.toml has no [[d1_databases]] binding = \"DB\""
+
+
+def cmd_doctor(a):
+    ok = True
+
+    def fail(msg):
+        nonlocal ok
+        ok = False
+        say(f"  FAIL {msg}")
+
+    say("== tools")
+    say(f"  wrangler: {'present' if WRANGLER.exists() else 'MISSING (claude-tools/install.sh)'}")
+    if not WRANGLER.exists():
+        ok = False
+    say(f"  collections: {', '.join(d.name for d in sorted(COLLECTIONS.iterdir()) if collection_info(d.name))}")
+    if not FAKE:
+        code, res = cf_get("/d1/database?per_page=1")
+        if code == 200:
+            say("  D1 API: ok (the token can manage databases)")
+        elif code in (401, 403):
+            fail("D1 API: the toolbelt's Cloudflare token has no D1 permission — TAYLOR-TODO §1 "
+                 "\"Give the Cloudflare token D1\" (Account · D1 · Edit)")
+        else:
+            fail(f"D1 API: {res}")
+    if not (Path.cwd() / ".client.json").exists():
+        say("== not in a client workspace (cd ~/projects/clients/<slug> for the database checks)")
+        sys.exit(0 if ok else 1)
+    site = the_site(a, need=False)
+    if not site:
+        _, meta = workspace()
+        say(f"== {meta['slug']}: no site here has a database (fine: a form alone doesn't need one)")
+        sys.exit(0 if ok else 1)
+    say(f"== {site.meta['slug']} / {site.name}: D1 {site.db_name} ({site.d1.get('id') or 'no id'})")
+    b, err = toml_binding(site.repo)
+    if err:
+        fail(f"repos/{site.name}: {err} (site data {site.name} writes it)")
+    elif b.get("database_id") != site.d1.get("id") or b.get("database_name") != site.db_name:
+        fail(f"repos/{site.name}/wrangler.toml binds {b.get('database_name')} ({b.get('database_id')}), "
+             f"the registry says {site.db_name} ({site.d1.get('id')})")
+    else:
+        say("  binding: wrangler.toml DB = the registry's database")
+    if not FAKE and not a.local:
+        code, res = cf_get(f"/d1/database/{site.d1.get('id')}")
+        if code == 200:
+            say(f"  database: reachable, {res.get('num_tables', '?')} tables, {int(res.get('file_size') or 0) // 1024} KB")
+        else:
+            fail(f"database {site.db_name}: {res}")
+    files = repo_migrations(site)
+    try:
+        done = applied(site, a.local, create=False)
+        missing = [p.name for p in files if p.name not in done]
+        stray = [n for n in done if n not in {p.name for p in files}]
+        if missing:
+            fail(f"migrations not applied: {', '.join(missing)} (db migrate)")
+        if stray:
+            fail(f"applied but not in the repo: {', '.join(stray)}")
+        if not missing and not stray:
+            say(f"  migrations: {len(files)} in the repo, {len(done)} applied")
+    except SystemExit:
+        fail("could not read d1_migrations (see the line above)")
+    fn = site.repo / "functions"
+    if not (fn / "_lib" / "core.js").exists() or not (fn / "admin" / "_middleware.js").exists():
+        fail(f"repos/{site.name}/functions/ is missing the admin shell (site data {site.name})")
+    views = registered_views(site.repo)
+    lost = [mod for _, mod in views if not (fn / "_admin" / f"{mod}.js").exists()]
+    if lost:
+        fail(f"functions/_admin/collections.js imports missing view(s): {', '.join(lost)}")
+    else:
+        say(f"  /admin shows: {', '.join(mod for _, mod in views) or '(nothing yet — db add <collection>)'}")
+    if not FAKE and site.project and not a.local:
+        code, res = cf_get(f"/pages/projects/{site.project}")
+        if code == 200:
+            env = ((res.get("deployment_configs") or {}).get("production") or {}).get("env_vars") or {}
+            need = [k for k in ("SESSION_SECRET", "ADMIN_EMAIL") if k not in env]
+            if need:
+                fail(f"Pages secret(s) not set on {site.project}: {', '.join(need)} (site data {site.name})")
+            else:
+                say("  secrets: SESSION_SECRET, ADMIN_EMAIL set on the Pages project (values not shown)")
+        else:
+            fail(f"Pages project {site.project}: {res}")
+    owner, contact = site.d1.get("owner"), site.meta.get("contact_email")
+    if owner and contact and owner.lower() != contact.lower():
+        fail(f"/admin signs in {owner} but the sign-in email goes to the contact address {contact} "
+             f"(site data {site.name} --owner {contact}, or newsletter setup --contact {owner})")
+    elif owner:
+        say(f"  owner: {owner} (the sign-in link goes there)")
+    sys.exit(0 if ok else 1)
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="db", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--site", help="which site's database, when the workspace has more than one")
+    common.add_argument("--local", action="store_true", help="the local copy (wrangler pages dev), not the live database")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    m = sub.add_parser("migrate", parents=[common], help="apply the repo's migrations not yet applied")
+    m.add_argument("--dry-run", action="store_true"); m.set_defaults(fn=cmd_migrate)
+    q = sub.add_parser("query", parents=[common], help="read: SELECT / WITH / PRAGMA / EXPLAIN")
+    q.add_argument("sql"); q.add_argument("--json", action="store_true"); q.set_defaults(fn=cmd_query)
+    e = sub.add_parser("exec", parents=[common], help="write; DROP / DELETE-without-WHERE need --yes")
+    e.add_argument("sql"); e.add_argument("--yes", action="store_true"); e.add_argument("--dry-run", action="store_true")
+    e.set_defaults(fn=cmd_exec)
+    x = sub.add_parser("export", parents=[common], help="every table to exports/<date>/ as CSV and JSON")
+    x.set_defaults(fn=cmd_export)
+    i = sub.add_parser("import", parents=[common], help="rows from a CSV (header row) or JSON list into a table")
+    i.add_argument("table"); i.add_argument("file"); i.add_argument("--dry-run", action="store_true")
+    i.set_defaults(fn=cmd_import)
+    ad = sub.add_parser("add", parents=[common], help="add a standard collection (migration, Function, /admin view)")
+    ad.add_argument("collection"); ad.add_argument("--no-migrate", action="store_true"); ad.add_argument("--dry-run", action="store_true")
+    ad.set_defaults(fn=cmd_add)
+    sub.add_parser("collections", parents=[common], help="what can be added; what this site has").set_defaults(fn=cmd_collections)
+    sub.add_parser("doctor", parents=[common], help="token, binding, migrations, secrets, /admin").set_defaults(fn=cmd_doctor)
+    a = ap.parse_args()
+    a.fn(a)
+
+
+if __name__ == "__main__":
+    main()

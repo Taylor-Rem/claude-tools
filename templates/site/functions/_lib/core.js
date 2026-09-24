@@ -72,8 +72,30 @@ export function sameOrigin(request) {
   return !origin || origin === new URL(request.url).origin;
 }
 
+// A wall-clock time with no zone ("2026-10-06T09:00", how bookings keep a
+// slot's start): shown as written, never shifted by the site's time zone.
+const LOCAL_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/;
+
+export function localTime(value) {
+  const d = new Date(value + ":00Z");
+  if (isNaN(d)) return String(value);
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "UTC", weekday: "short", month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit",
+  }).format(d);
+}
+
+// Now, as a wall-clock time in the site's zone ("2026-10-06T09:00").
+export function localNow(env, plusDays = 0) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", {
+    timeZone: env.TIMEZONE || "America/Denver", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).formatToParts(new Date(Date.now() + plusDays * 86400000)).map((p) => [p.type, p.value]));
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
+}
+
 export function when(value, env) {
   if (value === null || value === undefined || value === "") return "";
+  if (typeof value === "string" && LOCAL_TIME.test(value)) return localTime(value);
   const d = typeof value === "number" ? new Date(value * 1000) : new Date(String(value).replace(" ", "T") + (/[zZ]|[+-]\d\d:?\d\d$/.test(value) ? "" : "Z"));
   if (isNaN(d)) return String(value);
   return new Intl.DateTimeFormat("en-US", {
@@ -125,6 +147,7 @@ export function page(env, title, body, { status = 200, headers = {}, session = n
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex, nofollow">
+  <meta name="description" content="${esc(site)}'s admin page, for the owner only.">
   <title>${esc(title)} — ${esc(site)}</title>
   <link rel="stylesheet" href="/css/style.css">
   <style>${STYLE}</style>
@@ -240,8 +263,9 @@ export function wantsJson(request) {
   return (request.headers.get("accept") || "").includes("application/json");
 }
 
-// Back to the page the form was on (this site only), with ?sent=<form>#form.
-export function backTo(request, flag) {
+// Back to the page the form was on (this site only), with ?sent=<form>#form
+// (or another anchor: the booking form is #book).
+export function backTo(request, flag, hash = "form") {
   const self = new URL(request.url);
   let to = new URL("/", self);
   const ref = request.headers.get("referer");
@@ -252,6 +276,6 @@ export function backTo(request, flag) {
     } catch (_) { /* keep / */ }
   }
   to.search = new URLSearchParams(flag).toString();
-  to.hash = "form";
+  to.hash = hash;
   return redirect(to.toString());
 }

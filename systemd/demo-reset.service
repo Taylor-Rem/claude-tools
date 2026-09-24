@@ -1,11 +1,11 @@
 [Unit]
-Description=Put the demo restaurant's site back to its golden copy (ROADMAP B4)
+Description=Put every demo site (clients/demo-*, testaurant) back to its golden copy, files and data (ROADMAP B4, B30)
 After=network-online.target
 
 [Service]
+TimeoutStartSec=1800
 Type=oneshot
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-Environment=DEMO_WORKSPACE=%h/projects/clients/testaurant
-ExecStart=%h/.local/bin/demo reset
+ExecStart=%h/.local/bin/demo reset --all
 StandardOutput=append:%h/projects/claude-tools/logs/demo-reset.log
 StandardError=append:%h/projects/claude-tools/logs/demo-reset.log

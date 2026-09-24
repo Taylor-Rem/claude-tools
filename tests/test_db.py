@@ -145,17 +145,18 @@ class DbTest(unittest.TestCase):
         self.assertFalse((self.repo / "migrations" / "0004_submissions.sql").exists())
 
     def test_a_scaffold_is_refused_so_nothing_is_promised_from_it(self):
-        for name in ("bookings", "catalog", "orders", "posts", "subscribers"):
+        for name in ("catalog", "orders", "posts", "subscribers"):
             r = self.db("add", name)
             self.assertNotEqual(r.returncode, 0)
             self.assertIn("scaffold", r.stderr)
-        self.assertFalse((self.repo / "migrations" / "0002_bookings.sql").exists())
+        self.assertFalse((self.repo / "migrations" / "0002_catalog.sql").exists())
 
     def test_collections_lists_ready_scaffold_and_added(self):
         self.db("add", "submissions")
         out = self.db("collections").stdout
         self.assertRegex(out, r"submissions\s+added")
-        self.assertRegex(out, r"bookings\s+scaffold")
+        self.assertRegex(out, r"catalog\s+scaffold")
+        self.assertRegex(out, r"bookings\s{2,}times the owner opens")
         self.assertRegex(out, r"records\s{2,}the generic list")
 
     def test_the_submissions_function_and_view_match_the_table(self):
@@ -169,6 +170,56 @@ class DbTest(unittest.TestCase):
         view = (self.repo / "functions" / "_admin" / "submissions.js").read_text()
         for col in ("created_at", "name", "email", "form", "status", "notes", "updated_at"):
             self.assertIn(f'"{col}"', view)
+
+    def test_add_bookings_wires_both_views_and_prints_the_calendar(self):
+        r = self.db("add", "bookings")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((self.repo / "migrations" / "0002_bookings.sql").exists())
+        self.assertTrue((self.repo / "functions" / "api" / "bookings.js").exists())
+        reg = (self.repo / "functions" / "_admin" / "collections.js").read_text()
+        self.assertIn("export default { bookings, slots };", reg)
+        self.assertIn('action="/api/bookings"', r.stdout)                     # the calendar to paste
+        self.assertIn('id="book"', r.stdout)
+        cols = {c["name"] for c in json.loads(self.db("query", "PRAGMA table_info(booking_slots)", "--json").stdout)}
+        self.assertTrue({"starts_at", "minutes", "capacity", "label", "status"} <= cols)
+        r = self.db("exec", "INSERT INTO booking_slots (starts_at, minutes, capacity) VALUES ('2099-10-06T09:00', 60, 1)")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_the_bookings_function_checks_capacity_in_one_statement(self):
+        """The SQL in functions/api/bookings.js, run on the real migration: the
+        last place can be taken once, a closed or past slot not at all, and a
+        cancelled booking frees its place."""
+        import re as _re
+        import sqlite3
+        src = ROOT / "templates" / "collections" / "bookings"
+        fn = (src / "functions" / "api" / "bookings.js").read_text()
+        taken = _re.search(r'const TAKEN = "([^"]+)"', fn).group(1)
+        sqls = [x.replace("${TAKEN}", taken) for x in _re.findall(r"prepare\(\s*`([^`]+)`", fn)]
+        listing = next(x for x in sqls if x.lstrip().startswith("SELECT * FROM ("))
+        insert = next(x for x in sqls if x.lstrip().startswith("INSERT INTO bookings"))
+        con = sqlite3.connect(":memory:")
+        con.row_factory = sqlite3.Row
+        con.executescript((next((src / "migrations").glob("*.sql"))).read_text())
+        now, later = "2026-10-01T08:00", "2026-11-30T08:00"
+        con.execute("INSERT INTO booking_slots (starts_at, capacity) VALUES ('2026-10-06T09:00', 2)")      # 1
+        con.execute("INSERT INTO booking_slots (starts_at, status) VALUES ('2026-10-07T09:00', 'closed')")  # 2
+        con.execute("INSERT INTO booking_slots (starts_at) VALUES ('2026-09-01T09:00')")                   # 3, past
+        book = lambda slot: con.execute(insert, ("Dana", "d@x.test", None, None, None, slot, now)).rowcount
+        self.assertEqual([dict(r)["id"] for r in con.execute(listing, (now, later))], [1])
+        self.assertEqual(book(1), 1)
+        self.assertEqual(dict(con.execute(listing, (now, later)).fetchone())["places"], 1)
+        self.assertEqual(book(1), 1)
+        self.assertEqual(book(1), 0, "full")
+        self.assertEqual(list(con.execute(listing, (now, later))), [], "a full slot is left off the calendar")
+        self.assertEqual((book(2), book(3), book(99)), (0, 0, 0), "closed, past, no such slot")
+        con.execute("UPDATE bookings SET status = 'cancelled' WHERE id = 1")
+        self.assertEqual(book(1), 1, "a cancelled booking frees its place")
+        row = con.execute("SELECT slot_id, starts_at, name FROM bookings ORDER BY id DESC").fetchone()
+        self.assertEqual(tuple(row), (1, "2026-10-06T09:00", "Dana"))
+        view = (src / "functions" / "_admin" / "bookings.js").read_text() + (src / "functions" / "_admin" / "slots.js").read_text()
+        cols = {r["name"] for t in ("bookings", "booking_slots") for r in con.execute(f"PRAGMA table_info({t})")}
+        for col in _re.findall(r'(?:name: "|\["(?=[a-z_]+", "[A-Z]))([a-z_]+)"', view):
+            self.assertIn(col, cols, col)
 
     # -- read / write ----------------------------------------------------------
 

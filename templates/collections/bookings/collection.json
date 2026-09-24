@@ -1,4 +1,4 @@
 {
-  "status": "scaffold",
-  "summary": "slots the owner opens and the requests people make for them (scaffold: B30's demo-service finishes it)"
+  "status": "ready",
+  "summary": "times the owner opens and the bookings people make for them (a calendar on the site, capacity checked), on /admin"
 }

@@ -1,0 +1,60 @@
+<!-- The booking calendar (the bookings collection). Paste it where the client
+     wants it. It lists the open times from /api/bookings as the page loads,
+     so a time the owner opens (on /admin/slots, or Patch by text) shows up
+     at once — no publish needed. Keep the field names and the `website`
+     honeypot; the section's id must stay "book" (the page comes back to
+     #book with ?sent=booking, sent=full or sent=0). The styles are at the
+     bottom; move them into css/style.css if the site has its own. -->
+<form class="site-form booking-form" id="book" action="/api/bookings" method="post">
+  <fieldset class="booking-slots">
+    <legend>Pick a time</legend>
+    <div data-slots><p class="muted">Loading the open times…</p></div>
+  </fieldset>
+  <label>Name <input name="name" required autocomplete="name"></label>
+  <label>Email <input name="email" type="email" autocomplete="email"></label>
+  <label>Phone <input name="phone" type="tel" autocomplete="tel"></label>
+  <label>Anything we should know? <textarea name="notes" rows="3"></textarea></label>
+  <input name="website" type="text" tabindex="-1" autocomplete="off" aria-hidden="true" style="position:absolute;left:-9999px">
+  <button class="button" type="submit">Book it</button>
+  <p class="form-thanks" data-sent="booking" hidden>Booked — we've got you down and we'll confirm by email or phone.</p>
+  <p class="form-sorry" data-sent="full" hidden>That time was just taken or closed. Please pick another.</p>
+  <p class="form-sorry" data-sent="0" hidden>That didn't go through: pick a time, and leave a name and an email or phone.</p>
+  <script>
+    (function () {
+      var form = document.getElementById("book");
+      var box = form.querySelector("[data-slots]");
+      var sent = (location.search.match(/[?&]sent=([a-z0-9-]+)/) || [])[1];
+      if (sent && location.hash === "#book") form.querySelectorAll("[data-sent]").forEach(function (p) { p.hidden = p.getAttribute("data-sent") !== sent; });
+      function at(s) { var p = s.split(/[-T:]/); return new Date(Date.UTC(+p[0], p[1] - 1, +p[2], +p[3], +p[4])); }
+      var day = new Intl.DateTimeFormat("en-US", { timeZone: "UTC", weekday: "long", month: "long", day: "numeric" });
+      var time = new Intl.DateTimeFormat("en-US", { timeZone: "UTC", hour: "numeric", minute: "2-digit" });
+      function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text) e.textContent = text; return e; }
+      fetch("/api/bookings", { headers: { accept: "application/json" } })
+        .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+        .then(function (data) {
+          box.textContent = "";
+          if (!data.slots.length) { box.appendChild(el("p", "muted", "No open times right now. Ask for a quote instead and we'll find one.")); return; }
+          var group = null, last = "";
+          data.slots.forEach(function (s) {
+            var d = day.format(at(s.starts_at));
+            if (d !== last) { group = el("div", "booking-day"); group.appendChild(el("p", "booking-date", d)); box.appendChild(group); last = d; }
+            var label = el("label", "booking-slot");
+            var input = el("input"); input.type = "radio"; input.name = "slot"; input.value = s.id; input.required = true;
+            label.appendChild(input);
+            label.appendChild(document.createTextNode(" " + time.format(at(s.starts_at)) + (s.label ? " · " + s.label : "") + (s.places > 1 ? " (" + s.places + " places)" : "")));
+            group.appendChild(label);
+          });
+        })
+        .catch(function () { box.textContent = ""; box.appendChild(el("p", "muted", "The calendar didn't load. Please try again in a minute.")); });
+    })();
+  </script>
+  <style>
+    .booking-slots { border: 0; padding: 0; margin: 0; display: grid; gap: .75rem; }
+    .booking-slots legend { font-weight: 600; margin-bottom: .5rem; }
+    .booking-day { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+    .booking-date { flex-basis: 100%; margin: 0; color: var(--ink-dim); }
+    .booking-slot { display: inline-flex !important; align-items: center; gap: .4rem; padding: .45rem .8rem; min-height: 44px;
+      border: 1px solid var(--bg-line); border-radius: 3px; background: var(--bg-raised); cursor: pointer; }
+    .booking-slot input { width: 1.5rem; height: 1.5rem; margin: 0; padding: 0; }
+  </style>
+</form>

@@ -1,33 +1,48 @@
 #!/usr/bin/env python3
-"""demo — the demo restaurant's site: put it back the way it was (ROADMAP B4,
-plan ~/projects/plans/07-demo-restaurant.md).
+"""demo — the demo sites: put them back the way they were (ROADMAP B4, B30;
+plans ~/projects/plans/07-demo-restaurant.md, 12-templates-and-data.md).
 
-Strangers text the relay and change this site for real; every night it goes
-back to a golden copy so the next person starts from a clean restaurant.
+Strangers text the relay and change a demo site for real; every night it
+goes back to a golden copy so the next person starts from a clean one. The
+demos are the client workspaces named `demo-*`, plus `testaurant` (the
+restaurant, which came first): `demo ls` lists them.
 
+  demo ls                # every demo workspace, and whether each matches golden
   demo status            # what the site is now, and whether it matches golden
-  demo reset [--force]   # put it back to golden, publish, prove it is live
+  demo reset [--force]   # put it back to golden (files, and the database's rows), publish, prove it is live
   demo golden [--yes]    # mark the site as it is now as the new golden copy
   demo diff              # what a reset would undo
   demo doctor
+
+Every command takes --project SLUG (a demo workspace by name) or, for
+reset/doctor/status, --all (every demo — how the timer runs it).
+
+A demo with a database (`site data`) has its golden rows in the repo, in
+`seed.sql` at the root (never served): `demo reset` drops any table and
+migration golden doesn't have, applies golden's migrations, empties every
+table of the owner's (not the sign-in or migration bookkeeping), and runs
+seed.sql. Seed rows that are dates are written relative to today
+(`date('now', '+3 days')`), so the calendar is never in the past.
 
 The reset never rewrites history: it commits golden's files back on top of
 whatever is there, so `main` only ever moves forward and nothing needs a
 force-push. `relay.py demo` is the other half (who may text it, and the
 caps); this half owns the site.
 
-Runs from the demo client's workspace (a directory with `.client.json`), or
-anywhere with DEMO_WORKSPACE set — which is how the timer runs it:
-`claude-tools/systemd/demo-reset.timer`, 04:10 daily.
+Runs from a demo workspace (a directory with `.client.json`), with
+--project, or with DEMO_WORKSPACE set; the timer runs `demo reset --all`
+(`claude-tools/systemd/demo-reset.timer`, 04:10 daily).
 
 Config, by name, never printed:
   DEMO_WORKSPACE   default ~/projects/clients/testaurant
   DEMO_SITE        default: the workspace's only repo
+  CLIENTS_DIR      default ~/projects/clients
 """
 
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -35,8 +50,13 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+sys.stdout.reconfigure(line_buffering=True)
 STATE = Path(os.environ.get("DEMO_STATE", Path.home() / ".local/state/claude-tools/demo.json"))
+CLIENTS = Path(os.environ.get("CLIENTS_DIR", Path.home() / "projects/clients")).expanduser()
+DB_BIN = Path(os.environ.get("DEMO_DB_BIN") or Path(__file__).resolve().parent / "db")
 GOLDEN = "golden"
+SEED = "seed.sql"
+PROJECT = None          # --project SLUG, set in main()
 
 
 def die(msg, code=1):
@@ -44,10 +64,25 @@ def die(msg, code=1):
     sys.exit(code)
 
 
+def is_demo(slug):
+    return slug == "testaurant" or slug.startswith("demo-")
+
+
+def demos():
+    """Every demo workspace: clients/demo-* and clients/testaurant, with a .client.json."""
+    if not CLIENTS.is_dir():
+        return []
+    return sorted(p for p in CLIENTS.iterdir() if is_demo(p.name) and (p / ".client.json").exists())
+
+
 def workspace():
-    ws = Path(os.environ.get("DEMO_WORKSPACE", Path.home() / "projects/clients/testaurant")).expanduser()
+    ws = Path(os.environ.get("DEMO_WORKSPACE", CLIENTS / "testaurant")).expanduser()
     here = Path.cwd()
-    if (here / ".client.json").exists():
+    if PROJECT:
+        ws = CLIENTS / PROJECT
+        if not is_demo(PROJECT):
+            die(f"{PROJECT} is not a demo (demos are clients/demo-* and testaurant): demo ls")
+    elif (here / ".client.json").exists():
         ws = here
     if not (ws / ".client.json").exists():
         die(f"{ws} is not a client workspace (no .client.json). Set DEMO_WORKSPACE or run this from one.")
@@ -75,7 +110,7 @@ def git(repo, *args, check=True, quiet=False):
     return r.returncode, r.stdout.strip(), r.stderr.strip()
 
 
-def state_read():
+def _state_all():
     if STATE.exists():
         try:
             return json.loads(STATE.read_text())
@@ -84,7 +119,26 @@ def state_read():
     return {}
 
 
-def state_write(data):
+def _slug():
+    return workspace()[1].get("slug", "testaurant")
+
+
+def state_read():
+    """This demo's record. The file keeps one block per demo; testaurant's is the
+    top level, which is where it lived before there was more than one."""
+    data = _state_all()
+    slug = _slug()
+    return data if slug == "testaurant" else (data.get("demos") or {}).get(slug, {})
+
+
+def state_write(block):
+    data = _state_all()
+    slug = _slug()
+    if slug == "testaurant":
+        block = {**block, "demos": data.get("demos", {})}
+        data = block
+    else:
+        data.setdefault("demos", {})[slug] = block
     STATE.parent.mkdir(parents=True, exist_ok=True)
     STATE.write_text(json.dumps(data, indent=1) + "\n")
 
@@ -118,6 +172,76 @@ def fetch_live(url, tries=3):
                 return None, ""
             time.sleep(3)
     return None, ""
+
+
+# ---- the database (a demo with `site data`) -------------------------------------
+
+def has_db(repo):
+    return (repo / "wrangler.toml").exists() and "d1_databases" in (repo / "wrangler.toml").read_text()
+
+
+def db(ws, name, *args):
+    """Run the toolbelt's `db` on this demo's site; (code, stdout, stderr)."""
+    r = subprocess.run([str(DB_BIN), *args, "--site", name], capture_output=True, text=True, cwd=str(ws))
+    return r.returncode, r.stdout, r.stderr
+
+
+def db_json(ws, name, sql):
+    code, out, err = db(ws, name, "query", sql, "--json")
+    if code != 0:
+        die(f"db query failed: {(err or out).strip()[:300]}")
+    return json.loads(out or "[]")
+
+
+SYSTEM_TABLES = ("d1_migrations", "admin_tokens", "admin_sessions")
+
+
+def golden_tables(repo):
+    """The tables golden's migrations create (the repo is at golden when this runs)."""
+    found = set()
+    for p in sorted((repo / "migrations").glob("*.sql")) if (repo / "migrations").is_dir() else []:
+        found |= {m.lower() for m in re.findall(r"(?i)create\s+table\s+(?:if\s+not\s+exists\s+)?[\"`]?(\w+)", p.read_text())}
+    return found
+
+
+def reset_data(ws, name, repo):
+    """The database back to golden: its tables, its migrations, and its rows (seed.sql)."""
+    if not (repo / SEED).exists():
+        die(f"repos/{name} has a database but no {SEED} (the golden rows): write one, commit it, `demo golden --yes`")
+    migs = {p.name for p in (repo / "migrations").glob("*.sql")}
+    keep = golden_tables(repo) | set(SYSTEM_TABLES)
+    tables = [r["name"] for r in db_json(ws, name, "SELECT name FROM sqlite_master WHERE type='table' "
+                                                   "AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'")]
+    stray = [t for t in tables if t.lower() not in keep]
+    applied = [r["name"] for r in db_json(ws, name, "SELECT name FROM d1_migrations")] if "d1_migrations" in tables else []
+    extra = [m for m in applied if m not in migs]
+    sql = [f"DROP TABLE IF EXISTS {t}" for t in stray]
+    sql += ["DELETE FROM d1_migrations WHERE name = '" + m.replace("'", "''") + "'" for m in extra]
+    if sql:
+        code, out, err = db(ws, name, "exec", "; ".join(sql), "--yes")
+        if code != 0:
+            die(f"could not drop what golden doesn't have: {(err or out).strip()[:300]}")
+        print(f"  database: dropped {', '.join(stray) or 'no tables'}; forgot migrations {', '.join(extra) or 'none'}")
+    code, out, err = db(ws, name, "migrate")
+    if code != 0:
+        die(f"db migrate failed: {(err or out).strip()[:300]}")
+    mine = [t for t in tables if t.lower() in keep and t not in SYSTEM_TABLES]
+    mine += [t for t in golden_tables(repo) if t not in [x.lower() for x in tables] and t not in SYSTEM_TABLES]
+    # children before parents: D1 enforces foreign keys (bookings -> booking_slots)
+    refs = {t: {r["table"] for r in db_json(ws, name, f"PRAGMA foreign_key_list({t})")} for t in mine
+            if t.lower() in [x.lower() for x in tables]}
+    mine.sort(key=lambda t: -sum(1 for other in mine if t in refs.get(other, ())))
+    mine.sort(key=lambda t: 0 if refs.get(t) else 1)
+    wipe = ["PRAGMA defer_foreign_keys = on"] + [f"DELETE FROM {t}" for t in mine]
+    if "sqlite_sequence" in [r["name"] for r in db_json(ws, name, "SELECT name FROM sqlite_master WHERE name = 'sqlite_sequence'")] and mine:
+        wipe.append("DELETE FROM sqlite_sequence WHERE name IN (" + ", ".join(f"'{t}'" for t in mine) + ")")
+    seed = (repo / SEED).read_text()
+    code, out, err = db(ws, name, "exec", ";\n".join(wipe) + ";\n" + seed, "--yes")
+    if code != 0:
+        die(f"the seed did not load: {(err or out).strip()[:300]}")
+    counts = {t: db_json(ws, name, f"SELECT COUNT(*) AS n FROM {t}")[0]["n"] for t in mine}
+    print("  database: back to the seed — " + ", ".join(f"{t} {n}" for t, n in sorted(counts.items())))
+    return counts
 
 
 # ---- commands ----------------------------------------------------------------
@@ -185,7 +309,9 @@ def cmd_reset(args):
     git(repo, "fetch", "--quiet", "--tags", "--force", "origin")
     changed = tree_of(repo, "HEAD") != tree_of(repo, GOLDEN) or dirty(repo)
     if not changed and not args.force:
-        print("already the golden copy; nothing to undo")
+        if has_db(repo):                             # the files match, but a text may have changed rows
+            reset_data(ws, name, repo)
+        print("already the golden copy; nothing to undo" + (" in the files (the rows are back to the seed)" if has_db(repo) else ""))
         _record("clean")
         return
     # Discard local edits, then put golden's files back as one ordinary commit
@@ -201,6 +327,8 @@ def cmd_reset(args):
         print(f"reset {name} to golden and pushed")
     else:
         print(f"{name} already matched golden in git")
+    if has_db(repo):
+        reset_data(ws, name, repo)
     r = subprocess.run(["site", "publish", name], capture_output=True, text=True, cwd=str(ws))
     tail = (r.stdout or r.stderr).strip().splitlines()[-2:]
     for line in tail:
@@ -226,6 +354,10 @@ def _record(result):
 
 
 def cmd_doctor(args):
+    sys.exit(0 if each(args, _doctor) else 1)
+
+
+def _doctor(args):
     ok = True
     ws, meta = workspace()
     name = site_name(ws)
@@ -234,7 +366,7 @@ def cmd_doctor(args):
     print(f"  site: {name}  live: {live_url(meta) or 'MISSING'}")
     if not (repo / ".git").is_dir():
         print("  repo: MISSING")
-        sys.exit(1)
+        return False
     if has_golden(repo):
         print(f"  golden: {git(repo, 'log', '-1', '--format=%h %ad %s', '--date=short', GOLDEN)[1]}")
         remote = git(repo, "ls-remote", "--tags", "origin", GOLDEN, check=False)[1]
@@ -244,6 +376,10 @@ def cmd_doctor(args):
         print("  golden: NOT SET (`demo golden`)")
         ok = False
     print(f"  working tree: {'dirty' if dirty(repo) else 'clean'}")
+    if has_db(repo):
+        seeded = (repo / SEED).exists()
+        print(f"  database: yes; golden rows in {SEED}: {'yes' if seeded else 'NO — a reset cannot restore the data'}")
+        ok = ok and seeded
     url = live_url(meta)
     if url:
         status, body = fetch_live(url)
@@ -254,25 +390,69 @@ def cmd_doctor(args):
     st = state_read()
     print(f"  last reset: {st.get('last_reset', 'never')} ({st.get('last_reset_result', '-')})")
     timer = subprocess.run(["systemctl", "--user", "is-active", "demo-reset.timer"], capture_output=True, text=True)
-    print(f"  nightly timer: {timer.stdout.strip() or 'not installed'}")
+    print(f"  nightly timer: {timer.stdout.strip() or 'not installed'} (demo reset --all)")
     ok = ok and timer.stdout.strip() == "active"
     print("  who may text it: `cd ~/projects/sms-relay && ./relay.py demo status`")
-    sys.exit(0 if ok else 1)
+    return ok
+
+
+def each(args, fn):
+    """Run fn for this demo, or for every demo with --all; True when all went well."""
+    global PROJECT
+    if not getattr(args, "all", False):
+        r = fn(args)
+        return r is not False
+    ok = True
+    for ws in demos():
+        PROJECT = ws.name
+        print(f"== {ws.name}")
+        try:
+            r = fn(args)
+            ok = ok and r is not False
+        except SystemExit as exc:           # one demo failing never stops the next one's reset
+            ok = ok and not exc.code
+    PROJECT = None
+    return ok
+
+
+def cmd_ls(args):
+    global PROJECT
+    for ws in demos():
+        PROJECT = ws.name
+        meta = json.loads((ws / ".client.json").read_text())
+        try:
+            name = site_name(ws)
+        except SystemExit:
+            print(f"  {ws.name:<16} (no site yet)")
+            continue
+        repo = ws / "repos" / name
+        state = ("matches golden" if has_golden(repo) and tree_of(repo, "HEAD") == tree_of(repo, GOLDEN)
+                 else "changed since golden" if has_golden(repo) else "no golden yet")
+        print(f"  {ws.name:<16} {live_url(meta) or '-':<36} {state}{' · database' if has_db(repo) else ''}")
+    PROJECT = None
 
 
 def main():
+    global PROJECT
     ap = argparse.ArgumentParser(prog="demo", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--project", help="a demo workspace by slug (demo-service, testaurant, …)")
+    many = argparse.ArgumentParser(add_help=False, parents=[common])
+    many.add_argument("--all", action="store_true", help="every demo workspace")
+    ap.add_argument("--project", help=argparse.SUPPRESS)
     sub = ap.add_subparsers(dest="cmd")
-    sub.add_parser("status").set_defaults(fn=cmd_status)
-    sub.add_parser("diff").set_defaults(fn=cmd_diff)
-    r = sub.add_parser("reset")
+    sub.add_parser("ls", help="every demo").set_defaults(fn=cmd_ls)
+    sub.add_parser("status", parents=[many]).set_defaults(fn=lambda a: each(a, cmd_status))
+    sub.add_parser("diff", parents=[common]).set_defaults(fn=cmd_diff)
+    r = sub.add_parser("reset", parents=[many])
     r.add_argument("--force", action="store_true", help="publish even when nothing changed")
-    r.set_defaults(fn=cmd_reset)
-    g = sub.add_parser("golden")
+    r.set_defaults(fn=lambda a: sys.exit(0 if each(a, cmd_reset) else 1))
+    g = sub.add_parser("golden", parents=[common])
     g.add_argument("--yes", action="store_true", help="move golden without asking")
     g.set_defaults(fn=cmd_golden)
-    sub.add_parser("doctor").set_defaults(fn=cmd_doctor)
+    sub.add_parser("doctor", parents=[many]).set_defaults(fn=cmd_doctor)
     args = ap.parse_args()
+    PROJECT = getattr(args, "project", None)
     if not args.cmd:
         args.fn = cmd_status
     args.fn(args)

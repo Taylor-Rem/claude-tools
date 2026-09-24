@@ -1,5 +1,5 @@
 [Unit]
-Description=Nightly reset of the demo restaurant's site
+Description=Nightly reset of every demo site
 
 [Timer]
 OnCalendar=*-*-* 04:10:00

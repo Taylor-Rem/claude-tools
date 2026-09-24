@@ -30,3 +30,9 @@ export async function onRequestGet({ env, data }) {
     <p class="note">Signed in as ${esc(data.session.email)}.</p>
     ${cards.length ? `<ul class="cards">${cards.join("")}</ul>` : `<p>Nothing to show yet.</p>`}`, { session: data.session });
 }
+
+// HEAD /admin (link checkers, uptime pings): the same answer as GET, no body.
+export async function onRequestHead(ctx) {
+  const r = await onRequestGet(ctx);
+  return new Response(null, { status: r.status, headers: r.headers });
+}

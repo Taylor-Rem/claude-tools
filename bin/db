@@ -242,9 +242,19 @@ def ident(name):
 
 
 def split_statements(sql):
-    """Statements in a string, split on ; outside quotes (for the safety checks)."""
+    """Statements in a string, split on ; outside quotes, `--` comments dropped
+    (a comment may hold an apostrophe or a semicolon; D1 refuses a statement
+    that is only a comment)."""
     out, cur, q = [], [], None
-    for ch in sql:
+    sql = re.sub(r"(?m)^\s*--[^\n]*$", "", sql)             # whole-line comments
+    i = 0
+    while i < len(sql):
+        ch = sql[i]
+        i += 1
+        if not q and ch == "-" and sql[i:i + 1] == "-":        # a comment at the end of a line
+            j = sql.find("\n", i)
+            i = len(sql) if j < 0 else j
+            continue
         if q:
             cur.append(ch)
             if ch == q:
@@ -533,14 +543,15 @@ def cmd_add(a):
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy(f, dest)
             added.append(str(dest.relative_to(site.ws)))
-    # wire the view into /admin
-    if (fsrc / "_admin" / f"{a.collection}.js").exists():
-        views = registered_views(repo)
-        if a.collection not in {mod for _, mod in views}:
-            var = re.sub(r"\W", "_", a.collection)
-            if not a.dry_run:
-                write_views(repo, views + [(var, a.collection)])
-            added.append(f"repos/{site.name}/functions/_admin/collections.js (+{a.collection})")
+    # wire the view(s) into /admin: the collection's own first, then any others it ships (bookings: slots)
+    mods = sorted((p.stem for p in (fsrc / "_admin").glob("*.js")), key=lambda m: (m != a.collection, m)) \
+        if (fsrc / "_admin").is_dir() else []
+    views = registered_views(repo)
+    new = [(re.sub(r"\W", "_", m), m) for m in mods if m not in {mod for _, mod in views}]
+    if new:
+        if not a.dry_run:
+            write_views(repo, views + new)
+        added.append(f"repos/{site.name}/functions/_admin/collections.js (+{', '.join(m for _, m in new)})")
     say(("would add" if a.dry_run else "added") + f" {a.collection} to repos/{site.name}:")
     for x in added:
         say(f"  {x}")
@@ -549,9 +560,9 @@ def cmd_add(a):
         return
     if not a.no_migrate:
         cmd_migrate(argparse.Namespace(site=site.name, local=a.local, dry_run=False))
-    form = src / "form.html"
+    form = next((src / f for f in ("form.html", "booking.html") if (src / f).exists()), src / "form.html")
     say(f"\nnext: {src.name}'s README is the rest ({src / 'README.md'}); in short: "
-        + ("put the form below on the page, " if form.exists() else "")
+        + ("put the block below on the page, " if form.exists() else "")
         + f"commit, `git -C repos/{site.name} push`, `site publish {site.name}`, then prove it on the live site.")
     if form.exists():
         say("\n" + form.read_text())

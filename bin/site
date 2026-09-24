@@ -77,7 +77,7 @@ REGISTRY = ENV_FILE.parent / "sites.json"          # slug -> repo -> {host, proj
 WRANGLER = HERE / "node_modules" / ".bin" / "wrangler"
 NON_SITE = {"CLAUDE.md", "README.md", ".claude", "tools", ".gitignore", ".nojekyll",
             "CNAME", ".github", "version.json", "shots",
-            "functions", "migrations", "wrangler.toml", ".dev.vars", ".wrangler"}   # in the repo, not on the site
+            "functions", "migrations", "wrangler.toml", ".dev.vars", ".wrangler", "seed.sql"}   # in the repo, not on the site
 DATA_PARTS = ("functions", "migrations")          # in templates/site, copied only for a site with a database
 DB_BIN = HERE / "bin" / "db"
 NEWSLETTER_BIN = HERE / "bin" / "newsletter"

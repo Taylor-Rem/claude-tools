@@ -167,6 +167,19 @@ their email, works once, for 15 minutes.
 - a spreadsheet of customers they already have → `db import records
   incoming/<file>.csv` (the header row must match the columns; `--dry-run`
   first).
+- "add a booking calendar" / "let people book a time" → `db add bookings`
+  (it needs the database above), paste the calendar block it prints into a
+  section of the home page, open the first times the owner names, commit,
+  push, publish. The bookings README
+  (`claude-tools/templates/collections/bookings/README.md`) has the texts.
+  Tell them bookings land on `<live url>admin/bookings` (and are emailed),
+  and open times are on `<live url>admin/slots`.
+- "add Tuesday 9am as a booking slot" → the next Tuesday unless they say
+  otherwise, on the site's clock: `db exec "INSERT INTO booking_slots
+  (starts_at, minutes, capacity) VALUES ('YYYY-MM-DDT09:00', 60, 1)"`. No
+  publish: the calendar reads the database as the page loads. Say the date
+  back. "Close Friday 1pm" → `UPDATE booking_slots SET status = 'closed'
+  WHERE id = <id>`.
 - "send me all of it" / "I'm moving the site" → `db export`, then
   `SEND-FILE: exports/<date>/<table>.csv | everything in <list>`. The CSVs
   and JSON are the handover.
@@ -179,8 +192,9 @@ their email, works once, for 15 minutes.
 - A login for *their* customers or members (accounts, a members' area):
   not yet. FORWARD-TO-TAYLOR if they need it.
 - More than one person signing in to `/admin`: one owner address for now.
-- Online payments, a store, a booking calendar: being built, not offered
-  yet. FORWARD-TO-TAYLOR.
+- Online payments, a store: being built, not offered yet. FORWARD-TO-TAYLOR.
+- Taking payment for a booking, reminders by text, syncing a Google
+  Calendar: the calendar takes requests only. Say so.
 - File uploads through a form.
 - Wiping the list: `db exec` refuses DROP and a DELETE with no WHERE
   unless `--yes`. Only when the owner asked for exactly that, and `db

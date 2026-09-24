@@ -6,7 +6,7 @@ repos under repos/ and texted photos in incoming/. The workspace's CLAUDE.md and
 .claude/settings.json are the permission boundary; this tool writes them from
 templates/client/ in the claude-tools repo.
 
-  client new <slug> --name "Name" [--live-url URL] [--shared-key] [--restamp]
+  client new <slug> --name "Name" [--live-url URL] [--tier T] [--shared-key] [--restamp]
   client ls
   client doctor [slug]
   client snippet <slug>          # the config.json project entry to paste
@@ -24,12 +24,16 @@ the relay's defaults.client_auth (the shared workspace) pays instead.
 `client ls` and `client doctor` read the relay's config.json (RELAY_CONFIG,
 default ~/projects/sms-relay/config.json) for what is true of each client
 now — on the plan or unbilled, the demo, frozen, who texts, and which key
-actually pays — so the listing can't drift from the relay.
+actually pays — so the listing can't drift from the relay. The tier's name,
+price, texter cap and schedules come from the relay's own relay/tiers.py
+beside that config.json (six tiers since B31: Hosting has 0 texters and
+no changes by text — its texts get the hosting reply).
 
 CLIENTS_DIR overrides ~/projects/clients. No keys needed (it only checks names).
 """
 
 import argparse
+import importlib.util
 import json
 import os
 import subprocess
@@ -58,6 +62,32 @@ def relay_config():
         return None
 
 
+def relay_tiers():
+    """The relay's tier table (relay/tiers.py beside config.json), or None. It has no imports of its own."""
+    path = RELAY_CONFIG.parent / "relay" / "tiers.py"
+    try:
+        spec = importlib.util.spec_from_file_location("relay_tiers", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except (OSError, ImportError, SyntaxError, AttributeError):
+        return None
+
+
+def plan_line(tier_key):
+    """'Hosting $10/mo · 0 texters (texts get the hosting reply) · no schedules', or '' when unknown."""
+    tiers = relay_tiers()
+    t = tiers.get(tier_key) if tiers else None
+    if not t:
+        return f"tier {tier_key!r} (not in the relay's tiers.py)" if tier_key else ""
+    who = ("0 texters (texts get the hosting reply, no changes)" if t["texters"] == 0 else
+           "unlimited texters" if t["texters"] is None else f"{t['texters']} texter{'s' if t['texters'] != 1 else ''}")
+    usage = (f"${t['monthly_allowance_usd']:g} usage/mo (${t['first_period_allowance_usd']:g} first)"
+             if t["monthly_allowance_usd"] else "no usage")
+    sched = f"{t['schedules']} schedules" if t["schedules"] else "no schedules"
+    return f"{t['name']} ${t['monthly_usd']:g}/mo · {usage} · {who} · {sched}"
+
+
 def relay_view(slug, cfg):
     """What the relay says about this client: status, who texts, what pays. None if the relay doesn't know it."""
     if not cfg:
@@ -75,7 +105,9 @@ def relay_view(slug, cfg):
     elif senders and not active:
         status = "frozen"
     elif billing.get("plan") == "managed":
-        status = f"on the plan ({billing.get('tier') or '?'})"
+        tiers = relay_tiers()
+        t = tiers.get(billing.get("tier")) if tiers else None
+        status = f"on {t['name']}" if t else f"on the plan ({billing.get('tier') or '?'})"
     else:
         status = "unbilled"
     auth = (p.get("agent") or {}).get("auth")
@@ -85,7 +117,8 @@ def relay_view(slug, cfg):
         pays = "Taylor's plan (allow_plan)"
     else:
         pays = (cfg.get("defaults") or {}).get("client_auth") or "nothing — the relay refuses to load"
-    return {"status": status, "texters": active, "pays": pays, "auth": auth, "allow_plan": bool(p.get("allow_plan"))}
+    return {"status": status, "texters": active, "pays": pays, "auth": auth, "allow_plan": bool(p.get("allow_plan")),
+            "plan": plan_line(billing.get("tier")) if billing.get("plan") == "managed" else ""}
 
 
 def patch_built(slug, repo):
@@ -202,6 +235,17 @@ def snippet(slug, meta):
     return json.dumps({slug: entry}, indent=2)[1:-1].strip()
 
 
+def tier_sites(name):
+    """--tier: the tier's site count from the relay's table (all six tiers), or None."""
+    if not name:
+        return None
+    tiers = relay_tiers()
+    t = tiers.get(name) if tiers else None
+    if not t:
+        die(f"--tier {name!r}: not a tier ({', '.join(tiers.ORDER) if tiers else 'relay/tiers.py not found'})")
+    return t["sites"]
+
+
 def cmd_new(a):
     ws = CLIENTS_DIR / a.slug
     stamped = (ws / "CLAUDE.md").exists()
@@ -211,7 +255,7 @@ def cmd_new(a):
     old = read_meta(ws) if stamped else {}
     meta = {"slug": a.slug, "name": a.name or old.get("name") or a.slug,
             "live_url": a.live_url or old.get("live_url"),
-            "sites": a.sites if a.sites is not None else old.get("sites", 1),   # the tier's count (plan 02); `site new` enforces it
+            "sites": a.sites if a.sites is not None else tier_sites(a.tier) or old.get("sites", 1),   # the tier's count (plan 02); `site new` enforces it
             "auth": None if a.shared_key else (old.get("auth") or key_name(a.slug))}
     stamp(ws, meta)
     print(f"{'restamped' if stamped else 'created'} {ws}")
@@ -250,6 +294,8 @@ def cmd_ls(a):
         print(f"{ws.name:<18} {m.get('name', '?'):<28} {status:<20} texts: {who}")
         print(f"{'':<18} repos={','.join(repos_of(ws)) or '-'}  {' '.join(flags)}"
               + (f"  · pays: {rv['pays']}" if rv else ""))
+        if rv and rv.get("plan"):
+            print(f"{'':<18} plan: {rv['plan']}")
 
 
 def cmd_doctor(a):
@@ -294,6 +340,8 @@ def cmd_doctor(a):
             print("  relay: no project by this name in config.json (client snippet " + ws.name + ")")
         else:
             print(f"  relay: {rv['status']}; texts: {', '.join(rv['texters']) or 'nobody'}; pays: {rv['pays']}")
+            if rv.get("plan"):
+                print(f"  plan: {rv['plan']}")
             if rv["auth"]:
                 if not toolbelt_has(rv["auth"]):
                     print(f"  FAIL key {rv['auth']} is named in config.json but NOT in the toolbelt — client messages fail (setenv.sh {rv['auth']})")
@@ -324,6 +372,7 @@ def main():
     n.add_argument("--live-url"); n.add_argument("--restamp", action="store_true")
     n.add_argument("--shared-key", action="store_true", help="no key of its own: the relay's defaults.client_auth pays")
     n.add_argument("--sites", type=int, metavar="N", help="how many sites this client's plan covers (default 1; kept on --restamp)")
+    n.add_argument("--tier", metavar="T", help="hosting|light|starter|standard|elite|elite_plus: sites from the tier (--sites wins)")
     n.set_defaults(fn=cmd_new)
     sub.add_parser("ls", help="list client workspaces").set_defaults(fn=cmd_ls)
     d = sub.add_parser("doctor", help="check workspaces are stamped and repos are pushable")

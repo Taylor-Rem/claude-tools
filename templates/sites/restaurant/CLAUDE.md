@@ -132,7 +132,7 @@ needs it. `/admin` pages are never indexed and never cached.
 hour is one `db exec` and no publish (the catalog README in claude-tools
 `templates/collections/catalog/` has the texts). Prices are in cents. Taking
 payment needs the owner's Stripe key, set by Taylor (`site checkout`); until
-then the button says "Checkout: test mode, not switched on".
+then the button says "Checkout opens once Stripe is connected".
 
 ## Hosting (for Taylor)
 

@@ -12,10 +12,14 @@ restaurant, which came first): `demo ls` lists them.
   demo reset [--force]   # put it back to golden (files, and the database's rows), publish, prove it is live
   demo golden [--yes]    # mark the site as it is now as the new golden copy
   demo diff              # what a reset would undo
+  demo check             # `shot check --all` on the live site: every page, errors, links, phone fit
   demo doctor
 
 Every command takes --project SLUG (a demo workspace by name) or, for
-reset/doctor/status, --all (every demo — how the timer runs it).
+reset/check/doctor/status, --all (every demo — how the timer runs it).
+After each reset the timer's run also runs `demo check` on that demo (plan
+12 step 5: every page of every demo, every night); the result is kept and
+`demo doctor` shows it. A page that fails the check never fails the reset.
 
 A demo with a database (`site data`) has its golden rows in the repo, in
 `seed.sql` at the root (never served): `demo reset` drops any table and
@@ -313,6 +317,8 @@ def cmd_reset(args):
             reset_data(ws, name, repo)
         print("already the golden copy; nothing to undo" + (" in the files (the rows are back to the seed)" if has_db(repo) else ""))
         _record("clean")
+        if getattr(args, "check", True):
+            cmd_check(args)
         return
     # Discard local edits, then put golden's files back as one ordinary commit
     # on top of main: history moves forward, so no force-push anywhere.
@@ -344,6 +350,39 @@ def cmd_reset(args):
             die(f"published, but {url} answered {status}")
         print(f"  {url} — {status}, {len(body)} bytes")
     _record("reset")
+    if getattr(args, "check", True):
+        cmd_check(args)
+
+
+SHOT_BIN = os.environ.get("DEMO_SHOT_BIN", "shot")
+
+
+def cmd_check(args):
+    """`shot check --all` on the live site: every same-origin page, desktop and
+    phone. Keeps the last line and whether it was clean; True when clean."""
+    ws, meta = workspace()
+    url = live_url(meta)
+    if not url:
+        print("  check: no live_url in .client.json")
+        return False
+    try:
+        r = subprocess.run([SHOT_BIN, "check", url + "/", "--all"], capture_output=True, text=True,
+                           cwd=str(ws), timeout=600)
+        out, code = (r.stdout or r.stderr).strip(), r.returncode
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        out, code = f"shot did not run: {exc}", 2
+    lines = [x for x in out.splitlines() if x.strip()]
+    last = lines[-1].strip() if lines else "(no output)"
+    if code != 0:
+        for x in lines:
+            if x.lstrip().startswith(("✗", "HTTP", "a ", "Failed")) or x.startswith("http"):
+                print("  " + x.rstrip())
+    print(f"  check: {last}")
+    st = state_read()
+    st["last_check"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    st["last_check_result"] = "clean" if code == 0 else last
+    state_write(st)
+    return code == 0
 
 
 def _record(result):
@@ -389,6 +428,7 @@ def _doctor(args):
         ok = ok and status == 200 and demo_bar
     st = state_read()
     print(f"  last reset: {st.get('last_reset', 'never')} ({st.get('last_reset_result', '-')})")
+    print(f"  last page check: {st.get('last_check', 'never')} ({st.get('last_check_result', '-')}) — `demo check` runs it now")
     timer = subprocess.run(["systemctl", "--user", "is-active", "demo-reset.timer"], capture_output=True, text=True)
     print(f"  nightly timer: {timer.stdout.strip() or 'not installed'} (demo reset --all)")
     ok = ok and timer.stdout.strip() == "active"
@@ -446,10 +486,13 @@ def main():
     sub.add_parser("diff", parents=[common]).set_defaults(fn=cmd_diff)
     r = sub.add_parser("reset", parents=[many])
     r.add_argument("--force", action="store_true", help="publish even when nothing changed")
+    r.add_argument("--no-check", dest="check", action="store_false", help="skip the page check after the reset")
     r.set_defaults(fn=lambda a: sys.exit(0 if each(a, cmd_reset) else 1))
     g = sub.add_parser("golden", parents=[common])
     g.add_argument("--yes", action="store_true", help="move golden without asking")
     g.set_defaults(fn=cmd_golden)
+    sub.add_parser("check", parents=[many], help="shot check --all on the live site").set_defaults(
+        fn=lambda a: sys.exit(0 if each(a, cmd_check) else 1))
     sub.add_parser("doctor", parents=[many]).set_defaults(fn=cmd_doctor)
     args = ap.parse_args()
     PROJECT = getattr(args, "project", None)

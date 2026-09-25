@@ -64,8 +64,8 @@
         .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
         .then(function (data) {
           mode = data.checkout; box.textContent = ""; hoursBox(data.hours, data.open_now);
-          pay.textContent = mode === "live" ? "Pay and pick up" : mode === "test" ? "Pay (Stripe test mode — no real charge)" : "Checkout: test mode, not switched on";
-          payNote.textContent = mode === "live" ? "Payment is by Stripe Checkout." : mode === "test" ? "This is Stripe's test mode: use card 4242 4242 4242 4242, any future date, any code. Nothing is charged." : "Paying online isn't switched on yet. Browse away; ordering opens when it is.";
+          pay.textContent = mode === "live" ? "Pay and pick up" : mode === "test" ? "Pay (Stripe test mode — no real charge)" : "Checkout opens once Stripe is connected";
+          payNote.textContent = mode === "live" ? "Payment is by Stripe Checkout." : mode === "test" ? "This is Stripe's test mode: use card 4242 4242 4242 4242, any future date, any code. Nothing is charged." : "Paying online isn't connected yet: fill a basket if you like, but nothing is charged and no order is taken until it is.";
           if (!data.products.length) { box.appendChild(el("p", "muted", "Nothing here yet.")); return; }
           var section = null, last = null;
           data.products.forEach(function (p) {

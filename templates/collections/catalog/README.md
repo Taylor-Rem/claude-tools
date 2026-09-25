@@ -26,7 +26,7 @@ After `db add catalog`:
    `db exec "INSERT INTO products (name, category, price_cents, description, sort) VALUES ('Pho', 'Mains', 1400, 'Beef broth, rice noodles', 1)"`.
    The hours: `db exec "INSERT INTO hours (weekday, opens, closes) VALUES (1, '11:00', '21:00')"` per day.
 3. Commit, push, `site publish <name>`. The page shows everything with the
-   button "Checkout: test mode, not switched on" until step 4.
+   button "Checkout opens once Stripe is connected" until step 4.
 4. Payments are the owner's own Stripe account — Taylor's step, never by
    text: they give Taylor a restricted or secret key, Taylor puts it in the
    toolbelt and runs `SITE_ADMIN=1 site checkout <name> --key-from NAME

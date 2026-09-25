@@ -125,3 +125,29 @@ class DemoTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DemoCheckTest(DemoTest):
+    """The nightly page check: `shot check --all` on the live URL, the result kept for doctor."""
+
+    def fake_shot(self, code, last):
+        shot = self.root / "shot"
+        shot.write_text(f"#!/bin/sh\necho \"$@\" > {self.root / 'shot-args'}\necho '  ✗ 1 failed request'\necho '{last}'\nexit {code}\n")
+        shot.chmod(0o755)
+        self.demo.SHOT_BIN = str(shot)
+
+    def run_check(self):
+        (self.ws / ".client.json").write_text(json.dumps({"slug": "demo-acme", "name": "Acme", "live_url": "https://acme.example/"}))
+        self.demo.PROJECT = "demo-acme"
+        return self.demo.cmd_check(None)
+
+    def test_a_clean_check_is_recorded(self):
+        self.fake_shot(0, "3 pages, 0 things to look at")
+        self.assertTrue(self.run_check())
+        self.assertEqual((self.root / "shot-args").read_text().split(), ["check", "https://acme.example/", "--all"])
+        self.assertEqual(self.demo.state_read()["last_check_result"], "clean")
+
+    def test_a_failed_check_keeps_its_last_line(self):
+        self.fake_shot(1, "3 pages, 2 things to look at")
+        self.assertFalse(self.run_check())
+        self.assertEqual(self.demo.state_read()["last_check_result"], "3 pages, 2 things to look at")

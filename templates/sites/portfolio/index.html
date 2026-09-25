@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{NAME}}</title>
+  <!-- REPLACE-ME: one sentence about {{NAME}} for search results. -->
+  <meta name="description" content="{{NAME}} — {{TAGLINE}}">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <header class="site-header">
+    <a class="wordmark" href="index.html">{{NAME}}</a>
+    <nav class="site-nav" aria-label="Site">
+      <a href="#work" aria-current="page">Work</a>
+      <a href="#about">About</a>
+      <a href="#contact">Contact</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero">
+      <h1 class="hero-title">{{NAME}}</h1>
+      <!-- REPLACE-ME: placeholder tagline — swap for the client's own line. -->
+      <p class="hero-tagline">{{TAGLINE}}</p>
+      <div class="button-row">
+        <a class="button" href="#work">See the work</a>
+        <a class="button" href="#contact">Get in touch</a>
+      </div>
+    </section>
+    <section class="section" id="work">
+      <div class="section-inner reveal">
+        <p class="kicker">Work</p>
+        <h2>Selected work</h2>
+        <!-- REPLACE-ME: one <li> per piece of work: a picture (an <img> from images/), a title, one line. -->
+        <ul class="card-list three">
+          <li><svg viewBox="0 0 400 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Placeholder for a piece of work"><rect width="400" height="300" fill="#e7e5e1"/><circle cx="200" cy="130" r="55" fill="#fbfbfa"/><path d="M60 280 Q200 170 340 280 Z" fill="#fbfbfa"/></svg><h3>Project 1</h3><p class="card-meta">One line: what it was, for whom, when.</p></li>
+          <li><svg viewBox="0 0 400 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Placeholder for a piece of work"><rect width="400" height="300" fill="#e7e5e1"/><circle cx="200" cy="130" r="55" fill="#fbfbfa"/><path d="M60 280 Q200 170 340 280 Z" fill="#fbfbfa"/></svg><h3>Project 2</h3><p class="card-meta">One line: what it was, for whom, when.</p></li>
+          <li><svg viewBox="0 0 400 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Placeholder for a piece of work"><rect width="400" height="300" fill="#e7e5e1"/><circle cx="200" cy="130" r="55" fill="#fbfbfa"/><path d="M60 280 Q200 170 340 280 Z" fill="#fbfbfa"/></svg><h3>Project 3</h3><p class="card-meta">One line: what it was, for whom, when.</p></li>
+        </ul>
+      </div>
+    </section>
+    <section class="section" id="about">
+      <div class="section-inner reveal">
+        <p class="kicker">About</p>
+        <h2>About</h2>
+        <p class="lede"><!-- REPLACE-ME --> A sentence or two: who they are and what they make.</p>
+        <p>A second short paragraph, or delete it.</p>
+      </div>
+    </section>
+    <section class="section" id="contact">
+      <div class="section-inner reveal">
+        <p class="kicker">Contact</p>
+        <h2>Work together</h2>
+        <p class="lede">Say how to reach them for a commission or a booking.</p>
+        <div class="button-row">
+          <a class="button" href="mailto:hello@example.com">hello@example.com</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <!-- Keep this footer identical on every page. -->
+    <p class="copyright">&copy; {{YEAR}} {{NAME}}</p>
+  </footer>
+
+  <script src="js/main.js"></script>
+</body>
+</html>

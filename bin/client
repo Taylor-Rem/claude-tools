@@ -166,7 +166,7 @@ def site_urls(meta):
         sites = {}
     for entry in sites.values():
         if entry.get("host") == "cloudflare" and entry.get("project"):
-            urls.append(f"https://{entry['project']}.pages.dev/")
+            urls.append(f"https://{entry.get('pages_host') or entry['project'] + '.pages.dev'}/")
         for d in entry.get("domains", []):
             urls.append(f"https://{d}/")
     return list(dict.fromkeys(u.rstrip("/") + "/" for u in urls))

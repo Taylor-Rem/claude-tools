@@ -320,6 +320,20 @@ def default_styles():
             "little scuffed. No people unless the subject says so, no text, no "
             "logos, no screens with readable words."
         ),
+        # 2026-09-24: the night-shift feed (social/calendar.md § Three dials).
+        # Palette only; the art style is the prompt's first sentence and
+        # changes every post, so this preset must not name a medium.
+        "patchlamp-night": (
+            "Colour palette, whatever the medium: near-black warm room "
+            "(#0F1413), scuffed enamel teal-green panels (#16302F, #1E3E3C), "
+            "one warm amber (#F0A63A) as the only bright light, brass "
+            "(#B59063) for small metal parts, warm off-white (#E9E3D6) for "
+            "anything light; a muted red only for something wrong. Night, "
+            "lamplight from the left. The raccoon, if present: scruffy, one "
+            "ear notched, 1940s headset with a brass boom, a patch cord over "
+            "one shoulder, half-lidded and unimpressed. No text, no letters, "
+            "no logos, no readable screens."
+        ),
         "restaurant-social": (
             "Editorial photograph of a small independent restaurant, realistic "
             "and appetizing, warm natural light, shallow depth of field, the "

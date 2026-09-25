@@ -54,7 +54,7 @@ BRANCH = "main"
 # Everything the side-car mirrors, relative to WORK_TREE. TAYLOR-TODO.md is
 # the web page's file; the rest is the plan Cowork reads on the MacBook.
 TRACKED = [TODO_FILE.name, "ROADMAP.md", "VISION.md", "HISTORY.md", "CLAUDE.md",
-           "COWORK.md", "plans", "mac", "requests", "social", "flint"]
+           "COWORK.md", "plans", "mac", "requests", "social", "flint", ".gitattributes"]
 # `social` (added 2026-09-23, Flint): the group posts, the boards and the
 # day-1 mock posts, so Cowork can post them from the Mac (ROADMAP B24).
 # `flint` (2026-09-23): Cowork ↔ Flint mail — inbox/ (Cowork writes), outbox/ (Flint writes).
@@ -66,6 +66,30 @@ REQUESTS = WORK_TREE / "requests"
 REQUEST_TIMEOUT = int(os.environ.get("TODO_REQUEST_TIMEOUT", 45 * 60))
 REQUEST_MAX_CHARS = 4000
 REQUEST_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+# Flint's inbox (2026-09-24, Flint): a file Cowork writes to flint/inbox/ is a
+# question for Flint. Each sync starts one unanswered inbox file as a headless
+# Flint session that writes flint/outbox/<same name>.md; Taylor no longer
+# carries the ping. Same queue as the request box: one session at a time
+# across both. A first line `model: opus` in the inbox file picks the model.
+FLINT = WORK_TREE / "flint"
+INBOX, OUTBOX = FLINT / "inbox", FLINT / "outbox"
+INBOX_NAME = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9-]{0,63}$")
+INBOX_SINCE = "2026-09-24"   # files dated before this were answered by hand
+INBOX_TIMEOUT = int(os.environ.get("TODO_INBOX_TIMEOUT", 15 * 60))
+INBOX_MODELS = {"fable": "claude-fable-5-1", "opus": "claude-opus-5-5", "sonnet": "claude-sonnet-5"}
+INBOX_MODEL = os.environ.get("TODO_FLINT_MODEL", "fable")
+INBOX_MAX_CHARS = 12000
+FLINT_PROMPT = """You are Flint - Taylor's planner and verifier (CLAUDE.md "Who's who"), answering mail from Cowork, the Claude session on Taylor's MacBook, without Taylor carrying the ping. This is a headless run started by `todo sync`; nobody is watching, so finish the job and leave the record true.
+
+Read first: flint/README.md, then ROADMAP.md, TAYLOR-TODO.md (fresh, from disk), HISTORY.md's session log for this week, and any earlier files in flint/inbox and flint/outbox on the same topic. Your memory directory is loaded as usual.
+
+Cowork's note is flint/inbox/{name}.md (its text follows). Answer it by writing flint/outbox/{name}.md - that exact path; the file's existence is what closes the topic. Head it "# Flint -> Cowork - {today}, <topic>" then the answer: what Cowork can act on, what is Taylor's, what is a build session's. Verify before you assert: when the docs and the live system could differ, check the live system (shot, front, db doctor, the relay's read-only commands, git logs).
+
+Rules: anything that changes the plan goes into ROADMAP / TAYLOR-TODO / HISTORY by the usual rules (edit in place after re-reading from disk; one HISTORY session-log line tagged Flint if you changed something). Never write a secret or the id of one. Never restart a relay daemon, push a repo, merge a PR, post anywhere or spend money. If Cowork asks for something only Taylor can do, write the TAYLOR-TODO entry and say so. If a decision is Taylor's, recommend and file it in TAYLOR-TODO section 3 instead of deciding. Keep the reply under about 2,500 characters. Never write into flint/inbox. If you truly cannot answer, write the outbox file saying why and what Taylor should look at. Your final message is discarded; only the outbox file reaches Cowork.
+
+--- flint/inbox/{name}.md ---
+{text}
+"""
 
 
 def tracked_paths():
@@ -76,6 +100,11 @@ def write_exclude():
     """Only the tracked docs are ever seen by the side-car; everything else is excluded."""
     (GIT_DIR / "info").mkdir(exist_ok=True)
     lines = ["*"] + [f"!/{t}" for t in TRACKED] + ["!/plans/**", "!/mac/**", "!/requests/**", "!/social/**", "!/flint/**"]
+    # The same union rule as a tracked .gitattributes, so the MacBook's clone
+    # (which has no info/attributes of its own) merges the same way (2026-09-24).
+    ga = WORK_TREE / ".gitattributes"
+    if not ga.exists():
+        ga.write_text("*.md merge=union\n*.jsonl merge=union\n")
     (GIT_DIR / "info" / "exclude").write_text("\n".join(lines) + "\n")
     # When both sides add a line at the same spot (two HISTORY log lines, two
     # TODO entries), keep both instead of one side's whole file: git's union
@@ -362,6 +391,28 @@ def request_files():
     return out
 
 
+def inbox_files():
+    """(name, note path, reply path, running marker) for every inbox file, oldest first.
+    Answered = an outbox file with the same name, or `<name>-reply.md` (the hand-written convention)."""
+    if not INBOX.exists():
+        return []
+    out = []
+    for p in sorted(INBOX.glob("*.md"), key=lambda x: x.stat().st_mtime):
+        name = p.stem
+        if not INBOX_NAME.match(name) or name[:10] < INBOX_SINCE:
+            continue
+        out.append((name, p, OUTBOX / f"{name}.md", OUTBOX / f"{name}.running"))
+    return out
+
+
+def inbox_state(name, note, reply, running):
+    if reply.exists() or (OUTBOX / f"{name}-reply.md").exists():
+        return "answered"
+    if running.exists():
+        return "running"
+    return "waiting"
+
+
 def request_state(name, prompt, reply, running):
     if reply.exists():
         return "answered"
@@ -385,22 +436,23 @@ def start_requests(quiet=False):
     """Start the oldest unanswered request, detached, unless one is running.
     Never raises: a broken request box must not stop the sync."""
     try:
-        reqs = request_files()
-        if any(state == "running" for state in (request_state(*r) for r in reqs)):
+        jobs = [("request", request_state(*r), r) for r in request_files()] + \
+               [("inbox", inbox_state(*r), r) for r in inbox_files()]
+        if any(state == "running" for _, state, _ in jobs):
             return
-        for name, prompt, reply, running in reqs:
-            if request_state(name, prompt, reply, running) != "waiting":
+        for kind, state, (name, prompt, reply, running) in jobs:
+            if state != "waiting":
                 continue
             running.write_text(f"started {time.strftime('%Y-%m-%d %H:%M:%S')} by todo sync\n")
-            cmd = ["systemd-run", "--user", "--quiet", "--collect", f"--unit=todo-request-{name}",
+            cmd = ["systemd-run", "--user", "--quiet", "--collect", f"--unit=todo-{kind}-{name}",
                    "--setenv=PATH=" + os.environ.get("PATH", "") + ":" + str(Path.home() / ".local/bin"),
-                   str(Path(__file__).resolve()), "request", "run", name]
+                   str(Path(__file__).resolve()), kind, "run", name]
             r = subprocess.run(cmd, capture_output=True, text=True)
             if r.returncode:
                 running.unlink(missing_ok=True)
                 print(f"todo: could not start request {name}: {(r.stderr or r.stdout).strip()}", file=sys.stderr)
             elif not quiet:
-                print(f"started request {name}")
+                print(f"started {kind} {name}")
             return
     except Exception as exc:  # noqa: BLE001
         print(f"todo: request box skipped: {exc}", file=sys.stderr)
@@ -469,6 +521,82 @@ def run_request(name):
         body = ""
     reply.write_text("\n".join(head + [status, "", (body or "").strip()[-20000:], ""]))
     running.unlink(missing_ok=True)
+    notify_reply(name, status, reply)
+
+
+def notify_reply(name, status, reply):
+    """Tell Taylor a request is answered (relay `notify`: the channel he last used, else a DM).
+    Best effort — a missing relay never breaks the runner."""
+    try:
+        subprocess.run(["notify", "--file", str(reply), "--chars", "1200", f"request {name}: {status}"],
+                       capture_output=True, text=True, timeout=60, cwd=WORK_TREE)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def run_inbox(name):
+    """Answer one inbox file as a headless Flint. Called detached by start_requests."""
+    if not INBOX_NAME.match(name or ""):
+        die("bad inbox name")
+    note, reply, running = INBOX / f"{name}.md", OUTBOX / f"{name}.md", OUTBOX / f"{name}.running"
+    if not note.exists():
+        die(f"no such inbox file: {name}")
+    if inbox_state(name, note, reply, running) == "answered":
+        die(f"{name} is already answered")
+    text = note.read_text().strip()
+    model = INBOX_MODEL
+    first = text.splitlines()[0].strip().lower() if text else ""
+    if first.startswith("model:"):
+        model = first.split(":", 1)[1].strip()
+        text = text.split("\n", 1)[1] if "\n" in text else ""
+    model_id = INBOX_MODELS.get(model, model)
+    started = time.strftime("%Y-%m-%d %H:%M:%S")
+    OUTBOX.mkdir(parents=True, exist_ok=True)
+    running.write_text(f"started {started}\n")
+    prompt = FLINT_PROMPT.format(name=name, today=time.strftime("%Y-%m-%d %H:%M %Z"), text=text[:INBOX_MAX_CHARS])
+    body, status = "", ""
+    try:
+        r = subprocess.run(["claude", "-p", prompt, "--model", model_id, "--permission-mode", "auto", "--output-format", "json"],
+                           cwd=WORK_TREE, capture_output=True, text=True, timeout=INBOX_TIMEOUT,
+                           env=dict(os.environ, TODO_INBOX=name))
+        body, meta = r.stdout, {}
+        try:
+            data = json.loads(r.stdout)
+            body = data.get("result") or r.stdout
+            meta = {k: data.get(k) for k in ("num_turns", "duration_ms", "total_cost_usd") if k in data}
+        except ValueError:
+            pass
+        status = f"{model}, {meta.get('num_turns', '?')} turns, {round((meta.get('duration_ms') or 0) / 60000, 1)} min"
+        if r.returncode:
+            status += f", exit {r.returncode}"
+            if r.stderr.strip():
+                body = (body or "") + "\n\nstderr:\n" + r.stderr.strip()[-2000:]
+    except subprocess.TimeoutExpired:
+        status = f"stopped at the {INBOX_TIMEOUT // 60}-minute cap"
+        body = "(the session was stopped at the cap before it wrote the reply)"
+    except FileNotFoundError:
+        status = "failed: claude is not on PATH for the runner"
+    stamp = time.strftime("%Y-%m-%d %H:%M %Z")
+    if reply.exists():
+        with reply.open("a") as f:
+            f.write(f"\n_(answered by a headless Flint session, {status}, {stamp})_\n")
+    else:
+        reply.write_text(f"# Flint -> Cowork - {stamp}, {name} (the session left no reply file)\n\n"
+                         f"{(body or '').strip()[-6000:]}\n\n_(headless Flint session, {status}; "
+                         f"tell Taylor if this keeps happening)_\n")
+    running.unlink(missing_ok=True)
+
+
+def cmd_inbox(args):
+    if args.action == "run":
+        run_inbox(args.name)
+        return
+    items = inbox_files()
+    if not items:
+        print("no inbox files since " + INBOX_SINCE)
+    for name, note, reply, running in items:
+        first = next((l for l in note.read_text().splitlines() if l.strip() and not l.lower().startswith("model:")), "")
+        print(f"  {inbox_state(name, note, reply, running):<9} {name}  {first[:70]}")
 
 
 def cmd_init(args):
@@ -588,6 +716,8 @@ def cmd_doctor(args):
         print(f"{ok(r.returncode == 0)} fetch from origin" + (f"; {'in sync' if head == rem else 'differs — todo sync'}" if r.returncode == 0 else ""))
     t = subprocess.run(["systemctl", "--user", "is-active", "todo-sync.timer"], capture_output=True, text=True).stdout.strip()
     print(f"{ok(t == 'active')} todo-sync.timer {t or 'not installed'}")
+    ib = [inbox_state(*i) for i in inbox_files()]
+    print(f"{ok('running' not in ib or True)} flint inbox: {ib.count('waiting')} waiting, {ib.count('running')} running, {ib.count('answered')} answered since {INBOX_SINCE} (model {INBOX_MODEL}, cap {INBOX_TIMEOUT // 60} min)")
     site = gh("api", f"repos/{o}/{SITE_REPO}/pages", "--jq", ".html_url", check=False)
     print(f"{ok(site.returncode == 0)} Pages site " + (site.stdout.strip() if site.returncode == 0 else "not published — `todo site push`"))
     print("\nBrowser token (one time, in the browser, never in a repo):")
@@ -613,11 +743,20 @@ def main():
     p.add_argument("--run", dest="action", action="store_const", const="run", default="new")
     p.add_argument("--ls", dest="action", action="store_const", const="ls")
     p.set_defaults(fn=cmd_request)
+    p = sub.add_parser("inbox", help="Flint's inbox (flint/inbox -> flint/outbox): todo inbox ls | todo inbox run NAME")
+    p.add_argument("name", nargs="?", help="the inbox file's name (run)")
+    p.add_argument("--run", dest="action", action="store_const", const="run", default="ls")
+    p.add_argument("--ls", dest="action", action="store_const", const="ls")
+    p.set_defaults(fn=cmd_inbox)
     argv = sys.argv[1:]
     if argv[:2] == ["request", "ls"]:
         argv = ["request", "--ls"]
     elif argv[:2] == ["request", "run"]:
         argv = ["request", "--run", *argv[2:]]
+    elif argv[:2] == ["inbox", "ls"]:
+        argv = ["inbox", "--ls"]
+    elif argv[:2] == ["inbox", "run"]:
+        argv = ["inbox", "--run", *argv[2:]]
     args = ap.parse_args(argv)
     args.fn(args)
 

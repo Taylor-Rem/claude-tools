@@ -1,0 +1,207 @@
+#!/usr/bin/env python3
+"""
+music — Patch in the call: music in the Discord voice channel people are in.
+
+  music play <youtube link>          join the asker's voice channel and play it (or queue it)
+  music play "<search words>"        the same for a search: the first 1-15 minute hit
+  music play <playlist link> --all   queue the whole playlist (up to 50)
+  music play "<album / OST>" --all   the same by words: the first YouTube playlist that matches,
+                                     else the longest "full album" upload as one track
+  music skip                         the next one in the queue (or silence)
+  music stop                         stop, clear the queue, leave the channel
+  music np                           what's playing, how far in, how many queued
+  music queue                        the same plus the queue
+  music volume [0.5 | 50]            set it (0.05-2.0; restarts the song at the same spot), or print it
+  music status                       the daemon: gateway, servers, what's playing where
+  music doctor                       ffmpeg + libopus, yt-dlp + its JS solver, pynacl, davey,
+                                     the relay-voice unit, the socket, a real YouTube lookup, the rooms' allowlists
+
+  --for discord:<uid>   who asked (default $RELAY_SENDER_KEY, which a room run has): Patch joins
+                        the channel that person is in; else the room's server's only occupied
+                        voice channel; else it says which channels have people
+  --guild <id>          pin the server
+  --json                the daemon's whole answer
+
+Prints one line Patch can paste, e.g.
+  playing *Heist* — Lindsey Stirling, 3:41 in #General
+  queued *Toxic* — Britney Spears, 3:19, 1 ahead of it
+Exit status 1 when it didn't happen (nobody in voice, not found, can't join);
+the line says why, in words fit for the chat.
+
+The player is its own daemon, relay-voice.service (sms-relay/relay/voice.py,
+plan 16), on state/voice.sock; a relay restart never cuts a song. It leaves
+on `stop`, when the last person leaves the channel, or after 5 idle minutes.
+"""
+
+import json
+import os
+import shutil
+import socket
+import subprocess
+import sys
+from datetime import date
+from pathlib import Path
+
+RELAY = Path(os.environ.get("RELAY_DIR", Path.home() / "projects" / "sms-relay"))
+SOCKET = Path(os.environ.get("MUSIC_SOCKET", RELAY / "state" / "voice.sock"))
+VENV_PY = RELAY / ".venv" / "bin" / "python"
+ROOMS = Path.home() / "projects" / "rooms"
+PROBE = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+
+
+def ask(req, timeout=90):
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        s.settimeout(timeout)
+        s.connect(str(SOCKET))
+        s.sendall((json.dumps(req) + "\n").encode())
+        line = s.makefile("rb").readline()
+    if not line:
+        raise ConnectionError("the voice daemon closed the connection without answering")
+    return json.loads(line)
+
+
+def usage(code=2):
+    print(__doc__.strip())
+    sys.exit(code)
+
+
+def parse(argv):
+    opts = {"for": os.environ.get("RELAY_SENDER_KEY", ""), "project": os.environ.get("RELAY_PROJECT", ""),
+            "guild": "", "json": False, "all": False}
+    rest = []
+    it = iter(argv)
+    for a in it:
+        if a == "--for":
+            opts["for"] = next(it, "")
+        elif a.startswith("--for="):
+            opts["for"] = a.split("=", 1)[1]
+        elif a == "--guild":
+            opts["guild"] = next(it, "")
+        elif a.startswith("--guild="):
+            opts["guild"] = a.split("=", 1)[1]
+        elif a == "--json":
+            opts["json"] = True
+        elif a in ("--all", "--album", "--playlist"):
+            opts["all"] = True
+        elif a in ("-h", "--help"):
+            usage(0)
+        else:
+            rest.append(a)
+    return opts, rest
+
+
+def run_cmd(cmd, rest, opts):
+    req = {"cmd": cmd, "for": opts["for"], "project": opts["project"]}
+    if opts["guild"]:
+        req["guild"] = opts["guild"]
+    if cmd == "play":
+        req["query"] = " ".join(rest).strip()
+        if not req["query"]:
+            sys.exit("music play: a link or a few words")
+        if opts["all"]:
+            req["all"] = True
+    elif cmd == "volume" and rest:
+        req["value"] = rest[0]
+    try:
+        resp = ask(req)
+    except FileNotFoundError:
+        print("the music player isn't running (relay-voice.service is down) — tell Taylor")
+        sys.exit(1)
+    except (ConnectionError, OSError) as exc:
+        print(f"the music player didn't answer ({exc}) — tell Taylor")
+        sys.exit(1)
+    print(json.dumps(resp, indent=2) if opts["json"] else resp.get("line", ""))
+    sys.exit(0 if resp.get("ok") else 1)
+
+
+# ---- doctor -----------------------------------------------------------------
+
+def doctor():
+    bad = 0
+
+    def line(ok, text, fix=""):
+        nonlocal bad
+        bad += 0 if ok else 1
+        print(f"{'ok ' if ok else 'BAD'}  {text}" + (f"\n       fix: {fix}" if fix and not ok else ""))
+
+    ff = shutil.which("ffmpeg")
+    enc = subprocess.run([ff, "-hide_banner", "-encoders"], capture_output=True, text=True).stdout if ff else ""
+    line(bool(ff) and "libopus" in enc, f"ffmpeg {ff or 'missing'}" + (" with libopus" if "libopus" in enc else ""),
+         "a static ffmpeg with libopus in ~/.local/bin")
+
+    probe = ("import importlib, json\nout = {}\n"
+             "for m in ('nacl', 'davey', 'yt_dlp', 'yt_dlp_ejs', 'websocket'):\n"
+             "    try:\n        mod = importlib.import_module(m)\n"
+             "        out[m] = getattr(getattr(mod, 'version', None), '__version__', None) or getattr(mod, '__version__', 'ok')\n"
+             "    except Exception as e:\n        out[m] = None\n"
+             "print(json.dumps(out))")
+    try:
+        mods = json.loads(subprocess.run([str(VENV_PY), "-c", probe], capture_output=True, text=True, timeout=30).stdout)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        mods = {}
+    pip = f"{RELAY}/.venv/bin/pip install -r {RELAY}/requirements.txt"
+    for m, why in (("nacl", "pynacl (transport encryption)"), ("davey", "davey (DAVE end-to-end voice)"),
+                   ("yt_dlp", "yt-dlp"), ("yt_dlp_ejs", "yt-dlp-ejs (YouTube's JS challenge solver)"),
+                   ("websocket", "websocket-client")):
+        line(bool(mods.get(m)), f"{why} {mods.get(m) or 'missing'} in the relay venv", pip)
+    ver = mods.get("yt_dlp") or ""
+    try:
+        age = (date.today() - date(*map(int, ver.split(".")[:3]))).days
+        line(age < 75, f"yt-dlp is {age} days old" + ("" if age < 75 else " — youtube breaks old ones"),
+             f"{RELAY}/.venv/bin/pip install -U yt-dlp yt-dlp-ejs && systemctl --user restart relay-voice")
+    except (ValueError, TypeError):
+        pass
+    js = shutil.which("deno") or shutil.which("node")
+    line(bool(js), f"JS runtime for yt-dlp: {js or 'none'}", "apt install nodejs")
+
+    active = subprocess.run(["systemctl", "--user", "is-active", "relay-voice"], capture_output=True, text=True).stdout.strip()
+    line(active == "active", f"relay-voice.service {active or 'unknown'}",
+         "systemctl --user enable --now relay-voice; tail sms-relay/logs/voice.log")
+    try:
+        st = ask({"cmd": "status"}, timeout=10)
+        line(st.get("ready"), f"socket {SOCKET}: {st.get('line')}", "tail sms-relay/logs/voice.log")
+        for p in st.get("players") or []:
+            cur = (p.get("current") or {}).get("title") or "nothing"
+            print(f"       #{p['channel_name']}: {cur}, {len(p.get('queue') or [])} queued, volume {p['volume']:g}"
+                  + (f", last error: {p['error']}" if p.get("error") else ""))
+    except OSError as exc:
+        line(False, f"socket {SOCKET}: {exc}", "systemctl --user restart relay-voice")
+
+    try:
+        out = subprocess.run([str(VENV_PY), "-c", "import sys; from relay import voice; voice.ipv4_only(); "
+                                                  f"print(voice.resolve({PROBE!r}).label())"],
+                             cwd=str(RELAY), capture_output=True, text=True, timeout=90)
+        got = out.stdout.strip()
+        line(out.returncode == 0 and got, f"youtube lookup: {got or (out.stderr.strip().splitlines() or ['failed'])[-1]}",
+             f"{RELAY}/.venv/bin/pip install -U yt-dlp yt-dlp-ejs && systemctl --user restart relay-voice")
+    except subprocess.SubprocessError as exc:
+        line(False, f"youtube lookup: {exc}")
+
+    for room in ("lab", "hangout"):
+        f = ROOMS / room / ".claude" / "settings.json"
+        try:
+            allow = json.loads(f.read_text())["permissions"]["allow"]
+        except (OSError, ValueError, KeyError):
+            allow = []
+        line("Bash(music *)" in allow, f"rooms/{room} may run music", f"add \"Bash(music *)\" to {f}")
+
+    print("all green" if not bad else f"{bad} problem{'s' if bad > 1 else ''}")
+    return 1 if bad else 0
+
+
+def main():
+    opts, rest = parse(sys.argv[1:])
+    if not rest:
+        usage()
+    cmd, rest = rest[0].lower(), rest[1:]
+    if cmd == "doctor":
+        sys.exit(doctor())
+    aliases = {"now": "np", "nowplaying": "np", "next": "skip", "leave": "stop", "q": "queue", "vol": "volume"}
+    cmd = aliases.get(cmd, cmd)
+    if cmd not in ("play", "skip", "stop", "np", "queue", "volume", "status"):
+        usage()
+    run_cmd(cmd, rest, opts)
+
+
+if __name__ == "__main__":
+    main()

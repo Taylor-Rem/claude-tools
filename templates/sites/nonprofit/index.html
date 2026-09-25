@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{NAME}}</title>
+  <!-- REPLACE-ME: one sentence about {{NAME}} for search results. -->
+  <meta name="description" content="{{NAME}} — {{TAGLINE}}">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <header class="site-header">
+    <a class="wordmark" href="index.html">{{NAME}}</a>
+    <nav class="site-nav" aria-label="Site">
+      <a href="index.html" aria-current="page">Home</a>
+      <a href="index.html#events">Events</a>
+      <a href="index.html#volunteer">Volunteer</a>
+      <a href="donate.html">Donate</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero">
+      <h1 class="hero-title">{{NAME}}</h1>
+      <!-- REPLACE-ME: placeholder tagline — swap for the client's own line. -->
+      <p class="hero-tagline">{{TAGLINE}}</p>
+      <div class="button-row">
+        <a class="button" href="#events">What's on</a>
+        <a class="button" href="#volunteer">Volunteer</a>
+        <a class="button" href="donate.html">Donate</a>
+      </div>
+    </section>
+    <section class="section" id="mission">
+      <div class="section-inner reveal">
+        <p class="kicker">Who we are</p>
+        <h2>What we do</h2>
+        <p class="lede"><!-- REPLACE-ME --> Placeholder: the mission in a sentence or two — who it serves and how.</p>
+        <p>A second short paragraph, or delete it.</p>
+      </div>
+    </section>
+    <section class="section" id="events">
+      <div class="section-inner reveal">
+        <p class="kicker">Calendar</p>
+        <h2>What's on</h2>
+        <!-- REPLACE-ME: one <li> per event: a name, when (a date, or "every Saturday"), one line. Past ones come off. -->
+        <ul class="card-list">
+          <li><h3>First event</h3><p class="card-meta">Every Saturday, 9am</p><p>One line about it.</p></li>
+          <li><h3>Second event</h3><p class="card-meta">First Tuesday of the month, 7pm</p><p>One line about it.</p></li>
+        </ul>
+      </div>
+    </section>
+    <section class="section" id="volunteer">
+      <div class="section-inner reveal">
+        <p class="kicker">Volunteer</p>
+        <h2>Lend a hand</h2>
+        <p class="muted">Leave your name and we'll tell you about the next chance to help.</p>
+        <form class="site-form" id="form" action="/api/submissions" method="post">
+          <input type="hidden" name="_form" value="volunteer">
+          <label>Name <input name="name" required autocomplete="name"></label>
+          <label>Email <input name="email" type="email" required autocomplete="email"></label>
+          <label>Phone <input name="phone" type="tel" autocomplete="tel"></label>
+          <label>What would you like to help with? <textarea name="message" rows="4" required></textarea></label>
+          <input name="website" type="text" tabindex="-1" autocomplete="off" aria-hidden="true" style="position:absolute;left:-9999px">
+          <button class="button" type="submit">Sign me up</button>
+          <p class="form-thanks" hidden>Thanks for signing up — we'll be in touch.</p>
+          <p class="form-sorry" hidden>That didn't go through. Please try again, or call us.</p>
+          <script>
+            (function () {
+              var f = document.getElementById("form"), q = location.search;
+              if (/[?&]sent=0/.test(q)) f.querySelector(".form-sorry").hidden = false;
+              else if (/[?&]sent=/.test(q)) f.querySelector(".form-thanks").hidden = false;
+            })();
+          </script>
+        </form>
+      </div>
+    </section>
+    <section class="section" id="donate">
+      <div class="section-inner reveal">
+        <p class="kicker">Donate</p>
+        <h2>Give</h2>
+        <p>Placeholder: what a gift pays for, in a sentence.</p>
+        <div class="button-row">
+          <a class="button" href="https://example.com/">Donate</a>
+        </div>
+        <!-- REPLACE-ME: the button goes to the organisation's own giving page (PayPal, Givebutter, their bank's). The site never takes money itself. -->
+      </div>
+    </section>
+    <section class="section" id="details">
+      <div class="section-inner reveal">
+        <p class="kicker">Details</p>
+        <h2>Find us</h2>
+        <div class="details-grid">
+          <div>
+            <h3>Where</h3>
+            <p><!-- REPLACE-ME --> 123 Example Street, Somewhere</p>
+          </div>
+          <div>
+            <h3>Hours</h3>
+            <ul><li>Placeholder hours</li></ul>
+          </div>
+          <div>
+            <h3>Contact</h3>
+            <p><a href="mailto:hello@example.com">hello@example.com</a></p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <!-- Keep this footer identical on every page. -->
+    <p class="copyright">&copy; {{YEAR}} {{NAME}}</p>
+  </footer>
+
+  <script src="js/main.js"></script>
+</body>
+</html>

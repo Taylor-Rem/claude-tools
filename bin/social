@@ -5,12 +5,12 @@
   social                                   # what's connected here, and the last posts
   social post IMAGE "caption"              # in a client workspace: their Page + Instagram (+ Google if connected)
   social post BRAND IMAGE "caption"        # outside one: the house brand (patchlamp) or --project SLUG
-  social post BRAND                        # the oldest queued draft for that brand — B24's "post" reply
+  social post BRAND [N]                    # the oldest queued draft for that brand (or the Nth in `social queue`) — B24's "post" reply
       --only facebook,instagram,google     # a subset (default: every one that is connected)
       --page ID|NAME                       # when more than one Page is connected
       --dry-run                            # prepare the image and say what would go where; post nothing
   social queue                             # house drafts waiting for "post" (~/projects/social/queue/)
-  social queue add BRAND IMAGE "caption" [--pillar P] [--topic T]
+  social queue add BRAND IMAGE "caption" [--pillar P] [--topic T] [--mood M] [--art A]
   social queue drop N
   social connect [BRAND] [--network x]     # the signed link (24h) the account's owner opens to grant it
       --x-text "…"                         # (post) the X version; default: the caption cut to 280, any link kept last
@@ -181,6 +181,7 @@ def drafts(brand=None):
 
 def log_posted(brand, caption, results, draft=None):
     row = {"date": dt.date.today().isoformat(), "brand": brand, "pillar": (draft or {}).get("pillar"),
+           "mood": (draft or {}).get("mood"), "art": (draft or {}).get("art"),
            "topic": (draft or {}).get("topic") or caption.split("\n")[0][:80], "status": "posted",
            "path": (draft or {}).get("image"), "links": {k: v.get("url") for k, v in results.items() if v.get("ok")}}
     SOCIAL_DIR.mkdir(parents=True, exist_ok=True)
@@ -226,18 +227,21 @@ def cmd_status(args):
 def cmd_post(args):
     slug, rest = resolve(args, args.words)
     draft = None
-    if len(rest) == 0:
+    if len(rest) == 0 or (len(rest) == 1 and rest[0].isdigit()):
         if slug not in HOUSE or workspace_slug():
             die('say what to post: social post IMAGE "caption"')
         waiting = drafts(slug)
         if not waiting:
             die(f"nothing queued for {slug} (`social queue add {slug} IMAGE \"caption\"`)")
-        draft = waiting[0]
+        n = int(rest[0]) if rest else 1                       # `social post BRAND N` — the Nth draft of `social queue`
+        if not 1 <= n <= len(waiting):
+            die(f"no draft {n} for {slug}; `social queue` lists {len(waiting)}")
+        draft = waiting[n - 1]
         image, caption = draft["image"], draft["caption"]
     elif len(rest) == 2:
         image, caption = rest
     else:
-        die('usage: social post [BRAND] IMAGE "caption"')
+        die('usage: social post [BRAND] IMAGE "caption"  |  social post BRAND [N]')
     caption = caption.strip()
     if not caption:
         die("the caption is empty")
@@ -343,10 +347,11 @@ def cmd_queue(args):
         if not src.is_file():
             die(f"{src}: no such file")
         queue_dir().mkdir(parents=True, exist_ok=True)
-        stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
         img = queue_dir() / f"{stamp}-{brand}{src.suffix.lower()}"
         shutil.copy2(src, img)
         item = {"brand": brand, "image": str(img), "caption": caption.strip(), "pillar": args.pillar, "topic": args.topic,
+                "mood": args.mood, "art": args.art,
                 "added": dt.datetime.now().isoformat(timespec="seconds")}
         (queue_dir() / f"{stamp}-{brand}.json").write_text(json.dumps(item, indent=1) + "\n")
         print(f"queued for {brand}: {caption.strip()[:70]} — `social post {brand}` puts it up")
@@ -450,6 +455,8 @@ def main():
     q.add_argument("words", nargs="*")
     q.add_argument("--pillar")
     q.add_argument("--topic")
+    q.add_argument("--mood", help="the night-shift mood (social/calendar.md § Three dials)")
+    q.add_argument("--art", help="the art style the image was made in")
     q.set_defaults(fn=cmd_queue)
     for name, fn in (("connect", cmd_connect), ("ls", cmd_ls)):
         c = sub.add_parser(name)

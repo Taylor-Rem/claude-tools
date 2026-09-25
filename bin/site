@@ -100,6 +100,7 @@ DB_BIN = HERE / "bin" / "db"
 NEWSLETTER_BIN = HERE / "bin" / "newsletter"
 COMPAT_DATE = "2026-09-01"                        # Workers runtime date for the site's Functions
 DRY = False
+CREATED = set()                                   # Pages projects made in this run
 
 
 # ---------------------------------------------------------------- helpers
@@ -372,12 +373,38 @@ def cf_project(name):
 def cf_ensure_project(name):
     """The Pages project for a site, created on first use. Production branch
     `main`, no source (direct upload)."""
-    p = cf_project(name)
-    if p:
-        return p
+    for i in range(6 if name in CREATED else 1):     # just made: the API can take a few seconds to show it
+        p = cf_project(name)
+        if p:
+            return p
+        if name in CREATED:
+            time.sleep(3)
+    if name in CREATED:
+        return {"name": name, "subdomain": f"{name}.pages.dev"}
     p = cf_api("POST", "/pages/projects", {"name": name, "production_branch": "main"})
-    say(f"  created Pages project {name} -> https://{name}.pages.dev")
+    CREATED.add(name)
+    if (p or {}).get("subdomain"):
+        HOSTS[name] = p["subdomain"]
+    say(f"  created Pages project {name} -> https://{(p or {}).get('subdomain') or name + '.pages.dev'}")
     return p or {"name": name, "subdomain": f"{name}.pages.dev"}
+
+
+HOSTS = {}
+
+
+def pages_host(project):
+    """The project's real *.pages.dev host. Pages subdomains are global: when
+    `<name>.pages.dev` is someone else's, Cloudflare gives ours a suffix
+    (demo-business-ctm.pages.dev), so never build the host from the name."""
+    if project not in HOSTS:
+        for rows in registry_load().values():
+            for r in rows.values():
+                if r.get("project") == project and r.get("pages_host"):
+                    HOSTS[project] = r["pages_host"]
+    if project not in HOSTS:
+        p = cf_project(project) if not DRY and cf_creds(required=False)[0] else None
+        HOSTS[project] = (p or {}).get("subdomain") or f"{project}.pages.dev"
+    return HOSTS[project]
 
 
 def cf_domains(project):
@@ -442,6 +469,8 @@ def site_register(meta, name, project, domains=None, template=None):
     reg = registry_load()
     row = reg.setdefault(meta["slug"], {}).setdefault(name, {})
     row.update({"host": "cloudflare", "project": project})
+    if not DRY and pages_host(project) != f"{project}.pages.dev":
+        row["pages_host"] = pages_host(project)        # a suffixed host (the name was taken on pages.dev)
     if template:
         row["template"] = template
     if domains is not None:
@@ -566,7 +595,9 @@ def cmd_new(a):
         for s_, repos in registry_load().items():
             if name in repos:
                 die(f"{name} is already registered to workspace {s_}")
-    url = f"https://{name}.pages.dev/" if cloudflare else pages_url(o, name)
+    if cloudflare and not DRY:
+        cf_ensure_project(name)                      # first: the URL filled into the files is its real host
+    url = f"https://{pages_host(name)}/" if cloudflare else pages_url(o, name)
     values = {
         "NAME": meta["name"], "REPO": name, "URL": url, "OWNER": o,
         "YEAR": str(datetime.date.today().year),
@@ -727,7 +758,7 @@ def cmd_publish(a):
         die(f"wrangler pages deploy failed:\n{tail}")
     m = re.search(r"https://[a-z0-9.-]+\.pages\.dev", log)
     preview = m.group(0) if m else None
-    prod = f"https://{project}.pages.dev/"
+    prod = f"https://{pages_host(project)}/"
     live = None
     for dom in entry.get("domains") or []:
         if not dom.startswith("www."):
@@ -967,7 +998,7 @@ def cmd_checkout(a):
         if mode == "live" and not a.live:
             die("that's a live key: real cards, real money. Say --live if that's what the owner wants.")
         env = {"STRIPE_SECRET_KEY": {"type": "secret_text", "value": key}}
-        url = (meta.get("live_url") if meta.get("live_url") and entry.get("domains") else None) or f"https://{project}.pages.dev/"
+        url = (meta.get("live_url") if meta.get("live_url") and entry.get("domains") else None) or f"https://{pages_host(project)}/"
         if a.webhook:
             hook = f"{url.rstrip('/')}/api/stripe-webhook"
             if DRY:
@@ -996,7 +1027,7 @@ def cmd_data(a):
         return
     cmd_publish(argparse.Namespace(name=a.name, dry_run=False))
     entry = site_entry(workspace()[1], a.name) or {}
-    url = f"https://{entry.get('project', a.name)}.pages.dev/"
+    url = f"https://{pages_host(entry.get('project', a.name))}/"
     say()
     say(f"database: D1 {(entry.get('d1') or {}).get('name')} bound as DB; `db doctor` checks it")
     say(f"admin:    {url}admin (the owner types their email and gets a one-time link)")
@@ -1077,7 +1108,7 @@ def cmd_ls(a):
         entry = site_entry(meta, n)
         if entry and entry.get("host") == "cloudflare":
             proj = entry["project"]
-            live = f"https://{entry['domains'][0]}/" if entry.get("domains") else f"https://{proj}.pages.dev/"
+            live = f"https://{entry['domains'][0]}/" if entry.get("domains") else f"https://{pages_host(proj)}/"
             extra = [f"cloudflare:{proj}"] + [f"domain={x}" for x in entry.get("domains") or []]
             same = lambda u: re.sub(r"^https?://", "", (u or "").rstrip("/"))
             star = " *" if meta.get("live_url") and same(live) == same(meta["live_url"]) else ""
@@ -1143,7 +1174,7 @@ def cf_domain(ws, meta, d, name, entry, a):
             text = text.replace("<head>", f'<head>\n  <link rel="canonical" href="{new_url}{path}">', 1)
             page.write_text(text)
             changed.append(page.name)
-    old_url = meta.get("live_url") or f"https://{project}.pages.dev/"
+    old_url = meta.get("live_url") or f"https://{pages_host(project)}/"
     for f in FILLED_FILES:
         p = d / f
         if p.exists() and old_url in p.read_text() and old_url != new_url:
@@ -1162,7 +1193,7 @@ def cf_domain(ws, meta, d, name, entry, a):
     if changed and not DRY:
         cmd_publish(argparse.Namespace(name=name, dry_run=False))
 
-    target = f"{project}.pages.dev"
+    target = pages_host(project)
     say(f"\nDNS records at the registrar for {domain} (replace any A/CNAME already there for these names):")
     if apex:
         say(f"  ALIAS  @      {target}     (Porkbun: ALIAS; elsewhere ANAME/'CNAME flattening'; "
@@ -1352,7 +1383,7 @@ def cmd_retire(a):
             say(f"  kept https://github.com/{slug} (the record; --delete-repo removes it, `site transfer` hands it over)")
 
     # 4. the workspace
-    url = f"https://{project}.pages.dev/"
+    url = f"https://{pages_host(project)}/"
     if meta.get("live_url") and meta["live_url"].rstrip("/") + "/" == url:
         meta["live_url"] = None
         if not DRY:
@@ -1498,7 +1529,7 @@ def cmd_doctor(a):
                     fail(f"repos/{n}: registered as Pages project {proj} but Cloudflare has no such project")
                     continue
                 dep = (p.get("latest_deployment") or {})
-                url = f"https://{proj}.pages.dev/"
+                url = f"https://{pages_host(proj)}/"
                 cc = curl_header(url, "Cache-Control")
                 say(f"  repos/{n}: {slug} -> {url} last publish {(dep.get('created_on') or '-')[:19]} "
                     f"Cache-Control: {cc or '-'}")

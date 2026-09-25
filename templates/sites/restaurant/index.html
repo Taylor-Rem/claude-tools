@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{NAME}}</title>
+  <!-- REPLACE-ME: one sentence about {{NAME}} for search results. -->
+  <meta name="description" content="{{NAME}} — {{TAGLINE}}">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <header class="site-header">
+    <a class="wordmark" href="index.html">{{NAME}}</a>
+    <nav class="site-nav" aria-label="Site">
+      <a href="index.html" aria-current="page">Home</a>
+      <a href="#shop">Menu</a>
+      <a href="#details">Hours</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero">
+      <h1 class="hero-title">{{NAME}}</h1>
+      <!-- REPLACE-ME: placeholder tagline — swap for the client's own line. -->
+      <p class="hero-tagline">{{TAGLINE}}</p>
+      <div class="button-row">
+        <a class="button" href="#shop">See the menu</a>
+        <a class="button" href="#details">Hours</a>
+      </div>
+    </section>
+    <section class="section" id="about">
+      <div class="section-inner reveal">
+        <p class="kicker">About</p>
+        <h2>Who we are</h2>
+        <p class="lede"><!-- REPLACE-ME --> Placeholder: the kitchen, the food, since when.</p>
+      </div>
+    </section>
+    <section class="section" id="shop">
+      <div class="section-inner reveal">
+        <p class="kicker">Menu</p>
+        <h2>The menu</h2>
+        <!-- The items come from the database (products): add or change them on /admin/catalog, or by text. -->
+        <div class="shop" data-shop>
+          <p class="form-thanks" data-order="paid" hidden>Paid — thank you. We'll have it ready for pickup; the receipt is in your email.</p>
+          <p class="form-sorry" data-order="cancelled" hidden>Checkout was cancelled; nothing was charged. Your basket is below.</p>
+          <div data-products><p class="muted">Loading…</p></div>
+          <form class="site-form shop-checkout" data-checkout>
+            <h3>Your order, for pickup</h3>
+            <p class="muted" data-basket>Nothing in the basket yet.</p>
+            <label>Name <input name="name" required autocomplete="name"></label>
+            <label>Email <input name="email" type="email" autocomplete="email"></label>
+            <label>Phone <input name="phone" type="tel" autocomplete="tel"></label>
+            <label>Anything we should know? <textarea name="note" rows="2"></textarea></label>
+            <button class="button" type="submit" data-pay disabled>Checkout</button>
+            <p class="muted" data-pay-note></p>
+            <p class="form-sorry" data-error hidden></p>
+          </form>
+          <script>
+            (function () {
+              var root = document.querySelector("[data-shop]");
+              var box = root.querySelector("[data-products]"), form = root.querySelector("[data-checkout]");
+              var pay = root.querySelector("[data-pay]"), payNote = root.querySelector("[data-pay-note]");
+              var basketLine = root.querySelector("[data-basket]"), err = root.querySelector("[data-error]");
+              var order = (location.search.match(/[?&]order=(paid|cancelled)/) || [])[1];
+              if (order) root.querySelector('[data-order="' + order + '"]').hidden = false;
+              var basket = {}, products = {}, mode = "off";
+              var DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+              function money(c) { return "$" + (c / 100).toFixed(2); }
+              function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+              function clock(t) { var p = t.split(":"), h = +p[0], m = p[1]; return (h % 12 || 12) + (m === "00" ? "" : ":" + m) + (h < 12 ? "am" : "pm"); }
+              function refresh() {
+                var lines = [], total = 0, n = 0;
+                Object.keys(basket).forEach(function (id) {
+                  var q = basket[id], p = products[id]; if (!q || !p) return;
+                  lines.push(q + " × " + p.name); total += q * p.price_cents; n += q;
+                  var c = box.querySelector('[data-qty="' + id + '"]'); if (c) c.textContent = q;
+                });
+                box.querySelectorAll("[data-qty]").forEach(function (c) { if (!basket[c.getAttribute("data-qty")]) c.textContent = "0"; });
+                basketLine.textContent = n ? lines.join(", ") + " — " + money(total) : "Nothing in the basket yet.";
+                pay.disabled = !n || mode === "off";
+              }
+              function step(id, d) { basket[id] = Math.max(0, Math.min(20, (basket[id] || 0) + d)); refresh(); }
+              function hoursBox(hours, open) {
+                var h = document.querySelector("[data-hours]"); if (!h) return;
+                h.textContent = "";
+                if (!hours.length) { h.appendChild(el("p", "muted", "Hours coming soon.")); return; }
+                h.appendChild(el("p", "open-now " + (open ? "is-open" : "is-closed"), open ? "Open now" : "Closed now"));
+                var ul = el("ul");
+                DAYS.forEach(function (name, i) {
+                  var today = hours.filter(function (x) { return +x.weekday === i; });
+                  ul.appendChild(el("li", null, name.slice(0, 3) + ": " + (today.length ? today.map(function (x) { return clock(x.opens) + "–" + clock(x.closes) + (x.note ? " (" + x.note + ")" : ""); }).join(", ") : "closed")));
+                });
+                h.appendChild(ul);
+              }
+              fetch("/api/catalog", { headers: { accept: "application/json" } })
+                .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+                .then(function (data) {
+                  mode = data.checkout; box.textContent = ""; hoursBox(data.hours, data.open_now);
+                  pay.textContent = mode === "live" ? "Pay and pick up" : mode === "test" ? "Pay (Stripe test mode — no real charge)" : "Checkout: test mode, not switched on";
+                  payNote.textContent = mode === "live" ? "Payment is by Stripe Checkout." : mode === "test" ? "This is Stripe's test mode: use card 4242 4242 4242 4242, any future date, any code. Nothing is charged." : "Paying online isn't switched on yet. Browse away; ordering opens when it is.";
+                  if (!data.products.length) { box.appendChild(el("p", "muted", "Nothing here yet.")); return; }
+                  var section = null, last = null;
+                  data.products.forEach(function (p) {
+                    products[p.id] = p;
+                    if (p.category !== last) { box.appendChild(el("h3", "shop-section", p.category || "")); section = el("ul", "shop-list"); box.appendChild(section); last = p.category; }
+                    var li = el("li", "shop-item" + (p.status === "sold out" ? " is-sold-out" : ""));
+                    var text = el("div", "shop-text");
+                    var head = el("p", "shop-name"); head.appendChild(el("span", null, p.name)); head.appendChild(el("span", "price", money(p.price_cents)));
+                    text.appendChild(head);
+                    if (p.description) text.appendChild(el("p", "muted", p.description));
+                    li.appendChild(text);
+                    if (p.status === "sold out") li.appendChild(el("span", "shop-out", "Sold out"));
+                    else {
+                      var ctl = el("span", "shop-qty");
+                      var minus = el("button", null, "−"); minus.type = "button"; minus.setAttribute("aria-label", "One fewer " + p.name); minus.onclick = function () { step(p.id, -1); };
+                      var plus = el("button", null, "+"); plus.type = "button"; plus.setAttribute("aria-label", "One more " + p.name); plus.onclick = function () { step(p.id, 1); };
+                      var n = el("span", null, "0"); n.setAttribute("data-qty", p.id); n.setAttribute("aria-live", "polite");
+                      ctl.appendChild(minus); ctl.appendChild(n); ctl.appendChild(plus); li.appendChild(ctl);
+                    }
+                    section.appendChild(li);
+                  });
+                  refresh();
+                })
+                .catch(function () { box.textContent = ""; box.appendChild(el("p", "muted", "This didn't load. Please try again in a minute.")); });
+              form.addEventListener("submit", function (e) {
+                e.preventDefault(); err.hidden = true;
+                var f = new FormData(form), items = Object.keys(basket).filter(function (id) { return basket[id]; }).map(function (id) { return { id: +id, qty: basket[id] }; });
+                if (!f.get("email") && !f.get("phone")) { err.textContent = "Leave an email or a phone so we can reach you."; err.hidden = false; return; }
+                pay.disabled = true;
+                fetch("/api/checkout", { method: "POST", headers: { "content-type": "application/json", accept: "application/json" },
+                  body: JSON.stringify({ items: items, name: f.get("name"), email: f.get("email"), phone: f.get("phone"), note: f.get("note") }) })
+                  .then(function (r) { return r.json(); })
+                  .then(function (d) { if (d.url) location.href = d.url; else { err.textContent = d.checkout === "off" ? "Paying online isn't switched on yet." : (d.error || "That didn't go through."); err.hidden = false; refresh(); } })
+                  .catch(function () { err.textContent = "That didn't go through. Please try again."; err.hidden = false; refresh(); });
+              });
+            })();
+          </script>
+          <style>
+            .shop-section { margin: var(--space-lg) 0 .5rem; }
+            .shop-list { list-style: none; max-width: var(--measure); }
+            .shop-item { display: flex; gap: 1rem; align-items: center; justify-content: space-between; padding: .7rem 0; border-bottom: 1px solid var(--bg-line); }
+            .shop-name { display: flex; gap: .75rem; justify-content: space-between; font-weight: 600; }
+            .shop-text { flex: 1 1 auto; }
+            .shop-text .muted { font-size: .95rem; margin-top: .15rem; }
+            .shop-qty { display: inline-flex; align-items: center; gap: .5rem; white-space: nowrap; }
+            .shop-qty button { font: inherit; width: 2.75rem; height: 2.75rem; border: 1px solid var(--bg-line); border-radius: 3px; background: var(--bg-raised); color: var(--ink); cursor: pointer; }
+            .shop-qty span { min-width: 1.5rem; text-align: center; }
+            .is-sold-out .shop-name { color: var(--ink-dim); }
+            .shop-out { color: var(--ink-dim); font-size: .9rem; white-space: nowrap; }
+            .shop-checkout { margin-top: var(--space-lg); }
+            .shop-checkout button[disabled] { opacity: .6; cursor: not-allowed; }
+            .open-now { font-weight: 600; }
+            .open-now.is-open { color: var(--accent); }
+          </style>
+        </div>
+      </div>
+    </section>
+    <section class="section" id="details">
+      <div class="section-inner reveal">
+        <p class="kicker">Details</p>
+        <h2>Find us</h2>
+        <div class="details-grid">
+          <div>
+            <h3>Where</h3>
+            <p><!-- REPLACE-ME --> The address.</p>
+          </div>
+          <div>
+            <h3>Hours</h3>
+            <div data-hours><p class="muted">Loading…</p></div>
+          </div>
+          <div>
+            <h3>Contact</h3>
+            <p><a href="mailto:hello@example.com">hello@example.com</a></p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <!-- Keep this footer identical on every page. -->
+    <p class="copyright">&copy; {{YEAR}} {{NAME}}</p>
+  </footer>
+
+  <script src="js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,4 @@
+# Cloudflare Pages reads this file (it is not served). One rule per line:
+# from  to  status — paths only (an old page that moved, a short link). The
+# host can't redirect one domain to another from here: www serves the same
+# site, and `site domain` puts a canonical link on every page instead.

@@ -1,0 +1,9 @@
+{
+  "title": "Portfolio",
+  "summary": "one page of someone's work: pictures, a line each, who they are, how to reach them",
+  "pages": "index.html (hero, work, about, contact)",
+  "db": false,
+  "collections": [],
+  "workspace": "demo-portfolio",
+  "demo": "https://demo-portfolio.pages.dev/"
+}

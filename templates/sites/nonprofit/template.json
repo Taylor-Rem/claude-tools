@@ -1,0 +1,11 @@
+{
+  "title": "Nonprofit, church or event",
+  "summary": "a mission, a calendar of what's on, a volunteer sign-up kept on /admin, and a donate link to their own giving page",
+  "pages": "index.html (hero, mission, events, volunteer sign-up, donate, details) and donate.html",
+  "db": true,
+  "collections": [
+    "submissions"
+  ],
+  "workspace": "demo-nonprofit",
+  "demo": "https://demo-nonprofit.pages.dev/"
+}

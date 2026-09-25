@@ -99,7 +99,8 @@ def relay_view(slug, cfg):
                if v.get("role") in ("client", "family") and (v.get("projects") == "*" or slug in (v.get("projects") or []))]
     active = [v.get("name") or k for k, v in senders if v.get("state") in (None, "active")]
     billing = p.get("billing") or {}
-    if slug == (cfg.get("demo") or {}).get("project"):
+    demo = cfg.get("demo") or {}
+    if slug == demo.get("project") or slug in (demo.get("projects") or {}):
         status = "demo"
         active = active or ["anyone (the demo's texters aren't senders)"]
     elif senders and not active:

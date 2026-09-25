@@ -26,7 +26,8 @@
       "Bash(newsletter *)",
       "Bash(gbp *)",
       "Bash(social *)",
-      "Bash(shot *)"
+      "Bash(shot *)",
+      "Bash(print *)"
     ],
     "deny": [
       "Bash(* /home/*)",

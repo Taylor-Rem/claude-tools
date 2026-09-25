@@ -1,0 +1,1008 @@
+#!/usr/bin/env python3
+"""print — print-ready PDFs by text: a QR code, a table tent, a window sticker,
+a one-page menu, a flyer. ROADMAP B21, plan ~/projects/plans/13-printables.md.
+
+  print qr [URL|site|menu|listing] [--out PATH]
+        a QR code that resolves to the site, the menu, the Google listing or
+        any URL: a 3 x 3.75 in PDF plus a 300 dpi PNG, quiet zone kept, the
+        URL printed under it. Default target: the workspace's live site.
+  print tent "headline" [--sub "..."] [--qr site|menu|listing|URL]
+        a US-letter table tent: fold in half across the middle, stand it up;
+        both panels read upright (the top one is printed upside down). The
+        business name, the headline, the QR (default: the menu, else the site)
+        and the URL in words.
+  print sticker "text" [--sub "..."] [--qr site|menu|listing|URL|none]
+        a 4 x 4 in window sticker or cling: a 4.25 in page with 1/8 in bleed,
+        the cut line drawn, everything inside a 1/4 in safe margin.
+  print menu [FILE.md | --from-site] [--title "..."] [--qr ...]
+        a one-page menu on letter paper. FILE.md: "## Section" headings and
+        "- Item — $12" lines (a "| $12 |" or ".... 12" works too; an indented
+        line under an item is its description). --from-site reads the site's
+        catalog (`db query`, when the site has a database) or the menu list on
+        its page. Type shrinks until it all fits one sheet.
+  print flyer "headline" [--body "..."] [--qr ...] [--art IMAGE | --art gen "scene"]
+        a letter flyer: art across the top when given, headline, body, the QR
+        and the URL. `--art gen` pays for one `img gen` picture (its ledger
+        line is img's); nothing else here costs anything.
+  print doctor
+        the browser, the QR decoder, pdftoppm/pdfinfo, the brand this
+        workspace would print with, and which `print` is first on PATH.
+
+Common options: --site NAME (a workspace with more than one site), --name
+"Business" (outside a workspace), --out PATH (the PDF), --no-check.
+
+Where things come from. Run inside a client workspace (a folder with
+.client.json): the business name from .client.json; the site's URL from the
+toolbelt's site registry (~/.config/claude-tools/sites.json: a custom domain,
+else its Pages host) or .client.json's live_url; `menu` is the site's menu or
+shop section (#shop, #menu, menu.html, order.html), else the site; `listing`
+is a Google Maps link written in NOTES.md, CLAUDE.md or .client.json
+("listing"); when none is recorded, print says so and stops. Colours and type
+are the site's own CSS tokens (--ink, --accent, --font-display, --font-body in
+repos/<site>/css/style.css) and its web fonts; else a neutral default. Paper
+stays white (a home printer's ink).
+
+Output: <workspace>/print/<date>-<kind>-<words>.pdf (+ a -preview.png, and
+the .png for `qr`). The PDF's absolute path is the last line printed, so a
+relay reply can end with `SEND-FILE: <that path> | caption`.
+
+The check (every PDF, unless --no-check): pdfinfo reads the page size back and
+it must be the size asked for; pdftoppm renders the page and jsQR (pure JS,
+node_modules/jsqr) must read every QR on it as exactly the intended URL. A
+failed check exits non-zero and says what failed; never send that file.
+
+Rendering is headless Chromium (lib/print.mjs, the same Playwright as `shot`);
+the QR encoder is in this file (byte mode, error correction M). No keys.
+"""
+
+import argparse
+import datetime as dt
+import html
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from urllib.parse import urlparse
+
+TOOLS = Path(__file__).resolve().parent.parent
+TEMPLATES = TOOLS / "templates" / "print"
+HELPER = TOOLS / "lib" / "print.mjs"
+REGISTRY = Path(os.environ.get("SITES_REGISTRY", Path.home() / ".config/claude-tools/sites.json"))
+
+DEFAULT_BRAND = {
+    "ink": "#1d1d1f",
+    "accent": "#1d1d1f",
+    "muted": "#6b6b70",
+    "line": "#d9d9de",
+    "font_display": '"Helvetica Neue", Helvetica, Arial, sans-serif',
+    "font_body": '"Helvetica Neue", Helvetica, Arial, sans-serif',
+    "fonts_link": "",
+    "source": "default",
+}
+
+
+def die(msg, code=1):
+    print(f"print: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+# ================================================================ QR encoder
+# Byte mode, error-correction level M, versions 1-40, the standard's mask
+# penalty. After Project Nayuki's reference encoder (MIT); checked against a
+# real decoder (jsQR) in tests/test_print.py.
+
+ECC_M_PER_BLOCK = [-1, 10, 16, 26, 18, 24, 16, 18, 22, 22, 26, 30, 22, 22, 24, 24, 28, 28, 26, 26, 26,
+                   26, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28]
+ECC_M_BLOCKS = [-1, 1, 1, 1, 2, 2, 4, 4, 4, 5, 5, 5, 8, 9, 9, 10, 10, 11, 13, 14, 16,
+                17, 17, 18, 20, 21, 23, 25, 26, 28, 29, 31, 33, 35, 37, 38, 40, 43, 45, 47, 49]
+FORMAT_M = 0
+
+
+def _raw_modules(ver):
+    n = (16 * ver + 128) * ver + 64
+    if ver >= 2:
+        k = ver // 7 + 2
+        n -= (25 * k - 10) * k - 55
+        if ver >= 7:
+            n -= 36
+    return n
+
+
+def _data_codewords(ver):
+    return _raw_modules(ver) // 8 - ECC_M_PER_BLOCK[ver] * ECC_M_BLOCKS[ver]
+
+
+def _gf_mul(x, y):
+    z = 0
+    for i in reversed(range(8)):
+        z = (z << 1) ^ ((z >> 7) * 0x11D)
+        z ^= ((y >> i) & 1) * x
+    return z
+
+
+def _rs_divisor(degree):
+    res = [0] * (degree - 1) + [1]
+    root = 1
+    for _ in range(degree):
+        for j in range(len(res)):
+            res[j] = _gf_mul(res[j], root)
+            if j + 1 < len(res):
+                res[j] ^= res[j + 1]
+        root = _gf_mul(root, 2)
+    return res
+
+
+def _rs_remainder(data, divisor):
+    res = [0] * len(divisor)
+    for b in data:
+        factor = b ^ res.pop(0)
+        res.append(0)
+        for i, coef in enumerate(divisor):
+            res[i] ^= _gf_mul(coef, factor)
+    return res
+
+
+def qr_version_for(nbytes):
+    for ver in range(1, 41):
+        bits = 4 + (8 if ver <= 9 else 16) + 8 * nbytes
+        if bits <= _data_codewords(ver) * 8:
+            return ver
+    raise ValueError("too long for a QR code")
+
+
+def _align_positions(ver, size):
+    if ver == 1:
+        return []
+    k = ver // 7 + 2
+    step = (ver * 8 + k * 3 + 5) // (k * 4 - 4) * 2
+    return list(reversed([size - 7 - i * step for i in range(k - 1)] + [6]))
+
+
+def qr_matrix(text):
+    """The QR code for `text` as rows of booleans (True = dark), no quiet zone."""
+    data = text.encode("utf-8")
+    ver = qr_version_for(len(data))
+    size = ver * 4 + 17
+    cap = _data_codewords(ver)
+    bits = []
+
+    def put(val, n):
+        bits.extend((val >> i) & 1 for i in reversed(range(n)))
+
+    put(4, 4)
+    put(len(data), 8 if ver <= 9 else 16)
+    for b in data:
+        put(b, 8)
+    put(0, min(4, cap * 8 - len(bits)))
+    put(0, (-len(bits)) % 8)
+    pad = 0xEC
+    while len(bits) < cap * 8:
+        put(pad, 8)
+        pad ^= 0xEC ^ 0x11
+    codewords = [int("".join(map(str, bits[i:i + 8])), 2) for i in range(0, len(bits), 8)]
+
+    # error correction, interleaved
+    nblocks, ecclen = ECC_M_BLOCKS[ver], ECC_M_PER_BLOCK[ver]
+    raw = _raw_modules(ver) // 8
+    nshort = nblocks - raw % nblocks
+    shortlen = raw // nblocks
+    div = _rs_divisor(ecclen)
+    blocks, k = [], 0
+    for i in range(nblocks):
+        dat = codewords[k:k + shortlen - ecclen + (0 if i < nshort else 1)]
+        k += len(dat)
+        ecc = _rs_remainder(dat, div)
+        if i < nshort:
+            dat = dat + [0]
+        blocks.append(dat + ecc)
+    final = []
+    for i in range(len(blocks[0])):
+        for j, blk in enumerate(blocks):
+            if i != shortlen - ecclen or j >= nshort:
+                final.append(blk[i])
+
+    mods = [[False] * size for _ in range(size)]
+    func = [[False] * size for _ in range(size)]
+
+    def setf(x, y, dark):
+        mods[y][x] = dark
+        func[y][x] = True
+
+    for i in range(size):
+        setf(6, i, i % 2 == 0)
+        setf(i, 6, i % 2 == 0)
+    for cx, cy in ((3, 3), (size - 4, 3), (3, size - 4)):
+        for dy in range(-4, 5):
+            for dx in range(-4, 5):
+                x, y = cx + dx, cy + dy
+                if 0 <= x < size and 0 <= y < size:
+                    setf(x, y, max(abs(dx), abs(dy)) not in (2, 4))
+    al = _align_positions(ver, size)
+    last = len(al) - 1
+    for i, ax in enumerate(al):
+        for j, ay in enumerate(al):
+            if (i, j) in ((0, 0), (0, last), (last, 0)):
+                continue
+            for dy in range(-2, 3):
+                for dx in range(-2, 3):
+                    setf(ax + dx, ay + dy, max(abs(dx), abs(dy)) != 1)
+
+    def draw_format(mask):
+        d = FORMAT_M << 3 | mask
+        rem = d
+        for _ in range(10):
+            rem = (rem << 1) ^ ((rem >> 9) * 0x537)
+        b = (d << 10 | rem) ^ 0x5412
+        bit = lambda i: (b >> i) & 1 == 1  # noqa: E731
+        for i in range(6):
+            setf(8, i, bit(i))
+        setf(8, 7, bit(6))
+        setf(8, 8, bit(7))
+        setf(7, 8, bit(8))
+        for i in range(9, 15):
+            setf(14 - i, 8, bit(i))
+        for i in range(8):
+            setf(size - 1 - i, 8, bit(i))
+        for i in range(8, 15):
+            setf(8, size - 15 + i, bit(i))
+        setf(8, size - 8, True)
+
+    draw_format(0)  # reserve the format areas before placing data
+    if ver >= 7:
+        rem = ver
+        for _ in range(12):
+            rem = (rem << 1) ^ ((rem >> 11) * 0x1F25)
+        vb = ver << 12 | rem
+        for i in range(18):
+            dark = (vb >> i) & 1 == 1
+            a, b = size - 11 + i % 3, i // 3
+            setf(a, b, dark)
+            setf(b, a, dark)
+
+    i = 0
+    right = size - 1
+    while right >= 1:
+        if right == 6:
+            right = 5
+        for vert in range(size):
+            for j in range(2):
+                x = right - j
+                up = ((right + 1) & 2) == 0
+                y = size - 1 - vert if up else vert
+                if not func[y][x] and i < len(final) * 8:
+                    mods[y][x] = (final[i >> 3] >> (7 - (i & 7))) & 1 == 1
+                    i += 1
+        right -= 2
+
+    masks = [
+        lambda x, y: (x + y) % 2 == 0,
+        lambda x, y: y % 2 == 0,
+        lambda x, y: x % 3 == 0,
+        lambda x, y: (x + y) % 3 == 0,
+        lambda x, y: (x // 3 + y // 2) % 2 == 0,
+        lambda x, y: x * y % 2 + x * y % 3 == 0,
+        lambda x, y: (x * y % 2 + x * y % 3) % 2 == 0,
+        lambda x, y: ((x + y) % 2 + x * y % 3) % 2 == 0,
+    ]
+    base = [row[:] for row in mods]
+    best, best_score = None, None
+    for m, fn in enumerate(masks):
+        for y in range(size):
+            for x in range(size):
+                mods[y][x] = base[y][x] ^ (not func[y][x] and fn(x, y))
+        draw_format(m)
+        score = _penalty(mods)
+        if best_score is None or score < best_score:
+            best, best_score = [row[:] for row in mods], score
+    return best
+
+
+def _penalty(m):
+    n = len(m)
+    score = 0
+    lines = m + [list(col) for col in zip(*m)]
+    finder = ([1, 0, 1, 1, 1, 0, 1, 0, 0, 0, 0], [0, 0, 0, 0, 1, 0, 1, 1, 1, 0, 1])
+    for line in lines:
+        run, prev = 0, None
+        for v in line:
+            if v == prev:
+                run += 1
+            else:
+                if run >= 5:
+                    score += 3 + run - 5
+                run, prev = 1, v
+        if run >= 5:
+            score += 3 + run - 5
+        ints = [int(v) for v in line]
+        for k in range(n - 10):
+            if ints[k:k + 11] in finder:
+                score += 40
+    for y in range(n - 1):
+        for x in range(n - 1):
+            if m[y][x] == m[y][x + 1] == m[y + 1][x] == m[y + 1][x + 1]:
+                score += 3
+    dark = sum(sum(r) for r in m)
+    total = n * n
+    score += ((abs(dark * 20 - total * 10) + total - 1) // total - 1) * 10
+    return score
+
+
+def qr_svg(text, color="#000000", quiet=4):
+    """A square SVG (viewBox in modules, quiet zone included), one path."""
+    m = qr_matrix(text)
+    n = len(m) + 2 * quiet
+    d = []
+    for y, row in enumerate(m):
+        x = 0
+        while x < len(row):
+            if row[x]:
+                start = x
+                while x < len(row) and row[x]:
+                    x += 1
+                d.append(f"M{start + quiet} {y + quiet}h{x - start}v1h-{x - start}z")
+            else:
+                x += 1
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {n} {n}" shape-rendering="crispEdges" '
+            f'class="qrcode"><rect width="{n}" height="{n}" fill="#fff"/>'
+            f'<path fill="{color}" d="{"".join(d)}"/></svg>'), len(m)
+
+
+# ================================================================ layout math
+
+MIN_MODULE_IN = 0.025      # smallest module we print: ~0.64 mm, a phone reads it at arm's length and more
+
+
+def qr_min_inches(url, quiet=4):
+    n = len(qr_matrix(url)) + 2 * quiet
+    return round(n * MIN_MODULE_IN, 3)
+
+
+PAPER = {"letter": (8.5, 11.0)}
+
+
+def tent_layout(w=8.5, h=11.0, margin=0.5, qr_in=2.2):
+    """Letter, folded across the middle into an A-frame. Returns the two panel
+    boxes (inches, page coordinates, y down) and the fold line. The top panel
+    is rotated 180 degrees so both faces read upright once folded."""
+    half = h / 2
+    panel = {"w": w, "h": half, "margin": margin, "qr": qr_in,
+             "text_w": round(w - 2 * margin - qr_in - 0.4, 3)}
+    return {
+        "page": (w, h),
+        "fold_y": half,
+        "panels": [
+            dict(panel, y=0.0, rotate=180, face="back"),
+            dict(panel, y=half, rotate=0, face="front"),
+        ],
+        # jsQR regions (fractions of the page) holding each panel's QR
+        "qr_regions": [(0.0, 0.0, 1.0, 0.5), (0.0, 0.5, 1.0, 0.5)],
+    }
+
+
+def sticker_layout(size=4.0, bleed=0.125, safe=0.25):
+    page = size + 2 * bleed
+    return {"page": (page, page), "cut": (bleed, bleed, size, size),
+            "safe": (bleed + safe, bleed + safe, size - 2 * safe, size - 2 * safe), "bleed": bleed}
+
+
+# ================================================================ workspace
+
+class Ctx:
+    def __init__(self, a):
+        self.ws, self.meta = None, {}
+        p = Path.cwd() / ".client.json"
+        if p.exists():
+            try:
+                self.meta = json.loads(p.read_text())
+            except ValueError as exc:
+                die(f".client.json is not valid JSON: {exc}")
+            self.ws = Path.cwd()
+        self.name = getattr(a, "name", None) or self.meta.get("name") or ""
+        self.site_name, self.site = self._pick_site(getattr(a, "site", None))
+        self.repo = (self.ws / "repos" / self.site_name) if (self.ws and self.site_name) else None
+
+    def _pick_site(self, want):
+        if not self.ws:
+            return None, {}
+        try:
+            reg = json.loads(REGISTRY.read_text()) if REGISTRY.exists() else {}
+        except ValueError:
+            die(f"{REGISTRY} is not valid JSON")
+        mine = reg.get(self.meta.get("slug"), {}) or {}
+        if want:
+            if want not in mine:
+                die(f"{want!r} isn't one of this workspace's sites ({', '.join(sorted(mine)) or 'none'})")
+            return want, mine[want]
+        if len(mine) == 1:
+            return next(iter(mine.items()))
+        if len(mine) > 1:
+            return None, {"_many": sorted(mine)}
+        return None, {}
+
+    def out_dir(self):
+        d = (self.ws or Path.cwd()) / "print"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def inside(self, path):
+        """In a client workspace, files read or written stay inside it."""
+        p = Path(path).resolve()
+        if self.ws and not str(p).startswith(str(self.ws.resolve()) + os.sep):
+            die(f"{path} is outside this workspace")
+        return p
+
+
+def site_url(ctx):
+    s = ctx.site
+    if s.get("_many"):
+        die(f"this workspace has more than one site ({', '.join(s['_many'])}); say which with --site NAME")
+    if s.get("domains"):
+        return f"https://{s['domains'][0]}/"
+    if ctx.meta.get("live_url"):
+        return ctx.meta["live_url"].rstrip("/") + "/"
+    if s.get("pages_host"):
+        return f"https://{s['pages_host']}/"
+    if s.get("project"):
+        return f"https://{s['project']}.pages.dev/"
+    if not ctx.ws:
+        die("not in a client workspace: give a URL (print qr https://…) or run it in ~/projects/clients/<slug>")
+    die("this workspace has no site yet (nothing in the site registry, no live_url): give a URL instead")
+
+
+def menu_url(ctx):
+    base = site_url(ctx)
+    repo = ctx.repo
+    if repo and repo.is_dir():
+        for page in ("menu.html", "order.html"):
+            if (repo / page).exists():
+                return base + page.removesuffix(".html")
+        index = repo / "index.html"
+        if index.exists():
+            text = index.read_text(errors="replace")
+            for anchor in ("shop", "menu", "order"):
+                if re.search(rf'id="{anchor}"', text):
+                    return base + "#" + anchor
+    return base
+
+
+MAPS_RE = re.compile(r"https?://(?:www\.)?(?:google\.[a-z.]+/maps[^\s)>\]\"']*|maps\.google\.[a-z.]+/[^\s)>\]\"']*"
+                     r"|maps\.app\.goo\.gl/[^\s)>\]\"']+|goo\.gl/maps/[^\s)>\]\"']+|g\.page/[^\s)>\]\"']+"
+                     r"|g\.co/kgs/[^\s)>\]\"']+|search\.google\.com/local/[^\s)>\]\"']+)")
+
+
+def listing_url(ctx):
+    for key in ("listing", "google_listing", "maps_url"):
+        if ctx.meta.get(key):
+            return ctx.meta[key]
+    if ctx.ws:
+        for f in ("NOTES.md", "CLAUDE.md"):
+            p = ctx.ws / f
+            if p.exists():
+                m = MAPS_RE.search(p.read_text(errors="replace"))
+                if m:
+                    return m.group(0).rstrip(".,;")
+    die("no Google listing link is recorded for this business (NOTES.md or .client.json \"listing\"). "
+        "Ask the owner for their Google Maps link (Share → Copy link), write it in NOTES.md, and run it again.")
+
+
+def resolve_target(spec, ctx, default="site"):
+    """site | menu (alias order) | listing | a URL -> the URL a QR encodes."""
+    spec = (spec or default).strip()
+    low = spec.lower()
+    if low == "site":
+        return site_url(ctx)
+    if low in ("menu", "order"):
+        return menu_url(ctx)
+    if low in ("listing", "google", "maps"):
+        return listing_url(ctx)
+    if re.match(r"^https?://\S+$", spec):
+        return spec
+    if re.match(r"^[a-z0-9-]+(\.[a-z0-9-]+)+(/\S*)?$", low):
+        return "https://" + spec
+    die(f"{spec!r} isn't a target: site, menu, listing, or a URL")
+
+
+def url_words(url):
+    """How a URL reads on paper: no scheme, no www, no trailing slash or #anchor."""
+    p = urlparse(url)
+    host = p.netloc.removeprefix("www.")
+    path = p.path.rstrip("/")
+    if "google." in host and "/maps" in path or host in ("maps.app.goo.gl", "g.page", "goo.gl"):
+        return "Find us on Google Maps"
+    return host + path
+
+
+# ================================================================ brand
+
+TOKEN_RE = re.compile(r"--(ink|accent|ink-dim|bg-line|font-display|font-body)\s*:\s*([^;]+);")
+
+
+def brand(ctx):
+    b = dict(DEFAULT_BRAND)
+    repo = ctx.repo
+    if not (repo and repo.is_dir()):
+        return b
+    for css in (repo / "css" / "style.css", repo / "style.css"):
+        if css.exists():
+            found = {}
+            for k, v in TOKEN_RE.findall(css.read_text(errors="replace")):
+                found.setdefault(k, v.strip())
+            if found:
+                b.update({
+                    "ink": found.get("ink", b["ink"]),
+                    "accent": found.get("accent", b["accent"]),
+                    "muted": found.get("ink-dim", b["muted"]),
+                    "line": found.get("bg-line", b["line"]),
+                    "font_display": found.get("font-display", b["font_display"]),
+                    "font_body": found.get("font-body", b["font_body"]),
+                    "source": str(css.relative_to(ctx.ws)) if ctx.ws else str(css),
+                })
+                break
+    index = repo / "index.html"
+    if index.exists():
+        links = re.findall(r'<link[^>]+href="(https://fonts\.googleapis\.com/[^"]+)"', index.read_text(errors="replace"))
+        if links:
+            b["fonts_link"] = "".join(
+                f'<link rel="stylesheet" href="{html.escape(h)}">' for h in dict.fromkeys(links))
+    for k in ("ink", "accent", "muted", "line", "font_display", "font_body"):
+        if re.search(r"[<>{}]|url\(|var\(", b[k]):   # keep the page's CSS ours
+            b[k] = DEFAULT_BRAND[k]
+    return b
+
+
+# ================================================================ pages
+
+def fill(template, **vals):
+    text = (TEMPLATES / template).read_text()
+    for k, v in vals.items():
+        text = text.replace("{{" + k + "}}", str(v))
+    left = re.findall(r"\{\{[A-Z_]+\}\}", text)
+    if left:
+        raise ValueError(f"{template}: unfilled {left}")
+    return text
+
+
+def page(kind, body, b, w, h):
+    return fill("page.html", KIND=kind, W=w, H=h, FONTS=b["fonts_link"], INK=b["ink"], ACCENT=b["accent"],
+                MUTED=b["muted"], LINE=b["line"], FONT_DISPLAY=b["font_display"], FONT_BODY=b["font_body"],
+                CSS=(TEMPLATES / "print.css").read_text(), BODY=body)
+
+
+esc = html.escape
+
+
+def slug_words(text, n=5):
+    words = re.findall(r"[a-z0-9]+", text.lower())[:n]
+    return "-".join(words) or "print"
+
+
+def out_path(ctx, a, kind, words):
+    if getattr(a, "out", None):
+        p = ctx.inside(a.out) if ctx.ws else Path(a.out).resolve()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        return p.with_suffix(".pdf")
+    stem = f"{dt.date.today().isoformat()}-{kind}-{slug_words(words)}"
+    d = ctx.out_dir()
+    p, i = d / f"{stem}.pdf", 2
+    while p.exists():
+        p, i = d / f"{stem}-{i}.pdf", i + 1
+    return p
+
+
+# ================================================================ render + check
+
+def node():
+    n = shutil.which("node")
+    if not n:
+        die("node is not installed (bin/print renders with the toolbelt's Playwright; see install.sh)")
+    return n
+
+
+def render(html_text, pdf, w, h, png=None, dpi=300):
+    with tempfile.TemporaryDirectory(prefix="print-") as tmp:
+        src = Path(tmp) / "page.html"
+        src.write_text(html_text)
+        cmd = [node(), str(HELPER), "render", str(src), "--w", str(w), "--h", str(h), "--pdf", str(pdf),
+               "--dpi", str(dpi)]
+        if png:
+            cmd += ["--png", str(png)]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    if r.returncode != 0:
+        die(f"the renderer failed: {(r.stderr or r.stdout).strip()[-600:]}")
+    try:
+        return json.loads(r.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return {}
+
+
+def decode(png, crop=None):
+    cmd = [node(), str(HELPER), "decode", str(png)]
+    if crop:
+        cmd += ["--crop", ",".join(f"{c:.4f}" for c in crop)]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    if r.returncode != 0:
+        return None
+    try:
+        return json.loads(r.stdout.strip().splitlines()[-1]).get("data")
+    except (ValueError, IndexError):
+        return None
+
+
+def pdf_size_in(pdf):
+    r = subprocess.run(["pdfinfo", str(pdf)], capture_output=True, text=True)
+    m = re.search(r"Page size:\s+([\d.]+) x ([\d.]+) pts", r.stdout)
+    pages = re.search(r"Pages:\s+(\d+)", r.stdout)
+    if not m:
+        return None, None
+    return (float(m.group(1)) / 72, float(m.group(2)) / 72), int(pages.group(1)) if pages else None
+
+
+def check(pdf, w, h, qr_url=None, regions=((0, 0, 1, 1),), preview=None):
+    """The sanity check: page size and count, and each QR region decodes to qr_url.
+    Returns (ok, lines)."""
+    lines, ok = [], True
+    if not shutil.which("pdfinfo") or not shutil.which("pdftoppm"):
+        return False, ["pdfinfo/pdftoppm (poppler-utils) not installed: the PDF was not checked"]
+    size, pages = pdf_size_in(pdf)
+    if not size or abs(size[0] - w) > 0.02 or abs(size[1] - h) > 0.02:
+        ok = False
+        lines.append(f"page size {size} in, wanted {w} x {h} in")
+    else:
+        lines.append(f"page {size[0]:g} x {size[1]:g} in")
+    if pages != 1:
+        ok = False
+        lines.append(f"{pages} pages, wanted 1")
+    with tempfile.TemporaryDirectory(prefix="print-check-") as tmp:
+        base = Path(tmp) / "page"
+        subprocess.run(["pdftoppm", "-r", "150", "-png", "-singlefile", str(pdf), str(base)],
+                       capture_output=True, check=False)
+        png = base.with_suffix(".png")
+        if not png.exists():
+            return False, lines + ["pdftoppm could not render the PDF"]
+        if preview:
+            shutil.copyfile(png, preview)
+        if qr_url:
+            for i, reg in enumerate(regions, 1):
+                got = decode(png, reg)
+                if got == qr_url:
+                    lines.append(f"QR {i}/{len(regions)} reads {got}")
+                else:
+                    ok = False
+                    lines.append(f"QR {i}/{len(regions)} reads {got!r}, wanted {qr_url}")
+    return ok, lines
+
+
+def finish(pdf, w, h, a, qr_url=None, regions=((0, 0, 1, 1),), extra=()):
+    preview = pdf.with_name(pdf.stem + "-preview.png")
+    if a.no_check:
+        subprocess.run(["pdftoppm", "-r", "150", "-png", "-singlefile", str(pdf), str(preview.with_suffix(""))],
+                       capture_output=True, check=False)
+        print("check: skipped (--no-check)")
+    else:
+        ok, lines = check(pdf, w, h, qr_url, regions, preview)
+        print("check: " + "; ".join(lines))
+        if not ok:
+            print(f"print: the check FAILED — don't send {pdf}", file=sys.stderr)
+            sys.exit(2)
+    for e in extra:
+        print(e)
+    if preview.exists():
+        print(f"preview: {preview}")
+    print(pdf)
+
+
+def qr_block(url, b, cls="qr-wrap"):
+    svg, _ = qr_svg(url, color="#000000")
+    return f'<div class="{cls}">{svg}</div>'
+
+
+def need_name(ctx):
+    if not ctx.name:
+        die("no business name: run it in a client workspace or pass --name \"...\"")
+    return ctx.name
+
+
+# ================================================================ commands
+
+def cmd_qr(a):
+    ctx = Ctx(a)
+    url = resolve_target(a.target, ctx)
+    b = brand(ctx)
+    w, h = 3.0, 3.75
+    body = fill("qr.html", NAME=esc(ctx.name), QR=qr_block(url, b), URL=esc(url_words(url)))
+    pdf = out_path(ctx, a, "qr", url_words(url))
+    png = pdf.with_suffix(".png")
+    render(page("qr", body, b, w, h), pdf, w, h, png=png, dpi=300)
+    print(f"qr: {url}")
+    finish(pdf, w, h, a, url, extra=[f"png (300 dpi): {png}"])
+
+
+def cmd_tent(a):
+    ctx = Ctx(a)
+    name = need_name(ctx)
+    url = resolve_target(a.qr, ctx, default="menu")
+    b = brand(ctx)
+    lay = tent_layout()
+    w, h = lay["page"]
+    panels = []
+    for p in lay["panels"]:
+        panels.append(fill("tent-panel.html", FACE=p["face"], ROT=p["rotate"], NAME=esc(name),
+                           HEADLINE=esc(a.headline), SUB=esc(a.sub or ""), SUBCLASS="" if a.sub else " empty",
+                           QR=qr_block(url, b), URL=esc(url_words(url))))
+    body = fill("tent.html", BACK=panels[0], FRONT=panels[1])
+    pdf = out_path(ctx, a, "tent", a.headline)
+    render(page("tent", body, b, w, h), pdf, w, h)
+    print(f"tent: \"{a.headline}\" -> {url} (fold across the middle; the top half prints upside down on purpose)")
+    finish(pdf, w, h, a, url, lay["qr_regions"])
+
+
+def cmd_sticker(a):
+    ctx = Ctx(a)
+    b = brand(ctx)
+    lay = sticker_layout()
+    w, h = lay["page"]
+    url = None if (a.qr or "").lower() == "none" else resolve_target(a.qr, ctx, default="site")
+    body = fill("sticker.html", NAME=esc(ctx.name), TEXT=esc(a.text), SUB=esc(a.sub or ""),
+                QR=qr_block(url, b) if url else "", URL=esc(url_words(url)) if url else "",
+                BLEED=lay["bleed"])
+    pdf = out_path(ctx, a, "sticker", a.text)
+    render(page("sticker", body, b, w, h), pdf, w, h)
+    print(f"sticker: \"{a.text}\" 4 x 4 in (cut on the grey line; 1/8 in bleed)" + (f" -> {url}" if url else ""))
+    finish(pdf, w, h, a, url)
+
+
+PRICE = r"\$?\s?(\d{1,4}(?:\.\d{2})?)"
+
+
+def parse_item(line):
+    """'Beef pho — $13', 'Beef pho | $13 | brisket', 'Beef pho ..... 13', 'Beef pho $13' -> dict."""
+    s = re.sub(r"^\s*[-*•]\s*", "", line).strip()
+    if "|" in s:
+        parts = [p.strip() for p in s.split("|")]
+        price = re.fullmatch(PRICE, parts[1]) if len(parts) > 1 else None
+        return {"name": parts[0], "price": price.group(1) if price else (parts[1] if len(parts) > 1 else ""),
+                "desc": parts[2] if len(parts) > 2 else ""}
+    m = re.match(r"^(?P<name>.+?)\s*(?:[—–:]|\.{2,}|\s-\s)?\s*\$(?P<price>\d{1,4}(?:\.\d{2})?)\s*(?:[—–-]\s*(?P<desc>.+))?$", s)
+    if not m:
+        m = re.match(r"^(?P<name>.+?)\s*(?:[—–:]|\.{2,}|\s-\s)\s*(?P<price>\d{1,4}(?:\.\d{2})?)\s*(?:[—–-]\s*(?P<desc>.+))?$", s)
+    if m:
+        return {"name": m.group("name").strip(" —–-."), "price": m.group("price"), "desc": (m.group("desc") or "").strip()}
+    return {"name": s, "price": "", "desc": ""}
+
+
+def parse_menu_md(text):
+    """Markdown -> {"title", "note", "sections": [{"name", "items": [...]}]}."""
+    menu = {"title": "", "note": "", "sections": []}
+    cur, last = None, None
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        if not line.strip():
+            continue
+        if re.match(r"^#\s", line):
+            menu["title"] = line[2:].strip()
+        elif re.match(r"^#{2,}\s", line):
+            cur = {"name": line.lstrip("#").strip(), "items": []}
+            menu["sections"].append(cur)
+            last = None
+        elif re.match(r"^\s*[-*•]\s", line) or (cur is not None and not raw.startswith((" ", "\t")) and re.search(PRICE + r"\s*$", line)):
+            if cur is None:
+                cur = {"name": "", "items": []}
+                menu["sections"].append(cur)
+            last = parse_item(line)
+            cur["items"].append(last)
+        elif raw.startswith((" ", "\t")) and last is not None:
+            last["desc"] = (last["desc"] + " " + line.strip()).strip()
+        elif cur is None:
+            menu["note"] = (menu["note"] + " " + line.strip()).strip()
+    menu["sections"] = [s for s in menu["sections"] if s["items"]]
+    return menu
+
+
+def money(cents):
+    return f"{cents // 100}" if cents % 100 == 0 else f"{cents / 100:.2f}"
+
+
+def menu_from_site(ctx):
+    """The site's catalog through `db query` if it has a database, else the menu list on its page."""
+    if ctx.site.get("d1", {}).get("name"):
+        sql = ("SELECT category, name, description, price_cents FROM products "
+               "WHERE status != 'hidden' ORDER BY sort, id")
+        cmd = [str(TOOLS / "bin" / "db"), "query", sql, "--json"] + (["--site", ctx.site_name] if ctx.site_name else [])
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if r.returncode == 0:
+            try:
+                rows = json.loads(r.stdout)
+            except ValueError:
+                rows = []
+            if rows:
+                sections = {}
+                for row in rows:
+                    sections.setdefault(row.get("category") or "", []).append(
+                        {"name": row["name"], "desc": row.get("description") or "", "price": money(int(row.get("price_cents") or 0))})
+                return {"title": "", "note": "", "sections": [{"name": k, "items": v} for k, v in sections.items()]}
+        else:
+            print(f"print: the site's catalog didn't answer ({(r.stderr.strip().splitlines() or ['?'])[-1]}); trying its page")
+    if ctx.repo and ctx.repo.is_dir():
+        for pg in ("menu.html", "index.html"):
+            f = ctx.repo / pg
+            if not f.exists():
+                continue
+            text = f.read_text(errors="replace")
+            items = re.findall(r'class="menu-item"[^>]*>(.*?)</span>.*?class="menu-price"[^>]*>(.*?)</span>', text, re.S)
+            if items:
+                clean = lambda s: html.unescape(re.sub(r"<[^>]+>", "", s)).strip()  # noqa: E731
+                return {"title": "", "note": "", "sections": [{"name": "", "items": [
+                    {"name": clean(n), "price": clean(p).lstrip("$"), "desc": ""} for n, p in items]}]}
+    die("no menu found on the site (no catalog in its database, no menu list on its page). "
+        "Send the menu as text: sections, items, prices, and I'll lay it out (print menu FILE.md).")
+
+
+def cmd_menu(a):
+    ctx = Ctx(a)
+    if a.file and a.from_site:
+        die("a FILE.md or --from-site, not both")
+    if a.file:
+        menu = parse_menu_md(ctx.inside(a.file).read_text() if ctx.ws else Path(a.file).read_text())
+    elif a.from_site:
+        menu = menu_from_site(ctx)
+    else:
+        die("which menu? print menu FILE.md (sections, items, prices) or print menu --from-site")
+    if not menu["sections"]:
+        die("that menu has no items (\"## Section\" then \"- Item — $12\" lines)")
+    b = brand(ctx)
+    title = a.title or menu["title"] or ctx.name or "Menu"
+    url = resolve_target(a.qr, ctx) if a.qr else None
+    parts = []
+    for s in menu["sections"]:
+        rows = "".join(
+            f'<li><span class="item">{esc(i["name"])}</span><span class="dots"></span>'
+            f'<span class="price">{esc(("$" + i["price"]) if i["price"] and not i["price"].startswith("$") else i["price"])}</span>'
+            + (f'<span class="desc">{esc(i["desc"])}</span>' if i["desc"] else "") + "</li>" for i in s["items"])
+        head = f"<h2>{esc(s['name'])}</h2>" if s["name"] else ""
+        parts.append(f'<section class="menu-section">{head}<ul>{rows}</ul></section>')
+    foot = ""
+    if url:
+        foot = f'<footer class="menu-foot">{qr_block(url, b, "qr-small")}<span>{esc(url_words(url))}</span></footer>'
+    elif ctx.ws and ctx.site_name:
+        foot = f'<footer class="menu-foot"><span>{esc(url_words(site_url(ctx)))}</span></footer>'
+    n_items = sum(len(s["items"]) for s in menu["sections"])
+    body = fill("menu.html", TITLE=esc(title), NOTE=esc(menu["note"]), SECTIONS="".join(parts), FOOT=foot,
+                COLS="2" if n_items > 12 else "1")
+    w, h = PAPER["letter"]
+    pdf = out_path(ctx, a, "menu", title)
+    rep = render(page("menu", body, b, w, h), pdf, w, h)
+    print(f"menu: {title}, {len(menu['sections'])} section(s), {n_items} item(s)"
+          + (f", type at {rep['fit']:.0%}" if rep.get("fit") and rep["fit"] < 1 else ""))
+    if rep.get("overflow"):
+        print("print: it still doesn't fit one page at the smallest type; split it (two menus) or cut descriptions",
+              file=sys.stderr)
+        sys.exit(2)
+    finish(pdf, w, h, a, url)
+
+
+def cmd_flyer(a):
+    ctx = Ctx(a)
+    b = brand(ctx)
+    url = resolve_target(a.qr, ctx) if a.qr or ctx.ws else None
+    art = ""
+    if a.art:
+        if a.art[0] == "gen":
+            if len(a.art) < 2:
+                die('--art gen "the scene"')
+            out = ctx.out_dir() / f"{dt.date.today().isoformat()}-art-{slug_words(a.art[1])}.png"
+            img = shutil.which("img") or str(TOOLS / "bin" / "img")
+            r = subprocess.run([img, "gen", a.art[1], "--aspect", "4:3", "--quality", "hero", "--out", str(out)],
+                               capture_output=True, text=True, timeout=300)
+            if r.returncode != 0 or not out.exists():
+                die(f"img gen failed: {(r.stderr or r.stdout).strip()[-400:]}")
+            art_path = out
+            print(f"art: generated {out} (img gen; its ledger line is img's)")
+        else:
+            art_path = ctx.inside(a.art[0]) if ctx.ws else Path(a.art[0]).resolve()
+            if not art_path.exists():
+                die(f"no image at {a.art[0]}")
+        art = f'<div class="art" style="background-image:url(\'{art_path.as_uri()}\')"></div>'
+    w, h = PAPER["letter"]
+    body = fill("flyer.html", ART=art, ARTCLASS=" with-art" if art else "", NAME=esc(ctx.name),
+                HEADLINE=esc(a.headline), BODY=esc(a.body or ""),
+                QR=qr_block(url, b) if url else "", URL=esc(url_words(url)) if url else "")
+    pdf = out_path(ctx, a, "flyer", a.headline)
+    render(page("flyer", body, b, w, h), pdf, w, h)
+    print(f"flyer: \"{a.headline}\"" + (f" -> {url}" if url else ""))
+    finish(pdf, w, h, a, url)
+
+
+def cmd_doctor(a):
+    ok = True
+
+    def say(good, msg):
+        nonlocal ok
+        ok &= good
+        print(("ok   " if good else "FAIL ") + msg)
+
+    say(bool(shutil.which("node")), "node on PATH")
+    say(HELPER.exists(), f"renderer {HELPER}")
+    say(all((TEMPLATES / t).exists() for t in ("page.html", "print.css", "qr.html", "tent.html", "tent-panel.html",
+                                               "sticker.html", "menu.html", "flyer.html")), f"templates {TEMPLATES}")
+    say(bool(shutil.which("pdfinfo") and shutil.which("pdftoppm")), "pdfinfo + pdftoppm (poppler-utils)")
+    if shutil.which("node") and HELPER.exists():
+        r = subprocess.run([node(), str(HELPER), "doctor"], capture_output=True, text=True, timeout=120)
+        try:
+            d = json.loads(r.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            d = {}
+        say(bool(d.get("browser")), f"headless Chromium ({d.get('browser') or 'not found: cd claude-tools && npx playwright install chromium'})")
+        say(bool(d.get("jsqr") and d.get("pngjs")), "QR decoder jsQR + pngjs (claude-tools/node_modules; npm install)")
+        # round trip: encode here, render, decode there
+        with tempfile.TemporaryDirectory(prefix="print-doctor-") as tmp:
+            url = "https://patchlamp.com/"
+            pdf = Path(tmp) / "t.pdf"
+            body = fill("qr.html", NAME="doctor", QR=qr_block(url, DEFAULT_BRAND), URL=url_words(url))
+            render(page("qr", body, DEFAULT_BRAND, 3.0, 3.75), pdf, 3.0, 3.75)
+            good, lines = check(pdf, 3.0, 3.75, url)
+            say(good, "round trip: " + "; ".join(lines))
+    first = shutil.which("print")
+    mine = first and Path(first).resolve() == Path(__file__).resolve()
+    say(bool(mine), f"`print` on PATH is this tool ({first}; /usr/bin/print is mailcap's — ~/.local/bin must come first)")
+    ctx = Ctx(argparse.Namespace(site=None, name=None))
+    if ctx.ws:
+        b = brand(ctx)
+        print(f"     workspace {ctx.meta.get('slug')}: name {ctx.name!r}, brand from {b['source']}, "
+              f"accent {b['accent']}")
+        try:
+            print(f"     site -> {site_url(ctx)}   menu -> {menu_url(ctx)}")
+        except SystemExit:
+            pass
+    print("doctor: all good" if ok else "doctor: something above needs fixing")
+    sys.exit(0 if ok else 1)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="print", description=__doc__.split("\n\n")[0],
+                                 formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    def common(p):
+        p.add_argument("--site", help="which site, when the workspace has more than one")
+        p.add_argument("--name", help="the business name (outside a workspace)")
+        p.add_argument("--out", help="where the PDF goes (default print/<date>-<kind>-<words>.pdf)")
+        p.add_argument("--no-check", action="store_true", help="skip the page-size and QR check")
+        return p
+
+    p = common(sub.add_parser("qr", help="a QR code: PDF + 300 dpi PNG"))
+    p.add_argument("target", nargs="?", help="site (default), menu, listing, or a URL")
+    p.set_defaults(fn=cmd_qr)
+    p = common(sub.add_parser("tent", help="a US-letter fold-in-half table tent"))
+    p.add_argument("headline")
+    p.add_argument("--sub")
+    p.add_argument("--qr", help="menu (default), site, listing, or a URL")
+    p.set_defaults(fn=cmd_tent)
+    p = common(sub.add_parser("sticker", help="a 4 x 4 in window sticker with bleed and a cut line"))
+    p.add_argument("text")
+    p.add_argument("--sub")
+    p.add_argument("--qr", help="site (default), menu, listing, a URL, or none")
+    p.set_defaults(fn=cmd_sticker)
+    p = common(sub.add_parser("menu", help="a one-page menu from Markdown or the site"))
+    p.add_argument("file", nargs="?")
+    p.add_argument("--from-site", action="store_true")
+    p.add_argument("--title")
+    p.add_argument("--qr", help="add a QR in the footer: site, menu, listing, or a URL")
+    p.set_defaults(fn=cmd_menu)
+    p = common(sub.add_parser("flyer", help="a letter flyer, art optional"))
+    p.add_argument("headline")
+    p.add_argument("--body")
+    p.add_argument("--qr", help="site (default in a workspace), menu, listing, or a URL")
+    p.add_argument("--art", nargs="+", metavar="IMAGE|gen", help='an image path, or: gen "the scene" (one paid img gen)')
+    p.set_defaults(fn=cmd_flyer)
+    p = sub.add_parser("doctor", help="is everything here to print and check")
+    p.set_defaults(fn=cmd_doctor)
+    a = ap.parse_args(argv)
+    a.fn(a)
+
+
+if __name__ == "__main__":
+    main()

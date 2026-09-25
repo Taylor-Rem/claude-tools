@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>print</title>
+{{FONTS}}
+<style>
+@page { size: {{W}}in {{H}}in; margin: 0; }
+:root {
+  --ink: {{INK}};
+  --accent: {{ACCENT}};
+  --muted: {{MUTED}};
+  --line: {{LINE}};
+  --font-display: {{FONT_DISPLAY}};
+  --font-body: {{FONT_BODY}};
+  --w: {{W}}in;
+  --h: {{H}}in;
+}
+{{CSS}}
+</style>
+</head>
+<body class="{{KIND}}">
+<div class="sheet">
+{{BODY}}
+</div>
+<script>
+// shrink type until it fits: [data-fit] elements one by one, then the whole
+// [data-fit-page] block (the menu). The renderer calls fit() before printing.
+window.fit = function () {
+  document.querySelectorAll("[data-fit]").forEach(function (el) {
+    var s = parseFloat(getComputedStyle(el).fontSize), min = parseFloat(el.dataset.fit) || 10;
+    // a few px of glyph overhang below the last line is not overflow
+    var over = function () { var t = Math.max(2, s * 0.15);
+      return el.scrollHeight > el.clientHeight + t || el.scrollWidth > el.clientWidth + 1; };
+    while (over() && s > min) {
+      s -= 1; el.style.fontSize = s + "px";
+    }
+  });
+  var m = document.querySelector("[data-fit-page]");
+  if (m) {
+    var k = 1;
+    var over = function () { return m.scrollHeight > m.clientHeight + 1 || m.scrollWidth > m.clientWidth + 1; };
+    // a short menu grows to use the sheet (to 1.6x), a long one shrinks (to 0.5x)
+    while (!over() && k < 1.6) { k += 0.05; m.style.fontSize = k + "em"; }
+    while (over() && k > 0.5) { k -= 0.02; m.style.fontSize = k + "em"; }
+    window.fitScale = k;
+  }
+};
+</script>
+</body>
+</html>

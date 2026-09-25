@@ -357,6 +357,38 @@ one). Nothing to reconnect on our side.
 
 **If they ask to disconnect:** `DISCONNECT: facebook` on a line of its own.
 
+## Printables (QR code, table tent, sticker, menu, flyer)
+
+**When they ask:** "make me a table tent", "a QR code for the tables", "a
+sign for the window", "print our menu", "a flyer for Saturday".
+
+**What to say:** "Easy — here it is." It comes back in this reply as a PDF
+they print at home or take to a print shop.
+
+**What to run**, from the workspace root (each prints a check line and the
+PDF's path last):
+
+    print tent "Order at the counter, or online" [--sub "..."] [--qr menu|site|listing|URL]
+    print qr [site|menu|listing|URL]          # PDF + a 300 dpi PNG for their own designs
+    print sticker "Scan for our menu" [--qr ...|none]   # 4 x 4 in, cut line drawn
+    print menu --from-site                    # or: print menu incoming/menu.md
+    print flyer "Pho night is back" --body "..." [--art incoming/photo.jpg]
+
+`menu` points at the site's menu (or its shop), `site` at the home page,
+`listing` at their Google listing — only when its link is written in
+NOTES.md; if `print` says there's none, ask them for it (Google Maps → their
+place → Share → Copy link), add it to NOTES.md and run it again. Business
+name, colours and type come from their site. A menu they text you: write it
+as `## Section` and `- Item — $12` lines in `incoming/menu.md` first.
+
+**Send it:** end the reply with `SEND-FILE: print/<the file>.pdf | Your table
+tent: print it, fold it across the middle`. If the check line says FAILED,
+don't send it; say you're fixing it and pass it on.
+
+**Never** put on paper a price, an offer or an hour they didn't give you.
+`--art gen "..."` makes a picture and costs money: only when they ask for
+artwork and there's no photo of theirs to use.
+
 ## The weekly report (Monday morning)
 
 **Off unless they ask for it.** When they want one ("text me every Monday

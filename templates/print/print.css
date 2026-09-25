@@ -1,0 +1,83 @@
+/* print — shared sheet styles. Units are inches and points: this is paper. */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: var(--w); height: var(--h); background: #fff; color: var(--ink);
+  font-family: var(--font-body); -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+.sheet { position: relative; width: var(--w); height: var(--h); overflow: hidden; }
+.qrcode { display: block; width: 100%; height: 100%; }
+.kicker { font-size: 11pt; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent); font-weight: 600; }
+.url { font-size: 12pt; color: var(--ink); font-weight: 600; word-break: break-all; }
+.scan { font-size: 10pt; color: var(--muted); }
+
+/* ---- qr: 3 x 3.75 in */
+.qr .sheet { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 0.15in; gap: 0.06in; }
+body.qr .qr-wrap { width: 2.7in; height: 2.7in; }
+body.qr .kicker { font-size: 9pt; text-align: center; }
+body.qr .url { font-size: 11pt; text-align: center; }
+
+/* ---- tent: letter, fold across the middle */
+.tent .panel { position: absolute; left: 0; width: 8.5in; height: 5.5in; padding: 0.55in 0.6in;
+  display: flex; align-items: center; gap: 0.45in; }
+.tent .panel.back { top: 0; transform: rotate(180deg); }
+.tent .panel.front { top: 5.5in; }
+.tent .panel .words { flex: 1; height: 100%; display: flex; flex-direction: column; justify-content: center; gap: 0.16in; min-width: 0; }
+.tent .panel h1 { flex: none; font-family: var(--font-display); font-size: 40pt; line-height: 1.08; max-height: 2.6in; overflow: hidden; color: var(--ink); }
+.tent .panel .sub { font-size: 15pt; line-height: 1.3; color: var(--muted); }
+.tent .panel .sub.empty { display: none; }
+.tent .panel .rule { width: 0.9in; height: 4pt; background: var(--accent); }
+.tent .panel .code { width: 2.3in; flex: none; display: flex; flex-direction: column; align-items: center; gap: 0.08in; }
+.tent .panel .qr-wrap { width: 2.3in; height: 2.3in; }
+.tent .panel .code .url, .tent .panel .code .scan { text-align: center; }
+.tent .fold { position: absolute; left: 0; top: 5.5in; width: 8.5in; border-top: 1px dashed #b5b5b5; }
+.tent .fold span { position: absolute; right: 0.2in; top: -0.2in; font-size: 7pt; color: #9a9a9a; letter-spacing: 0.1em; }
+
+/* ---- sticker: 4.25 in page, 4 in cut, 0.25 in safe */
+.sticker .cut { position: absolute; left: 0.125in; top: 0.125in; width: 4in; height: 4in; border-radius: 0.25in;
+  border: 0.5pt solid #b5b5b5; }
+.sticker .bleedband { position: absolute; inset: 0; border: calc(0.125in + 0.12in) solid var(--accent); border-radius: 0.37in; }
+.sticker .safe { position: absolute; left: 0.5in; top: 0.5in; width: 3.25in; height: 3.25in;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 0.08in; }
+.sticker .safe h1 { flex: none; font-family: var(--font-display); font-size: 26pt; line-height: 1.05; max-height: 1.2in; overflow: hidden; width: 100%; }
+.sticker .safe .sub { font-size: 11pt; color: var(--muted); }
+.sticker .qr-wrap { width: 1.35in; height: 1.35in; }
+.sticker .qr-wrap:empty { display: none; }
+.sticker .url { font-size: 9pt; }
+.sticker .kicker { font-size: 8.5pt; }
+
+/* ---- menu: letter */
+.menu .sheet { padding: 0.6in 0.7in 0.5in; display: flex; flex-direction: column; }
+.menu header { text-align: center; margin-bottom: 0.25in; }
+.menu header h1 { font-family: var(--font-display); font-size: 34pt; color: var(--ink); }
+.menu header .note { margin-top: 0.06in; color: var(--muted); font-size: 11pt; }
+.menu header .rule { margin: 0.14in auto 0; width: 1in; height: 3pt; background: var(--accent); }
+.menu .body { flex: 1; min-height: 0; overflow: hidden; font-size: 12pt; column-gap: 0.45in; column-fill: auto; }
+.menu .body.cols-2 { columns: 2; }
+.menu .menu-section { break-inside: avoid-column; margin-bottom: 1.4em; }
+.menu h2 { font-family: var(--font-display); font-size: 1.35em; color: var(--accent); margin-bottom: 0.45em;
+  padding-bottom: 0.2em; border-bottom: 1px solid var(--line); }
+.menu ul { list-style: none; }
+.menu li { display: grid; grid-template-columns: auto 1fr auto; align-items: baseline; column-gap: 0.4em;
+  margin-bottom: 0.55em; break-inside: avoid; }
+.menu .item { font-weight: 600; }
+.menu .dots { border-bottom: 1px dotted var(--muted); transform: translateY(-0.25em); }
+.menu .price { font-variant-numeric: tabular-nums; font-weight: 600; }
+.menu .desc { grid-column: 1 / -1; color: var(--muted); font-size: 0.85em; line-height: 1.3; margin-top: 0.1em; }
+.menu .menu-foot { display: flex; align-items: center; justify-content: center; gap: 0.18in; padding-top: 0.15in;
+  border-top: 1px solid var(--line); font-size: 11pt; font-weight: 600; }
+.menu .qr-small { width: 1.2in; height: 1.2in; }
+
+/* ---- flyer: letter */
+.flyer .sheet { display: flex; flex-direction: column; }
+.flyer .art { height: 4.6in; background-size: cover; background-position: center; flex: none; }
+.flyer .main { flex: 1; padding: 0.6in 0.7in 0.55in; display: flex; flex-direction: column; gap: 0.2in; min-height: 0; }
+.flyer h1 { flex: none; font-family: var(--font-display); font-size: 54pt; line-height: 1.04; max-height: 3.4in; overflow: hidden; }
+.flyer.with-art h1, .with-art h1 { font-size: 44pt; max-height: 1.9in; }
+.flyer .copy { flex: 1; min-height: 0; display: flex; flex-direction: column; justify-content: center; gap: 0.25in; overflow: hidden; }
+.flyer .main:not(.with-art) h1 { font-size: 66pt; max-height: 5in; }
+.flyer .main:not(.with-art) .body-text { font-size: 20pt; }
+.flyer .body-text { font-size: 16pt; line-height: 1.4; color: var(--ink); }
+.flyer .body-text:empty { display: none; }
+.flyer .foot { display: flex; align-items: flex-end; justify-content: space-between; gap: 0.3in; border-top: 4pt solid var(--accent); padding-top: 0.2in; }
+.flyer .foot .who { display: flex; flex-direction: column; gap: 0.06in; }
+.flyer .foot .name { font-family: var(--font-display); font-size: 20pt; }
+.flyer .code { display: flex; flex-direction: column; align-items: center; gap: 0.05in; }
+.flyer .qr-wrap { width: 1.7in; height: 1.7in; }

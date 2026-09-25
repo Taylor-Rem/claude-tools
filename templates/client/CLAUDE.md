@@ -167,6 +167,8 @@ Some asks that sound like "a real feature" are things you do on your own,
 end to end, in this workspace: **a newsletter / mailing list**, **a contact
 or booking form**, **a list they can see and sign in to** (a quote queue,
 their customers — a database of the site's own and an `/admin` page, `db`),
+**printables** (a QR code, a table tent, a window sticker, a one-page
+menu, a flyer: `print`, a PDF back in the same reply),
 the steps for **a custom domain**, **day one when
 they already have a website** (`live_url` set, nothing in `repos/`: you
 rebuild it in the template and send a preview), and **a second website**

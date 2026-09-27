@@ -6,6 +6,7 @@ chats — read the relay's conversations, with the pictures people sent.
     chats --from smith -n 100          # just Smith
     chats --project bleu-grave         # just one project
     chats --photos                     # only exchanges that came with a picture
+    chats --transport web              # one channel: sms, telegram, discord, or web (patchlamp.com/account/chat)
     chats serve [--lan]                # a live page that keeps up on its own
     chats ls                           # the same thing as text in the terminal
     chats doctor                       # is anything set up wrong?
@@ -44,6 +45,16 @@ INCOMING_RE = re.compile(r"incoming/(photo-[\w.-]+\.(?:jpg|jpeg|png))", re.I)
 # believe it is that exchange's picture. They share a per-day filename, so this
 # is the only thing separating the real one from every other message that day.
 RECOVER_WINDOW_S = 300
+
+
+# What each relay transport is called on the page. `web` is the owner's chat on
+# patchlamp.com/account/chat (B34): sender key web:<slug>, the same rows.
+CHANNELS = {"sms": "text", "telegram": "Telegram", "discord": "Discord", "web": "browser"}
+
+
+def channel(r):
+    t = r.get("transport") or ""
+    return CHANNELS.get(t, t or "?")
 
 
 # ---- reading -----------------------------------------------------------------
@@ -130,6 +141,10 @@ def select(rows, args, cfg):
             name = cfg.get("projects", {}).get(r.get("project"), {}).get("name", "").lower()
             if want not in (r.get("project", "").lower(), name):
                 return False
+        if getattr(args, "transport", None):
+            want = args.transport.lower()
+            if want not in ((r.get("transport") or "").lower(), channel(r).lower()):
+                return False
         return True
 
     rows = [r for r in rows if keep(r)]
@@ -203,7 +218,7 @@ def render_body(rows, cfg, photo_src=None):
         pname = cfg.get("projects", {}).get(r.get("project"), {}).get("name") \
             or r.get("project") or "not on the allowlist"
         who = html.escape(r.get("sender_name") or "someone")
-        meta = f"{who} → {html.escape(pname)} · {html.escape(r.get('transport') or '?')} · {t:%H:%M}"
+        meta = f"{who} → {html.escape(pname)} · {html.escape(channel(r))} · {t:%H:%M}"
         shots = []
         for p, archived in r.get("_photos", []):
             uri = photo_src(p, archived)
@@ -322,7 +337,7 @@ def serve(args, cfg):
 
     host = "0.0.0.0" if args.lan else "127.0.0.1"
     token = secrets.token_urlsafe(6) if args.lan else ""
-    bits = [b for b in (args.sender, args.project) if b]
+    bits = [b for b in (args.sender, args.project, args.transport) if b]
     title = "Relay chats" + (" — " + ", ".join(bits) if bits else "")
 
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -398,7 +413,7 @@ def show_text(rows, cfg):
         pname = cfg.get("projects", {}).get(r.get("project"), {}).get("name") or r.get("project")
         pics = r.get("_photos", [])
         mark = f"  [{len(pics)} picture(s)]" if pics else ""
-        print(f"{t:%H:%M}  {r.get('sender_name')} → {pname} ({r.get('transport')}){mark}")
+        print(f"{t:%H:%M}  {r.get('sender_name')} → {pname} ({channel(r)}){mark}")
         for line in (r.get("text") or "(attachment only)").splitlines():
             print(f"         {line}")
         for p, archived in pics:
@@ -422,6 +437,13 @@ def doctor(relay, cfg):
     rows = load_rows(relay) if msgs.is_file() else []
     with_photos = sum(1 for r in rows if r.get("photos"))
     print(f"exchanges    {len(rows)} logged, {with_photos} with archived pictures")
+    by = {}
+    for r in rows:
+        by[channel(r)] = by.get(channel(r), 0) + 1
+    if by:
+        print("channels     " + ", ".join(f"{k} {v}" for k, v in sorted(by.items(), key=lambda kv: -kv[1])))
+    if "browser" not in by:
+        print("             · no browser chats yet (patchlamp.com/account/chat, B34; `relay.py chat doctor`)")
     stale = [r for r in rows if "photos" not in r]
     if stale:
         print(f"             · {len(stale)} from before archiving existed; their pictures are")
@@ -441,6 +463,7 @@ def main():
     ap.add_argument("--project", help="only this project (key or name)")
     ap.add_argument("-n", "--number", type=int, default=40, help="how many exchanges (0 = all)")
     ap.add_argument("--photos", action="store_true", help="only exchanges that came with a picture")
+    ap.add_argument("--transport", help="only this channel: sms, telegram, discord or web (the browser chat)")
     ap.add_argument("--out", type=Path, help="write the HTML here instead of the cache dir")
     ap.add_argument("--relay", type=Path, default=RELAY, help="relay checkout (default: ~/projects/sms-relay)")
     ap.add_argument("--port", type=int, default=8778, help="serve: port (default 8778)")
@@ -466,7 +489,7 @@ def main():
         show_text(rows, cfg)
         return 0
 
-    bits = [b for b in (args.sender, args.project) if b]
+    bits = [b for b in (args.sender, args.project, args.transport) if b]
     title = "Relay chats" + (" — " + ", ".join(bits) if bits else "")
     out = args.out
     if not out:

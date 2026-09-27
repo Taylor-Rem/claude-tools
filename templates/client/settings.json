@@ -27,7 +27,9 @@
       "Bash(gbp *)",
       "Bash(social *)",
       "Bash(shot *)",
-      "Bash(print *)"
+      "Bash(print *)",
+      "Bash(discord photos)",
+      "Bash(discord photos *)"
     ],
     "deny": [
       "Bash(* /home/*)",

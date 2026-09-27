@@ -1,0 +1,5 @@
+{
+  "GET /channels/111/messages": "messages.json",
+  "GET /channels/222/messages": "empty.json",
+  "GET /channels/333": "channel_333.json"
+}

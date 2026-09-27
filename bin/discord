@@ -6,10 +6,14 @@ discord — read-only window onto the Discord servers the relay bot is in.
   discord read <#name|id> [-n N]  the last N messages in a channel, oldest first (default 30)
   discord history [#name ...|--all] [--out FILE]   everything, oldest first, to a file (Read it whole)
                                   [--before <message id>] to page back, [--json] for rows
+  discord photos [-n N] [--channel #name|id] [--dir D]
+                                  the last N (default 6, max 20) photos/clips posted in this
+                                  run's channel (RELAY_THREAD / RELAY_CHAT), newest first,
+                                  downloaded so they can be looked at; one line each
   discord doctor                  is the token there, can we reach the API
 
 Reads DISCORD_BOT_TOKEN from the environment or ~/.config/claude-tools/env; the
-value is never printed. Only reads: no sending, no reacting, no state. Made so
+value is never printed. Only reads: no sending, no reacting, no state (`photos` keeps its downloads). Made so
 chat rooms (sms-relay `chat` projects) can look at the other channels of a
 server without the relay pushing every message into every prompt.
 """
@@ -17,6 +21,7 @@ server without the relay pushing every message into every prompt.
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -53,7 +58,21 @@ def need_token():
     return val
 
 
+def _fixture(path, params):
+    """DISCORD_FIXTURES=<dir>: answer from <dir>/routes.json ("GET <path>" -> file) — tests."""
+    root = Path(os.environ["DISCORD_FIXTURES"])
+    routes = json.loads((root / "routes.json").read_text())
+    key = f"GET {path}"
+    if params.get("before"):
+        key += f"?before={params['before']}"
+    if key not in routes:
+        die(f"not found: {path}")
+    return json.loads((root / routes[key]).read_text())
+
+
 def call(path, **params):
+    if os.environ.get("DISCORD_FIXTURES"):
+        return _fixture(path, params)
     for _ in range(6):
         r = requests.get(API + path, headers={"Authorization": f"Bot {need_token()}"}, params=params, timeout=30)
         if r.status_code != 429:
@@ -228,6 +247,151 @@ def cmd_history(args):
         print(f"{total} {'new ' if not fresh else ''}messages from {len(chans)} channel(s) -> {args.out}")
 
 
+# -- photos: "this cat" when the cat isn't attached ------------------------------
+
+MEDIA_EXT = {"jpg", "jpeg", "png", "gif", "webp", "heic", "mp4", "mov", "webm", "m4v"}
+VIDEO_EXT = {"mp4", "mov", "webm", "m4v"}
+MAX_BYTES = 25 * 1024 * 1024
+
+
+def ago_words(dt):
+    if not dt:
+        return "?"
+    s = int((datetime.now(timezone.utc) - dt).total_seconds())
+    for unit, n in (("day", 86400), ("hr", 3600), ("min", 60)):
+        if s >= n:
+            k = s // n
+            return f"{k} {unit}{'s' if k > 1 and unit == 'day' else ''} ago"
+    return "just now"
+
+
+def _media(m):
+    """[(kind, filename, url, size)] for one message: attachments, plus pasted image links."""
+    out = []
+    for a in m.get("attachments") or []:
+        ct = (a.get("content_type") or "").split(";")[0]
+        ext = (a.get("filename") or "").rsplit(".", 1)[-1].lower()
+        if ct.startswith("video/") or ext in VIDEO_EXT:
+            out.append(("video", a.get("filename") or "clip.mp4", a.get("url"), a.get("size") or 0))
+        elif ct.startswith("image/") or ext in MEDIA_EXT:
+            out.append(("image", a.get("filename") or "image.png", a.get("url"), a.get("size") or 0))
+    for e in m.get("embeds") or []:
+        if e.get("type") == "image" and (e.get("thumbnail") or {}).get("url"):
+            url = e["thumbnail"]["url"]
+            name = url.split("?")[0].rsplit("/", 1)[-1] or "image.png"
+            out.append(("image", name, url, 0))
+        elif e.get("type") == "gifv" and (e.get("video") or {}).get("url"):
+            out.append(("video", "gif.mp4", e["video"]["url"], 0))
+    return [x for x in out if x[2]]
+
+
+def _download(url, dest, size):
+    if dest.exists() and dest.stat().st_size and (not size or dest.stat().st_size == size):
+        return True
+    if size and size > MAX_BYTES:
+        return False
+    fx = os.environ.get("DISCORD_FIXTURES")
+    if fx:
+        src = Path(fx) / "files" / url.split("?")[0].rsplit("/", 1)[-1]
+        if not src.exists():
+            return False
+        dest.write_bytes(src.read_bytes())
+        return True
+    try:
+        r = requests.get(url, timeout=60, stream=True)
+        if r.status_code != 200:
+            return False
+        got = 0
+        with open(dest, "wb") as f:
+            for chunk in r.iter_content(1 << 16):
+                got += len(chunk)
+                if got > MAX_BYTES:
+                    break
+                f.write(chunk)
+        if got > MAX_BYTES:
+            dest.unlink(missing_ok=True)
+            return False
+        return True
+    except requests.RequestException:
+        dest.unlink(missing_ok=True)
+        return False
+
+
+def _photos_channel(args):
+    """The channel id to read. In a relay run it is the run's own channel (thread first);
+    a client workspace may not point it anywhere else."""
+    own = os.environ.get("RELAY_THREAD") or os.environ.get("RELAY_CHAT") or ""
+    transport = os.environ.get("RELAY_TRANSPORT", "")
+    if args.channel:
+        if Path(".client.json").exists() and args.channel != own:
+            die("photos: a client workspace reads only its own channel; drop --channel")
+        return resolve(args.channel)["id"]
+    if transport and transport != "discord":
+        die(f"photos: this run came by {transport}, not Discord — no channel history to read "
+            "(`chats --photos` has what was texted)")
+    if not own:
+        die("photos: no channel — run it from a Discord relay run (RELAY_CHAT) or pass --channel")
+    return own
+
+
+def _photos_dir(args, channel):
+    if args.dir:
+        return Path(args.dir)
+    # A relay run's allowlist lets Read and `img describe` see the workspace's incoming/,
+    # and denies /tmp; everywhere else the downloads go to /tmp.
+    if os.environ.get("RELAY_TRANSPORT") and Path("incoming").is_dir():
+        return Path("incoming") / "discord"
+    return Path("/tmp/discord-photos") / channel
+
+
+def _prune(folder, keep, days=2):
+    cutoff = time.time() - days * 86400
+    for f in folder.iterdir():
+        if f.is_file() and f.name not in keep and f.stat().st_mtime < cutoff:
+            f.unlink(missing_ok=True)
+
+
+def cmd_photos(args):
+    n = max(1, min(args.n, 20))
+    channel = _photos_channel(args)
+    found, before, pages = [], "", 0
+    while len(found) < n and pages < args.pages:
+        params = {"limit": 100}
+        if before:
+            params["before"] = before
+        page = call(f"/channels/{channel}/messages", **params)
+        pages += 1
+        if not page:
+            break
+        for m in page:                                   # newest first
+            for kind, name, url, size in _media(m):
+                found.append((m, kind, name, url, size))
+        before = page[-1]["id"]
+        if len(page) < 100:
+            break
+    found = found[:n]
+    if not found:
+        print(f"no photos or clips in the last {pages * 100} messages here")
+        return
+    folder = _photos_dir(args, channel)
+    folder.mkdir(parents=True, exist_ok=True)
+    keep = set()
+    for i, (m, kind, name, url, size) in enumerate(found, 1):
+        a = m.get("author") or {}
+        who = a.get("global_name") or a.get("username") or "?"
+        when = ago_words(snowflake_time(m.get("id")))
+        text = " ".join((m.get("content") or "").split())
+        text = (text[:60].rstrip() + "…") if len(text) > 60 else text
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", name)[-60:]
+        dest = folder / f"{m['id']}-{safe}"
+        keep.add(dest.name)
+        where = str(dest) if _download(url, dest, size) else "(couldn't download" + (", over 25MB)" if size > MAX_BYTES else ")")
+        tag = "  [video: img describe it]" if kind == "video" else ""
+        said = f'"{text}"' if text else "(no text)"
+        print(f"{i}. {who}, {when}: {said}  {where}{tag}")
+    _prune(folder, keep)
+
+
 def cmd_doctor(args):
     src = "env" if os.environ.get("DISCORD_BOT_TOKEN") else ("file" if load_keys().get("DISCORD_BOT_TOKEN") else None)
     print(f"token: {'found in ' + src if src else 'MISSING'}")
@@ -237,6 +401,12 @@ def cmd_doctor(args):
     print(f"bot: @{me.get('username')} [{me.get('id')}]")
     for g, chans in guild_channels():
         print(f"server: {g['name']} — {len(chans)} text channels")
+    own = os.environ.get("RELAY_THREAD") or os.environ.get("RELAY_CHAT")
+    if own and os.environ.get("RELAY_TRANSPORT") == "discord":
+        n = sum(len(_media(m)) for m in call(f"/channels/{own}/messages", limit=100))
+        print(f"photos: this run's channel {own} readable, {n} photo(s)/clip(s) in the last 100 messages")
+    else:
+        print("photos: no relay channel in env (RELAY_CHAT); `discord photos --channel ..` works by hand")
 
 
 def main():
@@ -256,6 +426,12 @@ def main():
     h.add_argument("--out", help="write here instead of stdout (incremental on rerun)")
     h.add_argument("--refresh", action="store_true", help="with --out: pull everything again")
     h.set_defaults(fn=cmd_history)
+    ph = sub.add_parser("photos", help="the last photos/clips posted here, downloaded, newest first")
+    ph.add_argument("-n", type=int, default=6, help="how many (default 6, max 20)")
+    ph.add_argument("--channel", default="", help="#name or id (default: this run's RELAY_THREAD / RELAY_CHAT)")
+    ph.add_argument("--dir", default="", help="where the files go (default: incoming/discord/ in a relay run, else /tmp/discord-photos/<channel>/)")
+    ph.add_argument("--pages", type=int, default=3, help="how far back, in pages of 100 messages (default 3)")
+    ph.set_defaults(fn=cmd_photos)
     sub.add_parser("doctor", help="token + API check").set_defaults(fn=cmd_doctor)
     args = ap.parse_args()
     args.fn(args)

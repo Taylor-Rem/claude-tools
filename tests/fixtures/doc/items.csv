@@ -1,0 +1,9 @@
+sku,item,price,in_stock
+T-001,Chicken tacos (3),11.50,yes
+T-002,Carne asada tacos (3),13.50,yes
+B-010,Burrito bowl,12.75,yes
+S-020,Chips & guacamole,6.25,yes
+S-021,Elote,4.50,seasonal
+S-022,Tamales (2),8.00,no
+D-030,Horchata,3.75,yes
+D-031,Mexican Coke,3.50,yes

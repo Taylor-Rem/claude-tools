@@ -1,0 +1,8 @@
+{"id": "FX_S02", "displayName": {"text": "Blue Canyon Landscaping"}, "formattedAddress": "Lehi, UT, USA",
+ "nationalPhoneNumber": "(801) 555-0102", "rating": 4.6, "userRatingCount": 31, "businessStatus": "OPERATIONAL",
+ "googleMapsUri": "https://maps.google.com/?cid=FX_S02", "location": {"latitude": 40.392, "longitude": -111.82},
+ "pureServiceAreaBusiness": true, "primaryType": "landscaper",
+ "regularOpeningHours": {"periods": [{"open": {"day": 1, "hour": 7, "minute": 0}, "close": {"day": 1, "hour": 17, "minute": 0}}],
+   "weekdayDescriptions": ["Monday: 7:00 AM – 5:00 PM"]},
+ "photos": [{"name": "1"}, {"name": "2"}, {"name": "3"}, {"name": "4"}, {"name": "5"}, {"name": "6"}, {"name": "7"}, {"name": "8"}, {"name": "9"}, {"name": "10"}],
+ "reviews": [{"rating": 5, "relativePublishTimeDescription": "a week ago", "publishTime": "2026-09-20T12:00:00Z"}]}

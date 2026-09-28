@@ -1,0 +1,5 @@
+{"id": "FX_S01", "displayName": {"text": "Mike's Pool Care"}, "formattedAddress": "101 N Main St, American Fork, UT 84003, USA",
+ "nationalPhoneNumber": "(801) 555-0101", "websiteUri": "https://www.facebook.com/mikespoolcare", "rating": 4.9, "userRatingCount": 14,
+ "businessStatus": "OPERATIONAL", "googleMapsUri": "https://maps.google.com/?cid=FX_S01", "location": {"latitude": 40.38, "longitude": -111.79},
+ "photos": [{"name": "a"}, {"name": "b"}], "primaryType": "pool_cleaning_service",
+ "reviews": [{"rating": 2, "relativePublishTimeDescription": "3 weeks ago", "publishTime": "2026-09-07T12:00:00Z"}]}

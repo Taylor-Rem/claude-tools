@@ -23,6 +23,23 @@ B25 (the remote lane), B7 (the pipeline: log, follow-ups, the week).
                                # three lines to paste under a group post, and the lead logged
   leads doctor
 
+Segments (B44, VISION § Decided 2026-09-28: services first, restaurants one of five):
+  kit, kit --remote, candidates and next read the services census (B43's
+  `businesses` table in the same wasatch.db) by default once it holds a kit's
+  worth (six service businesses with a phone and no site of their own); until
+  then, and with --segment restaurant, everything below is the restaurant census
+  exactly as before. diagnose looks a name up in both.
+  --segment services|creatives|retail|nonprofit|restaurant|all   (LEADS_SEGMENT sets the default)
+  leads kit --segment services  # the six nearest American Fork with no site of their own (a call list, not
+                                # Saturday counters): presence class, the faults, the opener, the close, the ladder
+  leads kit --remote --segment creatives   # six messages greeted by the business (or the first name in it)
+  leads diagnose "Name, City"   # a name in the services census answers from the census, no Places call
+                                # (--live reads the listing too); an unknown name is still looked up live
+  The pool for a non-restaurant segment: presence none, page (Facebook, Instagram,
+  Linktree…), directory (Thumbtack, Angi…), dead (business.site, a link that
+  doesn't load) or builder (a free Wix/GoDaddy/Square… address); `own` sites are
+  left out, `unknown` is read from the website link without a fetch.
+
 The pick: marketplace-only independents from the census
 (client-leads/wasatch.db: on DoorDash/Uber/Grubhub with no ordering
 of their own), operational, with a phone, at least --min-reviews reviews,
@@ -101,6 +118,7 @@ DETAILS_FIELDS = ",".join([
     "rating", "userRatingCount", "businessStatus", "googleMapsUri", "location",
     "regularOpeningHours", "currentOpeningHours", "photos", "reviews", "primaryTypeDisplayName",
     "primaryType", "reservable",   # B40: the tool line (a booking link or not; a service business or food)
+    "pureServiceAreaBusiness",     # B44: a trade that hides its address and shows a service area
 ])
 DETAILS_COST_USD = 0.025      # Place Details, Enterprise + Atmosphere SKU (approx.)
 CACHE_DAYS = 7
@@ -132,6 +150,63 @@ TOOL_LINE = ("The tool line (a counter marked \"no way to book\"): \"Where do th
              "live now — a notebook, a spreadsheet? Patch can put a booking page on your own site, with every booking on a "
              "private page only you open. Send him the sheet you keep and it goes in the same place. Six to look at on "
              f"{TOOLS_URL}.\"")
+
+# ---- segments (B44; plan 18 § Contract: the `businesses` table B43 fills) ------------------
+SEGMENTS = ("services", "creatives", "retail", "nonprofit", "restaurant")
+BUSINESS_SEGMENTS = SEGMENTS[:4]
+SEGMENT_TITLE = {"services": "Services", "creatives": "Creatives", "retail": "Makers and shops",
+                 "nonprofit": "Nonprofits", "restaurant": "Restaurants", "all": "Every segment"}
+SEGMENT_NOUN = {"services": "service businesses", "creatives": "creatives and solo pros", "retail": "makers and shops",
+                "nonprofit": "nonprofits, churches and leagues", "restaurant": "restaurants", "all": "small businesses"}
+SEGMENT_MIN_REVIEWS = 3           # a solo trade has a handful of reviews; the restaurant floor stays 25
+WEAK_PRESENCE = ("none", "page", "directory", "dead", "builder")
+PAGE_HOSTS = {"facebook.com": "Facebook", "fb.com": "Facebook", "instagram.com": "Instagram", "linktr.ee": "Linktree",
+              "tiktok.com": "TikTok", "sites.google.com": "Google Sites"}
+DIRECTORY_HOSTS = {"thumbtack.com": "Thumbtack", "angi.com": "Angi", "angieslist.com": "Angi", "homeadvisor.com": "HomeAdvisor",
+                   "yelp.com": "Yelp", "nextdoor.com": "Nextdoor", "houzz.com": "Houzz", "bark.com": "Bark", "porch.com": "Porch",
+                   "taskrabbit.com": "TaskRabbit", "etsy.com": "Etsy", "eventective.com": "Eventective", "theknot.com": "The Knot",
+                   "weddingwire.com": "WeddingWire", "gigsalad.com": "GigSalad", "thebash.com": "The Bash"}
+BUILDER_HOSTS = {"wixsite.com": "Wix", "wix.com": "Wix", "godaddysites.com": "GoDaddy", "square.site": "Square",
+                 "squarespace.com": "Squarespace", "weebly.com": "Weebly", "mystrikingly.com": "Strikingly",
+                 "carrd.co": "Carrd", "webs.com": "Webs"}
+FOOD_WORDS = ("restaurant", "cafe", "coffee", "bar", "food", "meal", "pizza", "diner", "deli", "bakery", "ice_cream",
+              "dessert", "sandwich", "steak", "sushi", "taco", "brewery", "winery")
+
+# The opener, the close and the ladder per segment (VISION § Decided 2026-09-28; every sentence maps to
+# patchlamp/CLAIMS.md: Starter $99 and "someone on the hook" (§ Pricing), the templates (§ Templates), /admin
+# (§ Web tools), Light $50 (§ Pricing). No ordering, no price that isn't on /pricing.)
+SEGMENT_OPENER = ("Open with the diagnostic, not the pitch: \"I looked your business up on Google and it's got <the thing above>. "
+                  "Here's exactly what to change; it's free, whether or not we talk again.\"")
+SEGMENT_CLOSE = ("The close: \"If you'd rather not think about it again: text Patch and it's done. Your site, your hours, your "
+                 "prices, changed in a minute by a number you text. It's $99 a month and I'm on the hook for all of it.\"")
+SEGMENT_LADDER = {
+    "services": ("Then the tool, if they quote jobs: \"Your site can take quote requests and bookings, and they land on a "
+                 "private page only you open: who asked, what for, marked new, replied or done. There's a working one on the "
+                 "pool-care demo at patchlamp.com/templates.\""),
+    "creatives": ("Then the site: \"One page of your work with a line each, who you are and how to reach you. Text a photo "
+                  "and say put this one first. Quote and booking requests can land on a private page only you open.\" "
+                  "The demos are at patchlamp.com/templates."),
+    "retail": ("Then the shop: \"What you sell with prices and a basket, your pickup hours, checkout through Stripe paid to "
+               "your own account, and the orders on a private page only you open.\" The demos are at patchlamp.com/templates."),
+    "nonprofit": ("Then the calendar: \"Your mission and a calendar of what's on, a volunteer sign-up kept in a list you "
+                  "open at /admin, and a donate page that links to your own giving page.\" A club that changes little can "
+                  "start on Light, $50 a month."),
+}
+BUSINESS_FIX_HINTS = [
+    ("no website", "A one-page site with what you do, the area you cover and a way to ask for a quote fixes the first one; Google links it the day it's up."),
+    ("page, not a site", "A site of your own beats a social page on Google, and you keep the page too."),
+    ("profile, not a site", "A site of your own means the customer who finds you on Google lands on your page, not a directory's."),
+    ("business.site", "Google retired business.site pages in 2024; pointing the website link somewhere live takes two minutes in the Business Profile."),
+    ("doesn't load", "Worth checking the domain renewed: a dead link on Google loses the calls that click it."),
+    ("free ", "A free builder address works, but your own domain reads as a real business on Google and in a text."),
+    ("street address", "If you work from home, Google lets you hide the address and show the area you serve instead (Edit profile → Location)."),
+    ("no hours", "Hours go in under Google Maps → the listing → Edit profile → Hours; two minutes for the owner."),
+    ("no photos", "Ten real photos of the work, before and after, is the single biggest lift on a listing."),
+    ("only ", "Ten real photos of the work, before and after, is the single biggest lift on a listing."),
+    ("★ review", "A short, polite owner reply to the recent low review reads well to everyone who sees it after."),
+    ("months old", "Asking a few recent customers for a review this week makes the listing look alive again."),
+    ("no phone", "Add the phone number under Edit profile → Contact."),
+]
 
 
 def die(msg, code=1):
@@ -220,6 +295,169 @@ def census_candidates(min_reviews=25):
 def census_stamp(cands):
     stamps = sorted({(c.get("refreshed_at") or "")[:10] for c in cands if c.get("refreshed_at")})
     return stamps[-1] if stamps else "?"
+
+
+# ---- the services census (B43's `businesses`; B44 reads it) -------------------------
+
+def businesses_state():
+    """(table exists, {segment: rows}) — never raises on an old census."""
+    if not CENSUS.exists():
+        return False, {}
+    conn = sqlite3.connect(f"file:{CENSUS}?mode=ro", uri=True)
+    try:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='businesses'").fetchone():
+            return False, {}
+        return True, dict(conn.execute("SELECT segment, count(*) FROM businesses GROUP BY segment").fetchall())
+    finally:
+        conn.close()
+
+
+DEFAULT_POOL_MIN = 6               # a kit's worth: below this the services census is mid-scan, not ready
+
+
+def default_segment():
+    """LEADS_SEGMENT, else services once the services census holds a kit's worth of leads (six with a phone and no
+    site of their own), else restaurant — so a scan that has written its first rows doesn't empty the 11:45 kit."""
+    env = (os.environ.get("LEADS_SEGMENT") or "").strip().lower()
+    if env:
+        if env not in SEGMENTS + ("all",):
+            die(f"LEADS_SEGMENT is one of {', '.join(SEGMENTS)}, all")
+        return env
+    _, counts = businesses_state()
+    if counts.get("services") and len(business_candidates(["services"])) >= DEFAULT_POOL_MIN:
+        return "services"
+    return "restaurant"
+
+
+def resolve_segment(arg):
+    """The segment a command runs on; a business segment with no census behind it stops here, in one line."""
+    seg = (arg or default_segment()).lower()
+    if seg in ("restaurant", "all"):
+        if seg == "all" and not sum(businesses_state()[1].values()):
+            print("leads: no services census yet — --segment all is the restaurants alone", file=sys.stderr)
+        return seg
+    exists, counts = businesses_state()
+    if not exists or not sum(counts.values()):
+        die("no services census yet — run B43's scan (client-leads/scripts/scan_services.py); --segment restaurant works today")
+    if not counts.get(seg):
+        die(f"no {seg} in the services census yet ({', '.join(f'{k} {v}' for k, v in sorted(counts.items()))})")
+    return seg
+
+
+def host_matches(host, table):
+    for h, label in table.items():
+        if host == h or host.endswith("." + h):
+            return label
+    return None
+
+
+def presence_from_url(url):
+    """(class, label) from the website link alone, no fetch: plan 18's classes minus the HTTP check
+    ('own' here means only "a domain of its own", not that it loads)."""
+    if not (url or "").strip():
+        return "none", None
+    host = host_of(url)
+    if host == "business.site" or host.endswith(".business.site"):
+        return "dead", "business.site"
+    if host == "sites.google.com":
+        return "page", "Google Sites"
+    for table, cls in ((PAGE_HOSTS, "page"), (DIRECTORY_HOSTS, "directory"), (BUILDER_HOSTS, "builder")):
+        label = host_matches(host, table)
+        if label:
+            return cls, label
+    if ".webnode." in "." + host:
+        return "builder", "Webnode"
+    return "own", host
+
+
+def presence(c, website=None):
+    """(class, label, url) for a business: the census's class (B43 checked it), or read from the link when it
+    says unknown or Google's listing now links somewhere else. An own-domain link nobody checked stays unknown."""
+    census_url = c.get("presence_url") or c.get("website") or ""
+    cls, url = c.get("presence_class") or "unknown", census_url
+    if website is not None and host_of(website) != host_of(census_url):   # Google links somewhere new since the scan
+        cls, url = None, website
+    derived, label = presence_from_url(url)
+    if cls in (None, "unknown"):
+        cls = "unknown" if derived == "own" else derived
+    elif derived == "own":
+        label = host_of(url)
+    return cls, label, url
+
+
+def presence_short(cls, label, url):
+    return {"none": "no website", "page": f"website → {label}", "directory": f"website → {label}",
+            "dead": f"dead link ({label or host_of(url)})", "builder": f"free {label} site",
+            "own": host_of(url), "unknown": host_of(url) or "website unchecked"}.get(cls, cls)
+
+
+def presence_fault(cls, label, url):
+    art = "an" if (label or "x")[0] in "AEIOU" else "a"
+    if cls == "none":
+        return "no website on Google"
+    if cls == "page":
+        return f"the website link is {art} {label} page, not a site of their own"
+    if cls == "directory":
+        return f"the website link is their {label} profile, not a site of their own"
+    if cls == "dead":
+        if label == "business.site":
+            return "the website link is a business.site page, and Google shut those down in 2024: it's a dead link"
+        return f"the website link ({label or host_of(url)}) doesn't load"
+    if cls == "builder":
+        return f"the website is a free {label} address ({host_of(url)})"
+    return None
+
+
+def business_candidates(segments, min_reviews=None):
+    """The services census's pool: independent, operational, a phone, no site of its own; nearest first."""
+    exists, _ = businesses_state()
+    if not exists:
+        return []
+    floor = SEGMENT_MIN_REVIEWS if min_reviews is None else min_reviews
+    conn = sqlite3.connect(f"file:{CENSUS}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    marks = ",".join("?" * len(segments))
+    rows = conn.execute(f"""
+        SELECT b.place_id, b.segment, b.category, b.presence_class, b.presence_url, b.city,
+               p.name, p.address, p.locality, p.phone, p.website, p.has_website, p.rating, p.reviews,
+               p.lat, p.lng, p.primary_type, p.google_maps_uri, p.refreshed_at
+        FROM businesses b JOIN place_cache p ON p.place_id = b.place_id
+        WHERE b.segment IN ({marks})
+          AND (CASE WHEN b.chain_override = 'yes' THEN 1 WHEN b.chain_override = 'no' THEN 0
+                    ELSE COALESCE(b.is_chain, 0) END) = 0
+          AND (p.business_status IS NULL OR p.business_status = 'OPERATIONAL')
+          AND p.lat IS NOT NULL AND p.lng IS NOT NULL
+          AND COALESCE(p.reviews, 0) >= ?
+          AND COALESCE(p.phone, '') != ''
+    """, (*segments, floor)).fetchall()
+    conn.close()
+    h = home()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["presence"], d["presence_label"], d["presence_link"] = presence(d)
+        if d["presence"] not in WEAK_PRESENCE:
+            continue
+        d["miles"] = round(miles(h, (d["lat"], d["lng"])), 1)
+        out.append(d)
+    out.sort(key=lambda d: (d["miles"], -(d["reviews"] or 0)))
+    return out
+
+
+def candidates_for(segment, min_reviews=None):
+    """Every command's pool: `restaurant` is census_candidates() exactly as before B44."""
+    if segment == "restaurant":
+        return census_candidates(25 if min_reviews is None else min_reviews)
+    if segment == "all":
+        rest = [dict(c, segment="restaurant") for c in census_candidates(25 if min_reviews is None else min_reviews)]
+        out = rest + business_candidates(BUSINESS_SEGMENTS, min_reviews)
+        out.sort(key=lambda d: (d["miles"], -(d["reviews"] or 0)))
+        return out
+    return business_candidates([segment], min_reviews)
+
+
+def is_business(c):
+    return (c.get("segment") or "") in BUSINESS_SEGMENTS
 
 
 # ---- kits already sent ---------------------------------------------------------
@@ -437,6 +675,70 @@ def faults(c, details, today):
     return out, summary
 
 
+def business_faults(c, details, today):
+    """faults() for a service business, a creative, a shop or a nonprofit (B44): the presence first (no site, a
+    social page or a directory profile as the site, a dead business.site, a free builder address), then what the
+    listing shows when it was read (no hours, under five photos, a low review, a street address where a trade
+    would show a service area). Works with details=None (census only)."""
+    d = details or {}
+    cls, label, url = presence(c, (d.get("websiteUri") or "") if details else None)
+    c["presence"], c["presence_label"], c["presence_link"] = cls, label, url
+    out = []
+    pf = presence_fault(cls, label, url)
+    if pf:
+        out.append(pf)
+    rating = d.get("rating") if details else c.get("rating")
+    n_reviews = d.get("userRatingCount") if details else c.get("reviews")
+    if details:
+        hours = (d.get("regularOpeningHours") or {}).get("periods")
+        if not hours:
+            out.append("no hours on Google")
+        n_photos = len(d.get("photos") or [])
+        if n_photos == 0:
+            out.append("no photos")
+        elif n_photos < 5:
+            out.append(f"only {n_photos} photos")
+        if (c.get("segment") == "services" and not d.get("pureServiceAreaBusiness")
+                and re.match(r"^\d", d.get("formattedAddress") or "")):
+            out.append("Google shows a street address, not the area they serve")
+        revs = d.get("reviews") or []
+        ages = [a for a in (review_age_days(r, today) for r in revs) if a is not None]
+        low = [r for r in revs if (r.get("rating") or 5) <= 3]
+        if low:
+            r = min(low, key=lambda r: review_age_days(r, today) or 9999)
+            out.append(f"a {r.get('rating')}★ review {r.get('relativePublishTimeDescription') or ''}".strip())
+        if ages and min(ages) > STALE_REVIEW_DAYS:
+            out.append(f"newest review is {min(ages) // 30} months old")
+        if not d.get("nationalPhoneNumber"):
+            out.append("no phone on Google")
+    if n_reviews is not None and n_reviews < 10:
+        out.append(f"only {n_reviews} reviews")
+    if rating is not None and rating < 4.0:
+        out.append(f"rating {rating}")
+    stars = f"{rating}★ ({n_reviews})" if rating is not None else "no rating"
+    bits = [stars, presence_short(cls, label, url)]
+    if details:
+        n_photos = len(d.get("photos") or [])
+        bits.append("10+ photos" if n_photos >= 10 else f"{n_photos} photos")
+    bits.append(c.get("category") or (d.get("primaryTypeDisplayName") or {}).get("text") or c.get("segment") or "")
+    summary = " · ".join(b for b in bits if b) + ("" if details else " · (census only)")
+    return out, summary
+
+
+def live_segment(details):
+    """A name looked up live (not in either census): None for food (the restaurant faults), 'services' for a
+    business people book (the service-area check applies), 'retail' for anything else (a storefront)."""
+    t = (details or {}).get("primaryType")
+    if is_food(t):
+        return None
+    return "services" if is_service({"primary_type": t}, None) else "retail"
+
+
+def is_food(primary_type):
+    t = (primary_type or "").lower()
+    return any(w in t for w in FOOD_WORDS)
+
+
 def booking_link(c, details):
     """How people book this place online, or None (B40: None prints the tool line).
     Google's `reservable`, else the listing's (or the census's) website on a booking host."""
@@ -611,6 +913,120 @@ def render(order, for_date, today, mode, note, skipped, census_date, loop, short
     return "\n".join(lines) + "\n"
 
 
+# ---- the kit for any other segment (B44) ------------------------------------------------
+
+def read_pick(c, details, today):
+    """A candidate with its listing folded in and its faults worked out (either census)."""
+    c = dict(c, details=details)
+    if details:
+        c["name"] = (details.get("displayName") or {}).get("text") or c["name"]
+        c["address"] = details.get("formattedAddress") or c.get("address")
+        c["phone"] = details.get("nationalPhoneNumber") or c.get("phone")
+        c["maps"] = clean_maps(details.get("googleMapsUri") or c.get("google_maps_uri"))
+    else:
+        c["maps"] = clean_maps(c.get("google_maps_uri"))
+    c["faults"], c["summary"] = (business_faults if is_business(c) else faults)(c, details, today)
+    c["booking"] = booking_link(c, details)
+    return c
+
+
+def nearest_pool(cands, radius, n, skip):
+    """Within the radius; if that's short of n, the nearest n wherever they are (the census is the valley)."""
+    left = [c for c in cands if c["place_id"] not in skip]
+    pool = [c for c in left if c["miles"] <= radius]
+    return (pool, None) if len(pool) >= n or len(left) == len(pool) else (left, radius)
+
+
+def build_segment_kit(args, segment):
+    today = dt.datetime.now(TZ).date()
+    for_date = dt.date.fromisoformat(args.for_date) if args.for_date else today
+    key, where = (None, None) if args.census_only else places_key()
+    places = Places(key, where, fixture=args.fixture, refresh=args.refresh)
+    cands = candidates_for(segment, args.min_reviews)
+    skip = {} if args.allow_repeat else recently_kitted(for_date)
+    skip.update({pid: "pipeline" for pid in pipeline_skip()})
+    pool, widened = nearest_pool(cands, args.radius, args.n, skip)
+    if not pool:
+        die(f"no {SEGMENT_NOUN[segment]} left to kit (all kitted or in the pipeline); --allow-repeat" if cands else
+            f"no {SEGMENT_NOUN[segment]} in the census's pool yet (a phone, ≥{SEGMENT_MIN_REVIEWS if args.min_reviews is None else args.min_reviews} "
+            "reviews, no site of their own); `leads doctor` counts them")
+    picks, skipped = [], []
+    for c in pool:
+        if len(picks) >= args.n:
+            break
+        details = places.get(c["place_id"]) if (key or args.fixture) else None
+        if places.failed and not args.fixture:
+            details = None
+        if details and details.get("businessStatus") not in (None, "OPERATIONAL"):
+            skipped.append((c["name"], details.get("businessStatus", "").lower().replace("_", " ")))
+            continue
+        picks.append(read_pick(c, details, today))
+    if places.calls:
+        ledger_append({"ts": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()), "kind": "places_details",
+                       "tool": "leads", "calls": places.calls, "cost_usd": round(places.calls * DETAILS_COST_USD, 3),
+                       "billed_to": f"google:GOOGLE_MAPS_API_KEY({where})", "project": "global",
+                       "for": f"{segment} {for_date.isoformat()}"})
+    mode = "fixture" if args.fixture else "google" if (key and not places.failed) else "census"
+    page = render_segment(picks, segment, for_date, today, mode, places.failed, skipped, census_stamp(cands), widened, args.n)
+    if not args.fixture and not args.no_save:
+        (STATE / "kits").mkdir(parents=True, exist_ok=True)
+        (STATE / "kits" / f"{for_date.isoformat()}-{segment}.md").write_text(page)
+        with open(STATE / "kits.jsonl", "a") as f:
+            f.write(json.dumps({"ts": dt.datetime.now(TZ).isoformat(timespec="seconds"), "for": for_date.isoformat(),
+                                "segment": segment, "place_ids": [p["place_id"] for p in picks],
+                                "names": [p["name"] for p in picks], "mode": mode, "calls": places.calls}) + "\n")
+    return page, picks
+
+
+def segment_copy(segments):
+    """The opener, the close and one ladder line per business segment on the page (restaurants keep theirs)."""
+    lines = []
+    if any(s in BUSINESS_SEGMENTS for s in segments):
+        lines += [SEGMENT_OPENER, SEGMENT_CLOSE]
+        lines += [SEGMENT_LADDER[s] for s in BUSINESS_SEGMENTS if s in segments]
+    if "restaurant" in segments:
+        lines.append("A restaurant on the list: open with its fault the same way and sell the listing, the menu and the site; "
+                     "ordering is not on offer (VISION § Decided, 2026-09-24).")
+    return lines
+
+
+def render_segment(order, segment, for_date, today, mode, note, skipped, census_date, widened, n):
+    lines = [f"{SEGMENT_TITLE[segment]} kit — {for_date.strftime('%a %-d %b')} · {len(order)} {SEGMENT_NOUN[segment]} "
+             f"nearest American Fork{'' if segment == 'all' else ' with no site of their own'} · call, or drop by"]
+    if mode == "google":
+        lines.append(f"(Google listings read {today.strftime('%a %-d %b')}; census {census_date})")
+    elif mode == "fixture":
+        lines.append("(FIXTURE listings — a test, not Google)")
+    else:
+        lines.append(f"(census {census_date} only — hours, photos and recent reviews aren't read"
+                     + ("" if note else " without a Places call") + ")")
+    if note:
+        lines.append(f"({note})")
+    if widened:
+        lines.append(f"(fewer than {n} within {widened:g} mi, so the nearest wherever they are)")
+    lines.append("")
+    for i, p in enumerate(order, 1):
+        where = p.get("locality") or (p.get("city") or "").replace(", Utah", "")
+        what = p.get("category") or p.get("segment") or ""
+        lines.append(f"{i}. {p['name']} — {p['miles']} mi · {what} · {where} · {p.get('phone') or 'no phone'}")
+        if is_business(p):
+            link = f" — {re.sub(r'^https?://(www[.])?', '', p['presence_link']).rstrip('/')}" if p.get("presence_link") else ""
+            lines.append(f"   Presence: {p['presence']}{link}")
+        lines.append(f"   Google: {p['summary']}")
+        lines.append(f"   Wrong: {' · '.join(p['faults']) if p['faults'] else 'nothing obvious — lead with the text-Patch line'}")
+        if p.get("maps"):
+            lines.append(f"   {p['maps']}")
+        lines.append("")
+    if skipped:
+        lines.append("Skipped: " + "; ".join(f"{name} ({why})" for name, why in skipped[:8]))
+        lines.append("")
+    lines += segment_copy({p.get("segment") or "restaurant" for p in order} or {segment})
+    lines += ["",
+              "Log every conversation by text: \"log <name> talked|interested|… <note>\" (`leads log`). Owner replies to "
+              "reviews aren't in the Places API — glance at the listing for unanswered ones."]
+    return "\n".join(lines) + "\n"
+
+
 # ---- the remote lane (B25) -------------------------------------------------------
 
 GROUPS_LOG = Path(os.environ.get("LEADS_GROUPS_LOG", PROJECTS / "social/leads-from-groups.md"))
@@ -665,7 +1081,7 @@ def chain_names():
 
 def lead_faults(c, details, today):
     """The faults a message may name: things on the listing, not the review count or the rating."""
-    fs, summary = faults(c, details, today)
+    fs, summary = (business_faults if is_business(c) else faults)(c, details, today)
     return [f for f in fs if not re.match(r"^(only \d+ reviews|rating )", f)], summary
 
 
@@ -863,6 +1279,190 @@ def _render_remote(picks, today, mode, note, census_date, emails):
     return "\n".join(lines) + "\n"
 
 
+# ---- the remote lane for any other segment (B44) -------------------------------------------
+
+NOT_A_FIRST_NAME = {"utah", "america", "americas", "nature", "natures", "mother", "mothers", "grandma", "grandmas",
+                    "grandpa", "papa", "mama", "uncle", "aunt", "auntie", "dad", "dads", "mom", "moms", "kid", "kids",
+                    "everyone", "people", "nana", "granny", "brother", "brothers", "sister", "sisters", "family", "families",
+                    "timp", "timpanogos", "wasatch", "provo", "orem", "lehi", "sandy", "draper", "ogden", "layton", "payson",
+                    "canyon", "valley", "mountain", "summit", "alpine", "county", "city", "state", "god", "gods", "christ",
+                    "king", "kings", "queen", "queens", "doctor", "pro", "pros", "the", "our", "your", "saint", "st"}
+FIRST_NAME_RE = r"[A-Z][a-z]{2,11}"
+
+
+def first_name(name):
+    """A first name the business carries, or None: "Mike's Pool Care" → Mike, "Photography by Jenna" → Jenna.
+    Only those two shapes — a word that might be a place or a brand is not a person."""
+    n = clean_name(name)
+    m = re.match(rf"^({FIRST_NAME_RE})['’]s\b", n) or re.search(rf"\b(?:by|with) ({FIRST_NAME_RE})\b(?!['’])", n)
+    if m and m.group(1).lower() not in NOT_A_FIRST_NAME:
+        return m.group(1)
+    return None
+
+
+def greeting(c):
+    """Greet by the first name in the name, else by the business — never "the team" (a solo's listing is one person)."""
+    return first_name(c["name"]) or clean_name(c["name"])
+
+
+def business_reach(c):
+    """Where a business can be messaged, from the link on its own listing: an Instagram or Facebook page is a DM,
+    a directory profile has its own message button. {'instagram','facebook','directory','email'}."""
+    out = {"instagram": None, "facebook": None, "directory": None, "email": None}
+    url = c.get("presence_link") or c.get("website") or ""
+    m = re.match(r"^(?:https?://)?(?:www\.|m\.)?instagram\.com/([A-Za-z0-9_.]+)", url)
+    if m and m.group(1).lower() not in IG_SKIP:
+        out["instagram"] = m.group(1)
+    m = re.match(r"^(?:https?://)?(?:www\.|m\.|web\.)?facebook\.com/([^/?#]+)", url)
+    if m and m.group(1).lower() not in FB_SKIP:
+        out["facebook"] = f"facebook.com/{m.group(1)}"
+    if c.get("presence") == "directory" and url:
+        out["directory"] = (c.get("presence_label") or host_of(url), url)
+    return out
+
+
+def business_reach_line(rc):
+    bits = []
+    if rc.get("instagram"):
+        bits.append(f"Instagram @{rc['instagram']}")
+    if rc.get("facebook"):
+        bits.append(rc["facebook"])
+    if rc.get("directory"):
+        bits.append(f"{rc['directory'][0]} profile")
+    return " · ".join(bits)
+
+
+def to_you(fault):
+    """A business fault, said to the owner."""
+    said = {"no website on Google": "there's no website on your listing", "no hours on Google": "there are no hours on it",
+            "no photos": "there are no photos on it", "no phone on Google": "there's no phone number on it"}
+    if fault in said:
+        return said[fault]
+    if re.match(r"^only \d+ photos$", fault):
+        return "it has " + fault
+    f = (fault.replace("the website link is a business.site page, and Google shut those down in 2024: it's a dead link",
+                       "your listing's website link is a business.site page, which Google shut down in 2024, so it goes nowhere")
+         .replace("the website link", "your listing's website link").replace("the website is", "your website is"))
+    return (to_them(f).replace("not a site of their own", "not a site of your own")
+            .replace("their ", "your ").replace("the area they serve", "the area you serve"))
+
+
+DM_NOUN = {"nonprofit": "nonprofits and churches around here"}
+
+
+def segment_dm_text(c, fs):
+    """The DM for a trade, a creative, a shop or a nonprofit: greeted by name, the business named, two faults at
+    most, the offer is the free diagnostic. No price, no pitch (the close is for when they answer)."""
+    hi, biz = greeting(c), clean_name(c["name"])
+    shown = [to_you(f) for f in fs[:2]]
+    what = " — and ".join(shown)
+    fix = "Both are easy to fix." if len(shown) > 1 else "It's easy to fix."
+    looked = "I looked yours up on Google" if hi == biz else f"I looked up {biz} on Google"
+    return (f"Hi {hi} — I'm Taylor, a small-business owner in American Fork; I fix websites and Google listings for "
+            f"{DM_NOUN.get(c.get('segment'), 'businesses around here')}. {looked}: {what}. {fix} Want me to send you exactly "
+            f"what to change? Free, no strings.")
+
+
+def segment_email(c, fs):
+    hi, biz = greeting(c), clean_name(c["name"])
+    subject = f"{biz} on Google — {'two quick fixes' if len(fs) > 1 else 'a quick fix'}"
+    return subject, segment_dm_text(c, fs).replace(f"Hi {hi} — I'm Taylor,", f"Hi {hi},\n\nI'm Taylor Remund —", 1)
+
+
+def build_segment_remote(args, segment):
+    today = dt.datetime.now(TZ).date()
+    key, where = (None, None) if args.census_only else places_key()
+    places = Places(key, where, fixture=args.fixture, refresh=args.refresh)
+    cands = [c for c in candidates_for(segment, args.min_reviews) if is_business(c)]
+    skip = {} if args.allow_repeat else contacted()
+    skip.update({pid: "pipeline" for pid in pipeline_skip()})
+    chains = chain_names()
+    pool, _ = nearest_pool([c for c in cands if (c["name"] or "").lower() not in chains], args.radius, args.n, skip)
+    if not pool:
+        die(f"no {SEGMENT_NOUN[segment]} left to message (all contacted or in the pipeline); --allow-repeat" if cands else
+            f"no {SEGMENT_NOUN[segment]} in the census's pool yet (a phone, no site of their own); `leads doctor` counts them")
+    for c in pool:
+        c["reach"] = business_reach(c)
+    pool.sort(key=lambda c: (not business_reach_line(c["reach"]), c["miles"]))    # messageable first, then nearest
+    picks = []
+    for c in pool:
+        if len(picks) >= args.n:
+            break
+        details = places.get(c["place_id"]) if (key or args.fixture) else None
+        if places.failed and not args.fixture:
+            details = None
+        if details and details.get("businessStatus") not in (None, "OPERATIONAL"):
+            continue
+        c = read_pick(c, details, today)
+        c["faults"] = [f for f in c["faults"] if not re.match(r"^(only \d+ reviews|rating )", f)]
+        if not c["faults"]:
+            continue
+        c["reach"] = business_reach(c)
+        c["summary"] = c["summary"].replace(" · (census only)", "")
+        c["variant"], c["message"] = "listing", segment_dm_text(c, c["faults"])
+        picks.append(c)
+    if places.calls:
+        ledger_append({"ts": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()), "kind": "places_details",
+                       "tool": "leads", "calls": places.calls, "cost_usd": round(places.calls * DETAILS_COST_USD, 3),
+                       "billed_to": f"google:GOOGLE_MAPS_API_KEY({where})", "project": "global",
+                       "for": f"remote {segment} {today}"})
+    mode = "fixture" if args.fixture else "google" if (key and not places.failed) else "census"
+    page = render_segment_remote(picks, segment, today, mode, places.failed, census_stamp(cands))
+    if not args.fixture and not args.no_save:
+        (STATE / "remote").mkdir(parents=True, exist_ok=True)
+        (STATE / "remote" / f"{today.isoformat()}-{segment}.md").write_text(page)
+        with open(STATE / "remote.jsonl", "a") as f:
+            f.write(json.dumps({"ts": dt.datetime.now(TZ).isoformat(timespec="seconds"), "for": today.isoformat(),
+                                "segment": segment, "place_ids": [p["place_id"] for p in picks],
+                                "names": [p["name"] for p in picks], "mode": mode}) + "\n")
+        log_leads([{"date": today.isoformat(), "name": clean_name(p["name"]),
+                    "city": p.get("locality") or (p.get("city") or "").replace(", Utah", ""),
+                    "source": f"remote kit ({p.get('category') or segment})",
+                    "reach": business_reach_line(p["reach"]) or p.get("phone"), "wrong": "; ".join(p["faults"][:3])}
+                   for p in picks])
+    return page, picks
+
+
+def render_segment_remote(picks, segment, today, mode, note, census_date, emails=True):
+    lines = [f"Remote kit — {today.strftime('%a %-d %b')} · {SEGMENT_TITLE[segment].lower()} · {len(picks)} messages to send from your phone"]
+    if mode == "census":
+        lines.append(f"(census {census_date} only — hours, photos and reviews aren't read)")
+    elif mode == "fixture":
+        lines.append("(FIXTURE listings — a test, not Google)")
+    else:
+        lines.append(f"(Google listings read today; census {census_date})")
+    if note:
+        lines.append(f"({note})")
+    lines.append("")
+    for i, p in enumerate(picks, 1):
+        rc = p["reach"]
+        where = p.get("locality") or (p.get("city") or "").replace(", Utah", "")
+        lines.append(f"{i}. {clean_name(p['name'])} — {p.get('category') or ''} · {where} · {p['summary']}")
+        if rc["instagram"]:
+            lines.append(f"   DM on Instagram: instagram.com/{rc['instagram']}")
+        elif rc["facebook"]:
+            lines.append(f"   Message on Facebook: {rc['facebook']}")
+        elif rc["directory"]:
+            lines.append(f"   Message on {rc['directory'][0]}: {rc['directory'][1]}")
+        else:
+            lines.append(f"   No page to message — call {p.get('phone') or 'them'}; the message is the opener")
+        lines.append(f"   \"{p['message']}\"")
+        if emails:
+            subject, _ = segment_email(p, p["faults"])
+            lines.append(f"   Email (to: {'their FB About' if rc['facebook'] else 'none known'}): \"{subject}\" + the message + footer")
+        if p.get("maps"):
+            lines.append(f"   {p['maps']}")
+        lines.append("")
+    lines += ["Email footer (every cold email, from founder@):", email_footer(), "",
+              "Greet by the business, or by the first name when the name carries one (Mike's Pool Care → Mike). "
+              "When they answer, the close and the ladder are on `leads kit --segment " + segment + "`. "
+              "After sending, text \"sent 1 3 4\" (or \"sent all\")."]
+    page = "\n".join(lines) + "\n"
+    if emails and len(page) > 3900:
+        return render_segment_remote(picks, segment, today, mode, note, census_date, emails=False)
+    return page
+
+
 def norm(text):
     text = re.sub(r"[^a-z0-9 ]+", " ", (text or "").lower().replace("&", " and "))
     return [w for w in text.split() if len(w) > 1 and w not in {"the", "restaurant", "and", "cafe", "grill", "llc", "co"}]
@@ -872,14 +1472,18 @@ def census_lookup(name, city=None):
     """Every place in the census whose name matches, best first: (score, row)."""
     if not CENSUS.exists():
         die(f"no census at {CENSUS} (LEADS_DB)")
+    has_b, _ = businesses_state()
     conn = sqlite3.connect(f"file:{CENSUS}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
-    rows = conn.execute("""
+    b_cols = ("CASE WHEN r.place_id IS NULL THEN b.segment END AS segment, b.category, b.presence_class, b.presence_url, COALESCE(r.city, b.city) AS city" if has_b else
+              "NULL AS segment, NULL AS category, NULL AS presence_class, NULL AS presence_url, r.city")
+    b_join = "LEFT JOIN businesses b ON b.place_id = p.place_id" if has_b else ""
+    rows = conn.execute(f"""
         SELECT p.place_id, p.name, p.address, p.locality, p.phone, p.website, p.has_website, p.rating, p.reviews,
                p.lat, p.lng, p.primary_type, p.google_maps_uri, p.refreshed_at, p.business_status,
                r.on_doordash, r.on_uber, r.on_grubhub, r.channel_class, r.parasite_url, r.serp_top3,
-               r.contact_name, r.contact_email, r.city
-        FROM place_cache p LEFT JOIN restaurants r ON r.place_id = p.place_id""").fetchall()
+               r.contact_name, r.contact_email, {b_cols}
+        FROM place_cache p LEFT JOIN restaurants r ON r.place_id = p.place_id {b_join}""").fetchall()
     conn.close()
     want = norm(name)
     if not want:
@@ -932,8 +1536,9 @@ FIX_HINTS = [
 ]
 
 
-def diagnosis_lines(c, fs, summary):
+def diagnosis_lines(c, fs, summary, hints=None):
     """Three lines for a group thread: what's good, what's wrong, the easiest fix. No pitch."""
+    hints = hints or FIX_HINTS
     name = clean_name(c["name"])
     rating, n = c.get("rating"), c.get("reviews")
     d = c.get("details") or {}
@@ -945,7 +1550,7 @@ def diagnosis_lines(c, fs, summary):
         return [first, "On Google: nothing obviously wrong — hours, photos and website all look right from here.",
                 "Nice work; the listing's doing its job."]
     second = "On Google: " + "; ".join(fs[:3]) + "."
-    hint = next((h for k, h in FIX_HINTS if k in fs[0]), "Each of those is a few minutes in the Business Profile.")
+    hint = next((h for k, h in hints if k in fs[0]), "Each of those is a few minutes in the Business Profile.")
     return [first, second, hint + " Happy to walk you through any of it."]
 
 
@@ -971,21 +1576,33 @@ def cmd_diagnose(args):
     if not c:
         die(f"\"{raw}\" isn't in the census" + ("" if key else " and there's no Places key to look it up (TAYLOR-TODO §1)")
             + "; send the Google Maps link or the city")
-    details = places.get(c["place_id"]) if (key or args.fixture) else None
+    from_census = bool(hits) and is_business(c) and not args.live
+    # B44: a name in the services census answers from the census — no Places call; --live reads the listing too
+    details = places.get(c["place_id"]) if (key or args.fixture) and not from_census else None
     if places.failed and not args.fixture:
         details = None
     if details:
         c["name"] = (details.get("displayName") or {}).get("text") or c["name"]
         c["locality"] = c.get("locality") or ""
+        if not hits and live_segment(details):
+            c["segment"] = live_segment(details)     # a live lookup that isn't food: a business's faults, not a restaurant's
+            c["category"] = (details.get("primaryTypeDisplayName") or {}).get("text")
     c["details"] = details
     fs, summary = lead_faults(c, details, today)
-    for line in diagnosis_lines(c, fs, summary):
+    biz = is_business(c)
+    for line in diagnosis_lines(c, fs, summary, BUSINESS_FIX_HINTS if biz else None):
         print(line)
     print()
-    rc = reach(c)
-    print(f"({c.get('locality') or c.get('city') or ''} · {summary.replace(' · (census only)', '')}"
-          + (f" · reach: {reach_line(rc)}" if reach_line(rc) else "")
-          + ("" if details else " · census only, hours/photos/reviews not checked")
+    rc = business_reach(c) if biz else reach(c)
+    rline = business_reach_line(rc) if biz else reach_line(rc)
+    at = (c.get("locality") or (c.get("city") or "").replace(", Utah", "")) if biz else (c.get("locality") or c.get("city") or "")
+    tail = ("" if details else
+            " · from the services census, listing not read (--live reads it)" if from_census else
+            " · census only, hours/photos/reviews not checked")
+    print(f"({at} · {summary.replace(' · (census only)', '')}"
+          + (f" · presence: {c['presence']}" if biz else "")
+          + (f" · reach: {rline}" if rline else "")
+          + tail
           + (f" · also matched: {', '.join(h[1]['name'] + ' (' + (h[1]['locality'] or '?') + ')' for h in hits[1:3])}" if len(hits) > 1 else "")
           + ")")
     if places.calls:
@@ -993,9 +1610,9 @@ def cmd_diagnose(args):
                        "tool": "leads", "calls": places.calls, "cost_usd": round(places.calls * DETAILS_COST_USD, 3),
                        "billed_to": f"google:GOOGLE_MAPS_API_KEY({where})", "project": "global", "for": "diagnose"})
     if not args.no_log:
-        log_leads([{"date": today.isoformat(), "name": clean_name(c["name"]), "city": c.get("locality") or c.get("city"),
+        log_leads([{"date": today.isoformat(), "name": clean_name(c["name"]), "city": (at or None) if biz else c.get("locality") or c.get("city"),
                     "source": f"group: {args.group}" if args.group else "group thread",
-                    "reach": reach_line(rc), "wrong": "; ".join(fs[:3])}])
+                    "reach": rline, "wrong": "; ".join(fs[:3])}])
 
 
 # ---- the pipeline (B7) ----------------------------------------------------------------
@@ -1205,8 +1822,8 @@ def lead_line(l, day):
             f"{tag}{note}" + (f"\n     {contact}" if contact else ""))
 
 
-def print_list(day, n=6):
-    """The day's list: follow-ups due, then fresh leads from the census to make up n."""
+def print_list(day, n=6, segment=None):
+    """The day's list: follow-ups due, then fresh leads from the census (the default segment's) to make up n."""
     due = due_by(day)
     label = ("Tomorrow, " if day == dt.datetime.now(TZ).date() + dt.timedelta(days=1) else "") + day.strftime("%a %-d %b")
     print(f"{label}: {len(due)} follow-up{'s' if len(due) != 1 else ''}"
@@ -1216,15 +1833,18 @@ def print_list(day, n=6):
     if len(due) < n:
         taken = pipeline_skip() | {l["place_id"] for l in pipeline_state().values() if l.get("place_id")} | set(contacted())
         chains = chain_names()
-        fresh = [c for c in census_candidates(25) if c["place_id"] not in taken and (c["name"] or "").lower() not in chains]
+        seg = segment or default_segment()
+        pool = candidates_for(seg)
+        fresh = [c for c in pool if c["place_id"] not in taken and (c["name"] or "").lower() not in chains]
         for c in fresh:
-            c["reach"] = reach(c)
+            c["reach"] = business_reach(c) if is_business(c) else reach(c)
             c["faults"], _ = lead_faults(c, None, day)
         fresh = [c for c in fresh if c["faults"]]
         fresh.sort(key=lambda c: (not (c["reach"]["instagram"] or c["reach"]["facebook"]), c["miles"]))
         for i, c in enumerate(fresh[: n - len(due)], len(due) + 1):
-            how = reach_line(c["reach"]) or c.get("phone") or ""
-            print(f"  {i}. NEW {clean_name(c['name'])} ({c.get('locality') or ''}, {c['miles']} mi) · {c['faults'][0]}"
+            how = (business_reach_line(c["reach"]) if is_business(c) else reach_line(c["reach"])) or c.get("phone") or ""
+            what = f"{c.get('category')}, " if is_business(c) and c.get("category") else ""
+            print(f"  {i}. NEW {clean_name(c['name'])} ({what}{c.get('locality') or ''}, {c['miles']} mi) · {c['faults'][0]}"
                   + (f"\n     {how}" if how else ""))
     if day.weekday() == 5:
         print("  (Saturday: the counter kit is `leads kit --last`)")
@@ -1233,7 +1853,7 @@ def print_list(day, n=6):
 def cmd_next(args):
     today = dt.datetime.now(TZ).date()
     day = parse_when(args.when, today) if args.when else today + dt.timedelta(days=1)
-    print_list(day, args.n)
+    print_list(day, args.n, resolve_segment(args.segment) if args.segment else None)
 
 
 def cmd_due(args):
@@ -1315,29 +1935,40 @@ def cmd_pipeline(args):
 
 # ---- commands -------------------------------------------------------------------
 
+def latest(folder):
+    """The newest page in a kits folder (restaurant pages are <date>.md, the others <date>-<segment>.md)."""
+    pages = list(folder.glob("*.md")) if folder.exists() else []
+    return max(pages, key=lambda p: (p.stat().st_mtime, p.name)) if pages else None
+
+
 def cmd_kit(args):
+    if args.last:
+        page = latest(STATE / ("remote" if args.remote else "kits"))
+        if not page:
+            die("no remote kit yet; run `leads kit --remote`" if args.remote else "no kit yet; run `leads kit`")
+        print(page.read_text(), end="")
+        return
+    segment = resolve_segment(args.segment)
     if args.remote:
-        if args.last:
-            kits = sorted((STATE / "remote").glob("*.md")) if (STATE / "remote").exists() else []
-            if not kits:
-                die("no remote kit yet; run `leads kit --remote`")
-            print(kits[-1].read_text(), end="")
-            return
         if args.radius == 10.0:
             args.radius = 30.0
-        page, picks = build_remote(args)
+        if segment == "restaurant":
+            if args.min_reviews is None:
+                args.min_reviews = 25
+            page, picks = build_remote(args)
+        else:
+            page, picks = build_segment_remote(args, segment)
         if args.json:
             print(json.dumps([{k: v for k, v in p.items() if k != "details"} for p in picks], indent=1, default=str))
             return
         print(page, end="")
         return
-    if args.last:
-        kits = sorted((STATE / "kits").glob("*.md")) if (STATE / "kits").exists() else []
-        if not kits:
-            die("no kit yet; run `leads kit`")
-        print(kits[-1].read_text(), end="")
-        return
-    page, order = build_kit(args)
+    if segment == "restaurant":
+        if args.min_reviews is None:
+            args.min_reviews = 25
+        page, order = build_kit(args)
+    else:
+        page, order = build_segment_kit(args, segment)
     if args.json:
         print(json.dumps([{k: v for k, v in p.items() if k != "details"} for p in order], indent=1, default=str))
         return
@@ -1345,6 +1976,30 @@ def cmd_kit(args):
 
 
 def cmd_candidates(args):
+    segment = resolve_segment(args.segment)
+    if segment == "restaurant":
+        if args.min_reviews is None:
+            args.min_reviews = 25
+        return restaurant_candidates(args)
+    cands = candidates_for(segment, args.min_reviews)
+    skip = recently_kitted(dt.datetime.now(TZ).date())
+    floor = SEGMENT_MIN_REVIEWS if args.min_reviews is None else args.min_reviews
+    print(f"{len(cands)} {SEGMENT_NOUN[segment]} with a phone, ≥{floor} reviews and no site of their own "
+          f"(none, page, directory, dead, builder); nearest first (census {census_stamp(cands)})")
+    shown = 0
+    for c in cands:
+        if c["miles"] > args.radius or shown >= args.n:
+            break
+        tag = f"  (kitted {skip[c['place_id']]})" if c["place_id"] in skip else ""
+        if is_business(c):
+            what = f"{c.get('category')} · {c.get('presence')}: {presence_short(c['presence'], c['presence_label'], c['presence_link'])}"
+        else:
+            what = f"restaurant · on {platforms(c)}"
+        print(f"  {c['miles']:>4} mi  {c['name']} · {c.get('locality') or ''} · {c['rating']}★ ({c['reviews']}) · {what}{tag}")
+        shown += 1
+
+
+def restaurant_candidates(args):
     cands = census_candidates(args.min_reviews)
     for_date = next_saturday()
     skip = recently_kitted(for_date)
@@ -1369,6 +2024,26 @@ def cmd_doctor(args):
         print(f"  {len(cands)} marketplace-only independents (phone, ≥25 reviews); {sum(c['miles'] <= 10 for c in cands)} within 10 mi of home; census {census_stamp(cands)}")
     else:
         ok = False
+    if CENSUS.exists():
+        exists, counts = businesses_state()
+        if not exists:
+            print("services census: not yet — no `businesses` table (B43's scan, client-leads/scripts/scan_services.py); "
+                  "the kits run on restaurants until it lands")
+        else:
+            conn = sqlite3.connect(f"file:{CENSUS}?mode=ro", uri=True)
+            classes = conn.execute("SELECT COALESCE(presence_class, 'unknown'), count(*) FROM businesses GROUP BY 1 ORDER BY 2 DESC").fetchall()
+            conn.close()
+            print(f"services census: {sum(counts.values())} rows"
+                  + (" (" + ", ".join(f"{k} {v}" for k, v in sorted(counts.items())) + ")" if counts else " — empty, the scan hasn't written yet"))
+            if classes:
+                print("  presence: " + ", ".join(f"{k} {v}" for k, v in classes))
+            for seg in BUSINESS_SEGMENTS:
+                if counts.get(seg):
+                    pool = business_candidates([seg])
+                    print(f"  {seg}: {len(pool)} in the kit's pool (phone, ≥{SEGMENT_MIN_REVIEWS} reviews, no site of their own); "
+                          f"{sum(c['miles'] <= 10 for c in pool)} within 10 mi")
+        print(f"default segment: {default_segment()}" + (" (LEADS_SEGMENT)" if os.environ.get("LEADS_SEGMENT") else
+                                                       f" (services once the services census has {DEFAULT_POOL_MIN} in the kit's pool, else restaurant)"))
     key, where = places_key()
     if key:
         print(f"GOOGLE_MAPS_API_KEY: set ({where})")
@@ -1405,10 +2080,11 @@ def main():
     sub = ap.add_subparsers(dest="cmd")
 
     k = sub.add_parser("kit", help="Saturday's counters, one page")
-    k.add_argument("--for", dest="for_date", help="YYYY-MM-DD (default: next Saturday)")
+    k.add_argument("--for", dest="for_date", help="YYYY-MM-DD (default: next Saturday for restaurants, today otherwise)")
     k.add_argument("--n", type=int, default=6)
     k.add_argument("--radius", type=float, default=10.0, help="miles from home (default 10)")
-    k.add_argument("--min-reviews", type=int, default=25)
+    k.add_argument("--min-reviews", type=int, default=None, help="default 25 for restaurants, 3 for the other segments")
+    k.add_argument("--segment", choices=SEGMENTS + ("all",), help="default: services once the services census holds a kit's worth, else restaurant")
     k.add_argument("--census-only", action="store_true", help="no Google calls")
     k.add_argument("--refresh", action="store_true", help="ignore the 7-day listing cache")
     k.add_argument("--allow-repeat", action="store_true", help="don't skip places kitted in the last 8 weeks")
@@ -1423,13 +2099,15 @@ def main():
     g.add_argument("name", nargs="+", help='"Name" or "Name, City"')
     g.add_argument("--group", help="the group the name came from (logged)")
     g.add_argument("--no-log", action="store_true")
+    g.add_argument("--live", action="store_true", help="read the Google listing even for a name in the services census")
     g.add_argument("--fixture", help="dir of <place_id>.json Place Details (tests)")
     g.set_defaults(fn=cmd_diagnose)
 
     c = sub.add_parser("candidates", help="the pool the kit picks from (no spend)")
     c.add_argument("--n", type=int, default=20)
     c.add_argument("--radius", type=float, default=10.0)
-    c.add_argument("--min-reviews", type=int, default=25)
+    c.add_argument("--min-reviews", type=int, default=None, help="default 25 for restaurants, 3 for the other segments")
+    c.add_argument("--segment", choices=SEGMENTS + ("all",))
     c.set_defaults(fn=cmd_candidates)
 
     lg = sub.add_parser("log", help="log a conversation: leads log \"Name[, City]\" OUTCOME [note...]")
@@ -1448,6 +2126,7 @@ def main():
     nx = sub.add_parser("next", help="the day's list: follow-ups due, then new leads (default tomorrow)")
     nx.add_argument("when", nargs="?")
     nx.add_argument("--n", type=int, default=6)
+    nx.add_argument("--segment", choices=SEGMENTS + ("all",), help="where the new leads come from (default as kit)")
     nx.set_defaults(fn=cmd_next)
 
     se = sub.add_parser("sent", help="picks from the last remote kit that went out: leads sent 1 3 4 | all")

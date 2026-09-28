@@ -26,7 +26,8 @@ class KitTest(unittest.TestCase):
         self.env = {"LEADS_STATE": self.tmp.name, "LEADS_LEDGER": str(Path(self.tmp.name) / "ledger.jsonl"),
                     "LEADS_GROUPS_LOG": str(Path(self.tmp.name) / "leads-from-groups.md"),
                     "CLAUDE_TOOLS_ENV": str(Path(self.tmp.name) / "no-env"), "LEADS_MAIL_ADDRESS": "",
-                    "GOOGLE_MAPS_API_KEY": "", "LEADS_PIPELINE": str(Path(self.tmp.name) / "pipeline.jsonl")}
+                    "GOOGLE_MAPS_API_KEY": "", "LEADS_PIPELINE": str(Path(self.tmp.name) / "pipeline.jsonl"),
+                    "LEADS_SEGMENT": "restaurant"}     # these are the restaurant kit's tests; B44's segments are below
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -236,6 +237,203 @@ class KitTest(unittest.TestCase):
         r = run("log", "Whistle Wok", "later", "--next", "someday", env=self.env)
         self.assertIn("can't read the date", r.stderr)
         self.assertNotEqual(run("log", "Whistle Wok", "maybe", env=self.env).returncode, 0)
+
+    def test_segment_restaurant_is_the_restaurant_kit_unchanged(self):
+        """B44: --segment restaurant prints what `leads kit` printed before segments existed."""
+        env = {k: v for k, v in self.env.items() if k != "LEADS_SEGMENT"}
+        for extra in ([], ["--remote"]):
+            pinned = run("kit", *extra, "--census-only", "--no-save", env=self.env)            # LEADS_SEGMENT=restaurant
+            flag = run("kit", *extra, "--census-only", "--no-save", "--segment", "restaurant", env=env)
+            self.assertEqual(flag.returncode, 0, flag.stderr)
+            self.assertEqual(pinned.stdout, flag.stdout)
+        self.assertEqual(run("candidates", env=self.env).stdout, run("candidates", "--segment", "restaurant", env=env).stdout)
+
+
+# -- B44: the kit and the diagnose for any segment, on a made-up services census ----------------
+
+SERVICES = HERE / "fixtures" / "leads-services"
+
+
+def fixture_census(path, businesses=True):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("leads_services_build", SERVICES / "build.py")
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m.build(path, businesses=businesses)
+
+
+def leads_module():
+    import importlib.util
+    from importlib.machinery import SourceFileLoader
+    spec = importlib.util.spec_from_loader("leads_mod", SourceFileLoader("leads_mod", str(LEADS)))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+class SegmentTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        t = Path(self.tmp.name)
+        self.db = fixture_census(t / "census.db")
+        self.env = {"LEADS_DB": str(self.db), "LEADS_STATE": str(t / "state"), "LEADS_LEDGER": str(t / "ledger.jsonl"),
+                    "LEADS_GROUPS_LOG": str(t / "leads-from-groups.md"), "CLAUDE_TOOLS_ENV": str(t / "no-env"),
+                    "LEADS_MAIL_ADDRESS": "", "GOOGLE_MAPS_API_KEY": "", "LEADS_PIPELINE": str(t / "pipeline.jsonl"),
+                    "LEADS_SEGMENT": ""}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_services_kit_is_six_nearest_with_presence_and_faults(self):
+        r = run("kit", "--segment", "services", "--census-only", "--json", "--no-save", env=self.env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rows = json.loads(r.stdout)
+        names = [x["name"] for x in rows]
+        self.assertEqual(names, ["Glacier Snow Removal", "Mike's Pool Care", "Timp Pressure Washing",
+                                 "Blue Canyon Landscaping", "Dave's Handyman Services", "Wasatch Pest Pros"])
+        for gone in ("Summit Plumbing & Drain", "Sparkle Home Cleaning", "ProCoat Painters", "Elite Garage Doors"):
+            self.assertNotIn(gone, names)            # own site, no phone, a chain, closed
+        by = {x["name"]: x for x in rows}
+        self.assertEqual(by["Glacier Snow Removal"]["presence"], "page")        # unknown in the census, read from the link
+        self.assertEqual(by["Wasatch Pest Pros"]["presence"], "dead")
+        self.assertIn("business.site", by["Wasatch Pest Pros"]["faults"][0])
+        self.assertIn("Thumbtack profile", by["Timp Pressure Washing"]["faults"][0])
+        self.assertIn("free Wix address", by["Dave's Handyman Services"]["faults"][0])
+        self.assertEqual(by["Blue Canyon Landscaping"]["faults"], ["no website on Google"])
+        page = run("kit", "--segment", "services", "--census-only", "--no-save", env=self.env).stdout
+        self.assertTrue(page.startswith("Services kit — "))
+        self.assertIn("Presence: page — facebook.com/mikespoolcare", page)
+        self.assertIn("$99 a month and I'm on the hook", page)
+        self.assertIn("quote requests", page)
+        self.assertNotRegex(page.lower(), r"\border(ing|s)?\b")
+        self.assertLess(len(page), 4000)
+
+    def test_services_is_the_default_once_the_census_has_rows(self):
+        self.assertEqual(run("kit", "--census-only", "--no-save", env=self.env).stdout,
+                         run("kit", "--census-only", "--no-save", "--segment", "services", env=self.env).stdout)
+        pre = fixture_census(Path(self.tmp.name) / "pre.db", businesses=False)
+        env = dict(self.env, LEADS_DB=str(pre))
+        r = run("kit", "--segment", "services", "--census-only", "--no-save", env=env)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no services census yet", r.stderr)
+        self.assertEqual(len(r.stderr.strip().splitlines()), 1)
+        r = run("candidates", env=env)                              # the default falls back to restaurants
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("marketplace-only", r.stdout)
+        doc = run("doctor", env=env).stdout
+        self.assertIn("services census: not yet", doc)
+        self.assertIn("default segment: restaurant", doc)
+
+    def test_fixture_listings_add_hours_photos_and_the_service_area(self):
+        r = run("kit", "--segment", "services", "--fixture", str(SERVICES / "details"), "--json", env=self.env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        by = {x["name"]: x for x in json.loads(r.stdout)}
+        mike = by["Mike's Pool Care"]["faults"]
+        for f in ("no hours on Google", "only 2 photos", "Google shows a street address, not the area they serve"):
+            self.assertIn(f, mike)
+        self.assertTrue(any("2★" in f for f in mike))
+        blue = by["Blue Canyon Landscaping"]["faults"]
+        self.assertEqual(blue, ["no website on Google"])             # hours, ten photos, a service area
+        self.assertFalse((Path(self.tmp.name) / "ledger.jsonl").exists(), "fixtures cost nothing")
+
+    def test_remote_creatives_is_six_messages_greeted_by_name(self):
+        r = run("kit", "--remote", "--segment", "creatives", "--census-only", "--json", "--no-save", env=self.env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rows = json.loads(r.stdout)
+        self.assertEqual(len(rows), 6)
+        msgs = {x["name"]: x["message"] for x in rows}
+        self.assertTrue(msgs["Photography by Jenna"].startswith("Hi Jenna — "))
+        self.assertTrue(msgs["Rosie's Florals"].startswith("Hi Rosie — "))
+        self.assertIn("I looked up Rosie's Florals on Google", msgs["Rosie's Florals"])
+        self.assertTrue(msgs["Beat Drop DJs"].startswith("Hi Beat Drop DJs — "))
+        self.assertIn("I looked yours up on Google: there's no website on your listing.", msgs["Beat Drop DJs"])
+        for m in msgs.values():
+            self.assertNotIn("team", m)
+            self.assertNotIn("$", m)
+            self.assertNotIn("their", m)
+            self.assertTrue(m.endswith("Free, no strings."))
+        self.assertNotIn("Lens & Light Studio", msgs)                 # an own site isn't a lead
+        page = run("kit", "--remote", "--segment", "creatives", "--census-only", env=self.env)
+        self.assertEqual(page.returncode, 0, page.stderr)
+        self.assertLess(len(page.stdout), 3901)
+        self.assertIn("DM on Instagram: instagram.com/photosbyjenna.ut", page.stdout)
+        self.assertIn("Message on Facebook: facebook.com/rosiesfloralsutah", page.stdout)
+        log = (Path(self.tmp.name) / "leads-from-groups.md").read_text()
+        self.assertEqual(log.count("| remote kit ("), 6)
+        again = run("kit", "--remote", "--segment", "creatives", "--census-only", "--json", "--no-save", env=self.env)
+        self.assertEqual(again.returncode, 1)                      # the fixture has six; tomorrow doesn't repeat them
+        self.assertIn("left to message", again.stderr)
+        r = run("sent", "1", "2", env=self.env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("Logged 2 sent", r.stdout)
+
+    def test_diagnose_answers_a_services_name_from_the_census(self):
+        env = dict(self.env, GOOGLE_MAPS_API_KEY="not-a-key", HTTPS_PROXY="http://127.0.0.1:9", https_proxy="http://127.0.0.1:9")
+        r = run("diagnose", "Mike's Pool Care, American Fork", "--group", "Utah County Moms",
+                "--fixture", str(SERVICES / "details"), env=env)          # the listing is right there; it isn't read
+        self.assertEqual(r.returncode, 0, r.stderr)
+        para = r.stdout.split("\n\n")[0].splitlines()
+        self.assertEqual(len(para), 3, r.stdout)
+        self.assertTrue(para[0].startswith("Mike's Pool Care: 4.9★ from 14 reviews"))
+        self.assertIn("Facebook page", para[1])
+        self.assertIn("A site of your own", para[2])
+        self.assertIn("from the services census", r.stdout)
+        self.assertNotIn("only 2 photos", r.stdout)
+        self.assertNotIn("Places", r.stdout + r.stderr)                  # no call was tried
+        self.assertFalse((Path(self.tmp.name) / "ledger.jsonl").exists())
+        self.assertNotIn("$", r.stdout)
+        log = (Path(self.tmp.name) / "leads-from-groups.md").read_text()
+        self.assertIn("| Mike's Pool Care | American Fork | group: Utah County Moms |", log)
+        r = run("diagnose", "Mike's Pool Care", "--live", "--fixture", str(SERVICES / "details"), "--no-log", env=self.env)
+        self.assertIn("only 2 photos", r.stdout)
+        r = run("diagnose", "Zzqx Nonexistent Roofing", "--no-log", env=self.env)       # unknown, no key: says so
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("isn't in the census", r.stderr)
+
+    def test_all_candidates_doctor_and_next(self):
+        r = run("kit", "--segment", "all", "--census-only", "--no-save", "--json", env=self.env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        segs = {x["segment"] for x in json.loads(r.stdout)}
+        self.assertTrue({"services", "creatives", "retail"} <= segs, segs)
+        page = run("kit", "--segment", "all", "--census-only", "--no-save", env=self.env).stdout
+        self.assertIn("Then the shop:", page)
+        self.assertIn("Then the site:", page)
+        r = run("candidates", "--segment", "nonprofit", env=self.env)
+        self.assertIn("Lehi Youth Soccer League", r.stdout)
+        self.assertNotIn("Grace Community Church", r.stdout)
+        doc = run("doctor", env=self.env).stdout
+        self.assertIn("services census: 23 rows (creatives 7, nonprofit 2, retail 2, services 12)", doc)
+        self.assertIn("presence: none 8", doc)
+        self.assertIn("default segment: services", doc)
+        r = run("next", env=self.env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("NEW Glacier Snow Removal (snow removal, American Fork", r.stdout)
+        r = run("log", "Mike's Pool Care", "talked", "wants a site", env=self.env)
+        self.assertIn("Logged: Mike's Pool Care (American Fork) — talked", r.stdout)
+
+    def test_presence_from_the_link(self):
+        m = leads_module()
+        cases = {None: "none", "": "none", "https://www.facebook.com/x": "page", "https://instagram.com/x": "page",
+                 "https://linktr.ee/x": "page", "https://sites.google.com/view/x": "page",
+                 "https://www.thumbtack.com/ut/x": "directory", "https://www.yelp.com/biz/x": "directory",
+                 "https://x.business.site/": "dead", "https://x.wixsite.com/home": "builder",
+                 "https://x.godaddysites.com": "builder", "https://x.square.site": "builder",
+                 "https://x.webnode.page": "builder", "https://x.com/": "own", "https://notfacebook.com": "own"}
+        for url, cls in cases.items():
+            self.assertEqual(m.presence_from_url(url)[0], cls, url)
+        self.assertEqual(m.first_name("Mike's Pool Care"), "Mike")
+        self.assertEqual(m.first_name("Photography by Jenna"), "Jenna")
+        self.assertIsNone(m.first_name("Utah's Best Lawn Care"))
+        self.assertIsNone(m.first_name("Blue Canyon Landscaping"))
+        self.assertIsNone(m.first_name("Timp's Pest Control"))
+        self.assertIsNone(m.live_segment({"primaryType": "chinese_restaurant"}))
+        self.assertEqual(m.live_segment({"primaryType": "pest_control_service"}), "services")
+        self.assertEqual(m.live_segment({"primaryType": "store"}), "retail")        # a storefront: no service-area fault
+        shop = {"segment": "retail", "name": "Lehi Mills", "website": "https://lehimills.com"}
+        fs, _ = m.business_faults(shop, {"websiteUri": "https://lehimills.com", "formattedAddress": "833 N 100 E, Lehi",
+                                         "photos": [{}] * 10, "nationalPhoneNumber": "x",
+                                         "regularOpeningHours": {"periods": [{"open": {"day": 1}}]}}, None)
+        self.assertEqual(fs, [])
 
 
 if __name__ == "__main__":

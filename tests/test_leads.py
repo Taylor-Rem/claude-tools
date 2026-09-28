@@ -127,6 +127,55 @@ class KitTest(unittest.TestCase):
         self.assertFalse((Path(self.tmp.name) / "leads-from-groups.md").exists())
 
 
+    # -- B40: the tool line -------------------------------------------------------------
+
+    def test_kit_prints_the_tool_line_for_a_listing_with_no_booking_link(self):
+        r = run("kit", "--fixture", str(FIXTURES), "--for", "2026-09-26", "--json", env=self.env)
+        rows = {x["name"]: x for x in json.loads(r.stdout)}
+        self.assertEqual(rows["Avenue Bakery"]["booking"], "reservations on Google")     # the fixture is reservable
+        self.assertIsNone(rows["Whistle Wok"]["booking"])                                # order.online is ordering, not booking
+        r = run("kit", "--fixture", str(FIXTURES), "--for", "2026-09-26", env=self.env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        blocks = {b.split(" — ")[0].split(". ", 1)[1]: b for b in r.stdout.split("\n\n") if b[:2].rstrip(".").isdigit()}
+        self.assertIn("No booking link → the tool line", blocks["Whistle Wok"])
+        self.assertNotIn("No booking link", blocks["Avenue Bakery"])
+        self.assertEqual(r.stdout.count("No booking link → the tool line"), 5)
+        self.assertIn("The tool line", r.stdout)
+        self.assertIn("patchlamp.com/tools", r.stdout)
+        self.assertIn("Send him the sheet you keep", r.stdout)
+        self.assertLess(len(r.stdout), 4000, "still one Telegram message")
+        tool = [l for l in r.stdout.splitlines() if l.startswith("The tool line")][0]
+        self.assertNotIn("$", tool)
+        self.assertNotIn("order", tool.replace("catering orders", ""), "ordering is not on offer")
+
+    def test_booking_link_and_the_service_variant(self):
+        import importlib.util
+        from importlib.machinery import SourceFileLoader
+        spec = importlib.util.spec_from_loader("leads_mod", SourceFileLoader("leads_mod", str(LEADS)))
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        self.assertEqual(m.booking_link({}, {"websiteUri": "https://www.opentable.com/r/x"}), "books on opentable.com")
+        self.assertEqual(m.booking_link({"website": "https://juniper.square.site/"}, None), "books on juniper.square.site")
+        self.assertIsNone(m.booking_link({}, {"websiteUri": "https://order.online/business/x"}))
+        pool = {"name": "Juniper Flats Pool & Spa", "primary_type": "pool_cleaning_service", "faults": ["no hours on Google"]}
+        food = {"name": "Whistle Wok", "primary_type": "chinese_restaurant", "faults": ["no hours on Google"]}
+        self.assertTrue(m.is_service(pool, None))
+        self.assertFalse(m.is_service(food, None))
+        self.assertFalse(m.is_service({"primary_type": "catering_service"}, None))
+        self.assertFalse(m.is_service({"primary_type": "restaurant"}, None))
+        variant, text = m.message_for(dict(pool, booking=None))
+        self.assertEqual(variant, "tool")
+        self.assertIn("no way to book you online", text)
+        self.assertIn("no hours on Google", text)
+        self.assertIn("patchlamp.com/tools", text)
+        self.assertNotIn("$", text)
+        self.assertEqual(m.message_for(dict(pool, booking="books on vagaro.com"))[0], "listing")
+        self.assertEqual(m.message_for(dict(food, booking=None))[0], "listing")
+        subject, body = m.email_draft(dict(pool, variant="tool"), pool["faults"])
+        self.assertEqual(subject, "Juniper Flats Pool & Spa: booking online")
+        self.assertTrue(body.startswith("Hi Juniper Flats Pool & Spa team,\n\nI'm Taylor Remund —"))
+
+
     # -- B7: the pipeline ---------------------------------------------------------------
 
     def events(self):

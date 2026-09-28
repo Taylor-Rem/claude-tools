@@ -40,6 +40,15 @@ Enterprise + Atmosphere SKU; each run appends one line to the toolbelt ledger
 replies to reviews are not in the Places API, so "unanswered" is not claimed;
 that arrives with the Business Profile connection (B11/B12).
 
+The tool line (B40, plan ~/projects/plans/15-web-tools.md § How we sell it,
+point 3): a counter whose listing shows no way to book online (Google's
+`reservable` is unset and the website isn't on a booking host, BOOKING_HOSTS)
+is marked "No booking link" and the page ends with the tool line, which
+points at patchlamp.com/tools. In the remote kit, a service business
+(SERVICE_TYPES / SERVICE_SUFFIXES; the census is food, so it is rare there)
+with no booking link gets the second message, `tool_dm_text`. Neither names
+a price or offers ordering.
+
 Config, by name, never printed:
   GOOGLE_MAPS_API_KEY   ~/.config/claude-tools/env (setenv.sh). Without it the
                         kit is census-only and says so on its first line.
@@ -91,6 +100,7 @@ DETAILS_FIELDS = ",".join([
     "id", "displayName", "formattedAddress", "nationalPhoneNumber", "websiteUri",
     "rating", "userRatingCount", "businessStatus", "googleMapsUri", "location",
     "regularOpeningHours", "currentOpeningHours", "photos", "reviews", "primaryTypeDisplayName",
+    "primaryType", "reservable",   # B40: the tool line (a booking link or not; a service business or food)
 ])
 DETAILS_COST_USD = 0.025      # Place Details, Enterprise + Atmosphere SKU (approx.)
 CACHE_DAYS = 7
@@ -101,6 +111,27 @@ SKIP_TYPES = {"gas_station", "convenience_store", "supermarket", "liquor_store",
 MARKETPLACE_HOSTS = ("doordash", "order.online", "ubereats", "grubhub", "toasttab", "facebook",
                      "instagram", "linktr", "yelp", "slicelife", "menufy", "postmates", "seamless")
 DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+
+# B40 (plan ~/projects/plans/15-web-tools.md § How we sell it, point 3): a listing with no way to book online
+# gets the tool line. A booking link is Google's own "reservable" or a website on one of these hosts.
+BOOKING_HOSTS = ("opentable", "resy.com", "exploretock", "sevenrooms", "yelp.com/reservations", "calendly", "vagaro",
+                 "booksy", "square.site", "squareup.com/appointments", "acuityscheduling", "setmore", "schedulicity",
+                 "housecallpro", "getjobber", "clienthub", "fresha", "mindbodyonline", "simplybook")
+# A service business (the remote kit's second message): Google primary types people book, by suffix or by name.
+# A positive list on purpose — a restaurant, a store or a type we don't know gets the listing message.
+SERVICE_SUFFIXES = ("_service", "_contractor", "_repair", "_salon", "_studio", "_school", "_instructor", "_trainer",
+                    "_clinic", "_groomer", "_cleaner", "_agency", "_consultant")
+SERVICE_TYPES = {"plumber", "electrician", "locksmith", "painter", "roofer", "moving_company", "car_wash", "car_detailing",
+                 "dentist", "chiropractor", "physiotherapist", "massage", "spa", "hair_care", "barber_shop",
+                 "beauty_salon", "nail_salon", "gym", "fitness_center", "yoga_studio", "tutoring", "photographer",
+                 "florist", "laundry", "veterinary_care", "pet_care", "landscaper", "pool_cleaning", "event_planner",
+                 "wedding_venue", "event_venue", "child_care_agency", "driving_school", "music_school"}
+NOT_SERVICE = {"catering_service", "meal_delivery", "food_delivery", "courier_service"}
+TOOLS_URL = "patchlamp.com/tools"
+TOOL_LINE = ("The tool line (a counter marked \"no way to book\"): \"Where do the catering orders and the party bookings "
+             "live now — a notebook, a spreadsheet? Patch can put a booking page on your own site, with every booking on a "
+             "private page only you open. Send him the sheet you keep and it goes in the same place. Six to look at on "
+             f"{TOOLS_URL}.\"")
 
 
 def die(msg, code=1):
@@ -406,6 +437,28 @@ def faults(c, details, today):
     return out, summary
 
 
+def booking_link(c, details):
+    """How people book this place online, or None (B40: None prints the tool line).
+    Google's `reservable`, else the listing's (or the census's) website on a booking host."""
+    d = details or {}
+    if d.get("reservable"):
+        return "reservations on Google"
+    url = d.get("websiteUri") if details else c.get("website")
+    low = (url or "").lower()
+    for h in BOOKING_HOSTS:
+        if h in low:
+            return f"books on {host_of(url)}"
+    return None
+
+
+def is_service(c, details):
+    """A service business (pool care, cleaning, lessons): a known primary type that isn't food or drink."""
+    t = ((details or {}).get("primaryType") or c.get("primary_type") or "").strip().lower()
+    if not t or t in NOT_SERVICE:
+        return False
+    return t in SERVICE_TYPES or t.endswith(SERVICE_SUFFIXES)
+
+
 # ---- the kit --------------------------------------------------------------------
 
 def route(picks, start):
@@ -471,6 +524,7 @@ def build_kit(args):
             c["sat_open"] = None
             c["maps"] = clean_maps(c["google_maps_uri"])
         c["faults"], c["summary"] = faults(c, details, today)
+        c["booking"] = booking_link(c, details)
         picks.append(c)
 
     start = home()
@@ -531,6 +585,8 @@ def render(order, for_date, today, mode, note, skipped, census_date, loop, short
         lines.append(f"{i}. {p['name']} — {p['miles']} mi · {short_address(p['address'])} · {opens} · {phone}")
         lines.append(f"   Google: {p['summary']}")
         lines.append(f"   Wrong: {' · '.join(p['faults']) if p['faults'] else 'nothing obvious — lead with the text-Patch line'}")
+        if not p.get("booking"):
+            lines.append("   No booking link → the tool line (below)")
         if p.get("maps"):
             lines.append(f"   {p['maps']}")
         lines.append("")
@@ -545,6 +601,10 @@ def render(order, for_date, today, mode, note, skipped, census_date, loop, short
         "Text me the fix and it's live today, free. If you want it kept right, that's $99 a month and I'm on the hook for all of it.\"",
         "The line to test: \"Text Patch and it's done. Your Google listing, your menu, your hours, changed in a minute by a number you text. It's AI, with someone on the hook.\"",
         "Ordering is not on offer (VISION § Decided, 2026-09-24): if they ask about their own ordering page, say not yet, plainly, and sell the listing.",
+    ]
+    if any(not p.get("booking") for p in order):
+        lines.append(TOOL_LINE)
+    lines += [
         "",
         "Log every conversation by text: \"log <name> talked|interested|… <note>\" (`leads log`). Owner replies to reviews aren't in the Places API — glance at the listing for unanswered ones.",
     ]
@@ -620,8 +680,29 @@ def dm_text(c, fs):
             f"Free, no strings.")
 
 
+def tool_dm_text(c, fs):
+    """B40, the second variant: a service business with no way to book online. One listing fault at most, then the
+    tool (a booking page on their own site, the list private to them). No price, like the first."""
+    name = clean_name(c["name"])
+    fault = f" While I was there: {to_them(fs[0])}." if fs else ""
+    return (f"Hi {name} team — I'm Taylor, a small-business owner in American Fork; I build websites and web tools for "
+            f"local businesses. I looked you up: there's no way to book you online from Google or your website.{fault} "
+            f"Where do the bookings live now — a notebook, a spreadsheet? I can put a booking page on your own site, with "
+            f"every booking on a private page only you open. There are working ones at {TOOLS_URL} if you want a look.")
+
+
+def message_for(c):
+    """Which of the two messages a pick gets: the tool variant for a service business with no booking link."""
+    if is_service(c, c.get("details")) and not c.get("booking"):
+        return "tool", tool_dm_text(c, c["faults"])
+    return "listing", dm_text(c, c["faults"])
+
+
 def email_draft(c, fs):
     name = clean_name(c["name"])
+    if c.get("variant") == "tool":
+        subject = f"{name}: booking online"
+        return subject, tool_dm_text(c, fs).replace(f"Hi {name} team — I'm Taylor,", f"Hi {name} team,\n\nI'm Taylor Remund —", 1)
     subject = f"{name} on Google — {'two quick fixes' if len(fs) > 1 else 'a quick fix'}"
     return subject, dm_text(c, fs).replace(f"Hi {name} team — I'm Taylor,", f"Hi {name} team,\n\nI'm Taylor Remund —", 1)
 
@@ -713,8 +794,10 @@ def build_remote(args):
         else:
             c["maps"] = clean_maps(c["google_maps_uri"])
         c["faults"], c["summary"] = lead_faults(c, details, today)
-        if not c["faults"]:
-            continue          # a message has to name something real that's wrong
+        c["booking"] = booking_link(c, details)
+        c["variant"], c["message"] = message_for(c)
+        if not c["faults"] and c["variant"] != "tool":
+            continue          # a message has to name something real that's wrong (no booking link is, for a service business)
         c["summary"] = c["summary"].replace(" · (census only)", "")
         picks.append(c)
     if places.calls:
@@ -765,7 +848,9 @@ def _render_remote(picks, today, mode, note, census_date, emails):
             lines.append(f"   Email: {rc['email']}")
         else:
             lines.append(f"   No handle or address found — call {p.get('phone') or 'them'}; the message is the opener")
-        lines.append(f"   \"{dm_text(p, p['faults'])}\"")
+        if p.get("variant") == "tool":
+            lines.append("   (a service business with no way to book online: the tool message, B40)")
+        lines.append(f"   \"{p.get('message') or dm_text(p, p['faults'])}\"")
         if emails:
             subject, _ = email_draft(p, p["faults"])
             to = rc["email"] or ("their FB About" if rc["facebook"] else "none known")

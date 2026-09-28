@@ -52,7 +52,11 @@
   li:first-child { border-top: 0; }
   .row { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; }
   .row input[type=checkbox] { width: 20px; height: 20px; margin: 3px 0 0; flex: none; accent-color: var(--accent); cursor: pointer; }
-  .text { flex: 1; min-width: 0; cursor: pointer; }
+  .text { flex: 1; min-width: 0; cursor: text; }
+  .chev { flex: none; width: 32px; height: 32px; margin: -3px -6px 0 0; padding: 0; border: 0; background: none; color: var(--muted); border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+  .chev:hover { background: var(--bg); color: var(--ink); }
+  .chev svg { width: 18px; height: 18px; transition: transform .15s; }
+  li.open .chev svg { transform: rotate(180deg); }
   .title { font-weight: 600; }
   li.done .title { color: var(--done); text-decoration: line-through; font-weight: 500; }
   .meta { color: var(--muted); font-size: 13px; }
@@ -262,13 +266,18 @@
         cb.addEventListener('change', () => toggle(it, cb, li));
         const text = document.createElement('div'); text.className = 'text';
         text.innerHTML = `<div class="title">${inline(it.title)}</div><div class="body">${bodyHtml(it)}</div>`;
-        text.addEventListener('click', (e) => {
-          if (e.target.closest('a')) return;
+        // the text is selectable (copying from it used to collapse the item); only the chevron toggles
+        const chev = document.createElement('button'); chev.type = 'button'; chev.className = 'chev';
+        chev.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>';
+        const setChev = () => { const o = li.classList.contains('open'); chev.title = o ? 'collapse' : 'expand'; chev.setAttribute('aria-expanded', o); chev.setAttribute('aria-label', o ? 'collapse' : 'expand'); };
+        setChev();
+        chev.addEventListener('click', () => {
           li.classList.toggle('open');
           if (li.classList.contains('open')) openIds.add(it.id); else openIds.delete(it.id);
           ls.set(LS.open, [...openIds].join('|'));
+          setChev();
         });
-        row.append(cb, text); li.appendChild(row); ul.appendChild(li);
+        row.append(cb, text, chev); li.appendChild(row); ul.appendChild(li);
       }
       if (!items.length) {
         const li = document.createElement('li'); li.innerHTML = '<div class="row"><span class="meta">nothing open here</span></div>'; ul.appendChild(li);

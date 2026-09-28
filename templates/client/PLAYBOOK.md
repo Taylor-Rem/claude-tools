@@ -217,6 +217,86 @@ a post. Exports stay in this workspace and go only to the owner.
 
 ---
 
+## Files: a spreadsheet, a PDF, a CSV, a Word file
+
+**When they send one:** "here's our stock list, what's missing from the
+site?", "put these prices on the menu page", "audit this sheet", a PDF
+menu, a Word file of changes.
+
+**What to say:** "Got it, reading it now." Then the answer, in a few lines.
+
+**Where it is:** `incoming/<its own name>` (`stock-list.xlsx`, a second one
+`stock-list-2.xlsx`). What it reads: PDF, CSV, TXT, Excel (.xlsx, .xls) and
+Word (.docx), up to 10 MB, five to a message. Anything else, or a file over
+that, never reaches you; the relay tells them what it can read.
+
+**Read it:**
+
+    doc text incoming/stock-list.xlsx            # every sheet, "## <name>" over each, rows as CSV
+    doc sheets incoming/stock-list.xlsx          # the sheet names and row counts
+    doc text incoming/stock-list.xlsx --sheet Prices
+    doc text incoming/menu.pdf                   # a PDF's text, page by page
+
+It prints at most 2,000 rows (`--max-rows N`) and says how many more there
+were; read a big sheet a sheet at a time. A cell prints its value: 11.5,
+not $11.50; a formula prints its last result. A PDF that "has no text
+layer" is a scan: open it with the Read tool and look at the page.
+
+**Audit it against the site** ("what's missing?", "is anything out of
+date?", "check this"): read the sheet; read what the site says (the
+shop/menu from `db query "SELECT name, category, price_cents, status FROM
+products ORDER BY category, sort"` when the site has a database, else the
+page itself in `repos/<name>/`); compare by name (trim, ignore case and
+plurals) the names, prices and stock (a 0 or "out" in their sheet against
+"on sale" on the site). Reply with the differences only, grouped: on the
+sheet but not on the site, on the site but not on the sheet, a different
+price (sheet vs site), out of stock but still on sale. Say how many matched.
+If it all matches, say that in one line. **Change nothing yet.** End with
+the question: "Want me to update the site to match?"
+
+**Update the site from it** (only on a yes, or when their message already
+said "put these on the site"):
+
+- The site has a database (a shop or menu from `db add catalog`): one `db
+  exec` per changed row: `UPDATE products SET price_cents = 1275,
+  updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE name = 'Burrito
+  bowl'`; `status = 'sold out'` for what's out, `'hidden'` for what's gone.
+  New items: write them as a CSV with the table's columns (`name,category,
+  price_cents,status`) at `incoming/new-items.csv`, `db import products
+  incoming/new-items.csv --dry-run`, then without it. No publish: the page
+  reads the database.
+- No database: edit the page in `repos/<name>/`, commit, push, `site
+  publish`, and check it the usual way.
+- Either way, say what changed: "Updated 4 prices, marked 2 sold out, added
+  elote." Never a price, an item or an hour that isn't in their file or
+  their message.
+
+**A file back** (when they ask for one: "send me the list", "a sheet of
+what's missing"): write the rows as a CSV (the Write tool, e.g.
+`exports/missing-from-site.csv`), then
+
+    doc write exports/missing-from-site.xlsx --from exports/missing-from-site.csv
+
+and end the reply with `SEND-FILE: exports/missing-from-site.xlsx | What's
+on your sheet but not on the site`. A CSV they can open anywhere is fine
+too: send that file as it is.
+
+**Rules.**
+
+- Never paste a whole sheet (or more than a handful of rows) into a reply:
+  a text is a summary, a file is the list.
+- A sheet is the owner's business (costs, suppliers, stock): never put a
+  cost, a supplier or a margin on a page or in a post.
+- Delete the file from `incoming/` when you're done
+  (`rm incoming/stock-list.xlsx`), unless they asked you to keep it.
+- **By text message (SMS), a spreadsheet doesn't arrive:** carriers pass a
+  PDF at best, and an Excel or Word file not at all. If they say they
+  texted a sheet and nothing is in `incoming/`, ask them to send it on the
+  browser chat (patchlamp.com/account/chat), Telegram or Discord, or to
+  paste the rows into a message.
+
+---
+
 ## Google Business Profile (connect it)
 
 **When they ask:** "can you see our Google listing", "connect my Google",

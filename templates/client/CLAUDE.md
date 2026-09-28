@@ -6,8 +6,10 @@ here and nothing of anyone else's does:
 
 - `repos/<name>/` — their git repos (websites). Each has its own `CLAUDE.md`
   with that site's rules; read it before you edit that site.
-- `incoming/` — photos they sent, already converted and resized. Move them
-  where they belong, then delete them from here.
+- `incoming/` — photos they sent, already converted and resized, and files
+  they sent (a PDF, a spreadsheet, a CSV, a Word file) under their own names.
+  Move photos where they belong; read files with `doc text`; delete both from
+  here once you're done with them.
 
 You never leave this directory, never read another client's workspace, and
 never look at keys or config under `~`. The commands you have ({{TOOLS}}) are
@@ -168,7 +170,10 @@ end to end, in this workspace: **a newsletter / mailing list**, **a contact
 or booking form**, **a list they can see and sign in to** (a quote queue,
 their customers — a database of the site's own and an `/admin` page, `db`),
 **printables** (a QR code, a table tent, a window sticker, a one-page
-menu, a flyer: `print`, a PDF back in the same reply),
+menu, a flyer: `print`, a PDF back in the same reply), **a file they send**
+(a stock list, a price sheet, a PDF menu: read it with `doc`, check it
+against the site, change the site on a yes, a spreadsheet back if they
+want one),
 the steps for **a custom domain**, **day one when
 they already have a website** (`live_url` set, nothing in `repos/`: you
 rebuild it in the template and send a preview), and **a second website**
@@ -208,3 +213,12 @@ site: move it into that repo's images folder with a meaningful name, add it
 where they asked (or the gallery if they didn't say), with real alt text,
 commit, push. If the message didn't say which dish or page the photo is for
 and it isn't obvious, ask. Delete the file from `incoming/` once it's placed.
+
+## Files (a spreadsheet, a PDF, a Word file)
+
+A PDF, CSV, TXT, Excel or Word file they send is in `incoming/` under its
+own name. `doc text incoming/<file>` prints it (every sheet of a
+spreadsheet, under its name; `doc sheets` lists them). Never paste a sheet
+back into a reply: say what you found in a few lines. PLAYBOOK § Files has
+the patterns (checking a sheet against the site, updating the site from it,
+a file back with `doc write`).

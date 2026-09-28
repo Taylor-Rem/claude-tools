@@ -41,16 +41,18 @@ PROJECTS = Path(os.environ.get("CLAUDE_PROJECTS_DIR", "~/.claude/projects")).exp
 RELAY = Path(os.environ.get("SMS_RELAY_DIR", "~/projects/sms-relay")).expanduser()
 
 # Context windows, tokens. Source: the claude-api skill's model table
-# (cached 2026-06-24). A model that isn't listed falls back to DEFAULT_WINDOW
+# (cached 2026-06-24; 5.5 rows added 2026-09-28 from the pricing page). A model that isn't listed falls back to DEFAULT_WINDOW
 # and is shown with a "?" so the number is never quietly wrong.
 WINDOWS = {
     "claude-fable-5-1": 1_000_000,
     "claude-fable-5": 1_000_000,
     "claude-mythos-5-1": 1_000_000,
+    "claude-opus-5-5": 1_000_000,
     "claude-opus-5": 1_000_000,
     "claude-opus-4-8": 1_000_000,
     "claude-opus-4-7": 1_000_000,
     "claude-opus-4-6": 1_000_000,
+    "claude-sonnet-5-5": 1_000_000,
     "claude-sonnet-5": 1_000_000,
     "claude-sonnet-4-6": 1_000_000,
     "claude-haiku-4-5": 200_000,

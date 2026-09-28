@@ -110,5 +110,71 @@ class ChatsFilesTest(unittest.TestCase):
             p.wait(timeout=10)
 
 
+class ChatsConversationTitleTest(unittest.TestCase):
+    """B37: a browser row shows its conversation's title (the relay's thread_title)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="chats-conv-")
+        relay = Path(cls.tmp) / "relay"
+        (relay / "state").mkdir(parents=True)
+        base = {"sender": "web:testaurant", "sender_name": "Testaurant", "project": "testaurant",
+                "transport": "web", "ok": True, "run": "r", "photos": []}
+        rows = [dict(base, id=1, ts="2026-09-28T10:00:00-06:00", text="raise the burger to $14", reply="Done.",
+                     thread="conv:4", thread_title="Menu prices"),
+                dict(base, id=2, ts="2026-09-28T10:05:00-06:00", text="untitled one", reply="Sure.",
+                     thread="conv:5"),
+                dict(base, id=3, ts="2026-09-28T10:06:00-06:00", sender="sms:+1", sender_name="Rosa",
+                     transport="sms", text="hi", reply="hello", thread_title="never shown")]
+        (relay / "state" / "messages.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+        (relay / "config.json").write_text(json.dumps({"bot_name": "Patch", "projects": {}}))
+        cls.relay = relay
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def run_chats(self, *args):
+        e = dict(os.environ, CLIENTS_DIR=str(Path(self.tmp) / "clients"), CHATS_OUT=str(Path(self.tmp) / "out"))
+        r = subprocess.run([sys.executable, str(CHATS), *args, "--relay", str(self.relay)],
+                           capture_output=True, text=True, env=e, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout
+
+    def test_ls_shows_the_title_on_web_rows(self):
+        out = self.run_chats("ls", "--transport", "web")
+        self.assertIn("Testaurant → testaurant (browser · “Menu prices”)", out)
+        self.assertIn("Testaurant → testaurant (browser)", out)                 # no title: just the channel
+        self.assertNotIn("Rosa", out)
+        self.assertNotIn("never shown", self.run_chats("ls"))                   # a text has no conversation title
+
+    def test_page_shows_the_title(self):
+        page_path = Path(self.tmp) / "conv.html"
+        self.run_chats("--transport", "web", "--out", str(page_path))
+        page = page_path.read_text()
+        self.assertIn("browser · “Menu prices”", page)
+
+    def test_serve_shows_the_title(self):
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        e = dict(os.environ, CLIENTS_DIR=str(Path(self.tmp) / "clients"))
+        p = subprocess.Popen([sys.executable, str(CHATS), "serve", "--relay", str(self.relay), "--port", str(port)],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=e)
+        try:
+            for _ in range(50):
+                try:
+                    page = urllib.request.urlopen(f"http://127.0.0.1:{port}/body", timeout=2).read().decode()
+                    break
+                except OSError:
+                    time.sleep(0.1)
+            else:
+                self.fail("chats serve didn't come up")
+            self.assertIn("browser · “Menu prices”", page)
+        finally:
+            p.terminate()
+            p.wait(timeout=10)
+
+
 if __name__ == "__main__":
     unittest.main()

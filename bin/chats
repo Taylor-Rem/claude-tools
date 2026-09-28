@@ -60,6 +60,20 @@ def channel(r):
     return CHANNELS.get(t, t or "?")
 
 
+def conversation(r):
+    """B37: a browser row's conversation title on patchlamp.com (the relay's
+    `thread_title`), or "" — other channels have no titled conversations."""
+    if (r.get("transport") or "") != "web":
+        return ""
+    return (r.get("thread_title") or "").strip()
+
+
+def where(r):
+    """The channel, plus the conversation's title on a browser row: 'browser · “Menu prices”'."""
+    title = conversation(r)
+    return f"{channel(r)} · “{title}”" if title else channel(r)
+
+
 # ---- reading -----------------------------------------------------------------
 
 def state_dir(relay):
@@ -260,7 +274,7 @@ def render_body(rows, cfg, photo_src=None, file_href=None):
         pname = cfg.get("projects", {}).get(r.get("project"), {}).get("name") \
             or r.get("project") or "not on the allowlist"
         who = html.escape(r.get("sender_name") or "someone")
-        meta = f"{who} → {html.escape(pname)} · {html.escape(channel(r))} · {t:%H:%M}"
+        meta = f"{who} → {html.escape(pname)} · {html.escape(where(r))} · {t:%H:%M}"
         shots = []
         for p, archived in r.get("_photos", []):
             if not is_image(p):
@@ -468,7 +482,7 @@ def show_text(rows, cfg):
         bits = ([f"{len(pics) - n_files} picture(s)"] if len(pics) > n_files else []) \
             + ([f"{n_files} file(s)"] if n_files else [])
         mark = f"  [{', '.join(bits)}]" if bits else ""
-        print(f"{t:%H:%M}  {r.get('sender_name')} → {pname} ({channel(r)}){mark}")
+        print(f"{t:%H:%M}  {r.get('sender_name')} → {pname} ({where(r)}){mark}")
         for line in (r.get("text") or "(attachment only)").splitlines():
             print(f"         {line}")
         for p, archived in pics:

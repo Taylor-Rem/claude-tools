@@ -15,14 +15,31 @@ workspace), never from an argument.
   db export                              # every table -> exports/<date>/<table>.csv + .json (the handover)
   db import TABLE FILE.csv|FILE.json [--dry-run]
   db add COLLECTION [--no-migrate]       # a standard collection: migration + Function + /admin view
+  db add NAME --from-sheet FILE [--sheet S] [--title T] [--singular S] [--statuses "a,b"] [--dry-run]
+                                         # a web tool of the owner's own from a sheet's header row:
+                                         # the migration, the /admin view, registered, migrated, rows imported
   db collections                         # what can be added, what this site has
+  db tools                               # every list /admin shows: collection, named list or web tool
   db doctor                              # token, binding, migrations applied, secrets, /admin wiring
 
 Every command takes --site NAME when the workspace has more than one site
 with a database, and --local to work on the local copy `wrangler pages dev`
 uses (repos/<site>/.wrangler/, for trying a change before it goes live).
 Collections live in claude-tools/templates/collections/<name>/ (a README
-each); PLAYBOOK.md § Data is when to use which.
+each); PLAYBOOK.md § Data is when to use which. A web tool (ROADMAP B40) is
+the same three parts built for one owner — a table, an /admin view, a
+public Function only when the public writes to it — in the client's own
+repo; the worked examples are claude-tools/templates/tools/<name>/ and
+PLAYBOOK.md § Web tools is the checklist.
+
+`--from-sheet` (a CSV, or an .xlsx/.xls read the way `doc text` reads it)
+guesses each column's type from the rows: whole numbers, numbers, dates
+(YYYY-MM-DD), money (a price/cost/amount/total header over numbers, kept in
+cents as <name>_cents), else text; the owner's headers are the labels. It
+adds the house columns status, notes, created_at, updated_at, and a
+"below reorder" shortcut when it sees an on-hand count beside a reorder
+level. `--dry-run` prints the header mapping and the files and writes
+nothing: say the mapping back to the owner first.
 
 Migrations are recorded in `d1_migrations`, the table wrangler's own
 `d1 migrations apply` uses, so whoever takes the repo over can keep going
@@ -53,6 +70,8 @@ HERE = Path(__file__).resolve().parent.parent
 ENV_FILE = Path(os.environ.get("CLAUDE_TOOLS_ENV", Path.home() / ".config/claude-tools/env"))
 REGISTRY = ENV_FILE.parent / "sites.json"
 COLLECTIONS = HERE / "templates" / "collections"
+TOOLS = HERE / "templates" / "tools"                 # worked examples of web tools (B40), not addable
+DOC_BIN = HERE / "bin" / "doc"
 WRANGLER = Path(os.environ.get("DB_WRANGLER") or HERE / "node_modules" / ".bin" / "wrangler")
 FAKE = bool(os.environ.get("DB_WRANGLER"))
 CF_API = "https://api.cloudflare.com/client/v4"
@@ -505,6 +524,8 @@ def cmd_collections(a):
 
 
 def cmd_add(a):
+    if a.from_sheet:
+        return cmd_add_sheet(a)
     info = collection_info(a.collection)
     if not info:
         die(f"no collection {a.collection!r} (db collections lists them)")
@@ -566,6 +587,290 @@ def cmd_add(a):
         + f"commit, `git -C repos/{site.name} push`, `site publish {site.name}`, then prove it on the live site.")
     if form.exists():
         say("\n" + form.read_text())
+
+
+# ---------------------------------------------------------------- web tools (B40)
+
+HOUSE = ("status", "notes", "created_at", "updated_at")
+MONEY_WORDS = re.compile(r"price|cost|amount|total|fee|paid|value|\$", re.I)
+SUM_WORDS = re.compile(r"total|amount|paid|value", re.I)
+COUNT_WORDS = re.compile(r"on.?hand|in.?stock|qty|quantity|stock|count", re.I)
+LEVEL_WORDS = re.compile(r"reorder|par\b|minimum|min\b|low", re.I)
+NUM = re.compile(r"^-?\d+(\.\d+)?$")
+INT = re.compile(r"^-?\d+$")
+DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def load_doc():
+    from importlib.machinery import SourceFileLoader
+    import importlib.util
+    loader = SourceFileLoader("doc_tool", str(DOC_BIN))
+    spec = importlib.util.spec_from_loader("doc_tool", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+def read_sheet(path, sheet=None):
+    """(sheet name, other sheet names, header, rows) from a CSV or a spreadsheet."""
+    if not path.is_file():
+        die(f"no such file: {path}")
+    if path.suffix.lower() == ".csv":
+        raw = path.read_bytes()
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = raw.decode("cp1252", errors="replace")
+        name, others, rows = path.stem, [], list(csv.reader(io.StringIO(text)))
+    else:
+        doc = load_doc()
+        kind = doc.kind_of(path)
+        if kind not in ("xlsx", "xls"):
+            die(f"--from-sheet takes a CSV or an Excel file (.xlsx, .xls); {path.name} isn't one")
+        sheets = [(n, r) for n, r in doc.sheets_of(path, kind) if r]
+        if not sheets:
+            die(f"{path.name} has no rows in any sheet")
+        pick = [x for x in sheets if sheet and x[0].lower() == sheet.lower()] if sheet else sheets[:1]
+        if not pick:
+            die(f"no sheet {sheet!r} in {path.name}; it has: {', '.join(n for n, _ in sheets)}")
+        name, rows = pick[0]
+        others = [n for n, _ in sheets if n != name]
+    rows = [[str(c).strip() for c in r] for r in rows]
+    rows = [r for r in rows if any(r)]
+    if len(rows) < 2:
+        die(f"sheet {name!r} needs a header row and at least one row under it")
+    header, body = rows[0], rows[1:]
+    while header and not header[-1]:
+        header.pop()
+    body = [(r + [""] * len(header))[:len(header)] for r in body]
+    return name, others, header, body
+
+
+def column_name(label, taken):
+    c = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_") or "column"
+    if c[0].isdigit():
+        c = "c_" + c
+    if c in ("id", "created_at", "updated_at", "rowid"):
+        c += "_ref"
+    base, n = c, 2
+    while c in taken:
+        c, n = f"{base}_{n}", n + 1
+    taken.add(c)
+    return c
+
+
+def sheet_columns(header, body):
+    """[{label, name, kind, sql}] per header cell: kind is text/whole/number/date/money/status/notes."""
+    cols, taken = [], set()
+    for i, label in enumerate(header):
+        label = label or f"Column {i + 1}"
+        vals = [r[i].replace(",", "") for r in body if r[i]]
+        low = re.sub(r"[^a-z]", "", label.lower())
+        if low in ("status", "notes"):
+            kind = low
+        elif vals and all(NUM.match(v.lstrip("$")) for v in vals) and MONEY_WORDS.search(label):
+            kind = "money"
+        elif vals and all(INT.match(v) for v in vals):
+            kind = "whole"
+        elif vals and all(NUM.match(v) for v in vals):
+            kind = "number"
+        elif vals and all(DAY.match(v) for v in vals):
+            kind = "date"
+        else:
+            kind = "text"
+        if kind in ("status", "notes"):
+            name = low
+            taken.add(name)
+        else:
+            name = column_name(label, taken | set(HOUSE))
+            if kind == "money" and not name.endswith("_cents"):
+                taken.discard(name)
+                name = column_name(name + "_cents", taken | set(HOUSE))
+        cols.append({"label": label, "name": name, "kind": kind,
+                     "sql": {"whole": "INTEGER", "money": "INTEGER", "number": "REAL"}.get(kind, "TEXT")})
+    return cols
+
+
+def cell_value(col, v):
+    v = v.strip()
+    if v == "":
+        return None
+    if col["kind"] == "money":
+        return int(round(float(v.replace(",", "").lstrip("$")) * 100))
+    if col["kind"] == "whole":
+        return int(v.replace(",", ""))
+    if col["kind"] == "number":
+        return float(v.replace(",", ""))
+    return v
+
+
+KIND_WORDS = {"text": "text", "whole": "whole number", "number": "number", "date": "date",
+              "money": "money, kept in cents: 4.50 -> 450", "status": "the status", "notes": "the notes"}
+
+
+def tool_files(table, title, singular, cols, statuses, sheet_label):
+    """(migration SQL, descriptor JS, shortcut or None) for a web tool made from a sheet."""
+    lines = [f"  {c['name']} {c['sql']}{' NOT NULL' if i == 0 else ''}," for i, c in enumerate(cols) if c["kind"] not in ("status", "notes")]
+    mig = (f"-- {table}: the owner's {title.lower()}, made by `db add {table} --from-sheet` from {sheet_label}.\n"
+           f"-- The owner's own columns first, then the house columns every list has.\n"
+           f"CREATE TABLE IF NOT EXISTS {table} (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n" + "\n".join(lines) + "\n"
+           f"  status TEXT NOT NULL DEFAULT {lit(statuses[0])},\n  notes TEXT,\n"
+           "  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),\n  updated_at TEXT\n);\n")
+    own = [c for c in cols if c["kind"] not in ("status", "notes")]
+    count = next((c for c in own if c["kind"] in ("whole", "number") and COUNT_WORDS.search(c["label"])), None)
+    level = next((c for c in own if c["kind"] in ("whole", "number") and LEVEL_WORDS.search(c["label"]) and c is not count), None)
+    cut = ("below reorder", f"{count['name']} < {level['name']}") if count and level else None
+    q = lambda x: json.dumps(x, ensure_ascii=False)
+    typ = {"whole": "number", "number": "number", "money": "number", "date": "date"}
+    field = lambda c, req=False: ("{ name: " + q(c["name"]) + ", label: " + q(c["label"] + (" (cents: 450 = $4.50)" if c["kind"] == "money" else ""))
+                                  + (", type: " + q(typ[c["kind"]]) if c["kind"] in typ else "") + (", required: true" if req else "") + " },")
+    shown = own[:5]
+    js = [f"// {title}: made by `db add {table} --from-sheet` from {sheet_label}. Change the title, the",
+          "// columns shown or the statuses here; the /admin shell does the rest (search, totals, CSV).",
+          "export default {",
+          f"  table: {q(table)},", f"  title: {q(title)},", f"  singular: {q(singular)},",
+          "  list: [" + ", ".join(f"[{q(c['name'])}, {q(c['label'])}]" for c in shown) + ', ["status", "Status"]],',
+          f"  statuses: {q(statuses)},",
+          f"  order: [{q(own[0]['name'])}, \"asc\"],"]
+    sums = [c["name"] for c in own if c["kind"] == "money" and SUM_WORDS.search(c["label"])]
+    if sums:
+        js.append(f"  sum: {q(sums)},")
+    if cut:
+        js.append(f"  shortcuts: [[{q(cut[0])}, {q(cut[1])}]],")
+    js += ["  create: ["] + [f"    {field(c, i == 0)}" for i, c in enumerate(own)] + ["  ],",
+           "  edit: [", '    { name: "status", label: "Status", type: "select" },'] + [f"    {field(c)}" for c in own] + [
+           '    { name: "notes", label: "Notes (only you see these)", type: "textarea" },', "  ],",
+           '  touch: "updated_at",', "};", ""]
+    return mig, "\n".join(js), cut
+
+
+def cmd_add_sheet(a):
+    table = a.collection
+    if not re.match(r"^[a-z][a-z0-9_]{0,40}$", table):
+        die(f"{table!r}: a web tool's name is its table's, lower case (stock, routes, jobs_log)")
+    if collection_info(table):
+        die(f"{table} is a standard collection: `db add {table}` (no --from-sheet)")
+    if table in SYSTEM_TABLES or table.startswith(("sqlite", "_cf", "d1_")):
+        die(f"{table} is taken by the sign-in and migration bookkeeping; pick another name")
+    path = Path(a.from_sheet)
+    if path.resolve().is_relative_to(Path.home() / ".config"):
+        die(f"no such file: {a.from_sheet}")
+    name, others, header, body = read_sheet(path, a.sheet)
+    cols = sheet_columns(header, body)
+    given = [x.strip() for x in (a.statuses or "").split(",") if x.strip()]
+    st_col = next((c for c in cols if c["kind"] == "status"), None)
+    found = list(dict.fromkeys(r[cols.index(st_col)] for r in body if r[cols.index(st_col)])) if st_col else []
+    statuses = given or (found[:8] if found else ["active", "archived"])
+    title = a.title or table.replace("_", " ").capitalize()
+    singular = a.singular or (table[:-1] if table.endswith("s") and not table.endswith("ss") else table).replace("_", " ")
+    label = f"{path.name}" + (f", sheet {name}" if path.suffix.lower() != ".csv" else "")
+    mig, js, cut = tool_files(table, title, singular, cols, statuses, label)
+
+    site = the_site(a)
+    repo = site.repo
+    if not (repo / "functions" / "_lib" / "core.js").exists():
+        die(f"repos/{site.name} has no functions/_lib/core.js: run `site data {site.name}` first")
+    existing = repo_migrations(site)
+    if any(p.name.split("_", 1)[-1] == f"{table}.sql" for p in existing) or (repo / "functions" / "_admin" / f"{table}.js").exists():
+        die(f"repos/{site.name} already has a {table} table or view; pick another name, or change that one by hand")
+    n = max([int(m.group(1)) for p in existing if (m := re.match(r"^(\d+)_", p.name))] or [0]) + 1
+    mig_path = repo / "migrations" / f"{n:04d}_{table}.sql"
+    view_path = repo / "functions" / "_admin" / f"{table}.js"
+
+    say(f"{label}: {len(body)} row{'s' if len(body) != 1 else ''}, {len(header)} column{'s' if len(header) != 1 else ''}"
+        + (f" (other sheets, not used: {', '.join(others)})" if others else ""))
+    w = max(len(c["label"]) for c in cols)
+    for c in cols:
+        say(f"  {c['label'].ljust(w)}  ->  {c['name']} ({KIND_WORDS[c['kind']]})")
+    say(f"  + {'status (' + ' / '.join(statuses) + ')' if not st_col else ''}{', ' if not st_col else ''}"
+        + ("notes, " if not any(c["kind"] == "notes" for c in cols) else "") + "created_at, updated_at (every list has them)")
+    if cut:
+        say(f"  shortcut on /admin/{table}: \"{cut[0]}\" ({cut[1]})")
+    say(f"{'would write' if a.dry_run else 'writing'} {mig_path.relative_to(site.ws)}, {view_path.relative_to(site.ws)}, "
+        f"functions/_admin/collections.js (+{table})")
+    order = [c for c in cols]
+    stmts = []
+    for r in body:
+        vals = {c["name"]: cell_value(c, r[i]) for i, c in enumerate(order)}
+        vals = {k: v for k, v in vals.items() if v is not None}
+        if not vals:
+            continue
+        stmts.append(f"INSERT INTO {table} ({', '.join(ident(k) for k in vals)}) VALUES ({', '.join(lit(v) for v in vals.values())});")
+    if a.dry_run:
+        say("\n-- the migration\n" + mig)
+        say("-- the first rows\n" + "\n".join(stmts[:3]) + (f"\n-- … {len(stmts) - 3} more" if len(stmts) > 3 else ""))
+        say(f"\ndry run: nothing written. Say the mapping back to the owner, then run it again without --dry-run.")
+        return
+    mig_path.parent.mkdir(exist_ok=True)
+    mig_path.write_text(mig)
+    view_path.write_text(js)
+    views = registered_views(repo)
+    if table not in {mod for _, mod in views}:
+        write_views(repo, views + [(table, table)])
+    if a.no_migrate:
+        say(f"not migrated (--no-migrate): db migrate, then db import {table} with the rows")
+        return
+    cmd_migrate(argparse.Namespace(site=site.name, local=a.local, dry_run=False))
+    if stmts and not a.no_import:
+        for i in range(0, len(stmts), 500):
+            run_sql(site, a.local, "\n".join(stmts[i:i + 500]) + "\n")
+        say(f"imported {len(stmts)} row{'s' if len(stmts) != 1 else ''} into {table}")
+    say(f"\nnext: look at it (the view file is yours to rename and trim), commit, `git -C repos/{site.name} push`, "
+        f"`site publish {site.name}`, then open /admin/{table} and tell the owner where it is.")
+
+
+def view_meta(repo, mod):
+    p = repo / "functions" / "_admin" / f"{mod}.js"
+    text = p.read_text() if p.exists() else ""
+    get = lambda k: (re.search(rf'\b{k}:\s*"([^"]*)"', text) or [None, None])[1]
+    return {"exists": p.exists(), "table": get("table"), "title": get("title"),
+            "filter": bool(re.search(r"\bfilter:\s*\{", text))}
+
+
+def collection_tables():
+    """table -> the collection whose migrations create it."""
+    out = {}
+    for d in sorted(COLLECTIONS.iterdir()) if COLLECTIONS.is_dir() else []:
+        for m in (d / "migrations").glob("*.sql") if (d / "migrations").is_dir() else []:
+            for t in re.findall(r"(?i)create\s+table\s+(?:if\s+not\s+exists\s+)?(\w+)", m.read_text()):
+                out[t.lower()] = d.name
+    return out
+
+
+def view_kinds(repo):
+    """[(module, meta, kind)] for every view /admin shows: kind is 'collection' (a
+    collection's own view), 'named list' (a copy on a collection's table, like
+    customers on records) or 'tool' (a table of this site's own: a web tool)."""
+    std = {p.stem for p in COLLECTIONS.glob("*/functions/_admin/*.js")}
+    tabs = collection_tables()
+    out = []
+    for _, mod in registered_views(repo):
+        m = view_meta(repo, mod)
+        kind = "collection" if mod in std else "named list" if (m["table"] or "").lower() in tabs else "tool"
+        out.append((mod, m, kind))
+    return out
+
+
+def cmd_tools(a):
+    site = the_site(a)
+    views = view_kinds(site.repo)
+    if not views:
+        say("/admin shows nothing yet (db add <collection>, or build a tool: PLAYBOOK.md § Web tools)")
+        return
+    have = {r["name"] for r in rows_of(d1(site, a.local, command="SELECT name FROM sqlite_master WHERE type='table'"))}
+    tables = sorted({m["table"] for _, m, k in views if k == "tool" and m["table"] in have})
+    counts = rows_of(d1(site, a.local, command="SELECT " + ", ".join(f"(SELECT COUNT(*) FROM {ident(t)}) AS {ident(t)}" for t in tables)))[0] if tables else {}
+    w = max(len(mod) for mod, _, _ in views)
+    for mod, m, kind in views:
+        extra = ""
+        if kind == "tool":
+            extra = f"  {counts[m['table']]} rows" if m["table"] in counts else "  TABLE MISSING (db migrate)"
+        if not m["exists"]:
+            extra = "  VIEW FILE MISSING"
+        say(f"{mod.ljust(w)}  {kind:<10}  {m['title'] or '?'} (table {m['table'] or '?'})  /admin/{mod}{extra}")
+    n = sum(1 for _, _, k in views if k == "tool")
+    say(f"\n{n} web tool{'s' if n != 1 else ''} of this site's own; worked examples: "
+        + ", ".join(sorted(p.name for p in TOOLS.iterdir() if p.is_dir())) + f" in {TOOLS} (PLAYBOOK.md § Web tools)")
 
 
 # ---------------------------------------------------------------- doctor
@@ -650,7 +955,17 @@ def cmd_doctor(a):
     if lost:
         fail(f"functions/_admin/collections.js imports missing view(s): {', '.join(lost)}")
     else:
-        say(f"  /admin shows: {', '.join(mod for _, mod in views) or '(nothing yet — db add <collection>)'}")
+        kinds = view_kinds(site.repo)
+        say(f"  /admin shows: {', '.join(mod + (' (tool)' if k == 'tool' else '') for mod, _, k in kinds) or '(nothing yet — db add <collection>)'}")
+        missing_t = [mod for mod, m, _ in kinds if not m["table"]]
+        if missing_t:
+            fail(f"view(s) with no table: {', '.join(missing_t)} (a view names its table: `table: \"…\"`)")
+    shell = HERE / "templates" / "sites" / "_shell" / "functions"
+    behind = [str(f.relative_to(shell.parent)) for f in sorted(shell.rglob("*")) if f.is_file()
+              and f.name != "collections.js" and (not (site.repo / f.relative_to(shell.parent)).exists()
+                                                 or (site.repo / f.relative_to(shell.parent)).read_bytes() != f.read_bytes())]
+    if behind:
+        say(f"  note: the /admin shell is {len(behind)} file(s) behind the toolbelt's: `site shell {site.name}` brings it up")
     if not FAKE and site.project and not a.local:
         code, res = cf_get(f"/pages/projects/{site.project}")
         if code == 200:
@@ -690,9 +1005,17 @@ def main():
     i.add_argument("table"); i.add_argument("file"); i.add_argument("--dry-run", action="store_true")
     i.set_defaults(fn=cmd_import)
     ad = sub.add_parser("add", parents=[common], help="add a standard collection (migration, Function, /admin view)")
-    ad.add_argument("collection"); ad.add_argument("--no-migrate", action="store_true"); ad.add_argument("--dry-run", action="store_true")
+    ad.add_argument("collection", help="a collection (db collections), or with --from-sheet the new table's name")
+    ad.add_argument("--no-migrate", action="store_true"); ad.add_argument("--dry-run", action="store_true")
+    ad.add_argument("--from-sheet", metavar="FILE", help="a web tool from a CSV or Excel sheet's header row (B40)")
+    ad.add_argument("--sheet", help="which sheet of an Excel file (default: the first with rows)")
+    ad.add_argument("--title", help="what /admin calls the list (default: the name, capitalised)")
+    ad.add_argument("--singular", help="what one row is called (item, stop)")
+    ad.add_argument("--statuses", help='the statuses, first is the default: "in stock,discontinued"')
+    ad.add_argument("--no-import", action="store_true", help="make the table and view, leave the rows out")
     ad.set_defaults(fn=cmd_add)
     sub.add_parser("collections", parents=[common], help="what can be added; what this site has").set_defaults(fn=cmd_collections)
+    sub.add_parser("tools", parents=[common], help="every list /admin shows: collection, named list or web tool").set_defaults(fn=cmd_tools)
     sub.add_parser("doctor", parents=[common], help="token, binding, migrations, secrets, /admin").set_defaults(fn=cmd_doctor)
     a = ap.parse_args()
     a.fn(a)

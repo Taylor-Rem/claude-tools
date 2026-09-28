@@ -65,7 +65,9 @@ export function cookie(request, name) {
   return null;
 }
 
-// A POST from a browser carries Origin; it must be this site. (No Origin at
+// A POST from a browser carries Origin; it must be this site. (The pages send
+// referrer-policy same-origin, not no-referrer: under no-referrer a browser
+// sends `Origin: null` on its own forms, and every /admin POST was refused.) (No Origin at
 // all is a non-browser client, which has no cookie to ride on.)
 export function sameOrigin(request) {
   const origin = request.headers.get("origin");
@@ -258,7 +260,7 @@ ${body}
     status,
     headers: {
       "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-robots-tag": "noindex",
-      "referrer-policy": "no-referrer", "x-frame-options": "DENY", ...headers,
+      "referrer-policy": "same-origin", "x-frame-options": "DENY", ...headers,
     },
   });
 }

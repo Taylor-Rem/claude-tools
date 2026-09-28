@@ -16,7 +16,10 @@ client texts a photo and says "like this", and the words alone don't tell you
 what they meant. The relay writes each exchange to state/messages.jsonl and
 keeps a copy of every inbound picture under state/media/; this stitches the
 two together into a single self-contained HTML file (pictures embedded, no
-server, no network) that you can open anywhere or send to yourself.
+server, no network) that you can open anywhere or send to yourself. A file
+someone sent that isn't a picture (a PDF, a spreadsheet, a Word file, a clip;
+ROADMAP B35) is a chip with its name, type and size, linking the archived copy
+(a file:// link in the static page, served by `chats serve`).
 
 Photos only exist from the point the relay started archiving them. Before
 that the working copies in each client's incoming/ were deleted by the agent
@@ -94,7 +97,7 @@ def photo_paths(relay, row):
     written within a few minutes of this exchange. Wrong pictures next to a
     client's words are worse than no pictures."""
     out = []
-    for rel in row.get("photos") or []:
+    for rel in (row.get("photos") or []) + (row.get("files") or []):
         p = state_dir(relay) / rel
         if p.is_file():
             out.append((p, True))
@@ -117,6 +120,36 @@ def photo_paths(relay, row):
                 out.append((hit, False))
                 break
     return out
+
+
+IMAGE_EXT = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif", ".bmp"}
+FILE_KIND = {".pdf": "PDF", ".csv": "CSV", ".txt": "text", ".xlsx": "Excel", ".xls": "Excel",
+             ".docx": "Word", ".mp4": "video", ".mov": "video", ".webm": "video", ".3gp": "video"}
+
+
+def is_image(path):
+    return Path(path).suffix.lower() in IMAGE_EXT
+
+
+def human_size(n):
+    for unit in ("B", "KB", "MB"):
+        if n < 1024 or unit == "MB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+
+
+def file_chip(path, href):
+    """A document (or a clip) someone sent: its name, size and type, linking the
+    file — never an <img> that can't show it."""
+    p = Path(path)
+    try:
+        size = human_size(p.stat().st_size)
+    except OSError:
+        size = "gone"
+    kind = FILE_KIND.get(p.suffix.lower(), p.suffix.lstrip(".").upper() or "file")
+    name = html.escape(p.name)
+    return (f'<a class=file href="{html.escape(href)}" download="{name}" title="{name}">'
+            f'<span class=fname>{name}</span><span class=fmeta>{html.escape(kind)} · {size}</span></a>')
 
 
 def data_uri(path, max_bytes=4_000_000):
@@ -187,6 +220,11 @@ h1{font-size:1.4rem;margin:0 0 4px}
 .shots img.big{max-width:100%;max-height:none;cursor:zoom-out}
 .shots img.loose{border-style:dashed;border-color:var(--dim)}
 .gone{font-size:.74rem;color:var(--dim);font-style:italic}
+.file{display:flex;flex-direction:column;gap:2px;max-width:260px;padding:10px 14px;border:1px solid var(--line);
+  border-radius:10px;background:var(--card);color:var(--ink);text-decoration:none}
+.file:hover{border-color:var(--accent)}
+.fname{font-weight:600;overflow-wrap:anywhere}
+.fmeta{font-size:.74rem;color:var(--dim)}
 .empty{color:var(--dim);padding:40px 0;text-align:center}
 """
 
@@ -197,11 +235,15 @@ document.addEventListener('click',function(e){
 """
 
 
-def render_body(rows, cfg, photo_src=None):
+def render_body(rows, cfg, photo_src=None, file_href=None):
     """The conversation itself. photo_src(path, archived) -> an <img src>; the
     default embeds the bytes so the file stands alone, while `serve` hands back
-    a URL instead so a live page isn't re-encoding every picture each poll."""
+    a URL instead so a live page isn't re-encoding every picture each poll.
+    Anything that isn't a picture (a PDF, a sheet, a Word file, a clip) is a
+    file chip linking file_href(path, archived): a file:// URL by default, the
+    server's own URL under `serve`."""
     photo_src = photo_src or (lambda p, archived: data_uri(p))
+    file_href = file_href or (lambda p, archived: Path(p).resolve().as_uri())
     bot = cfg.get("bot_name", "bot")
     parts = []
     if not rows:
@@ -221,6 +263,9 @@ def render_body(rows, cfg, photo_src=None):
         meta = f"{who} → {html.escape(pname)} · {html.escape(channel(r))} · {t:%H:%M}"
         shots = []
         for p, archived in r.get("_photos", []):
+            if not is_image(p):
+                shots.append(file_chip(p, file_href(p, archived)))
+                continue
             uri = photo_src(p, archived)
             if not uri:
                 shots.append(f'<span class=gone>[{html.escape(p.name)} — too big to embed]</span>')
@@ -283,7 +328,7 @@ LIVE_CSS = """
 """
 
 
-def render_page(rows, cfg, title, live=False, photo_src=None, sig=""):
+def render_page(rows, cfg, title, live=False, photo_src=None, sig="", file_href=None):
     head = [
         "<!doctype html><html lang=en><meta charset=utf-8>",
         '<meta name=viewport content="width=device-width,initial-scale=1">',
@@ -299,7 +344,7 @@ def render_page(rows, cfg, title, live=False, photo_src=None, sig=""):
     else:
         head.append(f'<div class=sub>{len(rows)} exchange(s) · built '
                     f"{datetime.now():%a %b %d, %H:%M} · tap a picture to enlarge</div>")
-    body = render_body(rows, cfg, photo_src)
+    body = render_body(rows, cfg, photo_src, file_href)
     tail = f"</div><script>{JS}{LIVE_JS if live else ''}</script>"
     return "\n".join(head) + f'\n<div id=feed>{body}</div>\n' + tail
 
@@ -348,10 +393,15 @@ def serve(args, cfg):
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
+            name = getattr(self, "_disposition", None)
+            if name:
+                safe = re.sub(r'[^A-Za-z0-9._-]', "_", name)
+                self.send_header("Content-Disposition", f'attachment; filename="{safe}"')
             self.end_headers()
             self.wfile.write(body)
 
         def do_GET(self):
+            self._disposition = None
             parsed = urllib.parse.urlparse(self.path)
             query = urllib.parse.parse_qs(parsed.query)
             if token and query.get("k", [""])[0] != token:
@@ -361,17 +411,19 @@ def serve(args, cfg):
                 p = photos.get(path.split("/", 1)[1])
                 if not p or not Path(p).is_file():
                     return self._send("not found", "text/plain", 404)
-                mime = mimetypes.guess_type(Path(p).name)[0] or "image/jpeg"
+                mime = mimetypes.guess_type(Path(p).name)[0] or \
+                    ("image/jpeg" if is_image(p) else "application/octet-stream")
+                self._disposition = None if is_image(p) else Path(p).name
                 return self._send(Path(p).read_bytes(), mime)
             rows = snapshot()
             if path == "state":
                 return self._send(json.dumps({"sig": signature(), "count": len(rows)}),
                                   "application/json")
             if path == "body":
-                return self._send(render_body(rows, cfg, src))
+                return self._send(render_body(rows, cfg, src, src))
             if path in ("", "index.html"):
                 return self._send(render_page(rows, cfg, title, live=True,
-                                              photo_src=src, sig=signature()))
+                                              photo_src=src, sig=signature(), file_href=src))
             return self._send("not found", "text/plain", 404)
 
         def log_message(self, *a):                       # not a web server; stay quiet
@@ -412,7 +464,10 @@ def show_text(rows, cfg):
             print(f"\n{t:%a %b %d}")
         pname = cfg.get("projects", {}).get(r.get("project"), {}).get("name") or r.get("project")
         pics = r.get("_photos", [])
-        mark = f"  [{len(pics)} picture(s)]" if pics else ""
+        n_files = sum(1 for p, _ in pics if not is_image(p))
+        bits = ([f"{len(pics) - n_files} picture(s)"] if len(pics) > n_files else []) \
+            + ([f"{n_files} file(s)"] if n_files else [])
+        mark = f"  [{', '.join(bits)}]" if bits else ""
         print(f"{t:%H:%M}  {r.get('sender_name')} → {pname} ({channel(r)}){mark}")
         for line in (r.get("text") or "(attachment only)").splitlines():
             print(f"         {line}")
@@ -462,7 +517,7 @@ def main():
     ap.add_argument("--from", dest="sender", help="only this person (name or sender key)")
     ap.add_argument("--project", help="only this project (key or name)")
     ap.add_argument("-n", "--number", type=int, default=40, help="how many exchanges (0 = all)")
-    ap.add_argument("--photos", action="store_true", help="only exchanges that came with a picture")
+    ap.add_argument("--photos", action="store_true", help="only exchanges that came with a picture or a file")
     ap.add_argument("--transport", help="only this channel: sms, telegram, discord or web (the browser chat)")
     ap.add_argument("--out", type=Path, help="write the HTML here instead of the cache dir")
     ap.add_argument("--relay", type=Path, default=RELAY, help="relay checkout (default: ~/projects/sms-relay)")
@@ -498,8 +553,9 @@ def main():
         out = OUT_DIR / f"chats-{slug}-{datetime.now():%Y%m%d-%H%M%S}.html"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(render_page(rows, cfg, title))
-    pics = sum(len(r.get("_photos", [])) for r in rows)
-    print(f"{len(rows)} exchange(s), {pics} picture(s)")
+    got = [p for r in rows for p, _ in r.get("_photos", [])]
+    files = sum(1 for p in got if not is_image(p))
+    print(f"{len(rows)} exchange(s), {len(got) - files} picture(s), {files} file(s)")
     print(out.resolve())
     return 0
 

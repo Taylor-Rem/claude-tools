@@ -331,6 +331,30 @@ def cmd_ls(a):
             print(f"{'':<18} plan: {rv['plan']}")
 
 
+def admin_views(repo):
+    """(views, missing): the lists a site's /admin shows, each (module, kind) with
+    kind 'collection', 'named list' or 'tool' (a table of the site's own, a web
+    tool — B40); missing = modules collections.js imports that aren't there."""
+    import re
+    reg = repo / "functions" / "_admin" / "collections.js"
+    if not reg.exists():
+        return [], []
+    coll = HERE / "templates" / "collections"
+    std = {p.stem for p in coll.glob("*/functions/_admin/*.js")}
+    tabs = set()
+    for m in coll.glob("*/migrations/*.sql"):
+        tabs |= {t.lower() for t in re.findall(r"(?i)create\s+table\s+(?:if\s+not\s+exists\s+)?(\w+)", m.read_text())}
+    views, missing = [], []
+    for mod in re.findall(r'import\s+[A-Za-z_]\w*\s+from\s+"\./([\w-]+)\.js";', reg.read_text()):
+        f = repo / "functions" / "_admin" / f"{mod}.js"
+        if not f.exists():
+            missing.append(mod)
+            continue
+        t = (re.search(r'\btable:\s*"(\w+)"', f.read_text()) or [None, ""])[1].lower()
+        views.append((mod, "collection" if mod in std else "named list" if t in tabs else "tool"))
+    return views, missing
+
+
 def cmd_doctor(a):
     ok = True
     targets = [CLIENTS_DIR / a.slug] if a.slug else [d for d in sorted(CLIENTS_DIR.iterdir())
@@ -376,6 +400,13 @@ def cmd_doctor(a):
                 print(f"  FAIL repo {r}: database binding: {bad}"); ok = False
             elif (entry or {}).get("d1"):
                 print(f"  repo {r}: database {entry['d1']['name']} bound as DB (db doctor checks the rest)")
+            views, missing = admin_views(d)
+            if missing:
+                print(f"  FAIL repo {r}: /admin imports view(s) that aren't there: {', '.join(missing)}"); ok = False
+            if views:
+                tools = [m for m, k in views if k == "tool"]
+                print(f"  repo {r}: /admin shows {len(views)} list(s)"
+                      + (f", web tool(s): {', '.join(tools)}" if tools else ""))
         m = read_meta(ws)
         rv = relay_view(ws.name, relay_config())
         if rv is None:

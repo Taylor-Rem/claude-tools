@@ -20,7 +20,7 @@
 //   json, create, edit, touch          the JSON column, the add form, the edit form, the "changed" column;
 //                                      an edit entry may be a name alone: "status", "notes", or a create field's
 // Anything the owner sees here, `db export` hands over as the same rows.
-import { page, esc, ident, when, ago, isDate, money, csv, readBody, redirect, localNow } from "../../_lib/core.js";
+import { page, esc, ident, when, ago, isDate, isTime, money, csv, readBody, redirect, localNow } from "../../_lib/core.js";
 import collections from "../../_admin/collections.js";
 
 const PER_PAGE = 50;
@@ -60,7 +60,7 @@ const isMoney = (col) => /_cents$/.test(col);
 
 export function cell(col, value, env) {
   if (value === null || value === undefined || value === "") return "";
-  if (/_at$/.test(col) || isDate(value)) return `<time title="${esc(when(value, env))}">${esc(ago(value, env))}</time>`;
+  if (isTime(col, value)) return `<time title="${esc(when(value, env))}">${esc(ago(value, env))}</time>`;
   if (col === "status") return `<span class="status">${esc(value)}</span>`;
   if (isMoney(col)) return esc(money(value));
   const s = String(value);
@@ -104,7 +104,7 @@ export function conditions(v, s, withStatus = true) {
   if (withStatus && s.status) { parts.push("status = ?"); args.push(s.status); }
   if (s.only) parts.push(`(${(v.shortcuts || []).find(([label]) => label === s.only)[1]})`);
   if (s.q) {
-    const cols = [...new Set(v.search || [...v.list.map(([c]) => c).filter((c) => !/_at$/.test(c) && !isMoney(c)), ...(v.json ? [v.json] : [])])];
+    const cols = [...new Set(v.search || [...v.list.map(([c]) => c).filter((c) => !/(_at|_on|^day|^date)$/.test(c) && !isMoney(c)), ...(v.json ? [v.json] : [])])];
     const like = "%" + s.q.replace(/[\\%_]/g, (c) => "\\" + c) + "%";
     parts.push("(" + cols.map((c) => `${ident(c)} LIKE ? ESCAPE '\\'`).join(" OR ") + ")");
     args.push(...cols.map(() => like));

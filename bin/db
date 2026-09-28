@@ -871,7 +871,7 @@ def cmd_tools(a):
         say(f"{mod.ljust(w)}  {kind:<10}  {m['title'] or '?'} (table {m['table'] or '?'})  /admin/{mod}{extra}")
     n = sum(1 for _, _, k in views if k == "tool")
     say(f"\n{n} web tool{'s' if n != 1 else ''} of this site's own; worked examples: "
-        + ", ".join(sorted(p.name for p in TOOLS.iterdir() if p.is_dir())) + f" in {TOOLS} (PLAYBOOK.md § Web tools)")
+        + ", ".join(sorted(p.name for p in TOOLS.iterdir() if p.is_dir())) + f" in claude-tools/templates/tools/ (PLAYBOOK.md § Web tools)")
 
 
 # ---------------------------------------------------------------- doctor

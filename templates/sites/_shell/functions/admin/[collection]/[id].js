@@ -1,6 +1,6 @@
 // /admin/<collection>/<id> — one entry: every column, the JSON column spelled
 // out, and the fields the view lets the owner change.
-import { page, esc, ident, when, money, readBody, redirect } from "../../_lib/core.js";
+import { page, esc, ident, when, isTime, money, readBody, redirect } from "../../_lib/core.js";
 import { view, where, input, editFields } from "./index.js";
 
 async function load(env, v, id) {
@@ -16,7 +16,7 @@ export async function onRequestGet({ env, params, data }) {
   const dl = [];
   for (const [k, val] of Object.entries(row)) {
     if (k === v.json || k === "ip_hash" || val === null || val === "") continue;
-    const shown = /_at$/.test(k) ? when(val, env) : /_cents$/.test(k) ? money(val) : val;
+    const shown = isTime(k, val) ? when(val, env) : /_cents$/.test(k) ? money(val) : val;
     dl.push(`<dt>${esc(k.replace(/_cents$/, "").replace(/_/g, " "))}</dt><dd>${esc(shown)}</dd>`);
   }
   if (v.json && row[v.json]) {
@@ -25,7 +25,7 @@ export async function onRequestGet({ env, params, data }) {
     for (const [k, val] of Object.entries(obj)) if (row[k] !== val) dl.push(`<dt>${esc(k.replace(/[_-]/g, " "))}</dt><dd>${esc(typeof val === "string" ? val : JSON.stringify(val))}</dd>`);
   }
   // one tap to change the status ("done", "skipped"), above the full form
-  const taps = (v.quick || editFields(v).some((f) => f.name === "status") && v.statuses || []).filter((st) => st !== row.status);
+  const taps = (editFields(v).some((f) => f.name === "status") ? v.statuses || [] : v.quick || []).filter((st) => st !== row.status);
   const quick = taps.length && row.status !== undefined ? `<div class="quick-row">${taps.map((st) =>
     `<form class="quick" method="post"><input type="hidden" name="status" value="${esc(st)}"><button type="submit">Mark ${esc(st)}</button></form>`).join("")}</div>` : "";
   const edit = editFields(v).length

@@ -116,6 +116,12 @@ export function isDate(value) {
   return typeof value === "string" && (DATE_ONLY.test(value) || LOCAL_TIME.test(value) || /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?(\.\d+)?(Z|[+-]\d\d:?\d\d)?$/.test(value));
 }
 
+// A *_at column is a time only when its value looks like one: `reorder_at`
+// (a count, "reorder at 10") is a number and stays one.
+export function isTime(col, value) {
+  return isDate(value) || (/_at$/.test(col) && typeof value === "number" && value > 1e9);
+}
+
 export function ago(value, env) {
   if (value === null || value === undefined || value === "") return "";
   const tz = env.TIMEZONE || "America/Denver";

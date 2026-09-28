@@ -136,6 +136,8 @@ site can reach it, and it goes with the site if they ever leave.
 2. The list: `db add submissions` for what a form sends; `db add records`
    for a list they keep by hand (customers, jobs). `db collections` shows
    what exists; one marked *scaffold* is not built yet — don't offer it.
+   Something none of them fits (routes, stock, a job board, a tally) is
+   not a "not yet": it's a web tool you build — the next page.
    `db add` prints the form to use and the collection's README says the
    rest.
 3. Point the form at the site: the form's `action` becomes
@@ -211,9 +213,142 @@ their email, works once, for 15 minutes.
   unless `--yes`. Only when the owner asked for exactly that, and `db
   export` first.
 
+**What the owner gets on every list** (the `/admin` shell does it, no
+work for you): a search box, the status pills with counts, a totals line
+("12 stops · 9 done"; a money column is added up), sort by any column, a
+**Download CSV** of what's on screen, dates in their words ("Today,
+9:12 AM"), and a layout that works one-handed on a phone. Tell them so
+when you hand a list over; don't build any of it again.
+
 **Rules.** What's in the database is the owner's customers' details: read
 it only to the owner, never put it on a public page, never paste it into
 a post. Exports stay in this workspace and go only to the owner.
+
+---
+
+## Web tools: a list of their own (routes, stock, jobs…)
+
+**When they ask:** "keep my pool routes: stops per day, done or skipped",
+"track my stock and tell me what's low", "a board of the jobs we've got on",
+"somewhere to log the deliveries", or they send the spreadsheet or notebook
+page they keep it in now. The question that finds it: *"what do you keep in
+a spreadsheet or a notebook today?"* — that thing becomes the tool.
+
+**The rule:** a web tool is **a table, an `/admin` view, and a public
+Function only if the public writes to it**, in their site's repo, on their
+site's database. Same `/admin`, same sign-in, same handover (`db export`).
+You build it the way you build a page. First: does a collection fit (§ Data:
+submissions, records, bookings, catalog)? A named list on `records` is
+often enough ("a list of my customers"). When it doesn't fit — they want to
+sort or add up their own columns, a day and an order, a count and a level —
+build one.
+
+**What to say:**
+
+> Easy. I'll make you a private page on your site where your routes live:
+> each day's stops in order, and you tap done or skipped as you go. Only
+> you can open it (<live url>admin/routes, the same sign-in link). You can
+> text me changes too.
+
+**Which plan:** a tool is a *build*, what Standard's first month is for.
+On Light or Starter the collections are there (a form's list, the
+calendar, the shop) but a tool of their own isn't: "a list built for you is
+a Standard job" — the same line as the rebuild.
+
+**What to build** (the site needs its database first: § Data, `site data`):
+
+1. **Their words → a table.** One row per thing they'd point at (a stop,
+   an item, a job). Their fields as real columns — never JSON — when
+   they'll sort, filter or add them up (`on_hand INTEGER`, `day TEXT` as
+   YYYY-MM-DD, money as `<name>_cents INTEGER`). The house columns every
+   list has: `status` (their words: to do / done / skipped), `notes`,
+   `created_at`, `updated_at`; `kind` and `title` only when one table
+   holds several lists.
+2. **A migration** `repos/<site>/migrations/NNNN_<name>.sql` (the next
+   number; `CREATE TABLE IF NOT EXISTS`, an index on what they filter by).
+   Never edit an applied one; change the shape with the next number.
+3. **The view** `repos/<site>/functions/_admin/<name>.js`, about 22 lines,
+   and one line in `functions/_admin/collections.js` (`import <name> from
+   "./<name>.js";` and the name in the export). The shell reads it:
+   `table`, `title`, `singular`, `list` (the columns shown, first is the
+   link), `statuses`, `create` (the add form), `edit` (a name alone —
+   `"status"`, `"notes"`, a create field's name — is enough), `touch:
+   "updated_at"`, and the extras the shell knows: `order` (`[["day",
+   "asc"], ["stop", "asc"]]`), `filters` (a chooser per column, `[["day",
+   "Day", "today"]]` opens on today), `quick` (one-tap status buttons on
+   each row), `sum` (added up on the totals line; `_cents` is money),
+   `shortcuts` (a named slice as a pill: `[["below reorder", "on_hand <
+   reorder_at"]]` — SQL you write, never anything a visitor typed),
+   `search` (default: the columns shown). The top of
+   `functions/admin/[collection]/index.js` lists them all.
+4. **A public Function** (`functions/api/<name>.js`) only when the public
+   writes to it (a sign-up, a request form): copy `api/submissions.js`'s
+   shape (honeypot, rate limit, the fields it takes). Never for a list only
+   the owner writes to.
+5. `db migrate`, `shot` the page, commit, push, `site publish <site>`;
+   prove one row live (`db exec` an INSERT, see it on `/admin/<name>`,
+   change its status by text, see it change), then `db doctor` and
+   `db tools` (it lists the site's tools).
+6. Tell them in their words where it is and what each status means:
+   "It's at <live url>admin/routes. Today's stops show first; tap done or
+   skipped. Text me 'Sam's done' and I'll mark it."
+
+**The worked examples** (built this way, kept as fixtures in
+`claude-tools/templates/tools/`; copy from them, in the owner's words):
+
+- **routes** (the service demo, `/admin/routes`): `day`, `stop`,
+  `customer`, `job`, `area`; statuses to do / done / skipped; opens on
+  today in stop order; one-tap done / skipped; "7 stops · 2 to do · 4 done
+  · 1 skipped". "Sam's done" is `db exec "UPDATE routes SET status =
+  'done', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE day =
+  '<today>' AND customer = 'Sam Example'"`.
+- **stock** (the shop demo, `/admin/stock`, made from their sheet in one
+  command, next): `item`, `kind`, `on_hand`, `reorder_at`, `supplier`,
+  `unit_cost_cents`, `last_counted`; a **below reorder** pill. "What's
+  below reorder?" is `db query "SELECT item, on_hand, reorder_at, supplier
+  FROM stock WHERE on_hand < reorder_at ORDER BY item"`, read back in a
+  line or two.
+
+**Spreadsheet → tool** ("put this sheet in my customer list", "here's my
+stock sheet, keep it on the site"): the sheet is in `incoming/`.
+
+1. `doc text incoming/<file>` — read it; `doc sheets` when there are
+   several and ask which one if it isn't obvious.
+2. **A new list from it:** `db add <name> --from-sheet incoming/<file>
+   [--sheet NAME] --title "<their word>" --singular <one> [--statuses
+   "a,b"] --dry-run`. It prints the header mapping (each column's name and
+   type: text, whole number, number, date, money in cents), the migration,
+   and the first rows, and writes nothing.
+3. **Say the mapping back** in their words before anything is written:
+   "I'll make a Stock page with item, kind, on hand, reorder at, supplier,
+   unit cost and last counted — 14 items. OK?" On a yes, the same command
+   without `--dry-run` writes the migration and the view, registers it,
+   migrates and imports the rows. Look at the view file, trim what they
+   won't use, then step 5 above.
+4. **Into a list that exists** (records, their customers, a tool you
+   built): write the rows as a CSV with the table's own column names
+   (`incoming/customers.csv`), `db import <table> incoming/customers.csv
+   --dry-run`, say the count and the columns back, then without it.
+5. **A later sheet against the tool** ("here's this week's count"): the
+   audit of § Files, against the table (`db query` it): what changed, what's
+   new, what's gone. Change nothing until they say yes; then one `db exec`
+   UPDATE per changed row. Delete the file from `incoming/` when done.
+
+**Guardrails (say no plainly, offer the nearest thing):**
+
+- A tool's Function never calls anything outside the site except Stripe
+  through the catalog's checkout and patchlamp.com's form endpoint (the
+  emails a form already sends); no other API, no webhook out.
+- Never store card numbers, passwords, or government ids (SSN, licence,
+  passport) — not in a column, not in notes.
+- One owner signs in. A login for their customers, staff or members is not
+  something you build: FORWARD-TO-TAYLOR.
+- A tool that needs a timer (a reminder at 8am, a weekly email), a second
+  database, or files uploaded through a form: FORWARD-TO-TAYLOR. (A
+  reminder *to the owner* by text is a standing instruction, not a tool.)
+- No charts. The totals line is the summary.
+- A tool is the owner's private page: nothing from it goes on a public page
+  or in a post unless they say so (costs, suppliers, customers).
 
 ---
 
@@ -253,6 +388,11 @@ sheet but not on the site, on the site but not on the sheet, a different
 price (sheet vs site), out of stock but still on sale. Say how many matched.
 If it all matches, say that in one line. **Change nothing yet.** End with
 the question: "Want me to update the site to match?"
+
+**Keep it as a list of its own** ("keep this on the site", "put my stock
+sheet somewhere I can see it"): that's a web tool from the sheet — § Web
+tools, "Spreadsheet → tool" (`db add <name> --from-sheet`, the mapping said
+back, a dry run first). Their next sheet is then audited against that table.
 
 **Update the site from it** (only on a yes, or when their message already
 said "put these on the site"):

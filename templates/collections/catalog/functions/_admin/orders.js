@@ -5,9 +5,10 @@ export default {
   table: "orders",
   title: "Orders",
   singular: "order",
-  list: [["created_at", "Placed"], ["name", "Name"], ["summary", "Items"], ["total_cents", "Total (cents)"], ["status", "Status"], ["mode", "Mode"]],
+  list: [["created_at", "Placed"], ["name", "Name"], ["summary", "Items"], ["total_cents", "Total"], ["status", "Status"], ["mode", "Mode"]],
   json: "items",
   statuses: ["pending", "paid", "ready", "collected", "cancelled"],
+  sum: ["total_cents"],
   edit: [
     { name: "status", label: "Status", type: "select" },
     { name: "owner_notes", label: "Notes (only you see these)", type: "textarea" },

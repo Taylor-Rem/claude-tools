@@ -103,6 +103,64 @@ export function when(value, env) {
   }).format(d);
 }
 
+// A time or a date in the owner's words, for a list: "Today, 3:04 PM",
+// "Yesterday, 9:12 AM", "Tomorrow, 9:00 AM", "Thu, 1:00 PM" within the week,
+// "Sep 3" this year, "Sep 3, 2025" before. A date with no time
+// ("2026-09-29", a route's day) the same, without the time. The entry's
+// own page keeps the full date (`when`).
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+
+export function isDate(value) {
+  return typeof value === "string" && (DATE_ONLY.test(value) || LOCAL_TIME.test(value) || /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?(\.\d+)?(Z|[+-]\d\d:?\d\d)?$/.test(value));
+}
+
+export function ago(value, env) {
+  if (value === null || value === undefined || value === "") return "";
+  const tz = env.TIMEZONE || "America/Denver";
+  let day, time = "";
+  const clock = (d, zone) => new Intl.DateTimeFormat("en-US", { timeZone: zone, hour: "numeric", minute: "2-digit" }).format(d);
+  if (typeof value === "string" && DATE_ONLY.test(value)) day = value;
+  else if (typeof value === "string" && LOCAL_TIME.test(value)) {
+    day = value.slice(0, 10);
+    time = clock(new Date(value + ":00Z"), "UTC");
+  } else {
+    const d = typeof value === "number" ? new Date(value * 1000) : new Date(String(value).replace(" ", "T") + (/[zZ]|[+-]\d\d:?\d\d$/.test(value) ? "" : "Z"));
+    if (isNaN(d)) return String(value);
+    day = new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(d);
+    time = clock(d, tz);
+  }
+  const at = new Date(day + "T00:00:00Z");
+  if (isNaN(at)) return String(value);
+  const today = localNow(env).slice(0, 10);
+  const diff = Math.round((at - new Date(today + "T00:00:00Z")) / 86400000);
+  const fmt = (o) => new Intl.DateTimeFormat("en-US", { timeZone: "UTC", ...o }).format(at);
+  const label = diff === 0 ? "Today" : diff === -1 ? "Yesterday" : diff === 1 ? "Tomorrow"
+    : Math.abs(diff) < 7 ? fmt({ weekday: "short" })
+    : day.slice(0, 4) === today.slice(0, 4) ? fmt({ month: "short", day: "numeric" })
+    : fmt({ month: "short", day: "numeric", year: "numeric" });
+  return time ? `${label}, ${time}` : label;
+}
+
+// Cents as money: 1250 -> "$12.50". A column named *_cents is money on /admin.
+export function money(cents) {
+  const n = Number(cents);
+  if (cents === null || cents === "" || !isFinite(n)) return String(cents ?? "");
+  return (n / 100).toLocaleString("en-US", { style: "currency", currency: "USD" });
+}
+
+// Rows as CSV (the header, then one line per row), the way `db export`
+// writes a table. A text cell a spreadsheet would run as a formula (=, +, -,
+// @ first) gets a leading apostrophe: what came from a public form stays text.
+export function csv(rows, cols) {
+  const q = (v) => {
+    if (v === null || v === undefined) return "";
+    let s = String(v);
+    if (typeof v === "string" && /^[=+@\t\r-]/.test(s) && !/^-?\d+(\.\d+)?$/.test(s)) s = "'" + s;
+    return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  return [cols.map(q).join(","), ...rows.map((r) => cols.map((c) => q(r[c])).join(","))].join("\r\n") + "\r\n";
+}
+
 // ---------------------------------------------------------------- pages
 
 const STYLE = `
@@ -133,6 +191,43 @@ const STYLE = `
   .admin .cards { list-style: none; display: grid; gap: .75rem; grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr)); margin: var(--space, 1rem) 0; }
   .admin .cards a { display: block; padding: 1rem; border: 1px solid var(--bg-line, #ddd); border-radius: 6px; background: var(--bg-raised, #fff); text-decoration: none; }
   .admin .note { color: var(--ink-dim, #666); }
+  .admin .tools { display: grid; gap: .6rem; margin: var(--space, 1rem) 0; }
+  .admin form.find { display: flex; flex-wrap: wrap; gap: .5rem; align-items: end; }
+  .admin form.find input[type=search] { flex: 1 1 14rem; min-width: 0; }
+  .admin form.find label { flex: 0 1 auto; }
+  .admin .pills { display: flex; flex-wrap: wrap; gap: .4rem; list-style: none; padding: 0; margin: 0; }
+  .admin .pills a { display: inline-flex; align-items: center; gap: .35rem; min-height: 2.5rem; padding: 0 .9rem;
+    border: 1px solid var(--bg-line, #ccc); border-radius: 999px; text-decoration: none; color: var(--ink, #111); }
+  .admin .pills a[aria-current] { background: var(--accent, #333); border-color: var(--accent, #333); color: #fff; }
+  .admin .totals { font-weight: 600; margin: 0; }
+  .admin .actions { display: flex; flex-wrap: wrap; gap: .5rem 1.25rem; align-items: center; margin: 0; }
+  .admin th a { display: inline; color: inherit; text-decoration: none; }
+  .admin th a:hover { text-decoration: underline; }
+  .admin form.quick { display: inline; margin: 0; }
+  .admin form.quick button { padding: .3rem .8rem; }
+  .admin .quick-row { display: flex; flex-wrap: wrap; gap: .5rem; margin: var(--space, 1rem) 0; }
+  .admin .quick-row button { background: transparent; color: var(--accent, #333); border: 1px solid var(--accent, #333); }
+  .admin .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .admin .phone-only { display: none; }
+  @media (max-width: 40rem) {
+    .admin { padding-top: var(--space, 1rem); }
+    .admin .phone-only { display: grid; }
+    .admin table.list thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+    .admin table.list, .admin table.list tbody, .admin table.list tr, .admin table.list td { display: block; width: 100%; }
+    .admin table.list tr { border: 1px solid var(--bg-line, #ddd); border-radius: 8px; padding: .6rem .8rem; margin-bottom: .6rem;
+      background: var(--bg-raised, #fff); }
+    .admin table.list td { display: flex; justify-content: space-between; gap: 1rem; border: 0; padding: .2rem 0; text-align: right; }
+    .admin table.list td::before { content: attr(data-label); color: var(--ink-dim, #666); text-align: left; }
+    .admin table.list td:first-child { display: block; text-align: left; font-size: 1.05rem; }
+    .admin table.list td:first-child::before { content: none; }
+    .admin table.list td:first-child a { padding: .3rem 0; }
+    .admin table.list td.quick-cell { justify-content: flex-end; padding-top: .4rem; }
+    .admin table.list td.quick-cell::before { content: none; }
+    .admin form.find > * { flex: 1 1 100%; }
+    .admin input, .admin select, .admin textarea { font-size: 16px; }
+    .admin button, .admin form.quick button { min-height: 2.75rem; }
+    .admin .pager a { display: inline-flex; align-items: center; min-height: 2.75rem; }
+  }
 `;
 
 export function page(env, title, body, { status = 200, headers = {}, session = null } = {}) {

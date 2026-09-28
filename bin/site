@@ -15,6 +15,7 @@ before 2026-09-16 and goes away once Bleu Grave has moved.
   site checkout <name> --key-from NAME [--webhook] [--live] | --off   # Stripe Checkout on a catalog site (SITE_ADMIN=1)
   site data <name> [--owner EMAIL] [--dry-run]   # give a site its own database + /admin (PLAYBOOK § Data)
   site publish [<name>] [--dry-run]    # HEAD of ./repos/<name> -> its Pages project (must be committed + pushed)
+  site shell [<name>] [--check]        # the /admin shell up to the toolbelt's (B41), commit, push, publish
   site ls                              # repos in ./repos with where they're served
   site domain <name> [example.com]     # custom domain on the project + the DNS lines   (SITE_ADMIN=1)
   site adopt <name> [--project P]      # register an existing repo as a Cloudflare site   (SITE_ADMIN=1)
@@ -1035,6 +1036,65 @@ def cmd_data(a):
         f"db collections shows them all")
 
 
+SHELL_OWN = {"functions/_admin/collections.js"}   # the site's own: which lists its /admin shows (db add writes it)
+
+
+def shell_drift(repo):
+    """The /admin shell files in repo that differ from (or are missing against)
+    templates/sites/_shell/functions — the generic part: the sign-in, the list
+    and entry pages, core.js. Never the site's own views or its migrations."""
+    out = []
+    for f in sorted((SHELL_DIR / "functions").rglob("*")):
+        rel = str(f.relative_to(SHELL_DIR))
+        if not f.is_file() or rel in SHELL_OWN:
+            continue
+        dest = repo / rel
+        if not dest.exists() or dest.read_bytes() != f.read_bytes():
+            out.append(rel)
+    return out
+
+
+def cmd_shell(a):
+    """Bring a site's /admin shell up to the toolbelt's (ROADMAP B41: search,
+    filters, totals, CSV, sort, the phone layout arrive on every site this
+    way): copy the generic shell files over, commit, push, publish. The
+    site's views (functions/_admin/*), its public Functions and its
+    migrations are its own and never touched. `--check` only says what's
+    behind. Safe to re-run: nothing to copy is nothing done."""
+    global DRY
+    DRY = a.dry_run
+    ws, meta = workspace()
+    reg = registry_load().get(meta["slug"], {})
+    names = [a.name] if a.name else [n for n in repos_of(ws) if ((reg.get(n) or {}).get("d1") or {}).get("id")]
+    if not names:
+        die("no site here has a database, so none has the /admin shell (site data <name> adds both)")
+    for name in names:
+        d = repo_dir(ws, name)
+        if not (d / "functions" / "_lib" / "core.js").exists():
+            die(f"repos/{name} has no /admin shell yet: site data {name}")
+        drift = shell_drift(d)
+        if not drift:
+            say(f"repos/{name}: the /admin shell is current")
+            continue
+        say(f"repos/{name}: {len(drift)} shell file(s) behind the toolbelt: {', '.join(drift)}")
+        if a.check:
+            continue
+        _, dirty = git(d, "status", "--porcelain", "--untracked-files=no", check=False)
+        if dirty.strip() and not DRY:
+            die(f"repos/{name} has uncommitted changes; commit them first, then site shell {name}")
+        for rel in drift:
+            if not DRY:
+                (d / rel).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy(SHELL_DIR / rel, d / rel)
+        git(d, "add", "--", *drift)
+        git(d, "-c", "user.name=Patch (claude-tools site)", "-c", "user.email=noreply@anthropic.com",
+            "commit", "-q", "-m", a.message or "The /admin shell from the toolbelt: search, filters, totals, CSV, sort, the phone layout")
+        git(d, "push", "-q")
+        cmd_publish(argparse.Namespace(name=name, dry_run=DRY))
+    if a.check and any(shell_drift(repo_dir(ws, n)) for n in names):
+        sys.exit(1)
+
+
 def cmd_adopt(a):
     """Register an existing repo (made for GitHub Pages) as a Cloudflare site
     and create its project. Doesn't touch DNS or GitHub Pages: publish, look,
@@ -1536,6 +1596,9 @@ def cmd_doctor(a):
                 if entry.get("d1") or (d / "functions").is_dir():
                     problem = binding_problem(d, entry)
                     (fail if problem else say)(f"  repos/{n}: database " + (problem or f"{entry['d1']['name']} bound as DB (db doctor for the rest)"))
+                    if (d / "functions" / "_lib" / "core.js").exists():
+                        drift = shell_drift(d)
+                        say(f"  repos/{n}: /admin shell " + (f"NOTE {len(drift)} file(s) behind the toolbelt (site shell {n})" if drift else "current"))
                 if cc and "no-cache" not in cc and "max-age=0" not in cc:
                     fail(f"repos/{n}: HTML is cacheable (copy templates/sites/business/_headers into the repo root)")
                 for dm in cf_domains(proj):
@@ -1587,6 +1650,12 @@ def main():
     dt.add_argument("--owner", help="the email that signs in to /admin (default: the workspace's contact)")
     dt.add_argument("--dry-run", action="store_true")
     dt.set_defaults(fn=cmd_data)
+    sh = sub.add_parser("shell", help="bring a site's /admin shell up to the toolbelt's, commit, push, publish (--check: only say)")
+    sh.add_argument("name", nargs="?", help="repo name under ./repos (default: every site here with a database)")
+    sh.add_argument("--check", action="store_true", help="say what's behind, change nothing (exit 1 when behind)")
+    sh.add_argument("-m", "--message", help="the commit message")
+    sh.add_argument("--dry-run", action="store_true")
+    sh.set_defaults(fn=cmd_shell)
     pb = sub.add_parser("publish", help="HEAD of ./repos/<name> -> its Cloudflare Pages project (commit + push first)")
     pb.add_argument("name", nargs="?", help="repo name under ./repos (optional when there is one)")
     pb.add_argument("--dry-run", action="store_true")

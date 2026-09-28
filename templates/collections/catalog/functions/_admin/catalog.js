@@ -1,10 +1,11 @@
-// How /admin shows what the site sells. Prices are in cents (1250 = $12.50).
+// How /admin shows what the site sells. Prices are kept in cents (1250 is
+// shown as $12.50).
 // "sold out" stays on the page, marked; "hidden" takes it off.
 export default {
   table: "products",
   title: "Products",
   singular: "product",
-  list: [["name", "Name"], ["category", "Section"], ["price_cents", "Price (cents)"], ["status", "Status"], ["updated_at", "Changed"]],
+  list: [["name", "Name"], ["category", "Section"], ["price_cents", "Price"], ["status", "Status"], ["updated_at", "Changed"]],
   statuses: ["on sale", "sold out", "hidden"],
   create: [
     { name: "name", label: "Name", required: true },

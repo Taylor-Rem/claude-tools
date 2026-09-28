@@ -498,8 +498,12 @@ def run_request(name):
     running.write_text(f"started {started}\n")
     head = [f"# reply to {name}", f"started {started} in {WORK_TREE}", ""]
     try:
-        r = subprocess.run(["claude", "-p", prompt, "--permission-mode", "auto", "--output-format", "json"],
-                           cwd=WORK_TREE, capture_output=True, text=True, timeout=REQUEST_TIMEOUT,
+        cmd = ["claude", "-p", prompt, "--permission-mode", "auto", "--output-format", "json"]
+        if prompt.startswith("/continue"):
+            # The build is supervised by a Fable session (VISION § Decided 2026-09-28):
+            # it spawns the Opus builders itself, so the request runs on Fable.
+            cmd[3:3] = ["--model", INBOX_MODELS["fable"]]
+        r = subprocess.run(cmd, cwd=WORK_TREE, capture_output=True, text=True, timeout=REQUEST_TIMEOUT,
                            env=dict(os.environ, TODO_REQUEST=name))
         body, meta = r.stdout, {}
         try:

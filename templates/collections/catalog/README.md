@@ -12,9 +12,9 @@ What `db add catalog` puts in the repo:
 |---|---|
 | `migrations/NNNN_catalog.sql` | `products` (name, description, section `category`, `price_cents`, `status` on sale / sold out / hidden, `sort`) and `hours` (weekday 0 = Sunday, opens, closes, note) |
 | `migrations/NNNN_orders.sql` | `orders`: one per Checkout, `pending` until Stripe says paid, then `paid` → `ready` → `collected` (or `cancelled`) |
-| `functions/api/catalog.js` | `GET /api/catalog`: the products (not hidden), the hours, open now, and the checkout mode (off / test / live) |
-| `functions/api/checkout.js` | `POST /api/checkout`: prices from the database, a Stripe Checkout session on the owner's own key, the order written `pending` |
-| `functions/api/stripe-webhook.js` | `POST /api/stripe-webhook`: Stripe's signed word that a Checkout was paid → the order is `paid` |
+| `functions/api/catalog.js` | `GET /api/catalog`: the products (not hidden), the hours, open now, the checkout mode (`checkout`: off / test / live) and how it's on (`via`: connected / key / off) |
+| `functions/api/checkout.js` | `POST /api/checkout`: prices from the database, a Stripe Checkout session **on the owner's own Stripe account** (connected: our platform key + `Stripe-Account`; fallback: their key), the order written `pending` |
+| `functions/api/stripe-webhook.js` | `POST /api/stripe-webhook`: the signed word that a Checkout was paid (forwarded by patchlamp.com when connected, from Stripe itself on the fallback) → the order is `paid` |
 | `functions/_admin/catalog.js`, `orders.js`, `hours.js` | `/admin/catalog` (Products), `/admin/orders`, `/admin/hours` |
 | `shop.html` | not copied — the shop block to paste into the page's `#shop` section (`db add` prints it) |
 
@@ -27,12 +27,27 @@ After `db add catalog`:
    The hours: `db exec "INSERT INTO hours (weekday, opens, closes) VALUES (1, '11:00', '21:00')"` per day.
 3. Commit, push, `site publish <name>`. The page shows everything with the
    button "Checkout opens once Stripe is connected" until step 4.
-4. Payments are the owner's own Stripe account — Taylor's step, never by
-   text: they give Taylor a restricted or secret key, Taylor puts it in the
-   toolbelt and runs `SITE_ADMIN=1 site checkout <name> --key-from NAME
-   --webhook` (`--live` for real money). The key is a Pages secret; nobody
-   prints it. Tell the client that paying online switches on once Taylor
-   has set it up, and FORWARD-TO-TAYLOR it.
+4. Payments are the owner's own Stripe account, **connected to Patchlamp's
+   platform** — the one path (ROADMAP B22, plan `~/projects/plans/16-payments.md`):
+   - The owner connects once: end a reply with `CONNECT: stripe | <business
+     name>` (the relay texts back Stripe's own sign-up link) or they press
+     **Connect Stripe** on patchlamp.com/account. Stripe's hosted onboarding
+     asks them for everything (bank, id); we never see it.
+   - Once `connections` says the stripe row is `connected`, Taylor (or Flint)
+     runs `SITE_ADMIN=1 site checkout <name> --connected` (`--test` for a
+     test-mode account, the demos): the site gets our platform key by name,
+     their `acct_…` and the forward secret as Pages secrets, and is
+     republished. No Stripe webhook per site: patchlamp.com's one Connect
+     endpoint hears "paid" and forwards it, signed, to `/api/stripe-webhook`.
+   - Every sale is a direct charge on their account: they are the merchant
+     of record, Stripe's fees are theirs, no application fee, nothing of
+     ours in between.
+
+   **The fallback** (an owner who won't connect): they give Taylor a
+   restricted or secret key, Taylor puts it in the toolbelt and runs
+   `SITE_ADMIN=1 site checkout <name> --key-from NAME --webhook` (`--live`
+   for real money). `--off` switches either off. Never ask for a key by
+   text; `site doctor` names which way a site is switched on.
 
 Everyday texts, no publish needed (the page reads the database live):
 

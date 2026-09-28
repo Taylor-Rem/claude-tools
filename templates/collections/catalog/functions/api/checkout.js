@@ -5,9 +5,18 @@
 // as `pending` with the Checkout session's id; /api/stripe-webhook marks it
 // `paid` when Stripe says so. Pickup only: no shipping, no stock counts.
 //
-// The Stripe key is the owner's own, a Pages secret (STRIPE_SECRET_KEY, set
-// by `site checkout`); this file never sees it printed. Without one the
-// answer is 503 {"checkout":"off"} and the page says checkout isn't on.
+// Two ways in, both Pages secrets set by `site checkout` and never printed:
+//  - connected (the path, ROADMAP B22): STRIPE_SECRET_KEY is Patchlamp's
+//    platform key and STRIPE_ACCOUNT the owner's own connected account
+//    (acct_…); the session is created *on their account* with a
+//    Stripe-Account header — a direct charge, they are the merchant of
+//    record, no application fee, nothing of ours in between. Stripe tells
+//    patchlamp.com it was paid and patchlamp.com forwards that, signed with
+//    STRIPE_WEBHOOK_SECRET, to /api/stripe-webhook.
+//  - key (the fallback): STRIPE_SECRET_KEY is the owner's own key and
+//    STRIPE_ACCOUNT is unset; Stripe calls /api/stripe-webhook itself.
+// Without a key the answer is 503 {"checkout":"off"} and the page says
+// checkout isn't on.
 import { sha256, now } from "../_lib/core.js";
 import { checkoutMode } from "./catalog.js";
 
@@ -63,7 +72,10 @@ export async function onRequestPost({ request, env }) {
   const origin = new URL(request.url).origin;
   const res = await fetch("https://api.stripe.com/v1/checkout/sessions", {
     method: "POST",
-    headers: { authorization: `Bearer ${env.STRIPE_SECRET_KEY}`, "content-type": "application/x-www-form-urlencoded" },
+    headers: {
+      authorization: `Bearer ${env.STRIPE_SECRET_KEY}`, "content-type": "application/x-www-form-urlencoded",
+      ...(env.STRIPE_ACCOUNT ? { "stripe-account": env.STRIPE_ACCOUNT } : {}),
+    },
     body: form({
       mode: "payment",
       success_url: `${origin}/?order=paid#shop`,

@@ -12,7 +12,9 @@ before 2026-09-16 and goes away once Bleu Grave has moved.
 
   site new <name> [--template TYPE] [--tagline "…"] [--primary] [--db [--owner EMAIL]] [--no-wait] [--dry-run] [--gh-pages]
   site templates                       # the kinds of site `--template` takes, and what each is
-  site checkout <name> --key-from NAME [--webhook] [--live] | --off   # Stripe Checkout on a catalog site (SITE_ADMIN=1)
+  site checkout <name> --connected [--test] | --key-from NAME [--webhook] [--live] | --off
+                                       # Stripe Checkout on a catalog site (SITE_ADMIN=1): --connected = the owner's
+                                       # connected account on our platform key (the path, B22); --key-from = their key (fallback)
   site data <name> [--owner EMAIL] [--dry-run]   # give a site its own database + /admin (PLAYBOOK § Data)
   site publish [<name>] [--dry-run]    # HEAD of ./repos/<name> -> its Pages project (must be committed + pushed)
   site shell [<name>] [--check]        # the /admin shell up to the toolbelt's (B41), commit, push, publish
@@ -89,7 +91,8 @@ NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 DOMAIN_RE = re.compile(r"^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$")
 PAGES_IPS = ("185.199.108.153", "185.199.109.153", "185.199.110.153", "185.199.111.153")
 FILLED_FILES = ("CLAUDE.md", "README.md", ".claude/settings.json")   # files that carry the live URL
-CF_API = "https://api.cloudflare.com/client/v4"
+CF_API = os.environ.get("CF_API_BASE") or "https://api.cloudflare.com/client/v4"   # env: tests only
+STRIPE_API = (os.environ.get("STRIPE_API_BASE") or "https://api.stripe.com").rstrip("/")   # env: tests only
 REGISTRY = ENV_FILE.parent / "sites.json"          # slug -> repo -> {host, project, domains}; not in any workspace
 WRANGLER = HERE / "node_modules" / ".bin" / "wrangler"
 NON_SITE = {"CLAUDE.md", "README.md", ".claude", "tools", ".gitignore", ".nojekyll",
@@ -956,7 +959,7 @@ def enable_data(ws, name, owner=None, dry=False):
 def stripe_post(key, path, fields):
     """POST to Stripe's API with the owner's key (never printed); the JSON answer."""
     import urllib.parse
-    req = urllib.request.Request(f"https://api.stripe.com/v1{path}", method="POST",
+    req = urllib.request.Request(f"{STRIPE_API}/v1{path}", method="POST",
                                  data=urllib.parse.urlencode(fields).encode(),
                                  headers={"Authorization": f"Bearer {key}", "User-Agent": "claude-tools site"})
     try:
@@ -970,9 +973,106 @@ def stripe_post(key, path, fields):
         die(f"Stripe refused it ({exc.code}): {msg or 'no message'}")
 
 
+STRIPE_VARS = ("STRIPE_SECRET_KEY", "STRIPE_ACCOUNT", "STRIPE_WEBHOOK_SECRET")
+
+
+def patchlamp_stripe_row(slug):
+    """The project's stripe connection row from patchlamp.com (plan 16 § Contract A),
+    read the way `connections` reads it, with the relay's shared secret. None if absent."""
+    env = read_env()
+    secret = os.environ.get("PATCHLAMP_RELAY_SHARED_SECRET") or env.get("PATCHLAMP_RELAY_SHARED_SECRET")
+    if not secret:
+        die("PATCHLAMP_RELAY_SHARED_SECRET is not in the toolbelt, so the Stripe connection can't be read")
+    base = (os.environ.get("PATCHLAMP_URL") or env.get("PATCHLAMP_URL") or "https://patchlamp.com").rstrip("/")
+    req = urllib.request.Request(f"{base}/internal/relay/projects/{slug}/connections",
+                                 headers={"Authorization": f"Bearer {secret}", "Accept": "application/json",
+                                          "User-Agent": "claude-tools site"})
+    try:
+        with urllib.request.urlopen(req, timeout=25) as r:
+            data = json.loads(r.read().decode() or "{}")
+    except urllib.error.HTTPError as exc:
+        die(f"patchlamp.com: HTTP {exc.code} reading {slug}'s connections")
+    except (urllib.error.URLError, OSError) as exc:
+        die(f"patchlamp.com unreachable: {exc}")
+    rows = [c for c in data.get("connections") or [] if c.get("kind") == "stripe" and c.get("status") != "revoked"]
+    return rows[0] if rows else None
+
+
+def stripe_account_check(key, acct):
+    """GET /v1/account on the connected account with the platform key: reachable, charges on?"""
+    req = urllib.request.Request(f"{STRIPE_API}/v1/account", headers={
+        "Authorization": f"Bearer {key}", "Stripe-Account": acct, "User-Agent": "claude-tools site"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read().decode())
+    except urllib.error.HTTPError as exc:
+        try:
+            msg = json.loads(exc.read().decode()).get("error", {}).get("message")
+        except ValueError:
+            msg = None
+        die(f"Stripe refused the platform key on {acct} ({exc.code}): {msg or 'no message'}")
+    except (urllib.error.URLError, OSError) as exc:
+        die(f"Stripe unreachable: {exc}")
+
+
+def pages_env(project, env):
+    cf_api("PATCH", f"/pages/projects/{project}",
+           {"deployment_configs": {"production": {"env_vars": env}, "preview": {"env_vars": env}}})
+
+
+def checkout_connected(a, meta, project):
+    """--connected (plan 16 § Contract D): the platform key by NAME, the owner's acct_…,
+    and the forward secret patchlamp.com signs the paid event with. No Stripe webhook:
+    patchlamp.com's one Connect endpoint is the webhook."""
+    key_name = "STRIPE_TEST_KEY" if a.test else "STRIPE_KEY_PATCHLAMP"
+    row = patchlamp_stripe_row(meta["slug"])
+    if not row:
+        die(f"{meta['slug']} has no Stripe connection on patchlamp.com. The owner connects first: the Connect "
+            f"Stripe button on patchlamp.com/account, or `CONNECT: stripe | <name>` by text. "
+            f"(An owner who won't connect: --key-from, the fallback.)")
+    if row.get("status") != "connected":
+        need = ", ".join(row.get("requirements") or []) or "the rest of Stripe's onboarding"
+        die(f"{meta['slug']}'s Stripe is {row.get('status')}, not connected: Stripe still needs {need}. "
+            f"Nothing changed; run this again once `connections` says connected.")
+    acct = (row.get("env") or {}).get("STRIPE_CONNECTED_ACCOUNT") or row.get("stripe_account") or row.get("external_id")
+    if not acct or not re.match(r"^acct_[A-Za-z0-9]+$", acct):
+        die(f"patchlamp.com's stripe row for {meta['slug']} carries no acct_… id")
+    fwd = row.get("webhook_secret")
+    if not fwd:
+        die(f"patchlamp.com's stripe row for {meta['slug']} carries no webhook_secret, so a paid order could never "
+            f"be marked paid; nothing changed")
+    if row.get("livemode") is True and a.test:
+        die(f"{acct} is a live account; drop --test")
+    if row.get("livemode") is False and not a.test:
+        die(f"{acct} is a test-mode account (a demo?); say --test to use STRIPE_TEST_KEY")
+    key = os.environ.get(key_name) or read_env().get(key_name)
+    if not key:
+        die(f"{key_name} is not in the toolbelt: ~/.config/claude-tools/setenv.sh {key_name} (TAYLOR-TODO §1)")
+    want = "_test_" if a.test else "_live_"
+    if not key.startswith(("sk", "rk")) or want not in key[:8]:
+        die(f"{key_name} doesn't look like a {'test' if a.test else 'live'} Stripe secret key")
+    if DRY:
+        say(f"  would check {acct} is reachable on {key_name}")
+    else:
+        info = stripe_account_check(key, acct)
+        if not info.get("charges_enabled"):
+            die(f"Stripe says {acct} can't take payments yet (charges_enabled false); nothing changed")
+        say(f"  {acct} reachable on {key_name}: taking payments")
+    env = {"STRIPE_SECRET_KEY": {"type": "secret_text", "value": key},
+           "STRIPE_ACCOUNT": {"type": "secret_text", "value": acct},
+           "STRIPE_WEBHOOK_SECRET": {"type": "secret_text", "value": fwd}}
+    say(f"  {'would set' if DRY else 'setting'} {', '.join(env)} on {project} "
+        f"(connected, {'test' if a.test else 'live'} mode, the platform key {key_name}; values never shown; "
+        f"no Stripe webhook — patchlamp.com forwards the paid event)")
+    if not DRY:
+        pages_env(project, env)
+
+
 def cmd_checkout(a):
-    """Switch a site's Checkout on (or off): the owner's Stripe key as a Pages
-    secret, and with --webhook the endpoint Stripe calls when an order is paid."""
+    """Switch a site's Checkout on (or off). --connected: the owner's connected
+    account on our platform key (the path). --key-from: the owner's own Stripe
+    key as a Pages secret, and with --webhook the endpoint Stripe calls when an
+    order is paid (the fallback)."""
     global DRY
     DRY = a.dry_run
     require_admin("checkout")
@@ -981,15 +1081,20 @@ def cmd_checkout(a):
     if not entry or entry.get("host") != "cloudflare" or not (entry.get("d1") or {}).get("id"):
         die(f"repos/{a.name} needs a database and the catalog first: site data {a.name} && db add catalog")
     project = entry["project"]
+    if sum(bool(x) for x in (a.off, a.connected, a.key_from)) > 1:
+        die("one of --connected, --key-from NAME or --off")
+    if a.test and not a.connected:
+        die("--test goes with --connected (with --key-from the key itself says test or live)")
     if a.off:
-        say(f"  {'would remove' if DRY else 'removing'} STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET from {project}")
+        say(f"  {'would remove' if DRY else 'removing'} {', '.join(STRIPE_VARS)} from {project}")
         if not DRY:
-            env = {"STRIPE_SECRET_KEY": None, "STRIPE_WEBHOOK_SECRET": None}
-            cf_api("PATCH", f"/pages/projects/{project}",
-                   {"deployment_configs": {"production": {"env_vars": env}, "preview": {"env_vars": env}}})
+            pages_env(project, {k: None for k in STRIPE_VARS})
+    elif a.connected:
+        checkout_connected(a, meta, project)
     else:
         if not a.key_from:
-            die("--key-from NAME: the toolbelt key holding the owner's Stripe secret key (setenv.sh NAME first)")
+            die("--connected (the owner's connected Stripe, the path) or --key-from NAME (the toolbelt key "
+                "holding the owner's Stripe secret key, the fallback; setenv.sh NAME first)")
         key = os.environ.get(a.key_from) or read_env().get(a.key_from)
         if not key:
             die(f"{a.key_from} is not in the toolbelt: ~/.config/claude-tools/setenv.sh {a.key_from}")
@@ -998,7 +1103,8 @@ def cmd_checkout(a):
             die(f"{a.key_from} doesn't look like a Stripe secret key (sk_test_… or sk_live_…)")
         if mode == "live" and not a.live:
             die("that's a live key: real cards, real money. Say --live if that's what the owner wants.")
-        env = {"STRIPE_SECRET_KEY": {"type": "secret_text", "value": key}}
+        # STRIPE_ACCOUNT cleared: a site moving off a connection must not send the owner's key to that account
+        env = {"STRIPE_SECRET_KEY": {"type": "secret_text", "value": key}, "STRIPE_ACCOUNT": None}
         url = (meta.get("live_url") if meta.get("live_url") and entry.get("domains") else None) or f"https://{pages_host(project)}/"
         if a.webhook:
             hook = f"{url.rstrip('/')}/api/stripe-webhook"
@@ -1009,13 +1115,14 @@ def cmd_checkout(a):
                                                               "description": f"{meta['name']} — orders (Patchlamp site)"})
                 env["STRIPE_WEBHOOK_SECRET"] = {"type": "secret_text", "value": res["secret"]}
                 say(f"  Stripe webhook {res.get('id')} → {hook}")
-        say(f"  {'would set' if DRY else 'setting'} {', '.join(env)} on {project} ({mode} mode; values never shown)")
+        say(f"  {'would set' if DRY else 'setting'} {', '.join(k for k, v in env.items() if v)} on {project} "
+            f"({mode} mode, the owner's key; values never shown)")
         if not DRY:
-            cf_api("PATCH", f"/pages/projects/{project}",
-                   {"deployment_configs": {"production": {"env_vars": env}, "preview": {"env_vars": env}}})
+            pages_env(project, env)
     # secrets reach a Function only from the next deployment on
     cmd_publish(argparse.Namespace(name=a.name, dry_run=DRY))
-    say(f"checkout for {a.name}: {'off' if a.off else 'on'} — `curl -s <url>api/catalog` says which mode")
+    say(f"checkout for {a.name}: {'off' if a.off else 'connected' if a.connected else 'on (owner key)'} — "
+        f"`curl -s <url>api/catalog` says checkout (test/live/off) and via (connected/key/off)")
 
 
 def cmd_data(a):
@@ -1599,6 +1706,14 @@ def cmd_doctor(a):
                     if (d / "functions" / "_lib" / "core.js").exists():
                         drift = shell_drift(d)
                         say(f"  repos/{n}: /admin shell " + (f"NOTE {len(drift)} file(s) behind the toolbelt (site shell {n})" if drift else "current"))
+                vars_ = ((p.get("deployment_configs") or {}).get("production") or {}).get("env_vars") or {}
+                if "STRIPE_SECRET_KEY" in vars_:
+                    via = "connected (the owner's account on our platform key)" if "STRIPE_ACCOUNT" in vars_ else "key (the owner's own key, the fallback)"
+                    hook = "STRIPE_WEBHOOK_SECRET" in vars_
+                    (say if hook else fail)(f"  repos/{n}: checkout {via}" + ("" if hook else
+                        " but no STRIPE_WEBHOOK_SECRET, so no order is ever marked paid (site checkout again)"))
+                elif (d / "functions" / "api" / "checkout.js").exists():
+                    say(f"  repos/{n}: checkout off (site checkout {n} --connected once the owner's Stripe is connected)")
                 if cc and "no-cache" not in cc and "max-age=0" not in cc:
                     fail(f"repos/{n}: HTML is cacheable (copy templates/sites/business/_headers into the repo root)")
                 for dm in cf_domains(proj):
@@ -1638,11 +1753,14 @@ def main():
     n.add_argument("--owner", help="with --db: the email that signs in to /admin (default: the workspace's contact)")
     n.set_defaults(fn=cmd_new)
     sub.add_parser("templates", help="the kinds of site --template takes").set_defaults(fn=cmd_templates)
-    ck = sub.add_parser("checkout", help="(SITE_ADMIN=1) switch a site's Stripe Checkout on with the owner's key, or --off")
-    ck.add_argument("name"); ck.add_argument("--key-from", metavar="NAME", help="toolbelt key holding the Stripe secret key")
+    ck = sub.add_parser("checkout", help="(SITE_ADMIN=1) switch a site's Stripe Checkout on: --connected (the path) or --key-from (fallback), or --off")
+    ck.add_argument("name")
+    ck.add_argument("--connected", action="store_true", help="the owner's Stripe connected to our platform (patchlamp.com's stripe row)")
+    ck.add_argument("--test", action="store_true", help="with --connected: a test-mode account, on STRIPE_TEST_KEY")
+    ck.add_argument("--key-from", metavar="NAME", help="fallback: toolbelt key holding the owner's own Stripe secret key")
     ck.add_argument("--webhook", action="store_true", help="also create the Stripe webhook that marks orders paid")
     ck.add_argument("--live", action="store_true", help="allow a live key (real money)")
-    ck.add_argument("--off", action="store_true", help="remove the key and webhook secret")
+    ck.add_argument("--off", action="store_true", help="remove the key, the account and the webhook secret")
     ck.add_argument("--dry-run", action="store_true")
     ck.set_defaults(fn=cmd_checkout)
     dt = sub.add_parser("data", help="give a site its own D1 database, /admin with an emailed sign-in, and the Functions shell")

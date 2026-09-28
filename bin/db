@@ -737,10 +737,11 @@ def tool_files(table, title, singular, cols, statuses, sheet_label):
         js.append(f"  sum: {q(sums)},")
     if cut:
         js.append(f"  shortcuts: [[{q(cut[0])}, {q(cut[1])}]],")
+    # the edit form: the status, the numbers and dates the owner keeps changing, the notes
+    # (a name alone reuses the create field; the text columns stay in create)
+    edits = ["status"] + [c["name"] for c in own if c["kind"] in ("whole", "number", "money", "date")] + ["notes"]
     js += ["  create: ["] + [f"    {field(c, i == 0)}" for i, c in enumerate(own)] + ["  ],",
-           "  edit: [", '    { name: "status", label: "Status", type: "select" },'] + [f"    {field(c)}" for c in own] + [
-           '    { name: "notes", label: "Notes (only you see these)", type: "textarea" },', "  ],",
-           '  touch: "updated_at",', "};", ""]
+           f"  edit: {q(edits)},", '  touch: "updated_at",', "};", ""]
     return mig, "\n".join(js), cut
 
 

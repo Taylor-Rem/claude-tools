@@ -17,7 +17,8 @@
 //   shortcuts: [[label, "SQL"], …]     a named slice as a pill ("below reorder", "on_hand < reorder_at");
 //                                      the SQL is this file's, never anything a visitor typed
 //   quick: ["done", …]                 one-tap status buttons on each row
-//   json, create, edit, touch          the JSON column, the add form, the edit form, the "changed" column
+//   json, create, edit, touch          the JSON column, the add form, the edit form, the "changed" column;
+//                                      an edit entry may be a name alone: "status", "notes", or a create field's
 // Anything the owner sees here, `db export` hands over as the same rows.
 import { page, esc, ident, when, ago, isDate, money, csv, readBody, redirect, localNow } from "../../_lib/core.js";
 import collections from "../../_admin/collections.js";
@@ -42,6 +43,16 @@ export function input(f, value = "", v = {}) {
   }
   if (f.type === "textarea") return `<label>${label} <textarea name="${esc(f.name)}">${esc(value)}</textarea></label>`;
   return `<label>${label} <input name="${esc(f.name)}" type="${esc(f.type || "text")}" value="${esc(value)}"${f.required ? " required" : ""}></label>`;
+}
+
+// The edit form's fields: an entry given as a name alone is the status
+// select, the notes box, or the create form's field of that name.
+export function editFields(v) {
+  const std = { status: { name: "status", label: "Status", type: "select" },
+    notes: { name: "notes", label: "Notes (only you see these)", type: "textarea" } };
+  return (v.edit || []).map((f) => typeof f !== "string" ? f
+    : (v.create || []).find((c) => c.name === f) ? { ...(v.create || []).find((c) => c.name === f), required: false }
+    : std[f] || { name: f, label: f.replace(/_/g, " ") });
 }
 
 export const plural = (v) => v.plural || (v.singular ? (/s$/.test(v.singular) ? v.singular : v.singular + "s") : "entries");

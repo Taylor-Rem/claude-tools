@@ -1,0 +1,149 @@
+{
+ "schema": 1,
+ "place_id": "FX_S01",
+ "slug": "mikes-pool-care",
+ "name": "Mike's Pool Care",
+ "category": "pool service",
+ "segment": "services",
+ "city": "American Fork",
+ "researched": "2026-09-29",
+ "facts": [
+  {
+   "id": "f1",
+   "kind": "contact",
+   "text": "Call or text (801) 555-0101.",
+   "confidence": "high",
+   "source": {
+    "kind": "listing",
+    "url": "https://maps.google.com/?cid=FX_S01",
+    "words": "(801) 555-0101"
+   }
+  },
+  {
+   "id": "f2",
+   "kind": "service",
+   "text": "Pool pump repair.",
+   "confidence": "high",
+   "source": {
+    "kind": "review",
+    "ref": 1,
+    "url": "https://maps.google.com/?cid=FX_S01",
+    "words": "fixed our pump when it failed"
+   },
+   "also": [
+    {
+     "kind": "review",
+     "ref": 2,
+     "url": "https://maps.google.com/?cid=FX_S01",
+     "words": "replaced a leaking pump seal"
+    }
+   ]
+  },
+  {
+   "id": "f3",
+   "kind": "service",
+   "text": "Spring pool openings.",
+   "confidence": "high",
+   "source": {
+    "kind": "review",
+    "ref": 0,
+    "url": "https://maps.google.com/?cid=FX_S01",
+    "words": "opened our pool in April"
+   },
+   "also": [
+    {
+     "kind": "review",
+     "ref": 2,
+     "url": "https://maps.google.com/?cid=FX_S01",
+     "words": "did the spring opening"
+    }
+   ]
+  },
+  {
+   "id": "f4",
+   "kind": "service",
+   "text": "Weekly pool cleaning through the season.",
+   "confidence": "medium",
+   "source": {
+    "kind": "review",
+    "ref": 1,
+    "url": "https://maps.google.com/?cid=FX_S01",
+    "words": "Weekly cleaning all season"
+   }
+  },
+  {
+   "id": "f5",
+   "kind": "hours",
+   "text": "Open weekdays, eight to five.",
+   "confidence": "high",
+   "source": {
+    "kind": "listing",
+    "url": "https://maps.google.com/?cid=FX_S01",
+    "words": "Monday: 8:00 AM \u2013 5:00 PM"
+   }
+  },
+  {
+   "id": "f6",
+   "kind": "area",
+   "text": "Serves American Fork and nearby towns.",
+   "confidence": "medium",
+   "source": {
+    "kind": "search",
+    "url": "https://www.facebook.com/mikespoolcare",
+    "words": "Mike's Pool Care - American Fork pool cleaning and repair | Facebook"
+   }
+  }
+ ],
+ "services": [
+  {
+   "name": "Pump repair",
+   "facts": [
+    "f2"
+   ]
+  },
+  {
+   "name": "Spring openings",
+   "facts": [
+    "f3"
+   ]
+  },
+  {
+   "name": "Weekly cleaning",
+   "facts": [
+    "f4"
+   ]
+  }
+ ],
+ "area": {
+  "text": "American Fork and nearby.",
+  "facts": [
+   "f6"
+  ]
+ },
+ "hours": {
+  "as_listed": [],
+  "say": {
+   "text": "Weekdays, eight to five.",
+   "facts": [
+    "f5"
+   ]
+  }
+ },
+ "about": [
+  {
+   "text": "A pool service in American Fork.",
+   "facts": [
+    "f1"
+   ]
+  }
+ ],
+ "faults": [],
+ "unknown": [
+  "Whether they build pools"
+ ],
+ "owner_asks": [
+  "Photos of pools they keep"
+ ],
+ "verdict": "build",
+ "skip_reason": null
+}

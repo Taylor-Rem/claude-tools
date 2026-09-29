@@ -1,0 +1,103 @@
+{
+  "permissions": {
+    "defaultMode": "dontAsk",
+    "allow": [
+      "Read(/{{DIR}}/**)",
+      "Edit(/{{DIR}}/**)",
+      "Write(/{{DIR}}/**)",
+      "Glob",
+      "Grep",
+      "WebSearch",
+      "WebFetch",
+      "Bash(prep facts lint facts.json)"
+    ],
+    "deny": [
+      "WebFetch(domain:facebook.com)",
+      "WebFetch(domain:*.facebook.com)",
+      "WebFetch(domain:fb.com)",
+      "WebFetch(domain:*.fb.com)",
+      "WebFetch(domain:fb.me)",
+      "WebFetch(domain:*.fb.me)",
+      "WebFetch(domain:fb.gg)",
+      "WebFetch(domain:*.fb.gg)",
+      "WebFetch(domain:fb.watch)",
+      "WebFetch(domain:*.fb.watch)",
+      "WebFetch(domain:fbcdn.net)",
+      "WebFetch(domain:*.fbcdn.net)",
+      "WebFetch(domain:fbsbx.com)",
+      "WebFetch(domain:*.fbsbx.com)",
+      "WebFetch(domain:facebook.net)",
+      "WebFetch(domain:*.facebook.net)",
+      "WebFetch(domain:instagram.com)",
+      "WebFetch(domain:*.instagram.com)",
+      "WebFetch(domain:instagr.am)",
+      "WebFetch(domain:*.instagr.am)",
+      "WebFetch(domain:cdninstagram.com)",
+      "WebFetch(domain:*.cdninstagram.com)",
+      "WebFetch(domain:ig.me)",
+      "WebFetch(domain:*.ig.me)",
+      "WebFetch(domain:threads.net)",
+      "WebFetch(domain:*.threads.net)",
+      "WebFetch(domain:threads.com)",
+      "WebFetch(domain:*.threads.com)",
+      "WebFetch(domain:messenger.com)",
+      "WebFetch(domain:*.messenger.com)",
+      "WebFetch(domain:m.me)",
+      "WebFetch(domain:*.m.me)",
+      "WebFetch(domain:whatsapp.com)",
+      "WebFetch(domain:*.whatsapp.com)",
+      "WebFetch(domain:whatsapp.net)",
+      "WebFetch(domain:*.whatsapp.net)",
+      "WebFetch(domain:wa.me)",
+      "WebFetch(domain:*.wa.me)",
+      "WebFetch(domain:meta.com)",
+      "WebFetch(domain:*.meta.com)",
+      "WebFetch(domain:meta.ai)",
+      "WebFetch(domain:*.meta.ai)",
+      "Edit(/{{DIR}}/log/**)",
+      "Write(/{{DIR}}/log/**)",
+      "Edit(/{{DIR}}/.claude/**)",
+      "Write(/{{DIR}}/.claude/**)",
+      "Edit(/{{DIR}}/listing.json)",
+      "Write(/{{DIR}}/listing.json)",
+      "Edit(/{{DIR}}/packet.json)",
+      "Write(/{{DIR}}/packet.json)",
+      "Edit(/{{DIR}}/RESEARCH.md)",
+      "Write(/{{DIR}}/RESEARCH.md)",
+      "Edit(/{{DIR}}/CLAUDE.md)",
+      "Write(/{{DIR}}/CLAUDE.md)",
+      "Read(~/.config/**)",
+      "Read(~/.ssh/**)",
+      "Read(~/.claude/**)",
+      "Read(~/.claude-relay/**)",
+      "Read(~/projects/**)",
+      "Read(~/.local/state/claude-tools/leads/**)",
+      "Read(/etc/**)",
+      "Bash(site:*)",
+      "Bash(git:*)",
+      "Bash(notify:*)",
+      "Bash(client:*)",
+      "Bash(outreach:*)",
+      "Bash(social:*)",
+      "Bash(curl:*)",
+      "Bash(wget:*)",
+      "Bash(leads:*)",
+      "Bash(python3:*)",
+      "Bash(ssh:*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{{HOOK}}",
+            "timeout": 20
+          }
+        ]
+      }
+    ]
+  }
+}

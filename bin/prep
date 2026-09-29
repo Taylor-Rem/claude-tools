@@ -1,0 +1,1364 @@
+#!/usr/bin/env python3
+"""prep — the prep run: businesses researched, built and drafted on Taylor's word (plan
+~/projects/plans/28-prep-run.md, ROADMAP B64–B67). This file is born with B65, the research half:
+
+  prep brief PLACE_ID [--json]      # the packet: the census row, the listing read with its reviews,
+                                    # the reach row and its evidence, the presence link, the faults
+  prep research PLACE_ID… [--parallel N] [--run ID] [--dry-run]
+                                    # one Sonnet session a business, on the subscription login, in a
+                                    # stamped directory whose settings deny Meta hosts and everything
+                                    # outside it; keeps each session's log and usage, lints the facts
+                                    # file, retries a failed lint once with the errors
+  prep facts lint FILE [--listing listing.json] [--json]
+                                    # every fact a source URL and its words; `high` only from the
+                                    # listing, their own site, a public record or two independent
+                                    # sources; never a review's words, a person's name, a price or a
+                                    # street address in a publishable field
+  prep doctor [--live]              # the login is the subscription (no API key), neither model is
+                                    # Fable, the census and the Places key answer; --live pings both
+                                    # models (one turn each) and the Places key (one read, $0.025)
+  prep hook research                # internal: the PreToolUse hook the stamped settings run
+
+B67 adds `pick`, `run`, `check`, `message`, `finish`, `resume`, `status`, `stop`, `last`,
+`approve` and the conductor; the seams it builds on are `new_run()`, `stamp()`,
+`session_cmd()`, `run_session()`, `record()` and `lint_facts()` below.
+
+Where things live (plan § Contracts): runs under PREP_STATE (~/.local/state/claude-tools/prep/)
+as <date>-<letter>/ with run.json and one directory a business: listing.json (the listing read,
+as on disk), packet.json (what `brief --json` prints), facts.json, log/research.stream.jsonl (the
+session's whole stream: every tool call and its input), log/research.json (the session's result:
+usage, cost at list, permission_denials, the model ids that ran), log/research.hook.jsonl (every
+tool call the boundary saw and what it decided). Nothing a run writes is in a repo.
+
+The boundary, three layers deep: `--restricted` (file tools confined to the directory, user and
+project settings ignored), `--permission-mode dontAsk` with the stamped `.claude/settings.json`
+(allow rules for the directory, web search and fetch; deny rules for Meta hosts and the log), and
+that settings file's PreToolUse hook (`prep hook research`): refuses a Meta host, a path outside the
+directory, any command but the lint, and the ninth search or the eleventh fetch, and logs each call.
+
+Models: PREP_MODEL_BUILD (claude-sonnet-5-5) researches; PREP_MODEL_JUDGE (claude-opus-5-5) is
+B67's. Every session names its model; a name with "fable" in it is refused, and a session whose
+result shows a Fable model is failed. ANTHROPIC_API_KEY and friends are stripped from the
+session's environment, so it runs on Taylor's subscription login or not at all. PREP_CLAUDE
+points at the `claude` to run (the tests' fake).
+
+Money: the listing reads already on disk (`leads`' details cache) are used at any age; a place
+with none costs one Places read (~$0.025, capped by PREP_PLACES_USD) and one ledger line.
+Sessions on the subscription are notional (list price kept as `plan_usd_list`, never `cost_usd`).
+"""
+
+import argparse
+import concurrent.futures
+import datetime as dt
+import importlib.util
+import json
+import os
+import re
+import shlex
+import shutil
+import signal
+import sqlite3
+import subprocess
+import sys
+import threading
+import time
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
+
+TOOLBELT = Path(__file__).resolve().parent.parent
+BIN = TOOLBELT / "bin"
+SELF = Path(__file__).resolve()
+TEMPLATE = TOOLBELT / "templates" / "prep" / "workspace"
+LEADS_BIN = Path(os.environ.get("PREP_LEADS_BIN", BIN / "leads"))
+PROJECTS = Path(os.environ.get("PROJECTS_DIR", Path.home() / "projects"))
+STATE = Path(os.environ.get("PREP_STATE", Path.home() / ".local/state/claude-tools/prep"))
+LEDGER = Path(os.environ.get("PREP_LEDGER", os.environ.get("LEADS_LEDGER",
+                                                           Path.home() / ".local/state/claude-tools/ledger.jsonl")))
+TZ = ZoneInfo("America/Denver")
+
+MODEL_BUILD = os.environ.get("PREP_MODEL_BUILD", "claude-sonnet-5-5")
+MODEL_JUDGE = os.environ.get("PREP_MODEL_JUDGE", "claude-opus-5-5")
+CAPS = {  # plan § Contracts: per business, eight searches, ten fetches, fifteen minutes
+    "searches": int(os.environ.get("PREP_RESEARCH_SEARCHES", 8)),
+    "fetches": int(os.environ.get("PREP_RESEARCH_FETCHES", 10)),
+    "minutes": float(os.environ.get("PREP_RESEARCH_MINUTES", 15)),
+    "turns": int(os.environ.get("PREP_RESEARCH_TURNS", 60)),
+}
+PARALLEL = int(os.environ.get("PREP_PARALLEL", 4))
+PLACES_USD = float(os.environ.get("PREP_PLACES_USD", 0.50))
+SCRUB_ENV = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK",
+             "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "ANTHROPIC_MODEL", "CLAUDE_CONFIG_DIR",
+             "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")
+
+# Meta's hosts: never fetched. A result from one may be used only as a search result (source.kind search).
+META_HOSTS = ("facebook.com", "fb.com", "fb.me", "fb.gg", "fb.watch", "fbcdn.net", "fbsbx.com", "facebook.net",
+              "instagram.com", "instagr.am", "cdninstagram.com", "ig.me", "threads.net", "threads.com",
+              "messenger.com", "m.me", "whatsapp.com", "whatsapp.net", "wa.me", "meta.com", "meta.ai",
+              "oculus.com", "workplace.com")
+RESEARCH_TOOLS = ("Read", "Write", "Edit", "Glob", "Grep", "WebSearch", "WebFetch", "Bash")
+STAGE_TOOLS = {"research": RESEARCH_TOOLS}     # B67 adds build, judge and batch
+STAGE_MANUAL = {"research": "RESEARCH.md"}
+LINT_COMMAND = "prep facts lint facts.json"
+PROTECTED = ("log", ".claude", "listing.json", "packet.json", "RESEARCH.md", "CLAUDE.md")
+
+FACT_KINDS = ("service", "specialty", "area", "hours", "since", "credential", "contact", "about", "other")
+SOURCE_KINDS = ("listing", "review", "search", "own_site", "directory", "record")
+HIGH_ALONE = ("listing", "own_site", "record")
+CONFIDENCE = ("high", "medium")
+REVIEW_RUN = 6               # a run of six words shared with a review fails the lint
+REVIEW_WORDS_MAX = 25        # a review source's words are a pointer, not a copy
+THIN_HIGH = 3                # fewer high facts than this (or no service) is a thin file
+
+
+def die(msg, code=1):
+    print(f"prep: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def now():
+    return dt.datetime.now(TZ)
+
+
+def today():
+    raw = os.environ.get("PREP_TODAY")
+    return dt.date.fromisoformat(raw) if raw else now().date()
+
+
+def write_json(path, data):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    tmp.replace(path)
+
+
+def read_json(path, default=None):
+    try:
+        return json.loads(Path(path).read_text())
+    except (OSError, json.JSONDecodeError):
+        return default
+
+
+def ledger_append(event):
+    try:
+        LEDGER.parent.mkdir(parents=True, exist_ok=True)
+        with open(LEDGER, "a") as f:
+            f.write(json.dumps(event) + "\n")
+    except OSError as exc:
+        print(f"prep: ledger write failed ({exc})", file=sys.stderr)
+
+
+def host_of(url):
+    try:
+        h = (urlparse(url if "://" in (url or "") else "https://" + (url or "")).hostname or "").lower()
+    except ValueError:
+        return ""
+    return h[4:] if h.startswith("www.") else h
+
+
+def is_meta(url):
+    h = host_of(url)
+    return any(h == m or h.endswith("." + m) for m in META_HOSTS)
+
+
+# ---- leads, read (never edited here: B64 owns it) ------------------------------------------------
+
+_LEADS = None
+
+
+def leads():
+    """bin/leads loaded as a module for its readers (the census pool, presence, faults, reach, the Places
+    cache). Read-only use: nothing here calls a function of it that writes."""
+    global _LEADS
+    if _LEADS is None:
+        spec = importlib.util.spec_from_loader("leads_for_prep", SourceFileLoader("leads_for_prep", str(LEADS_BIN)))
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        _LEADS = m
+    return _LEADS
+
+
+def census_row(place_id):
+    """The businesses row joined to place_cache, or None. The census is opened read-only."""
+    L = leads()
+    if not L.CENSUS.exists():
+        die(f"no census at {L.CENSUS} (LEADS_DB)")
+    conn = sqlite3.connect(f"file:{L.CENSUS}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='businesses'").fetchone():
+            return None
+        r = conn.execute("""
+            SELECT b.place_id, b.segment, b.category, b.categories, b.presence_class, b.presence_url, b.city,
+                   b.is_chain, b.chain_override,
+                   p.name, p.address, p.locality, p.phone, p.website, p.rating, p.reviews, p.lat, p.lng,
+                   p.primary_type, p.google_maps_uri, p.business_status, p.refreshed_at
+            FROM businesses b JOIN place_cache p ON p.place_id = b.place_id WHERE b.place_id = ?""",
+                         (place_id,)).fetchone()
+    finally:
+        conn.close()
+    return dict(r) if r else None
+
+
+def listing_read(place_id, fetch=True, spend=None):
+    """(details, read_at, cost). The listing read on disk first, at any age (`leads`' details cache); else
+    one Places read if the key exists and the run's Places cap allows it."""
+    L = leads()
+    cache = L.STATE / "details" / f"{place_id}.json"
+    if cache.exists():
+        stamp = dt.datetime.fromtimestamp(cache.stat().st_mtime, TZ).strftime("%Y-%m-%d")
+        return read_json(cache), stamp, 0.0
+    if not fetch:
+        return None, None, 0.0
+    if spend is not None and spend["usd"] + L.DETAILS_COST_USD > PLACES_USD + 1e-9:
+        return None, None, 0.0
+    key, where = L.places_key()
+    if not key:
+        return None, None, 0.0
+    places = L.Places(key, where)
+    d = places.get(place_id)
+    cost = places.calls * L.DETAILS_COST_USD
+    if spend is not None:
+        spend["usd"] += cost
+        spend["calls"] += places.calls
+        spend["where"] = where
+    if d is None and places.failed:
+        print(f"prep: {places.failed}", file=sys.stderr)
+    return d, now().strftime("%Y-%m-%d"), cost
+
+
+def slugify(text):
+    s = re.sub(r"[^a-z0-9]+", "-", re.sub(r"['\u2019]", "", (text or "").lower())).strip("-")
+    return s[:60].strip("-") or "business"
+
+
+def packet(place_id, fetch=True, spend=None):
+    """The brief as data: what a research session is handed (packet.json) and what `brief` prints."""
+    L = leads()
+    c = census_row(place_id)
+    if not c:
+        return None, "not in the services census (the businesses table)"
+    details, read_at, _ = listing_read(place_id, fetch=fetch, spend=spend)
+    faults, summary = L.business_faults(dict(c), details, today())
+    rc = L.business_reach(dict(c))
+    reach_row = (L.reach_table() or {}).get(place_id) or {}
+    evidence = reach_row.get("evidence")
+    try:
+        evidence = json.loads(evidence) if isinstance(evidence, str) else evidence
+    except json.JSONDecodeError:
+        pass
+    cls, label, link = L.presence(dict(c), (details or {}).get("websiteUri") if details else None)
+    d = details or {}
+    reviews = [{"ref": i, "rating": r.get("rating"), "when": r.get("relativePublishTimeDescription"),
+                "published": (r.get("publishTime") or "")[:10],
+                "text": ((r.get("originalText") or r.get("text") or {}).get("text") or "").strip()}
+               for i, r in enumerate(d.get("reviews") or [])]
+    city = c.get("locality") or (c.get("city") or "").split(",")[0].strip()
+    name = (d.get("displayName") or {}).get("text") or c["name"]
+    return {
+        "schema": 1,
+        "place_id": place_id,
+        "slug": slugify(L.plain_name(name)),
+        "name": name,
+        "category": c.get("category"),
+        "segment": c.get("segment"),
+        "city": city,
+        "census": {k: c.get(k) for k in ("rating", "reviews", "phone", "website", "primary_type", "locality",
+                                         "google_maps_uri", "business_status", "refreshed_at", "categories")},
+        "listing": {
+            "file": "listing.json" if details else None,
+            "read": read_at,
+            "maps_url": d.get("googleMapsUri") or c.get("google_maps_uri"),
+            "phone": d.get("nationalPhoneNumber") or c.get("phone"),
+            "website": d.get("websiteUri") or c.get("website"),
+            "rating": d.get("rating", c.get("rating")),
+            "review_count": d.get("userRatingCount", c.get("reviews")),
+            "type": (d.get("primaryTypeDisplayName") or {}).get("text") or c.get("primary_type"),
+            "service_area_business": d.get("pureServiceAreaBusiness"),
+            "hours": (d.get("regularOpeningHours") or {}).get("weekdayDescriptions") or [],
+            "address_never_publish": d.get("formattedAddress") or c.get("address"),
+            "photos": len(d.get("photos") or []),
+        },
+        "reviews": reviews,
+        "reach": {"instagram": rc.get("instagram"), "facebook": rc.get("facebook"), "email": rc.get("email"),
+                  "directory": list(rc["directory"]) if rc.get("directory") else None,
+                  "source": reach_row.get("source"), "checked": reach_row.get("checked"), "evidence": evidence},
+        "presence": {"class": cls, "label": label, "url": link},
+        "faults": faults,
+        "summary": summary,
+        "caps": {k: CAPS[k] for k in ("searches", "fetches", "minutes")},
+    }, None
+
+
+# ---- the facts file: schema 1 and its lint (plan § Contracts) --------------------------------------
+
+WORD_RE = re.compile(r"[a-z0-9]+(?:'[a-z0-9]+)*")
+PRICE_RES = [re.compile(p, re.I) for p in (
+    r"\$\s?\d", r"\b\d[\d,]*(?:\.\d+)?\s?(?:dollars|bucks|usd)\b", r"\b\d+\s?(?:/|per|an|a)\s?(?:hr|hour)\b",
+    r"\b\d+\s?(?:/|per)\s?(?:sq\.?\s?ft|square\s+f(?:oo|ee)t|visit|job|month|week)\b", r"\bUSD\s?\d")]
+STREET_TYPES = (r"St|Street|Ave|Avenue|Rd|Road|Blvd|Boulevard|Dr|Drive|Ln|Lane|Way|Ct|Court|Cir|Circle|Pkwy|"
+                r"Parkway|Hwy|Highway|Pl|Place|Loop|Trl|Trail|Ter|Terrace")
+ADDRESS_RES = [
+    re.compile(r"\b\d{1,6}\s+(?:[NSEW]\.?|North|South|East|West)\s+\d{1,6}(?:\s+(?:[NSEW]\.?|North|South|East|West))?\b"),
+    re.compile(r"\b\d{2,6}\s+(?:[NSEW]\.?\s+)?(?:[A-Z][A-Za-z]+\s+){1,3}(?:" + STREET_TYPES + r")\b\.?"),
+    re.compile(r"\b\d{2,6}\s+(?:[NSEW]\.?|North|South|East|West)\s+[A-Z][a-z]+"),
+    re.compile(r"\b(?:Suite|Ste\.?|Unit)\s*#?\s*\d+", re.I),
+    re.compile(r"\bP\.?\s?O\.?\s+Box\s+\d+", re.I),
+]
+NAME_PATTERNS = [re.compile(p) for p in (
+    r"\b(?:Mr|Mrs|Ms|Miss|Dr)\.?\s+[A-Z][a-z]+", r"\b[Oo]wner,?\s+[A-Z][a-z]+", r"\b[Oo]wned by\s+[A-Z][a-z]+",
+    r"\b[A-Z][a-z]+\s+and\s+(?:his|her|their)\s+(?:team|crew|wife|husband|son|daughter)")]
+NOT_NAMES = {  # capitalised words a review uses that are not a person
+    "i", "a", "the", "we", "they", "he", "she", "it", "my", "our", "this", "that", "these", "those", "and", "but",
+    "so", "if", "when", "then", "very", "great", "highly", "would", "will", "definitely", "thank", "thanks",
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "january", "february", "march",
+    "april", "may", "june", "july", "august", "september", "october", "november", "december", "christmas",
+    "thanksgiving", "easter", "utah", "google", "yelp", "facebook", "instagram", "american", "fork", "lehi", "orem",
+    "provo", "salt", "lake", "city", "county", "valley", "pleasant", "grove", "highland", "alpine", "saratoga",
+    "springs", "eagle", "mountain", "draper", "sandy", "herriman", "riverton", "bluffdale", "lindon", "vineyard",
+    "cedar", "hills", "spanish", "fork", "springville", "payson", "mapleton", "ogden", "layton", "bountiful",
+    "wasatch", "timpanogos", "north", "south", "east", "west", "usa", "us", "llc", "inc", "hvac", "ac", "diy",
+    "five", "star", "stars", "five-star", "ok", "okay", "wow", "also", "not", "no", "yes", "all", "his", "her",
+    "their", "you", "your", "me", "us", "one", "two", "three", "after", "before", "both", "every", "just", "even",
+    "best", "super", "absolutely", "amazing", "awesome", "excellent", "fantastic", "professional", "quick",
+    "reliable", "recommend", "recommended", "service", "services", "company", "team", "crew", "job", "work",
+    "home", "house", "for", "with", "from", "on", "in", "at", "to", "of", "by", "as", "is", "was", "are", "had",
+    "have", "has", "did", "do", "does", "been", "be", "what", "who", "how", "why", "where", "which", "there",
+}
+
+
+def words(text):
+    return WORD_RE.findall((text or "").lower().replace("’", "'"))
+
+
+def has_words(haystack, needle):
+    """The needle's words, in order, as whole words of the haystack (both normalised)."""
+    return bool(needle) and f" {needle} " in f" {haystack} "
+
+
+def grams(tokens, n=REVIEW_RUN):
+    return {tuple(tokens[i:i + n]) for i in range(len(tokens) - n + 1)}
+
+
+def norm_text(text):
+    return " ".join(words(text))
+
+
+def flat_strings(obj, skip=("reviews",)):
+    """Every string value in a listing read (reviews apart: those are their own source kind)."""
+    out = []
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k in skip:
+                continue
+            out.extend(flat_strings(v, skip))
+    elif isinstance(obj, list):
+        for v in obj:
+            out.extend(flat_strings(v, skip))
+    elif isinstance(obj, (str, int, float)) and not isinstance(obj, bool):
+        out.append(str(obj))
+    return out
+
+
+def review_texts(listing):
+    return [((r.get("originalText") or r.get("text") or {}).get("text") or "") for r in (listing or {}).get("reviews") or []]
+
+
+DICT = Path(os.environ.get("PREP_DICT", "/usr/share/dict/words"))
+_COMMON = None
+
+
+def common_words():
+    """Lower-case words of the system dictionary (its capitalised entries are proper nouns): a sentence's first
+    word is a name only when it isn't one of these. No dictionary → sentence-first words are never names."""
+    global _COMMON
+    if _COMMON is None:
+        try:
+            _COMMON = {w for w in DICT.read_text(errors="replace").split() if w.islower()}
+        except OSError:
+            _COMMON = set()
+    return _COMMON
+
+
+def likely_names(listing, business_name, city):
+    """Words that name a person in this business's reviews: the reviewers' own names, and a capitalised word
+    in a review's middle that isn't a common word, the business's own name or a place."""
+    own = set(words(business_name)) | set(words(city))
+    names = set()
+    for r in (listing or {}).get("reviews") or []:
+        for tok in re.findall(r"[A-Za-z][A-Za-z'\-]+", ((r.get("authorAttribution") or {}).get("displayName") or "")):
+            if len(tok) > 1 and tok.lower() not in own and tok.lower() not in NOT_NAMES:
+                names.add(tok.lower())
+    for text in review_texts(listing):
+        for sentence in re.split(r"(?<=[.!?])\s+|\n+", text):
+            toks = re.findall(r"[A-Za-z][A-Za-z'\u2019\-]*", sentence)
+            for i, tok in enumerate(toks):
+                bare = re.split(r"['\u2019]", tok)[0]
+                if not re.fullmatch(r"[A-Z][a-z]{2,14}", bare) or bare.lower() in NOT_NAMES or bare.lower() in own:
+                    continue
+                if i == 0 and (not common_words() or bare.lower() in common_words()):
+                    continue
+                names.add(bare.lower())
+    return names
+
+
+def publishable(facts_doc):
+    """(where, text) for every field a site or the outline may print. source.words is never one of them."""
+    out = []
+    for f in facts_doc.get("facts") or []:
+        if isinstance(f, dict):
+            out.append((f"fact {f.get('id')}", f.get("text") or ""))
+    for i, s in enumerate(facts_doc.get("services") or []):
+        if isinstance(s, dict):
+            out.append((f"services[{i}]", " ".join(str(s.get(k) or "") for k in ("name", "text"))))
+    for key in ("area",):
+        v = facts_doc.get(key)
+        if isinstance(v, dict):
+            out.append((key, v.get("text") or ""))
+    say = (facts_doc.get("hours") or {}).get("say") if isinstance(facts_doc.get("hours"), dict) else None
+    if isinstance(say, dict):
+        out.append(("hours.say", say.get("text") or ""))
+    for i, a in enumerate(facts_doc.get("about") or []):
+        if isinstance(a, dict):
+            out.append((f"about[{i}]", a.get("text") or ""))
+    return out
+
+
+def _sources(f):
+    src = [f.get("source")] + list(f.get("also") or [])
+    return [s for s in src if s is not None]
+
+
+def _independent(sources):
+    keys = set()
+    for s in sources:
+        if isinstance(s, dict):
+            keys.add((s.get("url") or "", str(s.get("ref")) if s.get("kind") == "review" else ""))
+    return len(keys) >= 2
+
+
+def lint_facts(doc, listing=None):
+    """{ok, errors, warnings, counts, thin} for a facts.json (schema 1). `listing` is the listing read the
+    file was researched from (listing.json beside it): without it the review, name and listing-words checks
+    cannot run, which is an error."""
+    errors, warnings = [], []
+
+    def err(msg):
+        errors.append(msg)
+
+    if not isinstance(doc, dict):
+        return {"ok": False, "errors": ["not a JSON object"], "warnings": [], "counts": {}, "thin": True}
+    if doc.get("schema") != 1:
+        err("schema must be 1")
+    for k in ("place_id", "slug", "name", "category", "segment", "city", "researched"):
+        if not isinstance(doc.get(k), str) or not doc.get(k).strip():
+            err(f"{k} is missing")
+    if isinstance(doc.get("researched"), str):
+        try:
+            dt.date.fromisoformat(doc["researched"][:10])
+        except ValueError:
+            err("researched is not a date")
+    if listing is None:
+        err("no listing read beside the file (listing.json): the review, name and listing checks can't run")
+        listing = {}
+    elif listing.get("id") and doc.get("place_id") and listing.get("id") != doc.get("place_id"):
+        err(f"place_id {doc.get('place_id')} is not the listing's ({listing.get('id')})")
+
+    verdict = doc.get("verdict")
+    if verdict not in ("build", "skip"):
+        err("verdict must be build or skip")
+    if verdict == "skip" and not (doc.get("skip_reason") or "").strip():
+        err("a skip needs its skip_reason")
+    for k in ("faults", "unknown", "owner_asks"):
+        v = doc.get(k)
+        if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
+            err(f"{k} must be a list of strings")
+
+    facts = doc.get("facts")
+    if not isinstance(facts, list):
+        err("facts must be a list")
+        facts = []
+    reviews = review_texts(listing)
+    listing_strings = [norm_text(s) for s in flat_strings(listing)]
+    maps_url = (listing.get("googleMapsUri") or "").strip()
+    ids, by_id = set(), {}
+    for n, f in enumerate(facts):
+        where = f"fact {f.get('id') if isinstance(f, dict) else n}"
+        if not isinstance(f, dict):
+            err(f"{where}: not an object")
+            continue
+        fid = f.get("id")
+        if not isinstance(fid, str) or not fid:
+            err(f"facts[{n}]: no id")
+        elif fid in ids:
+            err(f"{where}: id used twice")
+        else:
+            ids.add(fid)
+            by_id[fid] = f
+        if f.get("kind") not in FACT_KINDS:
+            err(f"{where}: kind {f.get('kind')!r} is not one of {', '.join(FACT_KINDS)}")
+        if not (f.get("text") or "").strip():
+            err(f"{where}: no text")
+        if f.get("confidence") not in CONFIDENCE:
+            err(f"{where}: confidence must be high or medium")
+        srcs = _sources(f)
+        if not srcs or not isinstance(f.get("source"), dict):
+            err(f"{where}: no source")
+            continue
+        if f.get("also") is not None and not isinstance(f.get("also"), list):
+            err(f"{where}: also must be a list of sources")
+        for si, s in enumerate(srcs):
+            sw = f"{where} source" + (f" also[{si - 1}]" if si else "")
+            if not isinstance(s, dict):
+                err(f"{sw}: not an object")
+                continue
+            kind, url, sw_words = s.get("kind"), (s.get("url") or "").strip(), (s.get("words") or "").strip()
+            if kind not in SOURCE_KINDS:
+                err(f"{sw}: kind {kind!r} is not one of {', '.join(SOURCE_KINDS)}")
+            if not re.match(r"^https?://[^\s/]+\.[^\s]+", url):
+                err(f"{sw}: no source URL")
+            if not sw_words:
+                err(f"{sw}: no source words (the words on the page that say it)")
+            if is_meta(url) and kind != "search":
+                err(f"{sw}: a Meta host ({host_of(url)}) may appear only as a search result (kind search)")
+            if kind == "record" and not host_of(url).endswith(".gov"):
+                err(f"{sw}: a public record is on a .gov host ({host_of(url) or 'none'})")
+            if kind == "listing":
+                if maps_url and url != maps_url:
+                    err(f"{sw}: a listing source's url is the listing's own maps link ({maps_url})")
+                if sw_words and listing and not any(has_words(ls, norm_text(sw_words)) for ls in listing_strings):
+                    err(f"{sw}: the words aren't in the listing read")
+            if kind == "review":
+                ref = s.get("ref")
+                if not isinstance(ref, int) or not (0 <= ref < len(reviews)):
+                    err(f"{sw}: a review source needs ref, the review's index in listing.json (0–{len(reviews) - 1})")
+                elif sw_words and not has_words(norm_text(reviews[ref]), norm_text(sw_words)):
+                    err(f"{sw}: the words aren't in review {ref}")
+                if maps_url and url != maps_url:
+                    err(f"{sw}: a review source's url is the listing's maps link ({maps_url})")
+                if len(words(sw_words)) > REVIEW_WORDS_MAX:
+                    err(f"{sw}: {len(words(sw_words))} words of a review; keep the pointer under {REVIEW_WORDS_MAX}")
+        if f.get("confidence") == "high":
+            kinds = [s.get("kind") for s in srcs if isinstance(s, dict)]
+            if not any(k in HIGH_ALONE for k in kinds) and not _independent(srcs):
+                err(f"{where}: high needs the listing, their own site, a public record, or two independent sources "
+                    f"(add the second under also)")
+
+    def refs(v, where):
+        fs = v.get("facts") if isinstance(v, dict) else None
+        if not isinstance(fs, list) or not fs:
+            err(f"{where}: names no facts")
+            return []
+        for x in fs:
+            if x not in by_id:
+                err(f"{where}: fact {x!r} doesn't exist")
+        return [by_id[x] for x in fs if x in by_id]
+
+    services = doc.get("services")
+    if not isinstance(services, list):
+        err("services must be a list")
+        services = []
+    for i, s in enumerate(services):
+        if not isinstance(s, dict) or not (s.get("name") or "").strip():
+            err(f"services[{i}]: needs a name")
+            continue
+        backed = refs(s, f"services[{i}]")
+        if backed and not any(b.get("confidence") == "high" for b in backed):
+            warnings.append(f"services[{i}] ({s['name']}): only medium facts behind it (the site uses high only)")
+    area = doc.get("area")
+    if area is not None:
+        if not isinstance(area, dict) or not (area.get("text") or "").strip():
+            err("area must be {text, facts} or null")
+        else:
+            refs(area, "area")
+    hours = doc.get("hours")
+    if not isinstance(hours, dict) or not isinstance(hours.get("as_listed"), list):
+        err("hours must be {as_listed: [...], say}")
+    elif hours.get("say") is not None:
+        if not isinstance(hours["say"], dict) or not (hours["say"].get("text") or "").strip():
+            err("hours.say must be {text, facts} or null")
+        else:
+            refs(hours["say"], "hours.say")
+    about = doc.get("about")
+    if not isinstance(about, list):
+        err("about must be a list")
+    else:
+        for i, a in enumerate(about):
+            if not isinstance(a, dict) or not (a.get("text") or "").strip():
+                err(f"about[{i}]: needs text")
+            else:
+                refs(a, f"about[{i}]")
+
+    # The never list, over every publishable field.
+    review_grams = [grams(words(t)) for t in reviews]
+    names = likely_names(listing, doc.get("name") or "", doc.get("city") or "")
+    street = ""
+    addr = (listing.get("formattedAddress") or "")
+    if re.match(r"^\d", addr):
+        street = norm_text(addr.split(",")[0])
+    for where, text in publishable(doc):
+        g = grams(words(text))
+        for ri, rg in enumerate(review_grams):
+            shared = g & rg
+            if shared:
+                err(f"{where}: shares a run of {REVIEW_RUN} words with review {ri} (\"{' '.join(sorted(shared)[0])}\")"
+                    f" — say it in your own words")
+                break
+        for rx in PRICE_RES:
+            m = rx.search(text)
+            if m:
+                err(f"{where}: a price (\"{m.group(0)}\")")
+                break
+        for rx in ADDRESS_RES:
+            m = rx.search(text)
+            if m:
+                err(f"{where}: a street address (\"{m.group(0)}\")")
+                break
+        if street and street in norm_text(text):
+            err(f"{where}: the listing's street address")
+        for rx in NAME_PATTERNS:
+            m = rx.search(text)
+            if m:
+                err(f"{where}: a person's name (\"{m.group(0)}\")")
+                break
+        hit = sorted(n for n in names if re.search(r"\b" + re.escape(n) + r"\b", text, re.I)
+                     and re.search(r"\b" + re.escape(n.capitalize()) + r"\b", text))
+        if hit:
+            err(f"{where}: a person's name from the reviews ({', '.join(hit)})")
+
+    high = [f for f in facts if isinstance(f, dict) and f.get("confidence") == "high"]
+    counts = {"facts": len(facts), "high": len(high), "medium": len(facts) - len(high), "services": len(services)}
+    thin = verdict == "build" and (len(high) < THIN_HIGH or not services)
+    if thin:
+        warnings.append(f"thin: {len(high)} high facts and {len(services)} services (a build wants {THIN_HIGH}+ and one)")
+    if verdict == "build" and not facts:
+        err("a build with no facts")
+    return {"ok": not errors, "errors": errors, "warnings": warnings, "counts": counts, "thin": thin}
+
+
+def lint_file(path, listing_path=None):
+    path = Path(path)
+    doc = read_json(path)
+    if doc is None:
+        return {"ok": False, "errors": [f"{path}: not readable JSON"], "warnings": [], "counts": {}, "thin": True}
+    lp = Path(listing_path) if listing_path else path.parent / "listing.json"
+    listing = read_json(lp) if lp.exists() else None
+    return lint_facts(doc, listing)
+
+
+def lint_lines(res):
+    c = res.get("counts") or {}
+    head = ("OK" if res["ok"] else f"{len(res['errors'])} error(s)") + (
+        f" · {c.get('facts', 0)} facts ({c.get('high', 0)} high, {c.get('medium', 0)} medium) · {c.get('services', 0)} services"
+        if c else "")
+    return [head] + [f"  error: {e}" for e in res["errors"]] + [f"  warning: {w}" for w in res["warnings"]]
+
+
+def cmd_facts(args):
+    if args.action != "lint":
+        die("facts: lint is the one action")
+    res = lint_file(args.file, args.listing)
+    if args.json:
+        print(json.dumps(res, indent=2))
+    else:
+        print(f"{args.file}: " + "\n".join(lint_lines(res)))
+    return 0 if res["ok"] else 1
+
+
+# ---- the workspace, the session, the record (the seams B67 builds on) -----------------------------
+
+def new_run(run_id=None, kind="research"):
+    """(run_id, run_dir) — <date>-<letter>, the next free letter today; an existing id is reopened."""
+    STATE.mkdir(parents=True, exist_ok=True)
+    if run_id:
+        d = STATE / run_id
+        if not (d / "run.json").exists():
+            die(f"no run {run_id} under {STATE}")
+        return run_id, d
+    day = today().isoformat()
+    for letter in "abcdefghijklmnopqrstuvwxyz":
+        rid = f"{day}-{letter}"
+        d = STATE / rid
+        try:
+            d.mkdir()
+        except FileExistsError:
+            continue
+        write_json(d / "run.json", {"id": rid, "kind": kind, "created": now().isoformat(timespec="seconds"),
+                                    "state": "research", "models": {"build": MODEL_BUILD, "judge": MODEL_JUDGE},
+                                    "caps": dict(CAPS), "businesses": {}, "usage": {}})
+        return rid, d
+    die(f"26 runs today already under {STATE}")
+
+
+_RUN_LOCK = threading.Lock()
+
+
+def record(run_dir, slug, stage, entry):
+    """Merge one business's stage result into run.json and add its usage to the stage's total."""
+    with _RUN_LOCK:
+        run = read_json(run_dir / "run.json", {})
+        b = run.setdefault("businesses", {}).setdefault(slug, {})
+        b.setdefault("stages", {})[stage] = entry
+        for k in ("place_id", "name", "status", "reason"):
+            if k in entry:
+                b[k] = entry[k]
+        u = run.setdefault("usage", {}).setdefault(stage, {"sessions": 0, "input_tokens": 0, "output_tokens": 0,
+                                                            "cache_read_input_tokens": 0,
+                                                            "cache_creation_input_tokens": 0, "plan_usd_list": 0.0,
+                                                            "permission_denials": 0, "models": []})
+        for s in entry.get("sessions") or []:
+            u["sessions"] += 1
+            for k in ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"):
+                u[k] += int((s.get("usage") or {}).get(k) or 0)
+            u["plan_usd_list"] = round(u["plan_usd_list"] + float(s.get("plan_usd_list") or 0), 4)
+            u["permission_denials"] += int(s.get("permission_denials") or 0)
+            u["models"] = sorted(set(u["models"]) | set(s.get("models") or []))
+        write_json(run_dir / "run.json", run)
+
+
+def settings_for(stage, workdir):
+    """The stage's settings template with the directory and the hook filled in."""
+    raw = (TEMPLATE / "settings" / f"{stage}.json").read_text()
+    hook = " ".join(shlex.quote(x) for x in (sys.executable, str(SELF), "hook", stage, "--dir", str(workdir)))
+    raw = raw.replace("{{HOOK}}", json.dumps(hook)[1:-1]).replace("{{DIR}}", str(workdir))
+    return json.loads(raw)
+
+
+def stamp(workdir, stage, pkt, listing):
+    """Stamp one business's directory for a stage: the manual, CLAUDE.md, the boundary, the packet,
+    the listing read, a facts skeleton (research) and log/. Re-stamping keeps what a session wrote."""
+    workdir = Path(workdir)
+    (workdir / "log").mkdir(parents=True, exist_ok=True)
+    (workdir / ".claude").mkdir(exist_ok=True)
+    manual = STAGE_MANUAL[stage]
+    shutil.copyfile(TEMPLATE / manual, workdir / manual)
+    claude_md = (TEMPLATE / "CLAUDE.md").read_text().replace("{{STAGE}}", stage).replace("{{MANUAL}}", manual)
+    (workdir / "CLAUDE.md").write_text(claude_md)
+    write_json(workdir / ".claude" / "settings.json", settings_for(stage, workdir))
+    write_json(workdir / "packet.json", pkt)
+    if listing is not None:
+        write_json(workdir / "listing.json", listing)
+    if stage == "research" and not (workdir / "facts.json").exists():
+        write_json(workdir / "facts.json", skeleton(pkt, listing))
+    caps = workdir / "log" / f"{stage}.caps.json"
+    if not caps.exists():
+        write_json(caps, {"searches": 0, "fetches": 0, "denied": 0})
+    return workdir
+
+
+def skeleton(pkt, listing):
+    return {"schema": 1, "place_id": pkt["place_id"], "slug": pkt["slug"], "name": pkt["name"],
+            "category": pkt["category"], "segment": pkt["segment"], "city": pkt["city"],
+            "researched": today().isoformat(), "facts": [], "services": [], "area": None,
+            "hours": {"as_listed": list((pkt.get("listing") or {}).get("hours") or []), "say": None},
+            "about": [], "faults": list(pkt.get("faults") or []), "unknown": [], "owner_asks": [],
+            "verdict": "build", "skip_reason": None}
+
+
+def computed(doc, pkt):
+    """What code owns in a facts file, set again after the session: identity, the listed hours, the faults."""
+    for k in ("place_id", "slug", "name", "category", "segment", "city"):
+        doc[k] = pkt[k]
+    doc["schema"] = 1
+    doc["researched"] = today().isoformat()
+    hours = doc.get("hours") if isinstance(doc.get("hours"), dict) else {}
+    hours["as_listed"] = list((pkt.get("listing") or {}).get("hours") or [])
+    hours.setdefault("say", None)
+    doc["hours"] = hours
+    doc["faults"] = list(pkt.get("faults") or [])
+    return doc
+
+
+def claude_bin():
+    return os.environ.get("PREP_CLAUDE") or shutil.which("claude") or "claude"
+
+
+def refuse_fable(model):
+    if not model or "fable" in model.lower():
+        die(f"model {model!r}: a prep session never runs on Fable, and never without a model named")
+
+
+def session_env():
+    env = {k: v for k, v in os.environ.items() if k not in SCRUB_ENV}
+    env["PATH"] = f"{BIN}{os.pathsep}{env.get('PATH', '/usr/bin:/bin')}"
+    env["PREP_BIN"] = str(SELF)
+    return env
+
+
+def session_cmd(stage, model, workdir, resume=None, max_turns=None):
+    """The headless `claude` for one stage in one directory. The model is always named."""
+    refuse_fable(model)
+    cmd = [claude_bin(), "-p", "--model", model, "--output-format", "stream-json", "--verbose",
+           "--restricted", "--tools", ",".join(STAGE_TOOLS[stage]),
+           "--settings", str(Path(workdir) / ".claude" / "settings.json"),
+           "--permission-mode", "dontAsk", "--strict-mcp-config", "--disable-slash-commands",
+           "--max-turns", str(max_turns or CAPS["turns"])]
+    if resume:
+        cmd += ["--resume", resume]
+    return cmd
+
+
+def run_session(workdir, stage, model, prompt, seconds, resume=None, tag=None):
+    """Run one session to completion or its time cap. The whole stream goes to log/<tag>.stream.jsonl,
+    the result object to log/<tag>.json. Returns a summary dict (never raises on a session failure)."""
+    workdir = Path(workdir)
+    tag = tag or stage
+    cmd = session_cmd(stage, model, workdir, resume=resume)
+    stream_path, err_path = workdir / "log" / f"{tag}.stream.jsonl", workdir / "log" / f"{tag}.stderr"
+    started = time.time()
+    timed_out = False
+    with open(stream_path, "w") as out, open(err_path, "w") as errf:
+        try:
+            proc = subprocess.Popen(cmd, cwd=workdir, stdin=subprocess.PIPE, stdout=out, stderr=errf,
+                                    env=session_env(), start_new_session=True, text=True)
+        except OSError as exc:
+            return {"ok": False, "error": f"can't start claude ({exc})", "tag": tag}
+        try:
+            proc.communicate(prompt, timeout=seconds)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+                proc.wait(timeout=10)
+            except (subprocess.TimeoutExpired, ProcessLookupError, PermissionError):
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+                proc.wait()
+    result = None
+    for line in stream_path.read_text(errors="replace").splitlines():
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(ev, dict) and ev.get("type") == "result":
+            result = ev
+    if result is not None:
+        write_json(workdir / "log" / f"{tag}.json", result)
+    models = sorted((result or {}).get("modelUsage", {}).keys())
+    summary = {
+        "tag": tag, "model": model, "models": models, "session_id": (result or {}).get("session_id"),
+        "seconds": round(time.time() - started, 1), "timed_out": timed_out, "exit": proc.returncode,
+        "ok": bool(result) and not result.get("is_error") and not timed_out,
+        "subtype": (result or {}).get("subtype"), "num_turns": (result or {}).get("num_turns"),
+        "usage": {k: (result or {}).get("usage", {}).get(k) for k in
+                  ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")},
+        "plan_usd_list": (result or {}).get("total_cost_usd"),
+        "permission_denials": len((result or {}).get("permission_denials") or []),
+    }
+    if any("fable" in m.lower() for m in models):
+        summary["ok"] = False
+        summary["error"] = f"the session ran on {', '.join(models)}: Fable is never a prep model"
+    elif models and model not in models:
+        summary["warning"] = f"asked for {model}, the result shows {', '.join(models)}"
+    if result is None:
+        summary["error"] = "timed out with no result" if timed_out else f"no result (exit {proc.returncode}; see {err_path.name})"
+    return summary
+
+
+# ---- research ------------------------------------------------------------------------------------
+
+RESEARCH_PROMPT = """Research this one business for its preview site. Your manual is RESEARCH.md in this directory: \
+read it first, then packet.json (the census row, the listing read, its reviews, the reach row, the faults). \
+Write your findings into facts.json (a skeleton is there), run `prep facts lint facts.json` and fix what it \
+says until it prints OK, then stop. Caps: {searches} web searches, {fetches} fetches, {minutes:g} minutes. \
+Nothing leaves this directory: you never message, post or publish anything."""
+
+RETRY_PROMPT = """`prep facts lint facts.json` still fails:\n\n{errors}\n\nFix facts.json (RESEARCH.md § The never \
+list and § Confidence say how), run the lint again until it prints OK, then stop. No new searches unless a \
+fix needs one."""
+
+
+def research_one(place_id, run_dir, dry=False, spend=None, fetch=True):
+    pkt, why = packet(place_id, fetch=fetch, spend=spend)
+    if pkt is None:
+        return {"place_id": place_id, "status": "failed", "reason": why}
+    with _RUN_LOCK:
+        run = read_json(run_dir / "run.json", {})
+        taken = {s for s, b in (run.get("businesses") or {}).items() if b.get("place_id") != place_id}
+        slug = pkt["slug"]
+        if slug in taken:
+            slug = slugify(f"{pkt['slug']}-{pkt['city']}")
+        n = 2
+        while slug in taken:
+            slug = f"{pkt['slug']}-{n}"
+            n += 1
+        pkt["slug"] = slug
+        (run_dir / slug).mkdir(exist_ok=True)
+        run.setdefault("businesses", {}).setdefault(slug, {"place_id": place_id, "name": pkt["name"]})
+        write_json(run_dir / "run.json", run)
+    workdir = run_dir / slug
+    listing, _, _ = listing_read(place_id, fetch=False)
+    stamp(workdir, "research", pkt, listing)
+    base = {"place_id": place_id, "name": pkt["name"], "slug": slug, "dir": str(workdir)}
+    if listing is None:
+        entry = dict(base, status="skip", reason="no listing read on disk and no Places read allowed", sessions=[])
+        doc = computed(skeleton(pkt, None), pkt)
+        doc.update(verdict="skip", skip_reason=entry["reason"])
+        write_json(workdir / "facts.json", doc)
+        record(run_dir, slug, "research", entry)
+        return entry
+    if dry:
+        entry = dict(base, status="dry-run", command=session_cmd("research", MODEL_BUILD, workdir), sessions=[])
+        return entry
+    deadline = time.time() + CAPS["minutes"] * 60
+    prompt = RESEARCH_PROMPT.format(**CAPS)
+    sessions = [run_session(workdir, "research", MODEL_BUILD, prompt, max(5, deadline - time.time()))]
+    res = finish_facts(workdir, pkt)
+    if not res["ok"] and sessions[-1].get("session_id") and not sessions[-1].get("error", "").startswith("the session ran on"):
+        retry_s = 300                                   # the retry gets its own five minutes at most
+        errors = "\n".join(f"- {e}" for e in res["errors"])
+        sessions.append(run_session(workdir, "research", MODEL_BUILD, RETRY_PROMPT.format(errors=errors), retry_s,
+                                    resume=sessions[-1]["session_id"], tag="research-retry"))
+        res = finish_facts(workdir, pkt)
+    doc = read_json(workdir / "facts.json", {}) or {}
+    if res["ok"] and os.environ.get("PREP_VERIFY", "on") != "off":
+        vr = verify_sources(doc)
+        write_json(workdir / "log" / "research.verify.json", vr)
+        if vr["downgraded"]:
+            write_json(workdir / "facts.json", doc)
+            res = lint_file(workdir / "facts.json")
+    hook = hook_summary(workdir, "research")
+    fable = [s for s in sessions if "Fable" in (s.get("error") or "")]
+    if fable:
+        status, reason = "failed", fable[0]["error"]
+    elif not res["ok"]:
+        status, reason = "failed", f"lint: {len(res['errors'])} error(s) after the retry"
+    elif doc.get("verdict") == "skip":
+        status, reason = "skip", doc.get("skip_reason")
+    else:
+        status, reason = ("thin" if res["thin"] else "facts"), None
+    entry = dict(base, status=status, reason=reason, lint=res, sessions=sessions, hook=hook,
+                 verdict=doc.get("verdict"))
+    write_json(workdir / "log" / "research.lint.json", res)
+    record(run_dir, slug, "research", entry)
+    return entry
+
+
+def finish_facts(workdir, pkt):
+    doc = read_json(workdir / "facts.json")
+    if not isinstance(doc, dict):
+        return {"ok": False, "errors": ["facts.json is missing or not JSON"], "warnings": [], "counts": {}, "thin": True}
+    write_json(workdir / "facts.json", computed(doc, pkt))
+    return lint_file(workdir / "facts.json")
+
+
+VERIFY_KINDS = ("own_site", "directory", "record")
+
+
+def fetch_text(url, timeout=15):
+    """A page's visible words, normalised, or None when it can't be read. Code's own read, never a Meta host."""
+    import html as htmllib
+    import urllib.error
+    import urllib.request
+    if is_meta(url):
+        return None
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible; claude-tools prep verify)",
+                                               "Accept": "text/html,*/*"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read(3_000_000).decode(resp.headers.get_content_charset() or "utf-8", errors="replace")
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+    raw = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", raw) + " " + " ".join(
+        re.findall(r'(?is)<script[^>]*application/ld\+json[^>]*>(.*?)</script>', raw))
+    return norm_text(htmllib.unescape(re.sub(r"<[^>]+>", " ", raw)))
+
+
+def verify_sources(doc, fetch=fetch_text):
+    """Code re-reads every own-site, directory and record source and looks for its words (a session's fetch
+    hands it a summary, so words can drift). A high fact that no longer has the support `high` needs once
+    the words that weren't found are set aside is set to medium, with the reason beside it.
+    Returns the report written to log/research.verify.json; `doc` is changed in place."""
+    pages, report = {}, {"checked": 0, "found": [], "missing": [], "unreachable": [], "downgraded": []}
+    for f in doc.get("facts") or []:
+        if not isinstance(f, dict):
+            continue
+        kept = []
+        for s in _sources(f):
+            if not isinstance(s, dict):
+                continue
+            if s.get("kind") not in VERIFY_KINDS:
+                kept.append(s)
+                continue
+            url = s.get("url") or ""
+            if url not in pages:
+                pages[url] = fetch(url)
+            report["checked"] += 1
+            row = {"fact": f.get("id"), "url": url, "words": s.get("words")}
+            if pages[url] is None:
+                report["unreachable"].append(row)
+            elif has_words(pages[url], norm_text(s.get("words") or "")):
+                report["found"].append(row)
+                kept.append(s)
+            else:
+                report["missing"].append(row)
+        dropped = [s for s in _sources(f) if isinstance(s, dict) and s not in kept]
+        if dropped and kept:        # the sources whose words were found lead; the others are set aside, not deleted
+            f["source"], f["also"] = kept[0], kept[1:]
+            if not f["also"]:
+                f.pop("also")
+            f["unverified"] = dropped
+        elif dropped:
+            f["unverified"] = dropped
+        if f.get("confidence") == "high":
+            kinds = [s.get("kind") for s in kept]
+            if not (any(k in HIGH_ALONE for k in kinds) or _independent(kept)):
+                f["confidence"] = "medium"
+                f["downgraded"] = "a source's words weren't found when code re-read it"
+                report["downgraded"].append(f.get("id"))
+    return report
+
+
+def hook_summary(workdir, stage):
+    rows = []
+    p = Path(workdir) / "log" / f"{stage}.hook.jsonl"
+    if p.exists():
+        for line in p.read_text().splitlines():
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+    return {"calls": len(rows), "searches": sum(1 for r in rows if r.get("tool") == "WebSearch" and r.get("allow")),
+            "fetches": sum(1 for r in rows if r.get("tool") == "WebFetch" and r.get("allow")),
+            "denied": [f"{r.get('tool')}: {r.get('why')}" for r in rows if not r.get("allow")],
+            "meta_fetched": [r.get("target") for r in rows if r.get("tool") == "WebFetch" and r.get("allow")
+                             and is_meta(r.get("target") or "")]}
+
+
+def stream_fetches(workdir, tag="research"):
+    """Every WebFetch URL the session's own stream shows it asked for (the proof beside the hook's log)."""
+    out = []
+    for p in sorted(Path(workdir, "log").glob(f"{tag}*.stream.jsonl")):
+        for line in p.read_text(errors="replace").splitlines():
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            for block in ((ev.get("message") or {}).get("content") or []) if isinstance(ev, dict) else []:
+                if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "WebFetch":
+                    out.append((block.get("input") or {}).get("url"))
+    return out
+
+
+def cmd_research(args):
+    doctor_quiet_or_die(args)
+    run_id, run_dir = new_run(args.run)
+    spend = {"usd": 0.0, "calls": 0, "where": None}
+    ids = list(dict.fromkeys(args.place_ids))
+    print(f"prep research: run {run_id} · {len(ids)} business(es) · {MODEL_BUILD} · {run_dir}")
+    results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(args.parallel, 8))) as pool:
+        futs = {pool.submit(research_one, pid, run_dir, args.dry_run, spend, not args.no_fetch): pid for pid in ids}
+        for fut in concurrent.futures.as_completed(futs):
+            try:
+                e = fut.result()
+            except Exception as exc:  # one business failing never stops the others
+                e = {"place_id": futs[fut], "status": "failed", "reason": f"{type(exc).__name__}: {exc}"}
+            results.append(e)
+            print(result_line(e), flush=True)
+    plan_usd = sum(float(s.get("plan_usd_list") or 0) for e in results for s in e.get("sessions") or [])
+    if spend["calls"]:
+        ledger_append({"ts": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), "kind": "places_details",
+                       "tool": "prep", "calls": spend["calls"], "cost_usd": round(spend["usd"], 4),
+                       "billed_to": f"google:GOOGLE_MAPS_API_KEY({spend['where']})", "project": "global",
+                       "for": f"research {run_id}"})
+    if not args.dry_run:
+        ledger_append({"ts": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), "kind": "prep_research",
+                       "tool": "prep", "run": run_id, "businesses": len(results),
+                       "sessions": sum(len(e.get("sessions") or []) for e in results), "cost_usd": 0,
+                       "plan_usd_list": round(plan_usd, 4), "billed_to": "plan:claude.ai", "model": MODEL_BUILD,
+                       "project": "global"})
+        with _RUN_LOCK:
+            run = read_json(run_dir / "run.json", {})
+            run["state"] = "researched"
+            run.setdefault("spend", {})["places_usd"] = round(run.get("spend", {}).get("places_usd", 0) + spend["usd"], 4)
+            write_json(run_dir / "run.json", run)
+    counts = {}
+    for e in results:
+        counts[e["status"]] = counts.get(e["status"], 0) + 1
+    print(f"done: {' · '.join(f'{v} {k}' for k, v in sorted(counts.items()))} · places ${spend['usd']:.3f} · "
+          f"sessions at list ${plan_usd:.2f} (plan, notional)")
+    return 0 if all(e["status"] in ("facts", "skip", "thin", "dry-run") for e in results) else 1
+
+
+def result_line(e):
+    bits = [f"  {e.get('status'):8} {e.get('name') or e.get('place_id')}"]
+    if e.get("reason"):
+        bits.append(f"— {e['reason']}")
+    lint = e.get("lint") or {}
+    c = lint.get("counts") or {}
+    if c:
+        bits.append(f"· {c.get('high', 0)} high / {c.get('facts', 0)} facts · {c.get('services', 0)} services")
+    h = e.get("hook") or {}
+    if h:
+        bits.append(f"· {h.get('searches', 0)} searches, {h.get('fetches', 0)} fetches, {len(h.get('denied') or [])} refused")
+    if e.get("dir"):
+        bits.append(f"· {e['dir']}")
+    if e.get("command"):
+        bits.append("\n    " + " ".join(e["command"]))
+    return " ".join(bits)
+
+
+# ---- the boundary's hook ---------------------------------------------------------------------------
+
+def _inside(path, root):
+    try:
+        p = Path(path)
+        if not p.is_absolute():
+            p = root / p
+        p = Path(os.path.realpath(p))
+        return p == root or root in p.parents, p
+    except (OSError, ValueError):
+        return False, None
+
+
+def hook_decide(stage, event, root):
+    """(allow, why, target) for one PreToolUse event. Plain code, so the tests prove every refusal."""
+    tool = event.get("tool_name") or ""
+    ti = event.get("tool_input") or {}
+    caps = read_json(root / "log" / f"{stage}.caps.json", {"searches": 0, "fetches": 0, "denied": 0})
+    if tool == "WebFetch":
+        url = ti.get("url") or ""
+        if is_meta(url):
+            return False, f"{host_of(url)} is a Meta host: never fetched here (a search result about it is fine)", url
+        if not re.match(r"^https?://", url):
+            return False, "only http(s) URLs", url
+        if caps.get("fetches", 0) >= CAPS["fetches"]:
+            return False, f"the fetch cap ({CAPS['fetches']}) is spent: write what you have", url
+        return True, None, url
+    if tool == "WebSearch":
+        q = ti.get("query") or ""
+        if caps.get("searches", 0) >= CAPS["searches"]:
+            return False, f"the search cap ({CAPS['searches']}) is spent: write what you have", q
+        return True, None, q
+    if tool in ("Read", "Write", "Edit", "Glob", "Grep", "NotebookEdit", "MultiEdit"):
+        target = ti.get("file_path") or ti.get("notebook_path") or ti.get("path") or "."
+        ok, p = _inside(target, root)
+        if not ok:
+            return False, "outside this business's directory", str(target)
+        if tool == "Glob" and ".." in (ti.get("pattern") or ""):
+            return False, "outside this business's directory", ti.get("pattern")
+        if tool in ("Write", "Edit", "NotebookEdit", "MultiEdit"):
+            rel = p.relative_to(root)
+            if rel.parts and rel.parts[0] in PROTECTED:
+                return False, f"{rel} is the launcher's, not yours to change", str(rel)
+        return True, None, str(p.relative_to(root)) if p else target
+    if tool == "Bash":
+        cmd = " ".join((ti.get("command") or "").split())
+        if cmd == LINT_COMMAND:
+            return True, None, cmd
+        return False, f"the one command here is `{LINT_COMMAND}`", cmd
+    return False, f"{tool} is not a research tool", ""
+
+
+def cmd_hook(args):
+    try:
+        event = json.loads(sys.stdin.read() or "{}")
+    except json.JSONDecodeError:
+        print("prep hook: unreadable event", file=sys.stderr)
+        return 2
+    root = Path(os.path.realpath(args.dir or event.get("cwd") or os.getcwd()))
+    allow, why, target = hook_decide(args.stage, event, root)
+    tool = event.get("tool_name")
+    log_dir = root / "log"
+    if log_dir.is_dir():
+        caps_p = log_dir / f"{args.stage}.caps.json"
+        caps = read_json(caps_p, {"searches": 0, "fetches": 0, "denied": 0})
+        if allow and tool == "WebSearch":
+            caps["searches"] = caps.get("searches", 0) + 1
+        elif allow and tool == "WebFetch":
+            caps["fetches"] = caps.get("fetches", 0) + 1
+        elif not allow:
+            caps["denied"] = caps.get("denied", 0) + 1
+        write_json(caps_p, caps)
+        with open(log_dir / f"{args.stage}.hook.jsonl", "a") as f:
+            f.write(json.dumps({"ts": now().isoformat(timespec="seconds"), "tool": tool, "target": target,
+                                "allow": allow, "why": why}) + "\n")
+    if allow:
+        return 0
+    print(f"prep boundary: {why}", file=sys.stderr)
+    return 2
+
+
+# ---- brief ---------------------------------------------------------------------------------------
+
+def cmd_brief(args):
+    pkt, why = packet(args.place_id, fetch=args.fetch)
+    if pkt is None:
+        die(f"{args.place_id}: {why}")
+    if args.json:
+        print(json.dumps(pkt, indent=2, ensure_ascii=False))
+        return 0
+    li, rc = pkt["listing"], pkt["reach"]
+    print(f"{pkt['name']} · {pkt['category']} · {pkt['city']} ({pkt['segment']}) · slug {pkt['slug']}")
+    print(f"  {pkt['place_id']} · {li['rating']}★ ({li['review_count']}) · {li['phone'] or 'no phone'} · "
+          f"{li['type'] or ''}{' · service area' if li['service_area_business'] else ''}")
+    print(f"  maps {li['maps_url']}")
+    pr = pkt["presence"]
+    print(f"  presence: {pr['class']}{' → ' + pr['url'] if pr['url'] else ''}")
+    print(f"  faults: {'; '.join(pkt['faults']) or 'none computed'}")
+    print(f"  hours: {'; '.join(li['hours']) or 'none on the listing'}")
+    reach = [x for x in (rc.get("instagram") and f"Instagram @{rc['instagram']}", rc.get("facebook"),
+                         rc.get("email"), rc.get("directory") and f"{rc['directory'][0]} {rc['directory'][1]}") if x]
+    print(f"  reach: {' · '.join(reach) or 'none'} ({rc.get('source') or 'no reach row'})")
+    if rc.get("evidence"):
+        print(f"  evidence: {json.dumps(rc['evidence'], ensure_ascii=False)}")
+    if not li["file"]:
+        print("  listing read: none on disk (`prep brief --fetch` reads it, ~$0.025)")
+        return 0
+    print(f"  listing read {li['read']} · {li['photos']} photos · {len(pkt['reviews'])} reviews (never quoted on a site):")
+    for r in pkt["reviews"]:
+        text = re.sub(r"\s+", " ", r["text"])
+        print(f"    [{r['ref']}] {r['rating']}★ {r['when'] or ''} — {text[:280]}{'…' if len(text) > 280 else ''}")
+    return 0
+
+
+# ---- doctor --------------------------------------------------------------------------------------
+
+def auth_status():
+    try:
+        r = subprocess.run([claude_bin(), "auth", "status", "--json"], capture_output=True, text=True, timeout=30,
+                           env=session_env())
+        return json.loads(r.stdout or "{}")
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+        return {"error": str(exc)}
+
+
+def doctor_checks(live=False):
+    """[(ok, line)] — shared by `doctor` and the refusal `research` makes before any session."""
+    out = []
+    cb = claude_bin()
+    found = shutil.which(cb) or (Path(cb).exists() and cb)
+    out.append((bool(found), f"claude: {found or cb + ' not found'}"))
+    leaked = [k for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN") if os.environ.get(k)]
+    out.append((True, "API key in this environment: " + (f"{', '.join(leaked)} set, stripped from every session"
+                                                         if leaked else "none")))
+    st = auth_status() if found else {"error": "no claude"}
+    sub = st.get("authMethod") == "claude.ai" and st.get("loggedIn") and st.get("subscriptionType")
+    out.append((bool(sub), "login: " + (f"the subscription ({st.get('subscriptionType')}, {st.get('authMethod')})" if sub
+                                        else f"not the subscription ({st.get('authMethod') or st.get('error') or 'logged out'})")))
+    for role, m in (("build", MODEL_BUILD), ("judge", MODEL_JUDGE)):
+        good = bool(re.fullmatch(r"claude-(sonnet|opus|haiku)-[0-9a-z-]+", m or "")) and "fable" not in (m or "").lower()
+        out.append((good, f"model {role}: {m}" + ("" if good else " (named, and never Fable)")))
+    if live and found and sub:
+        for role, m in (("build", MODEL_BUILD), ("judge", MODEL_JUDGE)):
+            out.append(ping_model(m, role))
+    try:
+        L = leads()
+        exists, counts = L.businesses_state()
+        pool = len(L.business_candidates(list(L.BUSINESS_SEGMENTS))) if exists else 0
+        out.append((exists and pool > 0, f"census: {L.CENSUS} · businesses {sum(counts.values())} · pool {pool}"))
+        cached = len(list((L.STATE / "details").glob("*.json"))) if (L.STATE / "details").exists() else 0
+        key, where = L.places_key()
+        out.append((bool(key), f"Places key: {'GOOGLE_MAPS_API_KEY (' + where + ')' if key else 'missing'} · "
+                               f"{cached} listing reads on disk"))
+        if live and key:
+            out.append(ping_places(L, key, where))
+    except SystemExit:
+        out.append((False, "census: unreadable"))
+    tpl = [p for p in ("RESEARCH.md", "CLAUDE.md", "settings/research.json") if not (TEMPLATE / p).exists()]
+    out.append((not tpl, f"template: {TEMPLATE}" + (f" missing {', '.join(tpl)}" if tpl else "")))
+    try:
+        s = settings_for("research", STATE / "x")
+        deny = " ".join(s["permissions"]["deny"])
+        meta_ok = all(f"domain:{m}" in deny for m in ("facebook.com", "instagram.com", "fb.com"))
+        out.append((meta_ok, "research settings: Meta hosts denied" + ("" if meta_ok else " — MISSING")))
+    except (OSError, KeyError, json.JSONDecodeError) as exc:
+        out.append((False, f"research settings: unreadable ({exc})"))
+    try:
+        STATE.mkdir(parents=True, exist_ok=True)
+        out.append((os.access(STATE, os.W_OK), f"state: {STATE}"))
+    except OSError as exc:
+        out.append((False, f"state: {exc}"))
+    return out
+
+
+def ping_model(model, role):
+    try:
+        r = subprocess.run([claude_bin(), "-p", "--model", model, "--output-format", "json", "--max-turns", "1",
+                            "--tools", ""], input="Reply with the word ok.", capture_output=True, text=True,
+                           timeout=120, env=session_env(), cwd=str(STATE))
+        res = json.loads(r.stdout or "{}")
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+        return False, f"model {role} live: no answer ({exc})"
+    used = sorted((res.get("modelUsage") or {}).keys())
+    ok = not res.get("is_error") and used and all("fable" not in u.lower() for u in used)
+    return bool(ok), f"model {role} live: answered as {', '.join(used) or '?'}"
+
+
+def ping_places(L, key, where):
+    import urllib.request
+    import urllib.error
+    pid = next((p.stem for p in (L.STATE / "details").glob("*.json")), None) or "ChIJgx-1ejiBTYcR-1yHjY-TnZg"
+    req = urllib.request.Request(L.DETAILS_URL + pid, headers={"X-Goog-Api-Key": key, "X-Goog-FieldMask": "id"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            ok = resp.status == 200
+    except (urllib.error.URLError, OSError) as exc:
+        return False, f"Places live: {exc}"
+    ledger_append({"ts": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), "kind": "places_details",
+                   "tool": "prep", "calls": 1, "cost_usd": L.DETAILS_COST_USD,
+                   "billed_to": f"google:GOOGLE_MAPS_API_KEY({where})", "project": "global", "for": "doctor"})
+    return ok, "Places live: answered"
+
+
+def cmd_doctor(args):
+    checks = doctor_checks(live=args.live)
+    for ok, line in checks:
+        print(f"{'ok ' if ok else 'BAD'} {line}")
+    return 0 if all(ok for ok, _ in checks) else 1
+
+
+def doctor_quiet_or_die(args):
+    """Before any session: the login is the subscription and the model isn't Fable. (The census checks are
+    the doctor's; a research call names its places.)"""
+    refuse_fable(MODEL_BUILD)
+    if getattr(args, "dry_run", False):
+        return
+    st = auth_status()
+    if not (st.get("authMethod") == "claude.ai" and st.get("loggedIn") and st.get("subscriptionType")):
+        die(f"the claude login is not the subscription ({st.get('authMethod') or st.get('error') or 'logged out'}): "
+            f"prep sessions run on Taylor's plan or not at all")
+
+
+# ---- main ----------------------------------------------------------------------------------------
+
+def main():
+    ap = argparse.ArgumentParser(prog="prep", description=__doc__.split("\n\n")[0],
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("brief", help="the packet for one business")
+    p.add_argument("place_id")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--fetch", action="store_true", help="read the listing from Places if none is on disk (~$0.025)")
+    p.set_defaults(fn=cmd_brief)
+    p = sub.add_parser("research", help="one Sonnet session a business → facts.json")
+    p.add_argument("place_ids", nargs="+")
+    p.add_argument("--parallel", type=int, default=PARALLEL)
+    p.add_argument("--run", help="add to an existing run id")
+    p.add_argument("--dry-run", action="store_true", help="stamp the directories, print the command, run nothing")
+    p.add_argument("--no-fetch", action="store_true", help="never read Places: a place with no listing on disk is skipped")
+    p.set_defaults(fn=cmd_research)
+    p = sub.add_parser("facts", help="facts lint FILE")
+    p.add_argument("action", choices=["lint"])
+    p.add_argument("file")
+    p.add_argument("--listing", help="the listing read (default: listing.json beside FILE)")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_facts)
+    p = sub.add_parser("doctor", help="the login, the models, the census, the key")
+    p.add_argument("--live", action="store_true", help="ping both models (one turn each) and Places (one read)")
+    p.set_defaults(fn=cmd_doctor)
+    p = sub.add_parser("hook", help=argparse.SUPPRESS)
+    p.add_argument("stage", choices=["research"])
+    p.add_argument("--dir", help="the business's directory (stamped into the settings)")
+    p.set_defaults(fn=cmd_hook)
+    args = ap.parse_args()
+    sys.exit(args.fn(args) or 0)
+
+
+if __name__ == "__main__":
+    main()

@@ -384,6 +384,19 @@ class Send(Base):
         self.assertEqual(6, len(third))
         self.assertRegex(third[0]["subject"], r"comes down \d{1,2} \w+")
 
+    def test_a_pick_with_no_preview_page_is_never_written_to(self):
+        """Every letter says "I've made you a page…"; without one there is nothing true to send."""
+        kit = json.loads(KIT.read_text())
+        kit["picks"][0]["preview_url"] = None
+        kit["picks"][1]["preview_url"] = ""
+        p = self.tmp / "no-previews.json"
+        p.write_text(json.dumps(kit))
+        r = self.run_it("send", "--kit", str(p), "--go")
+        self.assertEqual(4, len(self.outbox()))
+        self.assertIn("no preview page yet (B45)", r.stdout)
+        for row in self.outbox():
+            self.assertIn("https://preview-", row["text"])
+
     def test_a_suppressed_address_or_place_is_never_written_to(self):
         self.run_it("suppress", "add", "dave@highlandpoolspa.example", "--reason", "by hand")
         self.run_it("suppress", "add", "ChIJfixture0000000000003")

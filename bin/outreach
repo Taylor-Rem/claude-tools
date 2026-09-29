@@ -1312,6 +1312,11 @@ def cmd_send(args):
         if email.lower() in already:
             skipped.append((i, p.get("name"), "already sent today"))
             continue
+        if not (p.get("preview_url") or "").strip():
+            # Every letter's middle sentence is "I've made you a page…". Without one there
+            # is no letter to send — B45 builds them (`leads kit --remote --previews`).
+            skipped.append((i, p.get("name"), "no preview page yet (B45)"))
+            continue
         plan.append((i, p))
 
     room = per_day - len(sent_today(touch))
@@ -1345,9 +1350,6 @@ def cmd_send(args):
     for i, p in plan:
         vals = values_for(p, touch)
         subject, letter = t.render(vals, fault=(p.get("faults") or [""])[0])
-        if touch == 10 and not vals["preview_url"]:
-            skipped.append((i, p.get("name"), "the day-10 letter needs a preview and there isn't one"))
-            continue
         say(f"{i}. {p.get('name')} <{p.get('email')}> — \"{subject}\"")
         if DRY or args.show:
             say("".join(f"   | {l}\n" for l in letter.splitlines()))

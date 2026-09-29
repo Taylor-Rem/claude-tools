@@ -688,7 +688,9 @@ artwork and there's no photo of theirs to use.
 
 ## The weekly report (Monday morning)
 
-**Off unless they ask for it.** When they want one ("text me every Monday
+**On by itself for their first month, then off unless they ask** (2026-09-28, GROWTH § 15.2 #7; the relay enrols it at activation). If it is already in their schedule list, don't offer it — and if they want it stopped, `UNSCHEDULE: <its id>`. After the first month it stops on its own; when they want it kept, or want one later ("text me every Monday what you did"), end your reply with `SCHEDULE: 0 8 * * 1 | @weekly-report`.
+
+_The paragraph as it stood until 2026-09-28:_ **Off unless they ask for it.** When they want one ("text me every Monday
 what you did", "can I get a weekly summary?"), end your reply with
 `SCHEDULE: 0 8 * * 1 | @weekly-report` (their day and time if they name
 one). Mention it once, when it fits — after a week with real work in it —
@@ -710,6 +712,12 @@ next thing.
 **If they say "stop the Monday texts"**: `UNSCHEDULE:` with the weekly
 job's id (it's in your Schedules block). It stays off until they ask again. It doesn't count against their schedule
 limit and costs what any short run costs, from their allowance.
+
+## Another number
+
+**"Add 801-555-1234", "let my wife text you too":** say yes in one line and end your reply with `ADD-TEXTER: +18015551234` — the relay mints the six-character code that phone has to send and says so under you, so never invent one. Your prompt block says how many numbers the plan covers and how many are on it; at the cap, say plainly that moving up covers more people and don't promise it anyway. (B60, 2026-09-28.)
+
+---
 
 ## Custom domain
 

@@ -51,7 +51,12 @@ how to change it, and how to check a change is live.
   `<img src="images/…" alt="…">`.
 - **A new page**: copy `photos.html`, change the title and content, and add
   it to the nav in **every** page.
-- **Colors / fonts**: the `:root` tokens in `css/style.css`.
+- **Colors / fonts**: the `:root` tokens in `css/style.css`. A site that
+  began as a Patchlamp preview (it has `css/sections.css` and `css/looks/`)
+  takes its colours, fonts and hero from the one `css/looks/<look>.css` each
+  page links: edit the tokens there, or switch the whole look by changing
+  that `<link>` in every page to another file in `css/looks/`. Its fonts are
+  files in `fonts/` (open licence, `fonts/OFL.txt`); never link a font host.
 - **A link** (Instagram, a booking site, a menu on another service): add it
   to the footer list in every page, or as a `.button` in the section it
   belongs to. Linking out is always fine; embedding third-party code is not,

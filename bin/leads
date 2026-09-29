@@ -4383,7 +4383,19 @@ def preview_doctor():
           + ", ".join(sorted({v["template"] for v in cats.values()}))
           + (f"  MISSING {', '.join(missing)}" if missing else ""))
     ok = ok and not missing
-    for f in ("page.html", "root.html", "404.html", "_headers", "robots.txt", "css/preview.css"):
+    for kind in sorted(d.name for d in SITE_TEMPLATES.iterdir() if d.is_dir() and not d.name.startswith("_")):
+        if not has_library(kind):
+            continue
+        lib = SITE_TEMPLATES / kind
+        fonts = set()
+        for css in (lib / "css" / "looks").glob("*.css"):
+            fonts |= set(re.findall(r'url\("\.\./\.\./fonts/([^"]+)"\)', css.read_text()))
+        gone = sorted(f for f in fonts if not (lib / "fonts" / f).exists())
+        print(f"  library: {kind} — {len(list((lib / 'sections').glob('[a-z]*.html')))} sections, looks "
+              f"{', '.join(template_looks(kind))}, {len(fonts)} font files"
+              + (f"  MISSING {', '.join(gone)}" if gone else ""))
+        ok = ok and not gone
+    for f in ("page.html", "root.html", "404.html", "_headers", "robots.txt", "css/preview.css", "claim.html", "bar.html"):
         if not (PREVIEW_OVERLAY / f).exists():
             print(f"  overlay: MISSING templates/sites/_preview/{f}")
             ok = False
@@ -4411,8 +4423,8 @@ def preview_doctor():
     else:
         print(f"  domain: {PREVIEW_DOMAIN} not attached yet — links use the pages.dev host "
               f"(TAYLOR-TODO §1 \"previews.patchlamp.com\")")
-    print(f"  hero photos: img stock (Pexels, free) by default; `--hero gen` costs one image and "
-          f"logs its own ledger row")
+    print(f"  photos: img stock (Pexels, free) by default, {len({r.get('id') for r in image_registry()})} in use "
+          f"across previews ({PREVIEW_IMAGES.name}); `--hero gen` costs one image and logs its own ledger row")
     return ok
 
 

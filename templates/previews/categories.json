@@ -99,7 +99,7 @@
       "hero": "clean tidy living room",
       "cta": "Ask for a cleaning quote",
       "heroes": ["clean bright living room", "spotless modern kitchen", "clean tidy bedroom interior", "bright clean bathroom"],
-      "gallery": ["cleaning supplies bucket", "wiping kitchen counter", "vacuum cleaner carpet", "folded towels clean", "mop floor cleaning"]
+      "gallery": ["cleaning supplies bucket", "clean kitchen counter", "vacuum cleaner carpet", "folded towels clean", "mop floor cleaning"]
     },
     "pest control": {
       "template": "service",
@@ -150,7 +150,7 @@
       "hero": "car detailing polishing",
       "cta": "Book a detail",
       "heroes": ["car detailing polish shine", "clean car paint reflection", "car wash foam detailing", "polished black car"],
-      "gallery": ["car interior detailing", "car wheel cleaning", "microfiber cloth car", "car headlight polish", "car seats clean interior"]
+      "gallery": ["clean car interior seats", "car wheel cleaning", "microfiber cloth car", "car headlight polish", "car seats clean interior"]
     },
     "handyman": {
       "template": "service",
@@ -167,7 +167,7 @@
       "hero": "handyman tools home repair",
       "cta": "Send the list",
       "heroes": ["handyman tools workbench", "home repair tools wall", "toolbox hammer screwdriver", "drill wood workbench"],
-      "gallery": ["fixing cabinet door", "tape measure wood", "painting wall roller", "wall shelf install", "screwdriver hardware"]
+      "gallery": ["cabinet hinge screwdriver", "tape measure wood", "paint roller tray", "wall shelf install", "screwdriver hardware"]
     },
     "plumber": {
       "template": "service",
@@ -234,7 +234,7 @@
       ],
       "hero": "painter painting wall interior",
       "cta": "Ask for a painting quote",
-      "heroes": ["painting wall roller", "fresh painted room interior", "paint cans brushes", "house exterior painting"],
+      "heroes": ["paint roller tray", "fresh painted room interior", "paint cans brushes", "house exterior painting"],
       "gallery": ["paint roller tray", "color swatches wall", "painter tape wall", "paint brush trim", "freshly painted door"]
     },
     "garage door": {
@@ -371,7 +371,7 @@
       "hero": "tutor student studying table",
       "cta": "Ask about sessions",
       "heroes": ["study desk books notebook", "student notebook pencil", "library books study", "math homework notebook"],
-      "gallery": ["books stack", "writing notes", "calculator notebook", "desk lamp books", "pencils paper"]
+      "gallery": ["books stack", "notebook pen desk", "calculator notebook", "desk lamp books", "pencils paper"]
     },
     "music teacher": {
       "template": "service",

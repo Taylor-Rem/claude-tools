@@ -3,6 +3,7 @@
 img — Claude's image toolbelt. Stock photos (Pexels) and generation (Gemini).
 
     img stock "chicken tikka masala" [-n 5] [--orientation landscape] [--out DIR] [--page 2]
+    img stock "pool deck" -n 1 --seed SLUG --skip-file used.txt --width 1600 --json   # one pick, never a used id
     img gen "prompt" [--style menu] [--quality menu|hero|pro|draft] [--aspect 4:3] [--ref photo.jpg] [--out FILE]
     img edit photo.jpg "put a party hat on him" [--quality ...] [--out FILE]   # instructed edit of a real photo
     img video "prompt" [--engine grok|veo] [--quality draft|good|pro] [--seconds N] [--aspect 16:9|9:16] [--ref first-frame.jpg] [--dry-run]

@@ -53,7 +53,7 @@ SITE_REPO = os.environ.get("TODO_SITE_REPO", "todo")
 BRANCH = "main"
 # Everything the side-car mirrors, relative to WORK_TREE. TAYLOR-TODO.md is
 # the web page's file; the rest is the plan Cowork reads on the MacBook.
-TRACKED = [TODO_FILE.name, "ROADMAP.md", "VISION.md", "HISTORY.md", "CLAUDE.md",
+TRACKED = [TODO_FILE.name, "ROADMAP.md", "VISION.md", "HISTORY.md", "CLAUDE.md", "GROWTH.md",
            "COWORK.md", "plans", "mac", "requests", "social", "flint", ".gitattributes"]
 # `social` (added 2026-09-23, Flint): the group posts, the boards and the
 # day-1 mock posts, so Cowork can post them from the Mac (ROADMAP B24).

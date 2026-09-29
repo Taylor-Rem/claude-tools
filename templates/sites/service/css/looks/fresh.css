@@ -1,0 +1,66 @@
+/* Look: fresh — clean and friendly. White ground, deep teal accent, soft
+   rounded corners; Plus Jakarta Sans throughout; the hero is split, the
+   words on the left and the photo beside them in a rounded frame.
+   Fonts are this site's own files (fonts/, SIL OFL). */
+
+@font-face { font-family: "Plus Jakarta Sans"; font-weight: 200 800; font-style: normal; font-display: swap;
+  src: url("../../fonts/plus-jakarta-sans-latin-wght-normal.woff2") format("woff2"); }
+
+:root {
+  --bg: #ffffff;
+  --bg-raised: #f1f6f5;
+  --bg-line: #d6e3e0;
+  --ink: #102a2c;
+  --ink-dim: #45605f;
+  --accent: #0b6e66;
+  --accent-dim: #07534d;
+  --accent-ink: #ffffff;
+  --font-display: "Plus Jakarta Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-body: "Plus Jakarta Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --display-weight: 750;
+  --display-tracking: -0.025em;
+  --radius: 14px;
+}
+
+.site-header { background: rgba(255, 255, 255, 0.96); }
+.site-nav a { text-transform: none; letter-spacing: 0; font-size: 0.92rem; }
+.header-cta, .btn { border-radius: 999px; }
+
+/* the hero: words left, photo right (photo under the words on a phone) */
+.hero-block {
+  display: grid;
+  gap: clamp(1.5rem, 4vw, 3.5rem);
+  align-items: center;
+  max-width: 80rem;
+  margin: 0 auto;
+  padding: clamp(1.25rem, 4vw, 3.5rem) var(--page-pad) clamp(2.5rem, 5vw, 4rem);
+}
+.hero-copy { padding: 0; }
+.hero-media { order: 2; border-radius: 28px; }
+.hero-media img { aspect-ratio: 4 / 3; border-radius: 28px; }
+.hero-heading { font-size: clamp(2.3rem, 5.6vw, 4.2rem); line-height: 1.04; }
+.hero-kicker {
+  display: inline-block;
+  padding: 0.35rem 0.85rem;
+  border-radius: 999px;
+  background: var(--bg-raised);
+  letter-spacing: 0.08em;
+}
+@media (min-width: 56rem) {
+  .hero-block { grid-template-columns: 1.05fr 1fr; min-height: min(78vh, 42rem); }
+}
+
+.proof { border-top: 1px solid var(--bg-line); }
+.service-list li { border: 0; box-shadow: var(--shadow); }
+.service-n {
+  width: 2.5rem;
+  height: 2.5rem;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 0.9rem;
+}
+.kicker { letter-spacing: 0.1em; }
+.gallery-grid img, .about-media img { border-radius: 20px; }

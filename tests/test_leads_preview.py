@@ -49,7 +49,7 @@ elif argv and argv[0] == "new":
     ws = Path(os.getcwd())
     d = ws / "repos" / argv[1]
     (d / "css").mkdir(parents=True, exist_ok=True)
-    (d / "index.html").write_text("<html>the template</html>")
+    (d / "index.html").write_text(os.environ.get("FAKE_SITE_INDEX") or "<html>the template</html>")
     (d / "photos.html").write_text("<html>photos</html>")
     (d / "css" / "style.css").write_text("body{}")
     os.system("git -C %s init -q -b main" % d)
@@ -70,9 +70,46 @@ if argv and argv[0] == "new":
 print("ok")
 '''
 
+# An `img` that answers from a small shared pool of made-up Pexels ids (the same twenty for every
+# search, so two previews would collide without the registry) and writes a real tiny PNG; `gen`
+# takes only a FILE for --out, the way leads must call it, and an aspect img accepts.
+FAKE_IMG = r'''#!/usr/bin/env python3
+import base64, json, os, random, sys
+from pathlib import Path
+PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAIAAAA7ljmRAAAAEklEQVR4nGNgYGD4z8DAwMDAAAAMAAHKhOSVAAAAAElFTkSuQmCC")
+argv = sys.argv[1:]
+with open(os.environ["FAKE_IMG_LOG"], "a") as f:
+    f.write(json.dumps(argv) + "\n")
+def opt(name, default=None):
+    return argv[argv.index(name) + 1] if name in argv else default
+if argv[0] == "stock":
+    skip = set()
+    if opt("--skip-file"):
+        skip = {l.strip() for l in Path(opt("--skip-file")).read_text().splitlines() if l.strip()}
+    pool = [str(900 + i) for i in range(20) if str(900 + i) not in skip]
+    random.Random(opt("--seed")).shuffle(pool)
+    out = Path(opt("--out")); out.mkdir(parents=True, exist_ok=True)
+    got = []
+    for pid in pool[:1]:
+        path = out / f"photo-{pid}.jpg"
+        path.write_bytes(PNG)
+        got.append({"path": str(path), "id": int(pid), "photographer": "A. Fixture", "alt": "a made-up photo", "url": "https://example.test/" + pid})
+    print(json.dumps(got))
+elif argv[0] == "gen":
+    out = Path(opt("--out"))
+    if out.is_dir() or opt("--aspect") not in ("1:1", "3:2", "4:3", "16:9", "9:16", "3:4"):
+        sys.exit("fake img: --out must be a file and --aspect one img accepts")
+    out.write_bytes(PNG)
+    print("  [1] " + str(out))
+'''
+
 
 def text_of(html):
-    """What a reader sees: tags out, whitespace squeezed."""
+    """What a reader sees: comments, scripts and styles out, inline tags joined, block tags spaced,
+    whitespace squeezed."""
+    html = re.sub(r"<!--.*?-->", " ", html, flags=re.S)
+    html = re.sub(r"<(script|style)\b.*?</\1>", " ", html, flags=re.S)
+    html = re.sub(r"</?(a|span|strong|em|b|i)\b[^>]*>", "", html)
     return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html)).strip()
 
 
@@ -88,7 +125,7 @@ class PreviewTest(unittest.TestCase):
         self.bin = t / "bin"
         self.bin.mkdir()
         self.log = t / "calls.jsonl"
-        for name, body in (("site", FAKE_SITE), ("client", FAKE_CLIENT)):
+        for name, body in (("site", FAKE_SITE), ("client", FAKE_CLIENT), ("img", FAKE_IMG)):
             p = self.bin / name
             p.write_text(body)
             p.chmod(0o755)
@@ -99,7 +136,8 @@ class PreviewTest(unittest.TestCase):
                     "LEADS_PIPELINE": str(t / "pipeline.jsonl"), "LEADS_MAIL_ADDRESS": "",
                     "GOOGLE_MAPS_API_KEY": "", "LEADS_SEGMENT": "services",
                     "PROJECTS_DIR": str(t / "projects"), "FAKE_SITE_LOG": str(self.log),
-                    "LEADS_PREVIEW_BIN": str(self.bin)}
+                    "LEADS_PREVIEW_BIN": str(self.bin), "LEADS_IMG_BIN": str(self.bin / "img"),
+                    "FAKE_IMG_LOG": str(t / "img.jsonl")}
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -277,6 +315,8 @@ class PreviewTest(unittest.TestCase):
         self.assertEqual(dry.returncode, 0, dry.stderr)
         self.assertIn("would run: client new mikes-pool-care", dry.stdout)
         self.assertIn("would run: site new mikes-pool-care-site --template service", dry.stdout)
+        self.assertIn("would copy the whole rendered site", dry.stdout)
+        self.assertIn("switch the forms on", dry.stdout)
         self.assertEqual(self.calls(), [], "a dry run runs nothing")
 
         r = self.run_leads("preview", "--claim", "Mike's Pool Care", "--slug", "mikes-pool-care")
@@ -298,12 +338,153 @@ class PreviewTest(unittest.TestCase):
         self.assertIn("<title>Mike's Pool Care</title>", built)
         self.assertIn('<a href="photos.html">Photos</a>', built)  # the template's other page is linked
         self.assertIn("&copy; ", built)
+        # the whole rendered site came over, the overlay cut, the forms switched on (B64)
+        self.assertIn('action="/api/submissions"', built)
+        self.assertIn('action="/api/bookings"', built, "the template's calendar is kept")
+        self.assertNotIn("disabled", built)
+        self.assertNotIn("goes live when the site is claimed", built)
+        self.assertNotIn("<!--c:", built)
+        self.assertNotIn("<!--p:", built)
+        self.assertIn('<a href="/admin">Owner sign-in</a>', built)
+        for f in ("photos.html", "404.html", "css/sections.css", "css/looks/sturdy.css", "css/looks/fresh.css",
+                  "css/looks/classic.css", "fonts/OFL.txt", "js/main.js"):
+            self.assertTrue((repo / f).exists(), f)
+        self.assertFalse((repo / "claim").exists(), "the claim redirect stays on the previews host")
+        self.assertFalse((repo / "css" / "preview.css").exists())
+        self.assertNotIn("preview", text_of((repo / "photos.html").read_text()).lower())
         meta = json.loads((self.previews / "meta" / "mikes-pool-care-american-fork.json").read_text())
         self.assertEqual(meta["claimed"], "mikes-pool-care")
         self.assertNotIn("mikes-pool-care-american-fork",
                          self.run_leads("kit", "--remote", "--segment", "services", "--fixture", str(DETAILS),
                                         "--previews", "--json", "--no-save").stdout,
                          "a claimed preview is not offered again")
+
+    # -- the section library, the looks, the renderer (plan 28, B64) ----------------------
+
+    def content_of(self, slug):
+        return json.loads((self.previews / "content" / slug / "content.json").read_text())
+
+    def test_one_content_json_renders_in_every_look_with_nothing_from_a_third_party(self):
+        self.build("Mike's Pool Care, American Fork", extra=["--hero", "stock"])
+        src = self.previews / "content" / "mikes-pool-care-american-fork" / "content.json"
+        content = json.loads(src.read_text())
+        self.assertEqual((content["schema"], content["template"]), (1, "service"))
+        self.assertEqual([x["type"] for x in content["sections"]][:3], ["hero", "proof", "services"])
+        looks = sorted(p.stem for p in (ROOT / "templates/sites/service/css/looks").glob("*.css"))
+        self.assertEqual(len(looks), 3)
+        for look in looks:
+            out = Path(self.tmp.name) / "looks" / look
+            r = self.run_leads("preview", "--from", str(src), "--out", str(out), "--look", look)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            html = (out / "index.html").read_text()
+            self.assertIn(f'href="css/looks/{look}.css"', html)
+            for f in ("photos.html", "404.html", "claim/index.html", "css/style.css", "css/sections.css",
+                      "css/preview.css", "js/main.js", "images/hero.jpg"):
+                self.assertTrue((out / f).exists(), f"{look}: {f}")
+            css = (out / "css" / "looks" / f"{look}.css").read_text()
+            for font in re.findall(r'url\("\.\./\.\./(fonts/[^"]+)"\)', css):
+                self.assertTrue((out / font).exists(), font)
+            for page in ("index.html", "photos.html"):
+                h = (out / page).read_text()
+                for ref in re.findall(r'(?:src|href)="([^"]+)"', h):
+                    if ref.startswith(("http", "//")):
+                        self.assertRegex(ref, r"^https://(patchlamp\.com|maps\.google\.com)", f"{page}: {ref}")
+                    elif not ref.startswith(("#", "tel:", "mailto:", "/admin", "index.html#")):
+                        self.assertTrue((out / ref.split("#")[0]).exists(), f"{look} {page}: {ref}")
+            self.assertEqual(html.count('class="img-label"'), html.count("<img "), "every picture says what it is")
+            self.assertIn("This form goes live when the site is claimed.", text_of(html))
+            self.assertRegex(html, r'<fieldset class="form-fields" disabled>')
+            self.assertIn('<a href="claim/">Claim it</a>', html)
+        self.assertFalse((self.previews / "site" / "looks").exists(), "--out records nothing in the tree")
+
+    def test_the_claim_link_opens_the_sign_up_filled(self):
+        self.build("Mike's Pool Care, American Fork")
+        page = (self.previews / "site" / "mikes-pool-care-american-fork" / "claim" / "index.html").read_text()
+        self.assertIn('<meta name="robots" content="noindex, nofollow, noarchive">', page)
+        url = re.search(r'url=([^"]+)"', page).group(1).replace("&amp;", "&")
+        self.assertEqual(url, "https://patchlamp.com/start?business=Mike%27s+Pool+Care&city=American+Fork"
+                              "&category=pool+service&preview=mikes-pool-care-american-fork")
+        self.assertIn(url, json.loads((self.previews / "meta" / "mikes-pool-care-american-fork.json").read_text())["claim_url"])
+
+    def test_from_holds_a_content_json_to_the_contract(self):
+        self.build("Mike's Pool Care, American Fork")
+        content = self.content_of("mikes-pool-care-american-fork")
+        content["sections"][0].pop("heading")
+        content["sections"].append({"type": "menu", "heading": {"text": "x", "facts": []}})
+        content["sections"][2]["heading"] = {"text": "Something we made up", "facts": []}
+        content["look"] = "neon"
+        bad = Path(self.tmp.name) / "bad.json"
+        bad.write_text(json.dumps(content))
+        r = self.run_leads("preview", "--from", str(bad), "--out", str(Path(self.tmp.name) / "bad"))
+        self.assertEqual(r.returncode, 1)
+        for want in ("sections[0] hero: missing heading", "type 'menu' is not in the service library",
+                     "no facts and not listed in generic[]", "look 'neon'"):
+            self.assertIn(want, r.stderr)
+
+    def test_two_previews_in_one_run_never_share_a_photo(self):
+        self.build("Dave's Handyman Services", "ProCoat Painters", "Mike's Pool Care, American Fork",
+                   extra=["--hero", "stock"])
+        seen = {}
+        for m in (json.loads(p.read_text()) for p in (self.previews / "meta").glob("*.json")):
+            self.assertEqual(len(m["images"]), 5, m["slug"])               # a hero and four more
+            for i in m["images"]:
+                self.assertNotIn(i, seen, f"{m['slug']} reuses {i} from {seen.get(i)}")
+                seen[i] = m["slug"]
+        rows = [json.loads(x) for x in (self.previews / "images.jsonl").read_text().splitlines()]
+        self.assertEqual(len(rows), 15)
+        calls = [json.loads(x) for x in (Path(self.tmp.name) / "img.jsonl").read_text().splitlines()]
+        self.assertTrue(all("--skip-file" in c and "--seed" in c for c in calls if c[0] == "stock"))
+        # a rebuild keeps its own photos: its seed is its slug, and its own ids are not skipped
+        before = json.loads((self.previews / "meta" / "procoat-painters-american-fork.json").read_text())["images"]
+        self.build("ProCoat Painters", extra=["--hero", "stock"])
+        after = json.loads((self.previews / "meta" / "procoat-painters-american-fork.json").read_text())["images"]
+        self.assertEqual(before, after)
+
+    def test_hero_gen_hands_img_a_file_and_an_aspect_it_takes(self):
+        self.build("Mike's Pool Care, American Fork", extra=["--hero", "gen"])
+        calls = [json.loads(x) for x in (Path(self.tmp.name) / "img.jsonl").read_text().splitlines()]
+        gen = [c for c in calls if c[0] == "gen"]
+        self.assertEqual(len(gen), 1)
+        self.assertTrue(gen[0][gen[0].index("--out") + 1].endswith("/hero.png"))
+        self.assertEqual(gen[0][gen[0].index("--aspect") + 1], "16:9")
+        meta = json.loads((self.previews / "meta" / "mikes-pool-care-american-fork.json").read_text())
+        self.assertEqual(meta["hero"], "generated")
+        self.assertIn("Made with AI", self.page("mikes-pool-care-american-fork"))
+
+    def test_hours_read_the_way_a_person_says_them(self):
+        import importlib.machinery, importlib.util
+        loader = importlib.machinery.SourceFileLoader("leads_t", str(LEADS))
+        spec = importlib.util.spec_from_loader("leads_t", loader)
+        mod = importlib.util.module_from_spec(spec)
+        loader.exec_module(mod)
+        allday = {"regularOpeningHours": {"weekdayDescriptions": [
+            f"{d}: Open 24 hours" for d in ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")]}}
+        self.assertEqual(mod.hours_for_people(allday, {"segment": "services"}), ["Call or text any day"])
+        self.assertEqual(mod.hours_for_people({"regularOpeningHours": {"periods": [{"open": {"day": 0}}]}},
+                                              {"segment": "services"}), ["Call or text any day"])
+        self.assertEqual(mod.hours_for_people(allday, {"segment": "retail"}), ["Mon-Sun: Open 24 hours"])
+        self.assertEqual(mod.hours_for_people(allday, {"segment": "services"}, say="By appointment"), ["By appointment"])
+
+    def test_a_claim_never_replaces_a_page_with_a_thinner_one(self):
+        self.build("Mike's Pool Care, American Fork")
+        content = self.content_of("mikes-pool-care-american-fork")
+        content["sections"] = [x for x in content["sections"] if x["type"] != "booking"]
+        thin = self.previews / "content" / "mikes-pool-care-american-fork" / "thin.json"
+        thin.write_text(json.dumps(content))
+        r = self.run_leads("preview", "--from", str(thin), "--no-publish")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = self.run_leads("preview", "--claim", "mikes-pool-care-american-fork", "--slug", "mikes-pool-care",
+                           env={"FAKE_SITE_INDEX": '<form action="/api/bookings"></form><form action="/api/submissions"></form>'})
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no form for /api/bookings", r.stderr)
+        repo = Path(self.tmp.name) / "projects" / "clients" / "mikes-pool-care" / "repos" / "mikes-pool-care-site"
+        self.assertIn("/api/bookings", (repo / "index.html").read_text(), "nothing was copied")
+
+    def test_the_library_is_one_file_set_for_both_templates(self):
+        sites = ROOT / "templates" / "sites"
+        for f in sorted((sites / "portfolio" / "sections").glob("*.html")) + [sites / "portfolio/css/sections.css"]:
+            twin = sites / "service" / f.relative_to(sites / "portfolio")
+            self.assertEqual(f.read_text(), twin.read_text(), f"{f.name} differs between service and portfolio")
 
     # -- the copy table and doctor -------------------------------------------------------
 

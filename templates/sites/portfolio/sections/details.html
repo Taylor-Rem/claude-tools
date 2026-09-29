@@ -1,0 +1,45 @@
+    <section class="section details{{alt}}" id="details">
+      <div class="section-inner reveal">
+        <div class="section-head">
+<!--if:kicker-->
+          <p class="kicker">{{kicker}}</p>
+<!--/if:kicker-->
+          <h2>{{heading}}</h2>
+        </div>
+        <div class="details-grid">
+          <div>
+            <h3>Hours</h3>
+<!--if:hours-->
+            <ul>
+<!--each:hours-->
+              <li>{{item}}</li>
+<!--/each:hours-->
+            </ul>
+<!--/if:hours-->
+<!--ifnot:hours-->
+<!--p:nohours-->
+            <p class="muted">Google doesn't show hours for {{name}} yet &mdash; this is where they go.</p>
+<!--/p:nohours-->
+<!--c:nohours
+            <p>Call to set a time.</p>
+/c:nohours-->
+<!--/ifnot:hours-->
+          </div>
+          <div>
+            <h3>Where</h3>
+            <p>{{where}}</p>
+          </div>
+          <div>
+            <h3>Contact</h3>
+            <ul>
+<!--if:phone.href-->
+              <li><a href="{{phone.href}}">{{phone.text}}</a></li>
+<!--/if:phone.href-->
+<!--each:links-->
+              <li><a href="{{item.href}}">{{item.text}}</a></li>
+<!--/each:links-->
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>

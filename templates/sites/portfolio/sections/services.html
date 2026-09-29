@@ -1,0 +1,23 @@
+    <section class="section services{{alt}}" id="services">
+      <div class="section-inner reveal">
+        <div class="section-head">
+<!--if:kicker-->
+          <p class="kicker">{{kicker}}</p>
+<!--/if:kicker-->
+          <h2>{{heading}}</h2>
+<!--if:intro-->
+          <p class="lede">{{intro}}</p>
+<!--/if:intro-->
+<!--if:note-->
+<!--p:caveat-->
+          <p class="preview-caveat">{{note}}</p>
+<!--/p:caveat-->
+<!--/if:note-->
+        </div>
+        <ol class="service-list">
+<!--each:items-->
+          <li><span class="service-n" aria-hidden="true">{{n}}</span><h3>{{item.title}}</h3><p>{{item.text}}</p></li>
+<!--/each:items-->
+        </ol>
+      </div>
+    </section>

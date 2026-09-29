@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+<!--p:robots-->
+  <!-- A preview Patchlamp built for a business that has not asked for it and
+       does not own it: it must never be indexed. `_headers` at the root of the
+       previews project sends X-Robots-Tag on top of this. -->
+  <meta name="robots" content="noindex, nofollow, noarchive">
+  <title>{{page_title}} — a preview by Patchlamp</title>
+  <meta name="description" content="A preview website Patchlamp made for {{name}}. Not their official site.">
+<!--/p:robots-->
+<!--c:head
+  <title>{{page_title}}</title>
+  <meta name="description" content="{{description}}">
+/c:head-->
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="css/sections.css">
+  <link rel="stylesheet" href="css/looks/{{look}}.css">
+<!--p:css-->
+  <link rel="stylesheet" href="css/preview.css">
+<!--/p:css-->
+</head>
+<body class="page-{{page}}">
+{{&bar}}
+
+  <header class="site-header">
+    <a class="wordmark" href="index.html">{{name}}</a>
+    <nav class="site-nav" aria-label="Site">
+<!--each:nav-->
+      <a href="{{item.href}}">{{item.label}}</a>
+<!--/each:nav-->
+    </nav>
+<!--if:cta.href-->
+    <a class="header-cta" href="{{cta.href}}"><span class="cta-full">{{cta.text}}</span><span class="cta-short">{{cta.short}}</span></a>
+<!--/if:cta.href-->
+  </header>
+
+  <main id="top">
+{{&sections}}
+  </main>
+
+  <footer class="site-footer">
+<!--p:footer-->
+    <p class="preview-note">A preview Patchlamp made for {{name}}. Not their official site.
+      <a href="claim/">Claim it</a>, or ask us to take it down: <a href="mailto:founder@patchlamp.com">founder@patchlamp.com</a></p>
+    <p class="copyright">This preview comes down on {{expires_long}} unless it is claimed.
+      Built {{built_long}} by <a href="https://patchlamp.com/">Patchlamp</a>.</p>
+<!--/p:footer-->
+<!--c:footer
+    <p class="copyright">&copy; {{year}} {{name}}<!--if:photos--> · <a href="photos.html">Photos</a><!--/if:photos--><!--if:admin--> · <a href="/admin">Owner sign-in</a><!--/if:admin--></p>
+/c:footer-->
+  </footer>
+
+  <script src="js/main.js"></script>
+</body>
+</html>

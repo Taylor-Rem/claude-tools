@@ -1,0 +1,54 @@
+/* Look: night — after dark, for a stage or a room full of lights. Near-black
+   ground, warm white ink, one amber accent; Space Grotesk throughout; the
+   hero is the photo, full width, the words over it on a dark wash.
+   Fonts are this site's own files (fonts/, SIL OFL). */
+
+@font-face { font-family: "Space Grotesk"; font-weight: 300 700; font-style: normal; font-display: swap;
+  src: url("../../fonts/space-grotesk-latin-wght-normal.woff2") format("woff2"); }
+
+:root {
+  --bg: #111214;
+  --bg-raised: #1b1d20;
+  --bg-line: #2e3136;
+  --ink: #f3f1ec;
+  --ink-dim: #b9b5ad;
+  --accent: #f2b441;
+  --accent-dim: #d99a24;
+  --accent-ink: #141414;
+  --font-display: "Space Grotesk", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-body: "Space Grotesk", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --display-weight: 700;
+  --display-tracking: -0.03em;
+  --radius: 10px;
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+}
+
+a { color: var(--accent); }
+a:hover { color: #ffd27a; }
+.site-header { background: rgba(17, 18, 20, 0.96); border-bottom-color: var(--bg-line); }
+.site-nav a { color: var(--ink-dim); }
+.site-nav a:hover { color: var(--ink); }
+
+/* the hero: photo behind, words in front, centred */
+.hero-block { display: grid; min-height: min(86vh, 46rem); background: #000000; }
+.hero-block > .hero-media, .hero-block > .hero-copy { grid-area: 1 / 1; }
+.hero-media::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.55) 0%, rgba(0, 0, 0, 0.82) 100%);
+}
+.hero-copy { align-self: center; justify-self: center; text-align: center; width: 100%; max-width: 60rem; }
+.hero-heading { margin: 0 auto; color: #ffffff; font-size: clamp(2.6rem, 7.5vw, 5.4rem); line-height: 1; }
+.hero-sub { margin-left: auto; margin-right: auto; color: #e6e2da; }
+.hero-actions { justify-content: center; }
+.hero-block .btn-secondary { color: #ffffff; }
+.hero-note { color: #e6e2da; }
+@media (max-width: 40rem) {
+  .hero-block { min-height: 0; }
+  .hero-copy { padding-top: 5rem; padding-bottom: 4rem; }
+}
+
+.site-form input, .site-form textarea { border-color: var(--bg-line); }
+.service-list li { border-color: var(--bg-line); }
+.place-list li { border-color: var(--bg-line); }

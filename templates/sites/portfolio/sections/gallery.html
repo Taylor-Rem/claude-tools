@@ -1,0 +1,33 @@
+    <section class="section gallery{{alt}}" id="photos">
+      <div class="section-inner reveal">
+        <div class="section-head">
+<!--if:kicker-->
+          <p class="kicker">{{kicker}}</p>
+<!--/if:kicker-->
+          <h2>{{heading}}</h2>
+<!--if:intro-->
+          <p class="lede">{{intro}}</p>
+<!--/if:intro-->
+        </div>
+<!--if:images-->
+        <ul class="gallery-grid">
+<!--each:images-->
+          <li>
+            <figure>
+              <img src="{{item.src}}" alt="{{item.alt}}" width="{{item.w}}" height="{{item.h}}" loading="lazy">
+<!--p:label-->
+              <figcaption class="img-label">{{item.label}}</figcaption>
+<!--/p:label-->
+            </figure>
+          </li>
+<!--/each:images-->
+        </ul>
+<!--/if:images-->
+<!--ifnot:images-->
+        <p class="gallery-empty">Photos coming soon.</p>
+<!--/ifnot:images-->
+<!--if:more-->
+        <p class="gallery-more"><a href="photos.html">All photos</a></p>
+<!--/if:more-->
+      </div>
+    </section>

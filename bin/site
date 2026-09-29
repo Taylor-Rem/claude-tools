@@ -100,6 +100,7 @@ NON_SITE = {"CLAUDE.md", "README.md", ".claude", "tools", ".gitignore", ".nojeky
             "functions", "migrations", "wrangler.toml", ".dev.vars", ".wrangler", "seed.sql"}   # in the repo, not on the site
 DATA_PARTS = ("functions", "migrations")          # in templates/sites/_shell, copied only for a site with a database
 TEMPLATE_META = "template.json"                   # in each type's folder; about the template, never copied
+LIBRARY = "sections"                              # a type's section library (leads preview --from renders it); never copied
 DB_BIN = HERE / "bin" / "db"
 NEWSLETTER_BIN = HERE / "bin" / "newsletter"
 COMPAT_DATE = "2026-09-01"                        # Workers runtime date for the site's Functions
@@ -632,7 +633,7 @@ def cmd_new(a):
     # 2. the files, from the local template, placeholders filled before the first commit
     (ws / "repos").mkdir(exist_ok=True)
     shutil.copytree(TEMPLATE_DIR, dest, symlinks=False,
-                    ignore=lambda d, names: [n for n in names if Path(d) == TEMPLATE_DIR and n in DATA_PARTS + (TEMPLATE_META,)])
+                    ignore=lambda d, names: [n for n in names if Path(d) == TEMPLATE_DIR and n in DATA_PARTS + (TEMPLATE_META, LIBRARY)])
     unfilled = []
     for p in dest.rglob("*"):
         if not p.is_file() or ".git" in p.parts[len(dest.parts):][:1]:

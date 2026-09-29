@@ -1,0 +1,9 @@
+[Unit]
+Description=Patchlamp: leads cadence at 06:00 daily, before the 07:30 morning message
+
+[Timer]
+OnCalendar=*-*-* 06:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

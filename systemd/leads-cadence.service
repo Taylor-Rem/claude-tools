@@ -1,0 +1,7 @@
+[Unit]
+Description=Patchlamp: file the day's follow-up touches (leads cadence; GROWTH § 5.5, B48)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/leads cadence
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin

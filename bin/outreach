@@ -421,7 +421,8 @@ def approval_problems(names):
 def sample_values(expiry=None):
     return {
         "first": "Dave", "business": "Highland Pool & Spa",
-        "fault": "the website on your Google listing is a page that doesn't load any more",
+        # a fault as `leads` writes it, through the same to_you() a real letter uses (B62)
+        "fault": to_you("the website link is a business.site page, and Google shut those down in 2024: it's a dead link"),
         "preview_url": "https://preview-highland-pool.pages.dev/",
         "price_line": PRICE_LINE, "prices_line": PRICES_LINE,
         "phone": toolbelt("PATCHLAMP_VOICE_NUMBER") or "801-555-0100",
@@ -1210,7 +1211,7 @@ def who_replied(reply):
 # ---- send ----------------------------------------------------------------------
 
 def values_for(pick, touch):
-    fault = to_them((pick.get("faults") or [""])[0])
+    fault = to_you((pick.get("faults") or [""])[0])
     days = int(env_num("OUTREACH_PREVIEW_DAYS", DEFAULT_PREVIEW_DAYS, int))
     expiry = (today() + dt.timedelta(days=max(days - touch, 1))).strftime("%-d %B")
     business = pick.get("name") or ""
@@ -1229,14 +1230,39 @@ def values_for(pick, touch):
 COMPANY_TAIL = re.compile(r"[,\s]+(?:llc|l\.l\.c\.?|inc|inc\.|co|co\.|corp|corp\.|ltd|ltd\.|pllc|lc)$", re.I)
 
 
-def to_them(fault):
-    """A fault is written about a place; a letter is written to it. `leads` phrases them in
-    the third person ("not a site of their own", "the area they serve")."""
+# `leads` writes a fault about the place ("no hours on Google", "not a site of their own");
+# a letter says it to the owner. The phrasings match `leads`'s own to_you() (B62), except
+# that here the fault stands alone after "I looked X up on Google:", so it never says "it".
+# Duplicated rather than imported: `leads` is a 3,800-line script, this is a dozen lines.
+FAULT_SAID = {
+    "no website on Google": "there's no website on your Google listing",
+    "no hours on Google": "there are no hours on your Google listing",
+    "no photos": "there are no photos on your Google listing",
+    "no phone on Google": "there's no phone number on your Google listing",
+}
+
+
+def to_you(fault):
+    """A fault is written about a place; a letter is written to it."""
     f = (fault or "").strip()
-    f = f.replace("Google says closed", "Google says you're closed")
+    if f in FAULT_SAID:
+        return FAULT_SAID[f]
+    m = re.match(r"^only (\d+) photos$", f)
+    if m:
+        return f"your Google listing has only {m.group(1)} photos"
+    m = re.match(r"^a (\d)★ review (.+)$", f)
+    if m:
+        return f"there's a {m.group(1)}★ review on your Google listing from {m.group(2)}"
+    if f.startswith("newest review is "):
+        return "your " + f
+    f = (f.replace("the website link is a business.site page, and Google shut those down in 2024: it's a dead link",
+                   "your listing's website link is a business.site page, which Google shut down in 2024, so it goes nowhere")
+         .replace("the website link", "your listing's website link").replace("the website is", "your website is")
+         .replace("Google says closed", "Google says you're closed")
+         .replace("searching the name brings up", "searching your name brings up"))
     f = re.sub(r"\btheirs\b", "yours", f)
     f = re.sub(r"\btheir\b", "your", f)
-    f = re.sub(r"\bthey\b", "you", f)
+    f = re.sub(r"\bthey (serve|don't|do not|control)\b", r"you \1", f)   # never "check they're right" (the hours)
     f = re.sub(r"\bthem\b", "you", f)
     return f
 

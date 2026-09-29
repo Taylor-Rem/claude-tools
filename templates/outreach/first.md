@@ -27,7 +27,7 @@ Subject default: one thing to fix on {business}'s Google listing
 ---
 Hi {first},
 
-I'm Taylor Remund — I build and look after small websites out of American Fork, and I go through local businesses one at a time. On {business}: {fault}. I've made you a page that fixes it, so you can look at it instead of imagining it: {preview_url}. If you want it kept it's {price_line}; if you don't, I take it down and that's the end of it. Either way the page is yours to copy from.
+I'm Taylor Remund — I build and look after small websites out of American Fork, and I go through local businesses one at a time. I looked {business} up on Google: {fault}. I've made you a page that fixes it, so you can look at it instead of imagining it: {preview_url}. If you want it kept it's {price_line}; if you don't, I take it down and that's the end of it. Either way the page is yours to copy from.
 
 Taylor Remund
 {phone}

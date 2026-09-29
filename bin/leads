@@ -15,8 +15,9 @@ B25 (the remote lane), B7 (the pipeline: log, follow-ups, the week).
   leads week --by channel      # the Sunday review (B52): the funnel per channel + GROWTH § 2.4's rows
   leads pipeline [--all]       # every lead by stage
 
-  leads today                  # the 07:30 message (B48): today's six, yesterday's replies, the
-                               # follow-ups due with the touch each is owed, the first call, the words
+  leads today                  # the 07:30 message (B48): today's six, each with the DM to paste (or
+                               # the call and what to say, B62), yesterday's replies, the follow-ups due,
+                               # the first call, and the `go` words only when the email lane can send
   leads brief "Mike's Pool Care"   # one screen before the call: the fault, the preview, the history,
                                # the segment's objection and its answer, the close, the booking link
   leads cadence [--dry-run]    # the day 3 / 10 / 30 touches a silent lead is owed (GROWTH § 5.5),
@@ -166,6 +167,7 @@ The pipeline's event shape (one JSON object a line; fields are added, never rena
 
 import argparse
 import datetime as dt
+import hashlib
 import html
 import json
 import math
@@ -1467,9 +1469,19 @@ def first_name(name):
     return None
 
 
+COMPANY_TAIL = re.compile(r"[,\s]+(?:llc|l\.l\.c\.?|pllc|l\.?c\.?|inc\.?|corp\.?|ltd\.?)$", re.I)
+
+
+def plain_name(name):
+    """The business as a person would say it: "Pinnacle Painting LLC" → "Pinnacle Painting" (B62). Only in a
+    message — the pipeline and the census keep the name as Google has it."""
+    n = clean_name(name)
+    return COMPANY_TAIL.sub("", n).strip() or n
+
+
 def greeting(c):
     """Greet by the first name in the name, else by the business — never "the team" (a solo's listing is one person)."""
-    return first_name(c["name"]) or clean_name(c["name"])
+    return first_name(c["name"]) or plain_name(c["name"])
 
 
 def business_reach(c):
@@ -1514,6 +1526,11 @@ def to_you(fault):
         return said[fault]
     if re.match(r"^only \d+ photos$", fault):
         return "it has " + fault
+    m = re.match(r"^a (\d)★ review (.+)$", fault)
+    if m:
+        return f"there's a {m.group(1)}★ review on it from {m.group(2)}"
+    if fault.startswith("newest review is "):
+        return "your " + fault
     f = (fault.replace("the website link is a business.site page, and Google shut those down in 2024: it's a dead link",
                        "your listing's website link is a business.site page, which Google shut down in 2024, so it goes nowhere")
          .replace("the website link", "your listing's website link").replace("the website is", "your website is"))
@@ -1527,7 +1544,7 @@ DM_NOUN = {"nonprofit": "nonprofits and churches around here"}
 def segment_dm_text(c, fs):
     """The DM for a trade, a creative, a shop or a nonprofit: greeted by name, the business named, two faults at
     most, the offer is the free diagnostic. No price, no pitch (the close is for when they answer)."""
-    hi, biz = greeting(c), clean_name(c["name"])
+    hi, biz = greeting(c), plain_name(c["name"])
     shown = [to_you(f) for f in fs[:2]]
     what = " — and ".join(shown)
     fix = "Both are easy to fix." if len(shown) > 1 else "It's easy to fix."
@@ -1538,7 +1555,7 @@ def segment_dm_text(c, fs):
 
 
 def segment_email(c, fs):
-    hi, biz = greeting(c), clean_name(c["name"])
+    hi, biz = greeting(c), plain_name(c["name"])
     subject = f"{biz} on Google — {'two quick fixes' if len(fs) > 1 else 'a quick fix'}"
     return subject, segment_dm_text(c, fs).replace(f"Hi {hi} — I'm Taylor,", f"Hi {hi},\n\nI'm Taylor Remund —", 1)
 
@@ -3264,19 +3281,88 @@ def today_data(args, today):
         if last.get("kind") == "touch_due" and int(last.get("touch") or 0) == 30:
             row["listing"] = thirty_day_read(lead, args, today)
         due.append(row)
+    email_off, n = email_gate(kit["picks"])
     words = []
-    if (env_value("OUTREACH_AUTO") or "") != "1":
-        n = sum(1 for p in kit["picks"] if p.get("email"))
-        words = [f"go — send the {n} email{'s' if n != 1 else ''} in today's six" if n else
-                 "go — nothing to send by email today (no addresses; B61 is finding them)",
+    if not email_off and (env_value("OUTREACH_AUTO") or "") != "1":
+        # B62: the reply words only when `outreach send --go` would actually put a letter in the post
+        words = [f"go — send the {n} email{'s' if n != 1 else ''} in today's six",
                  "go 1 3 — only those", "hold 4 — hold one back"]
+    six = [dict(p, **morning_pick(p, email_on=not email_off)) for p in kit["picks"]]
     return {"date": today.isoformat(), "segment": kit.get("segment"), "fresh_kit": fresh,
-            "six": kit["picks"], "lane": lane, "replies": reps, "inbound": inbound_rows(today, state),
-            "due": due, "first_call": warmest(today, state), "words": words}
+            "six": six, "lane": lane, "replies": reps, "inbound": inbound_rows(today, state),
+            "due": due, "first_call": warmest(today, state), "words": words, "email_off": email_off}
+
+
+def first_letter_approved():
+    """Taylor's word on the day-0 letter, read the way `outreach send` reads it: the hash of first.md in APPROVED."""
+    folder = Path(os.environ.get("OUTREACH_TEMPLATES", TOOLBELT / "templates" / "outreach"))
+    t, a = folder / "first.md", folder / "APPROVED"
+    if not (t.exists() and a.exists()):
+        return False
+    sha = hashlib.sha256(t.read_text().encode()).hexdigest()
+    return any(l.split()[:2] == ["first", sha] for l in a.read_text().splitlines() if not l.startswith("#"))
+
+
+def email_gate(picks):
+    """(None, how many letters) when `outreach send --go` would send today, else (the first reason it wouldn't, 0).
+    The settings in the order `outreach send` refuses on them, then today's picks — no provider call, no spend."""
+    if not env_value("LEADS_MAIL_ADDRESS"):
+        return "no postal address for the footer yet (LEADS_MAIL_ADDRESS, TAYLOR-TODO §1)", 0
+    if not first_letter_approved():
+        return "the first letter isn't approved yet (`outreach approve`)", 0
+    if not (env_value("INSTANTLY_API_KEY") or (env_value("OUTREACH_PROVIDER") or "").lower() == "fake"):
+        return "no mailbox yet (INSTANTLY_API_KEY)", 0
+    try:
+        per_day = int(env_value("OUTREACH_PER_DAY") or 0)
+    except ValueError:
+        per_day = 0
+    if per_day <= 0:
+        return "OUTREACH_PER_DAY is 0", 0
+    with_email = [p for p in picks if p.get("email")]
+    if not with_email:
+        return "none of the six has an address (B61 is finding them)", 0
+    ready = [p for p in with_email if p.get("preview_url")]
+    if not ready:
+        return "every letter carries a preview page and none of theirs is built yet (B45)", 0
+    return None, min(len(ready), per_day)
+
+
+def call_opener(p):
+    """What to say when the only way in is the phone: SEGMENT_OPENER with the pick's own first fault in it."""
+    fs = p.get("faults") or []
+    what = f": {to_you(fs[0])}" if fs else ""
+    return (f"Say: \"Hi, this is Taylor — I run a small business in American Fork. I looked {plain_name(p['name'])} "
+            f"up on Google{what}. Here's exactly what to change; it's free, whether or not we talk again.\"")
+
+
+def morning_pick(p, email_on):
+    """B62: what Taylor does with one of the six — {"how": where it goes, "dm": the message to paste (the
+    kit's own wording, the preview sentence when there's a page), "say": the call opener}. Added to each
+    pick in `--json`; nothing there is renamed."""
+    c = {"name": p["name"], "segment": p.get("segment")}
+    faults = p.get("faults") or []
+    if (p.get("segment") or "restaurant") == "restaurant":
+        dm = p.get("message") or (dm_text(c, faults) if faults else None)   # the restaurant tool variant is saved
+    else:
+        dm = segment_dm_text(c, faults) if faults else p.get("message")    # today's wording, from the saved faults
+    url = p.get("preview_url")
+    if dm and url and url not in dm:
+        dm += preview_sentence(url)
+    phone = p.get("phone")
+    if p.get("instagram"):
+        return {"how": f"Instagram: instagram.com/{p['instagram']}", "dm": dm, "say": None}
+    if p.get("facebook"):
+        return {"how": "Facebook: " + re.sub(r"^https?://(www\.)?", "", p["facebook"]), "dm": dm, "say": None}
+    if p.get("email") and email_on:
+        return {"how": f"email: {p['email']} — the letter goes on `go`", "dm": None, "say": None}
+    if phone:
+        also = f" (the email to {p['email']} waits for the email lane)" if p.get("email") else ""
+        return {"how": f"call: {phone}{also}", "dm": None, "say": call_opener(p)}
+    return {"how": f"no way in yet — leads brief \"{p['name']}\"", "dm": None, "say": None}
 
 
 def today_message(d, n_due=6):
-    """The message itself: under 40 lines, one line a pick, and nothing that isn't in `d`."""
+    """The message itself: under 60 lines, a pick's line then its DM (or its call), nothing that isn't in `d`."""
     day = dt.date.fromisoformat(d["date"])
     six, due = d["six"], d["due"]
     head = (f"Morning — {day.strftime('%a %-d %b')} · {SEGMENT_TITLE.get(d['segment'], 'leads').lower()} · "
@@ -3284,14 +3370,17 @@ def today_message(d, n_due=6):
             f"{len(due)} follow-up{'s' if len(due) != 1 else ''} due")
     lines = [head, ""]
     for i, p in enumerate(six, 1):
-        reach_bit = ("@" + p["instagram"] if p.get("instagram") else
-                     p.get("facebook") or p.get("email") or p.get("phone") or "no way in yet")
-        bits = [f"{i}. {p['name']}", p.get("category") or p.get("segment") or "", p.get("city") or "",
-                (p.get("faults") or ["nothing obvious"])[0], reach_bit]
-        if p.get("preview_url"):
-            bits.append(p["preview_url"])
+        m = p if "how" in p else dict(p, **morning_pick(p, email_on=not d.get("email_off")))
+        bits = [f"{i}. {p['name']}", p.get("category") or p.get("segment") or "", p.get("city") or "", m["how"]]
         lines.append(" · ".join(b for b in bits if b))
-    if not six:
+        if m.get("dm"):
+            lines.append(m["dm"])          # its own line, no quotes or indent: a long-press copies it as it goes
+        elif m.get("say"):
+            lines.append(m["say"])
+        lines.append("")
+    if six:
+        lines.pop()
+    else:
         lines.append("No kit today — the pool is empty or every lead is already in the pipeline (`leads candidates`).")
     lines.append("")
     if not d["lane"]:
@@ -3330,6 +3419,8 @@ def today_message(d, n_due=6):
         lines.append(f"First call: nobody warm yet — the six above are the day's work.")
     if d["words"]:
         lines += ["", "Needs a word: " + " · ".join(d["words"])]
+    elif d.get("email_off") and six:
+        lines += ["", f"Email is off today — {d['email_off']} — so the six are yours to send; no word needed."]
     return "\n".join(lines) + "\n"
 
 

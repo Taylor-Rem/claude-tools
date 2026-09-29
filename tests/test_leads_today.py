@@ -90,25 +90,50 @@ class Base(unittest.TestCase):
 class MorningTest(Base):
     """B48: `leads today`."""
 
-    def test_mondays_message_is_under_forty_lines_and_names_the_six(self):
+    def test_mondays_message_is_under_sixty_lines_and_carries_each_dm(self):
         r = self.run_leads("today", "--census-only", now=ANCHOR)
         self.assertEqual(r.returncode, 0, r.stderr)
         lines = r.stdout.splitlines()
-        self.assertLess(len(lines), 40, r.stdout)
+        self.assertLess(len(lines), 60, r.stdout)
         self.assertTrue(lines[0].startswith("Morning — Mon 28 Sep · services · 6 to send"), lines[0])
-        six = [l for l in lines if l[:2].rstrip(".").isdigit()]
+        six = [i for i, l in enumerate(lines) if l[:2].rstrip(".").isdigit()]
         self.assertEqual(len(six), 6)
-        for l in six:
-            bits = l.split(" · ")
-            self.assertGreaterEqual(len(bits), 5, l)        # name · category · city · fault · reach
-        self.assertIn("Mike's Pool Care", six[1])
-        self.assertIn("not a site of their own", six[1])
-        self.assertIn("facebook.com/mikespoolcare", six[1])
-        self.assertIn("Needs a word: go", r.stdout)
-        self.assertIn("go 1 3", r.stdout)
-        self.assertIn("hold 4", r.stdout)
+        for i in six:
+            self.assertGreaterEqual(len(lines[i].split(" · ")), 4, lines[i])   # name · category · city · how
+            under = lines[i + 1]
+            self.assertTrue(under.startswith("Hi ") or under.startswith('Say: "Hi, this is Taylor'), under)
+        mike = lines[six[1]]
+        self.assertIn("Mike's Pool Care", mike)
+        self.assertIn("Facebook: facebook.com/mikespoolcare", mike)
+        dm = lines[six[1] + 1]
+        # B62: the kit's own second-person DM, pasteable as it stands
+        self.assertEqual(dm, "Hi Mike — I'm Taylor, a small-business owner in American Fork; I fix websites and Google "
+                             "listings for businesses around here. I looked up Mike's Pool Care on Google: your listing's "
+                             "website link is a Facebook page, not a site of your own. It's easy to fix. Want me to send "
+                             "you exactly what to change? Free, no strings.")
+        for i in six:
+            self.assertNotRegex(lines[i + 1], r"\btheir\b|\bthey\b|\[|preview", lines[i + 1])   # no placeholder
         self.assertNotIn("$", r.stdout)                      # no price in the morning message
         self.assertFalse((self.t / "ledger.jsonl").exists(), "census-only costs nothing")
+
+    def test_a_pick_with_only_a_phone_gets_the_call_and_the_opener(self):
+        r = self.run_leads("today", "--census-only", now=ANCHOR)
+        lines = r.stdout.splitlines()
+        i = next(i for i, l in enumerate(lines) if "Timp Pressure Washing" in l)
+        self.assertTrue(lines[i].endswith("call: (801) 555-0104"), lines[i])
+        self.assertEqual(lines[i + 1], 'Say: "Hi, this is Taylor — I run a small business in American Fork. I looked '
+                                       'Timp Pressure Washing up on Google: your listing\'s website link is your Thumbtack '
+                                       'profile, not a site of your own. Here\'s exactly what to change; it\'s free, '
+                                       'whether or not we talk again."')
+        self.assertEqual(lines[i + 2], "")
+
+    def test_no_reply_words_while_email_cannot_send_and_one_reason_why(self):
+        r = self.run_leads("today", "--census-only", now=ANCHOR)
+        self.assertNotIn("Needs a word", r.stdout)
+        self.assertNotIn("go 1 3", r.stdout)
+        self.assertEqual(r.stdout.splitlines()[-1],
+                         "Email is off today — no postal address for the footer yet (LEADS_MAIL_ADDRESS, "
+                         "TAYLOR-TODO §1) — so the six are yours to send; no word needed.")
 
     def test_the_word_is_not_asked_for_once_the_lane_runs_itself(self):
         r = self.run_leads("today", "--census-only", env={"OUTREACH_AUTO": "1"}, now=ANCHOR)
@@ -117,11 +142,19 @@ class MorningTest(Base):
     def test_json_carries_the_message_and_everything_in_it(self):
         r = self.run_leads("today", "--census-only", "--json", now=ANCHOR)
         d = json.loads(r.stdout)
-        self.assertEqual(sorted(d), ["date", "due", "first_call", "fresh_kit", "inbound", "lane",
+        self.assertEqual(sorted(d), ["date", "due", "email_off", "first_call", "fresh_kit", "inbound", "lane",
                                      "message", "replies", "segment", "six", "words"])
         self.assertEqual(d["date"], ANCHOR.isoformat())
         self.assertEqual(len(d["six"]), 6)
         self.assertTrue(d["message"].startswith("Morning — Mon 28 Sep"))
+        for p in d["six"]:                                    # B48's keys stay; B62's are added
+            for k in ("name", "category", "city", "phone", "email", "instagram", "facebook", "faults",
+                      "preview_url", "message", "how", "dm", "say"):
+                self.assertIn(k, p)
+            self.assertIn(p["dm"] or p["say"], d["message"])
+        self.assertEqual(d["words"], [])
+        self.assertIn("LEADS_MAIL_ADDRESS", d["email_off"])
+
 
     def test_yesterdays_replies_come_from_the_outreach_inbox_log(self):
         r = self.run_leads("today", "--census-only", now=ANCHOR)
@@ -221,10 +254,82 @@ class MorningTest(Base):
         self.run_leads("kit", "--remote", "--census-only", "--segment", "services")
         saved = list((self.t / "state" / "remote").glob("*.json"))
         self.assertEqual(len(saved), 1, "the remote run saves the envelope beside its page")
-        r = self.run_leads("today", "--census-only", "--json", now=ANCHOR)
+        # the kit is dated by the real clock, so `today` reads it on the same day (it passed only on ANCHOR itself)
+        ran = dt.date.fromisoformat(saved[0].name[:10])
+        r = self.run_leads("today", "--census-only", "--json", now=ran)
         self.assertFalse(json.loads(r.stdout)["fresh_kit"], "today reads the morning's run")
         names = [p["name"] for p in json.loads(r.stdout)["six"]]
         self.assertEqual(names, [p["name"] for p in json.loads(saved[0].read_text())["picks"]])
+
+
+class MorningEmailTest(Base):
+    """B62: the `go` footer only when `outreach send --go` would put a letter in the post."""
+
+    def setUp(self):
+        super().setUp()
+        tpl = self.t / "tpl"
+        tpl.mkdir()
+        first = (LEADS.parent.parent / "templates" / "outreach" / "first.md").read_text()
+        (tpl / "first.md").write_text(first)
+        import hashlib
+        (tpl / "APPROVED").write_text(f"# test\nfirst          {hashlib.sha256(first.encode()).hexdigest()}\n")
+        self.open = {"LEADS_MAIL_ADDRESS": "PO Box 1, American Fork, UT", "OUTREACH_TEMPLATES": str(tpl),
+                     "OUTREACH_PROVIDER": "fake", "OUTREACH_PER_DAY": "5"}
+        pick = {"category": "pool service", "segment": "services", "city": "Lehi", "phone": "(801) 555-0199",
+                "instagram": None, "facebook": None, "maps_url": None, "summary": "",
+                "faults": ["no website on Google", "only 2 photos"]}
+        picks = [dict(pick, place_id="P1", name="Ada Pools", first="Ada Pools", email="ada@example.test",
+                      preview_url="https://previews.patchlamp.com/ada-pools/"),
+                 dict(pick, place_id="P2", name="Bo Pools", first="Bo Pools", email="bo@example.test", preview_url=None),
+                 dict(pick, place_id="P3", name="Cy Pools", first="Cy Pools", email=None,
+                      facebook="https://facebook.com/cypools", preview_url="https://previews.patchlamp.com/cy-pools/")]
+        folder = self.t / "state" / "remote"
+        folder.mkdir(parents=True)
+        (folder / f"{ANCHOR.isoformat()}-services.json").write_text(
+            json.dumps({"date": ANCHOR.isoformat(), "segment": "services", "picks": picks}))
+
+    def today(self, **env):
+        return self.run_leads("today", "--census-only", env=dict(self.open, **env), now=ANCHOR).stdout
+
+    def test_every_gate_open_asks_for_the_word(self):
+        out = self.today()
+        self.assertIn("Needs a word: go — send the 1 email in today's six · go 1 3 — only those · hold 4", out)
+        self.assertNotIn("Email is off", out)
+        self.assertIn("1. Ada Pools · pool service · Lehi · email: ada@example.test — the letter goes on `go`", out)
+
+    def test_the_first_closed_gate_is_the_one_reason(self):
+        tpl = Path(self.open["OUTREACH_TEMPLATES"])
+        cases = [({"LEADS_MAIL_ADDRESS": ""}, "no postal address"),
+                 ({"OUTREACH_TEMPLATES": str(self.t)}, "the first letter isn't approved yet"),
+                 ({"OUTREACH_PROVIDER": "", "INSTANTLY_API_KEY": ""}, "no mailbox yet (INSTANTLY_API_KEY)"),
+                 ({"OUTREACH_PER_DAY": "0"}, "OUTREACH_PER_DAY is 0")]
+        for env, why in cases:
+            out = self.today(**env)
+            self.assertNotIn("Needs a word", out, env)
+            self.assertIn(f"Email is off today — {why}", out, env)
+        (tpl / "first.md").write_text((tpl / "first.md").read_text() + "\nedited\n")   # the hash is stale
+        self.assertIn("the first letter isn't approved yet", self.today())
+
+    def test_a_preview_goes_into_the_dm_and_an_address_without_a_page_waits(self):
+        out = self.today(OUTREACH_PER_DAY="0").splitlines()
+        cy = out.index(next(l for l in out if l.startswith("3. Cy Pools")))
+        self.assertTrue(out[cy + 1].startswith("Hi Cy Pools — I'm Taylor"), out[cy + 1])
+        self.assertIn("I also built you a page to see what one could look like: "
+                      "https://previews.patchlamp.com/cy-pools/", out[cy + 1])
+        bo = next(l for l in out if l.startswith("2. Bo Pools"))
+        self.assertIn("call: (801) 555-0199 (the email to bo@example.test waits for the email lane)", bo)
+
+    def test_the_picks_close_the_gate_when_the_settings_are_open(self):
+        f = self.t / "state" / "remote" / f"{ANCHOR.isoformat()}-services.json"
+        kit = json.loads(f.read_text())
+        kit["picks"][0]["preview_url"] = None                 # Ada has an address and no page now
+        f.write_text(json.dumps(kit))
+        self.assertIn("Email is off today — every letter carries a preview page and none of theirs is built yet (B45)",
+                      self.today())
+        for pk in kit["picks"]:
+            pk["email"] = None
+        f.write_text(json.dumps(kit))
+        self.assertIn("Email is off today — none of the six has an address (B61 is finding them)", self.today())
 
 
 class BriefTest(Base):

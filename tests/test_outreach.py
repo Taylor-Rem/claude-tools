@@ -227,6 +227,12 @@ class Templates(Base):
         self.assertEqual(1, len(re.findall(r"https?://", pitch)), f"one link in the pitch, not\n{pitch}")
         self.assertTrue(4 <= len(re.split(r"(?<=[.!?])\s+", pitch.strip())) <= 6)
 
+    def test_the_sample_fault_is_a_leads_fault_said_to_the_owner(self):
+        r = self.run_it("approve", "--dry-run", "--template", "first")
+        self.assertIn("I looked Highland Pool & Spa up on Google: your listing's website link is a business.site "
+                      "page, which Google shut down in 2024, so it goes nowhere.", r.stdout)
+        self.assertIn("Subject: your Google listing points at a page that doesn't load", r.stdout)
+
     def test_approve_writes_a_hash_per_letter(self):
         self.approve()
         text = (self.tpl / "APPROVED").read_text()
@@ -294,6 +300,35 @@ class Send(Base):
         ken = by["ken@saratogablinds.example"]
         self.assertIn("a Facebook page you don't control", ken)   # `leads` says "they don't control"
         for text in by.values():
+            self.assertNotRegex(text.split("Taylor Remund")[0], r"\btheir\b|\bthey\b")
+
+    def test_a_fault_as_leads_writes_it_goes_out_in_the_second_person(self):
+        """B62: `leads` phrases a fault about the place; the letter says it to the owner."""
+        said = {
+            "the website link is a Facebook page, not a site of their own":
+                "your listing's website link is a Facebook page, not a site of your own",
+            "the website link is their Houzz profile, not a site of their own":
+                "your listing's website link is your Houzz profile, not a site of your own",
+            "Google shows a street address, not the area they serve":
+                "Google shows a street address, not the area you serve",
+            "no website on Google": "there's no website on your Google listing",
+            "no hours on Google": "there are no hours on your Google listing",
+            "only 2 photos": "your Google listing has only 2 photos",
+            "the website is a free Wix address (mikes.wixsite.com)":
+                "your website is a free Wix address (mikes.wixsite.com)",
+        }
+        picks = [{"place_id": f"P{i}", "name": f"Biz {i}", "first": f"Biz {i}", "email": f"b{i}@example.test",
+                  "preview_url": f"https://previews.patchlamp.com/biz-{i}/", "faults": [f]}
+                 for i, f in enumerate(said)]
+        kit = self.tmp / "leads-kit.json"
+        kit.write_text(json.dumps({"date": "2026-09-29", "segment": "services", "picks": picks}))
+        self.approve()
+        self.run_it("send", "--kit", str(kit), "--go", OUTREACH_PER_DAY="10")
+        by = {r["to"]: r["text"] for r in self.outbox()}
+        self.assertEqual(len(by), len(said))
+        for i, want in enumerate(said.values()):
+            text = by[f"b{i}@example.test"]
+            self.assertIn(f"I looked Biz {i} up on Google: {want}.", text)
             self.assertNotRegex(text.split("Taylor Remund")[0], r"\btheir\b|\bthey\b")
 
     def test_each_subject_names_that_business_s_own_fault(self):

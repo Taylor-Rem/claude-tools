@@ -4,14 +4,24 @@ B25 (the remote lane), B7 (the pipeline: log, follow-ups, the week).
 
   leads log "Whistle Wok" talked "owner Mike, wants to see the demo" --who Mike --next fri
                                # one conversation; prints tomorrow's list back
-      outcomes: messaged visited talked interested demo later won lost
+      outcomes: messaged visited talked inbound interested demo later trial won lost churned
+      (inbound is the relay's lane: they came to us — the site form, the demo line, a reply)
       (each sets the stage and a default follow-up; --next overrides: tomorrow, fri, 3d, 2w, oct 3, none)
   leads sent 1 3 4             # those picks from today's remote kit went out (or: sent all)
   leads next [fri]             # the day's list (default tomorrow): follow-ups due, then new leads
   leads due                    # follow-ups due today (the 8am report)
   leads show "Whistle Wok"     # one lead's history
   leads week [--ago 1]         # this week's numbers
+  leads week --by channel      # the Sunday review (B52): the funnel per channel + GROWTH § 2.4's rows
   leads pipeline [--all]       # every lead by stage
+
+  leads today                  # the 07:30 message (B48): today's six, yesterday's replies, the
+                               # follow-ups due with the touch each is owed, the first call, the words
+  leads brief "Mike's Pool Care"   # one screen before the call: the fault, the preview, the history,
+                               # the segment's objection and its answer, the close, the booking link
+  leads cadence [--dry-run]    # the day 3 / 10 / 30 touches a silent lead is owed (GROWTH § 5.5),
+                               # recorded as pipeline events; the DM ones print, the email ones are
+                               # `outreach send --touch 3|10`
 
   leads kit                    # Saturday's six counters, faults and the opener (one page)
   leads kit --for 2026-10-04   # a different Saturday
@@ -105,8 +115,13 @@ Config, by name, never printed:
                         very first publish create the Pages project. Until
                         Taylor gives that word, a publish stops and says so
                         (GROWTH § 10, TAYLOR-TODO §1 "Preview sites").
-  LEADS_NOW             an ISO date standing in for today, for the previews'
-                        expiry only (so `sweep` is provable without waiting)
+  LEADS_NOW             an ISO date standing in for today: the previews' expiry, and the
+                        clock `today`, `cadence`, `brief` and `week` read (so a day-10
+                        touch is provable without waiting ten days). Unset in normal use.
+  LEADS_KIT_PREVIEWS    =1 and `leads today` builds a preview for every pick it makes (B45)
+  LEADS_BOOKING_URL     the booking link `leads brief` ends on (Cal.com); shared with `outreach`
+  OUTREACH_STATE        read-only here: `leads today` reads the email lane's replies.jsonl for
+                        "yesterday's replies", and never writes anything under it
   LEADS_PIPELINE        the pipeline, one event per line (default
                         ~/projects/private-docs/leads/pipeline.jsonl: backed up
                         nightly, in no repo — it holds names and numbers). The
@@ -129,7 +144,24 @@ The kit's machine-readable seam (`leads kit --remote --json`), which
               "faults": [str], "preview_url"|null, "maps_url",
               "message" (the DM draft) and "summary" beyond the agreed shape}]}
 
-`leads kit --json` without --remote is unchanged: the picks as a plain list.
+`leads kit --json` without --remote is unchanged: the picks as a plain list. Every
+remote run also saves that envelope beside its page (state/remote/<date>[-segment].json),
+which is where `leads today` reads the morning's six from instead of paying twice.
+
+Reach (B61, `client-leads/scripts/reach.py`): when the census has a `reach` table
+(place_id, instagram, facebook, email, source, checked, evidence) the kit's picks take
+a handle or an address from it *after* the census's own columns — the listing's own
+link and, for a restaurant, its search results, win. `leads doctor` prints the coverage,
+or says the table isn't there yet. Nothing here writes to it.
+
+The pipeline's event shape (one JSON object a line; fields are added, never renamed):
+  ts date key place_id name city outcome stage next note who email phone via reach
+  source   the channel (email dm group saturday referral inbound mail), so `week --by
+           channel` can cut the funnel; `--source` sets it, else it follows --via, the
+           channel the lead is already on, or the reach the kit used
+  was      the faults named in the first message, so the day-30 read can say what changed
+  next_by  "hand" when Taylor named the date (`--next thu`): the cadence never writes over it
+  kind     "touch_due" for a cadence event, with `touch` (3|10|30) and `channel`
 """
 
 import argparse
@@ -184,7 +216,8 @@ BOOKING_HOSTS = ("opentable", "resy.com", "exploretock", "sevenrooms", "yelp.com
 # A positive list on purpose — a restaurant, a store or a type we don't know gets the listing message.
 SERVICE_SUFFIXES = ("_service", "_contractor", "_repair", "_salon", "_studio", "_school", "_instructor", "_trainer",
                     "_clinic", "_groomer", "_cleaner", "_agency", "_consultant")
-SERVICE_TYPES = {"plumber", "electrician", "locksmith", "painter", "roofer", "moving_company", "car_wash", "car_detailing",
+SERVICE_TYPES = {"service",   # Google's bare type: a trade with no more specific one (window cleaning, power washing)
+                 "plumber", "electrician", "locksmith", "painter", "roofer", "moving_company", "car_wash", "car_detailing",
                  "dentist", "chiropractor", "physiotherapist", "massage", "spa", "hair_care", "barber_shop",
                  "beauty_salon", "nail_salon", "gym", "fitness_center", "yoga_studio", "tutoring", "photographer",
                  "florist", "laundry", "veterinary_care", "pet_care", "landscaper", "pool_cleaning", "event_planner",
@@ -340,6 +373,73 @@ def census_candidates(min_reviews=25):
 def census_stamp(cands):
     stamps = sorted({(c.get("refreshed_at") or "")[:10] for c in cands if c.get("refreshed_at")})
     return stamps[-1] if stamps else "?"
+
+
+# ---- the reach table (B61's `reach`; read here, written by client-leads/scripts/reach.py) ----
+
+_REACH = None
+
+
+def reach_table():
+    """place_id -> {'instagram' (handle), 'facebook' ('facebook.com/x'), 'email', 'source', 'checked', 'evidence'},
+    or None when the census has no `reach` table yet (B61 hasn't run). Read once, never written."""
+    global _REACH
+    if _REACH is not None:
+        return _REACH or None
+    if not CENSUS.exists():
+        return None
+    conn = sqlite3.connect(f"file:{CENSUS}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='reach'").fetchone():
+            _REACH = {}
+            return None
+        rows = conn.execute("SELECT * FROM reach").fetchall()
+    finally:
+        conn.close()
+    out = {}
+    for r in rows:
+        d = dict(r)
+        pid = d.get("place_id")
+        if not pid:
+            continue
+        out[pid] = {"instagram": ig_handle(d.get("instagram")), "facebook": fb_page(d.get("facebook")),
+                    "email": (d.get("email") or "").strip() or None, "source": d.get("source"),
+                    "checked": d.get("checked"), "evidence": d.get("evidence")}
+    _REACH = out
+    return out
+
+
+def ig_handle(value):
+    """A handle from a handle, an @handle or a profile URL; None for a post, a reel or nothing."""
+    v = (value or "").strip().lstrip("@")
+    m = re.match(r"^(?:https?://)?(?:www\.|m\.)?instagram\.com/([A-Za-z0-9_.]+)", v)
+    if m:
+        v = m.group(1)
+    v = v.strip("/")
+    return v if re.fullmatch(r"[A-Za-z0-9_.]+", v or "") and v.lower() not in IG_SKIP else None
+
+
+def fb_page(value):
+    """'facebook.com/x' from a page URL or a bare page name; None for a group, an event or nothing."""
+    v = (value or "").strip()
+    if not v:
+        return None
+    m = re.match(r"^(?:https?://)?(?:www\.|m\.|web\.)?facebook\.com/([^/?#]+)", v)
+    name = m.group(1) if m else (v.strip("/") if "/" not in v.strip("/") else None)
+    if not name or name.lower() in FB_SKIP:
+        return None
+    return f"facebook.com/{name}"
+
+
+def reach_fill(out, place_id):
+    """The census's own columns win; the B61 table fills what they left empty."""
+    row = (reach_table() or {}).get(place_id or "")
+    if row:
+        for f in ("instagram", "facebook", "email"):
+            if not out.get(f) and row.get(f):
+                out[f] = row[f]
+    return out
 
 
 # ---- the services census (B43's `businesses`; B44 reads it) -------------------------
@@ -594,19 +694,28 @@ def ledger_append(event):
 
 # ---- reading a listing ---------------------------------------------------------
 
+def open_always(periods):
+    """Google says "open 24 hours" with a single period that has no close and opens at day 0, hour 0 —
+    the day field is present and zero, not missing, so a 24/7 listing must never read as closed Saturdays."""
+    if len(periods or []) != 1 or "close" in (periods[0] or {}):
+        return False
+    o = (periods[0] or {}).get("open") or {}
+    return o.get("day") in (None, 0) and not o.get("hour") and not o.get("minute")
+
+
 def saturday_open(details):
     """(hour, minute) of the earliest Saturday opening, 'closed', or None (no hours)."""
     hours = (details or {}).get("regularOpeningHours") or {}
     periods = hours.get("periods")
     if not periods:
         return None
+    if open_always(periods):
+        return (0, 0)
     opens = []
     for p in periods:
         o = p.get("open") or {}
         if o.get("day") == 6:
             opens.append((o.get("hour", 0), o.get("minute", 0)))
-        elif "close" not in p and o.get("day") is None:
-            return (0, 0)  # open 24/7 comes as one open with no close
     return min(opens) if opens else "closed"
 
 
@@ -1079,7 +1188,8 @@ def render_segment(order, segment, for_date, today, mode, note, skipped, census_
 GROUPS_LOG = Path(os.environ.get("LEADS_GROUPS_LOG", PROJECTS / "social/leads-from-groups.md"))
 SIGNOFF = "Taylor"
 IG_SKIP = {"p", "reel", "reels", "explore", "stories", "tv", "accounts", "popular"}
-FB_SKIP = {"groups", "events", "pages", "search", "watch", "marketplace", "hashtag", "people", "sharer", "profile.php"}
+FB_SKIP = {"groups", "events", "pages", "search", "watch", "marketplace", "hashtag", "people", "share", "sharer",
+           "profile.php"}   # facebook.com/share/<id> is somebody's share link, not a page to message
 TEXT_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
 TEXT_SEARCH_COST_USD = 0.032
 
@@ -1089,7 +1199,8 @@ def mail_address():
 
 
 def reach(c):
-    """Where the owner can be messaged, from the census's own search results: {'instagram', 'facebook', 'email'}."""
+    """Where the owner can be messaged, from the census's own search results, then B61's `reach` table:
+    {'instagram', 'facebook', 'email'}."""
     out = {"instagram": None, "facebook": None, "email": (c.get("contact_email") or "").strip() or None}
     try:
         top = json.loads(c.get("serp_top3") or "[]")
@@ -1103,7 +1214,7 @@ def reach(c):
         m = re.match(r"^https?://(?:www\.|m\.|web\.)?facebook\.com/([^/?#]+)", url)
         if m and not out["facebook"] and m.group(1).lower() not in FB_SKIP:
             out["facebook"] = f"facebook.com/{m.group(1)}"
-    return out
+    return reach_fill(out, c.get("place_id"))
 
 
 def clean_name(name):
@@ -1275,6 +1386,10 @@ def build_remote(args):
     if not args.fixture and not args.no_save:
         (STATE / "remote").mkdir(parents=True, exist_ok=True)
         (STATE / "remote" / f"{today.isoformat()}.md").write_text(page)
+        # the same seam `--json` prints, kept on disk so `leads today` can read the morning's six
+        # without paying for the listings twice
+        (STATE / "remote" / f"{today.isoformat()}.json").write_text(
+            json.dumps(kit_json(picks, "restaurant", today), indent=1, default=str) + "\n")
         with open(STATE / "remote.jsonl", "a") as f:
             f.write(json.dumps({"ts": dt.datetime.now(TZ).isoformat(timespec="seconds"), "for": today.isoformat(),
                                 "place_ids": [p["place_id"] for p in picks], "names": [p["name"] for p in picks], "mode": mode}) + "\n")
@@ -1358,9 +1473,14 @@ def greeting(c):
 
 
 def business_reach(c):
-    """Where a business can be messaged, from the link on its own listing: an Instagram or Facebook page is a DM,
-    a directory profile has its own message button. {'instagram','facebook','directory','email'}."""
+    """Where a business can be messaged: the link on its own listing first (an Instagram or Facebook page is a DM,
+    a directory profile has its own message button), then B61's `reach` table, which is the only place a service
+    business's email address comes from. {'instagram','facebook','directory','email'}."""
     out = {"instagram": None, "facebook": None, "directory": None, "email": None}
+    if not c.get("presence"):        # a row straight from census_lookup hasn't been classed yet
+        cls, label, link = presence(c)
+        c["presence"], c["presence_label"] = cls, label
+        c["presence_link"] = c.get("presence_link") or link
     url = c.get("presence_link") or c.get("website") or ""
     m = re.match(r"^(?:https?://)?(?:www\.|m\.)?instagram\.com/([A-Za-z0-9_.]+)", url)
     if m and m.group(1).lower() not in IG_SKIP:
@@ -1370,7 +1490,7 @@ def business_reach(c):
         out["facebook"] = f"facebook.com/{m.group(1)}"
     if c.get("presence") == "directory" and url:
         out["directory"] = (c.get("presence_label") or host_of(url), url)
-    return out
+    return reach_fill(out, c.get("place_id"))
 
 
 def business_reach_line(rc):
@@ -1381,6 +1501,8 @@ def business_reach_line(rc):
         bits.append(rc["facebook"])
     if rc.get("directory"):
         bits.append(f"{rc['directory'][0]} profile")
+    if rc.get("email"):
+        bits.append(rc["email"])
     return " · ".join(bits)
 
 
@@ -1466,6 +1588,8 @@ def build_segment_remote(args, segment):
     if not args.fixture and not args.no_save:
         (STATE / "remote").mkdir(parents=True, exist_ok=True)
         (STATE / "remote" / f"{today.isoformat()}-{segment}.md").write_text(page)
+        (STATE / "remote" / f"{today.isoformat()}-{segment}.json").write_text(
+            json.dumps(kit_json(picks, segment, today), indent=1, default=str) + "\n")
         with open(STATE / "remote.jsonl", "a") as f:
             f.write(json.dumps({"ts": dt.datetime.now(TZ).isoformat(timespec="seconds"), "for": today.isoformat(),
                                 "segment": segment, "place_ids": [p["place_id"] for p in picks],
@@ -1499,6 +1623,8 @@ def render_segment_remote(picks, segment, today, mode, note, census_date, emails
             lines.append(f"   Message on Facebook: {rc['facebook']}")
         elif rc["directory"]:
             lines.append(f"   Message on {rc['directory'][0]}: {rc['directory'][1]}")
+        elif rc.get("email"):
+            lines.append(f"   Email: {rc['email']}")
         else:
             lines.append(f"   No page to message — call {p.get('phone') or 'them'}; the message is the opener")
         if p.get("preview_url"):
@@ -1506,7 +1632,8 @@ def render_segment_remote(picks, segment, today, mode, note, census_date, emails
         lines.append(f"   \"{p['message']}\"")
         if emails:
             subject, _ = segment_email(p, p["faults"])
-            lines.append(f"   Email (to: {'their FB About' if rc['facebook'] else 'none known'}): \"{subject}\" + the message + footer")
+            to = rc.get("email") or ("their FB About" if rc["facebook"] else "none known")
+            lines.append(f"   Email (to: {to}): \"{subject}\" + the message + footer")
         if p.get("maps"):
             lines.append(f"   {p['maps']}")
         lines.append("")
@@ -2344,7 +2471,7 @@ def preview_claim(args):
             print(f"leads: git {git_args[0]} in {dest}: {(g.stderr or g.stdout).strip()[:160]}", file=sys.stderr)
     r = subprocess.run([str(SITE_BIN), "publish", repo], capture_output=True, text=True, cwd=str(ws))
     print((r.stdout + r.stderr).strip()[-600:])
-    m["claimed"] = slug
+    m["claimed"], m["claimed_on"] = slug, now_date().isoformat()     # the week counts claims by date (B52)
     preview_save(m)
     print(f"claimed: clients/{slug} · repos/{repo} · the preview is marked claimed "
           f"(`leads preview --remove {m['slug']}` takes it off the previews host)")
@@ -2359,14 +2486,29 @@ OUTCOMES = {
     "messaged":   ("contacted", 4, "a DM or email went out, no answer yet"),
     "visited":    ("contacted", 3, "walked in, the decision-maker wasn't there"),
     "talked":     ("contacted", 7, "talked to the owner or manager, no decision"),
+    "inbound":    ("interested", 1, "they came to us — the site form, the demo line, a reply"),
     "interested": ("interested", 2, "wants to hear more"),
     "demo":       ("negotiating", 2, "saw the demo / talked price"),
     "later":      ("contacted", 30, "not now; ask again in a month"),
+    "trial":      ("trialing", 5, "the free week started"),
     "won":        ("won", None, "said yes"),
     "lost":       ("lost", None, "said no, or not a fit"),
+    "churned":    ("churned", None, "was paying, cancelled"),
 }
-STAGES = ["contacted", "interested", "negotiating", "won", "lost"]
+STAGES = ["contacted", "interested", "negotiating", "trialing", "won", "lost", "churned"]
 WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+# The channel a touch came through, so the week can be cut by it (B52, GROWTH § 2.4). `--via` is
+# the older, freer word; this is the short list the week counts.
+SOURCES = ("email", "dm", "group", "saturday", "referral", "inbound", "mail")
+VIA_SOURCE = {"email": "email", "dm": "dm", "instagram": "dm", "facebook": "dm", "message": "dm",
+              "group": "group", "counter": "saturday", "visit": "saturday", "door": "saturday",
+              "referral": "referral", "mail": "mail", "postcard": "mail",
+              "inbound": "inbound", "form": "inbound", "text": "inbound", "web": "inbound"}
+# A conversation is a real exchange: the outcomes that mean somebody talked back (or came to us).
+CONVERSATION = ("visited", "talked", "inbound", "interested", "demo", "later", "trial", "won", "lost")
+# § 5.5: day 0 the fault and the preview, then these, and back in the pool at 90.
+CADENCE = (3, 10, 30)
 
 
 def parse_when(text, today):
@@ -2420,7 +2562,7 @@ def pipeline_state():
         lead = leads.setdefault(k, {"key": k, "place_id": e.get("place_id"), "name": e["name"], "city": e.get("city"),
                                     "history": [], "who": None, "email": None, "phone": None, "reach": None})
         lead["history"].append(e)
-        for f in ("name", "city", "stage", "outcome", "next", "reach"):
+        for f in ("name", "city", "stage", "outcome", "next", "reach", "source"):
             if f in e:
                 lead[f] = e[f]
         for f in ("who", "email", "phone"):
@@ -2428,6 +2570,38 @@ def pipeline_state():
                 lead[f] = e[f]
         lead["last"] = e["date"]
     return leads
+
+
+def source_for(explicit, via, outcome, lead=None, row=None, reach_row=None):
+    """The channel to record (B52): what was asked for, else what `--via` says, else the channel this lead
+    was already on, else — for a first message — the reach the kit would have used. Unknown stays unknown:
+    the week counts an `unknown` row rather than inventing one."""
+    if explicit:
+        s = explicit.strip().lower()
+        if s not in SOURCES:
+            die(f"--source is one of: {', '.join(SOURCES)}")
+        return s
+    if via and VIA_SOURCE.get(via.strip().lower()):
+        return VIA_SOURCE[via.strip().lower()]
+    if outcome == "inbound":
+        return "inbound"            # they came to us, whatever channel we were on with them
+    if lead and lead_source(lead):
+        return lead_source(lead)
+    if outcome == "messaged":
+        rc = reach_row or ((business_reach(row) if is_business(row) else reach(row)) if row else {})
+        if rc.get("email"):
+            return "email"
+        if rc.get("instagram") or rc.get("facebook") or rc.get("directory"):
+            return "dm"
+    return None
+
+
+def lead_source(lead):
+    """The channel a lead is on: the first one any of its events recorded."""
+    for e in lead.get("history") or []:
+        if e.get("source"):
+            return e["source"]
+    return None
 
 
 def claimed_places():
@@ -2443,7 +2617,8 @@ def pipeline_skip():
     """place_ids the kits should leave alone: anyone won or lost, and anyone with a follow-up still ahead."""
     today = dt.datetime.now(TZ).date().isoformat()
     return {l["place_id"] for l in pipeline_state().values()
-            if l.get("place_id") and (l.get("stage") in ("won", "lost") or (l.get("next") or "") > today)}
+            if l.get("place_id") and (l.get("stage") in ("won", "lost", "trialing", "churned")
+                                      or (l.get("next") or "") > today)}
 
 
 def resolve_lead(raw, place=None):
@@ -2471,12 +2646,21 @@ def resolve_lead(raw, place=None):
 
 
 def _census_by_id(place_id):
+    """The census row for one place, from either census (the services columns come too, so a services
+    lead gets `business_reach` and the business faults, not a restaurant's)."""
+    if not place_id or not CENSUS.exists():
+        return []
+    has_b, _ = businesses_state()
+    b_cols = ("CASE WHEN r.place_id IS NULL THEN b.segment END AS segment, b.category, b.presence_class, "
+              "b.presence_url, COALESCE(r.city, b.city) AS city" if has_b else
+              "NULL AS segment, NULL AS category, NULL AS presence_class, NULL AS presence_url, r.city")
+    b_join = "LEFT JOIN businesses b ON b.place_id = p.place_id" if has_b else ""
     conn = sqlite3.connect(f"file:{CENSUS}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
-    rows = conn.execute("""SELECT p.*, r.on_doordash, r.on_uber, r.on_grubhub, r.channel_class, r.parasite_url, r.serp_top3,
-                                  r.contact_name, r.contact_email, r.city
-                           FROM place_cache p LEFT JOIN restaurants r ON r.place_id = p.place_id WHERE p.place_id = ?""",
-                        (place_id,)).fetchall()
+    rows = conn.execute(f"""SELECT p.*, r.on_doordash, r.on_uber, r.on_grubhub, r.channel_class, r.parasite_url,
+                                   r.serp_top3, r.contact_name, r.contact_email, {b_cols}
+                            FROM place_cache p LEFT JOIN restaurants r ON r.place_id = p.place_id {b_join}
+                            WHERE p.place_id = ?""", (place_id,)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
@@ -2491,13 +2675,21 @@ def cmd_log(args):
     nxt = parse_when(args.next, today) if args.next is not None else (today + dt.timedelta(days=days) if days else None)
     if nxt and nxt.weekday() == 6 and args.next is None:
         nxt += dt.timedelta(days=1)            # nobody follows up on a Sunday
+    lead = pipeline_state().get(key)
     event = {"ts": dt.datetime.now(TZ).isoformat(timespec="seconds"), "date": today.isoformat(), "key": key,
              "place_id": pid, "name": name, "city": city, "outcome": outcome, "stage": stage,
              "next": nxt.isoformat() if nxt else None, "note": " ".join(args.note).strip() or None,
              "who": args.who, "email": args.email, "phone": args.phone or (row or {}).get("phone"), "via": args.via}
+    if args.next is not None and nxt:
+        event["next_by"] = "hand"          # a date Taylor named; the cadence never writes over it
+    rc = None
     if row:
-        rc = reach(row)
-        event["reach"] = reach_line(rc) or None
+        rc = business_reach(row) if is_business(row) else reach(row)
+        event["reach"] = (business_reach_line(rc) if is_business(row) else reach_line(rc)) or None
+        event["email"] = event.get("email") or rc.get("email")
+        if outcome == "messaged":
+            event["was"] = "; ".join(lead_faults(row, None, today)[0][:2]) or None
+    event["source"] = source_for(getattr(args, "source", None), args.via, outcome, lead, row, rc)
     PIPELINE.parent.mkdir(parents=True, exist_ok=True)
     with open(PIPELINE, "a") as f:
         f.write(json.dumps({k: v for k, v in event.items() if v is not None or k == "next"}) + "\n")
@@ -2537,11 +2729,16 @@ def cmd_sent(args):
             die(f"the last remote kit ({last['for']}) has {len(ids)} leads, not {i}")
         row = (_census_by_id(ids[i - 1]) or [{}])[0]
         nxt = today + dt.timedelta(days=OUTCOMES["messaged"][1])
+        biz = is_business(row)
+        rc = (business_reach(row) if biz else reach(row)) if row else {}
         event = {"ts": dt.datetime.now(TZ).isoformat(timespec="seconds"), "date": today.isoformat(),
                  "key": f"place:{ids[i - 1]}", "place_id": ids[i - 1], "name": clean_name(names[i - 1]),
                  "city": row.get("locality") or row.get("city"), "outcome": "messaged", "stage": "contacted",
                  "next": nxt.isoformat(), "via": args.via, "phone": row.get("phone"),
-                 "reach": reach_line(reach(row)) or None, "note": f"remote kit {last['for']} #{i}"}
+                 "reach": ((business_reach_line(rc) if biz else reach_line(rc)) or None) if row else None,
+                 "email": rc.get("email"), "source": source_for(args.source, args.via, "messaged", None, row, rc),
+                 "was": ("; ".join(lead_faults(row, None, today)[0][:2]) or None) if row else None,
+                 "note": f"remote kit {last['for']} #{i}"}
         PIPELINE.parent.mkdir(parents=True, exist_ok=True)
         with open(PIPELINE, "a") as f:
             f.write(json.dumps({k: v for k, v in event.items() if v is not None}) + "\n")
@@ -2560,9 +2757,14 @@ def lead_line(l, day):
     late = (day - dt.date.fromisoformat(l["next"])).days
     tag = f" · {late}d late" if late > 0 else ""
     last = l["history"][-1]
+    what = (f"day {last.get('touch')} touch by {last.get('channel')}" if last.get("kind") == "touch_due"
+            else f"{last['outcome']} {last['date'][5:]}")
     note = f" — \"{last['note']}\"" if last.get("note") else ""
-    contact = " · ".join(x for x in (l.get("who"), l.get("phone"), l.get("reach"), l.get("email")) if x)
-    return (f"{l['name']}{' (' + l['city'] + ')' if l.get('city') else ''} · {l['stage']}, {last['outcome']} {last['date'][5:]}"
+    parts = [l.get("who"), l.get("phone"), l.get("reach")]
+    if l.get("email") and l["email"] not in (l.get("reach") or ""):
+        parts.append(l["email"])                      # the reach line already carries it when B61 found one
+    contact = " · ".join(x for x in parts if x)
+    return (f"{l['name']}{' (' + l['city'] + ')' if l.get('city') else ''} · {l['stage']}, {what}"
             f"{tag}{note}" + (f"\n     {contact}" if contact else ""))
 
 
@@ -2634,10 +2836,114 @@ def week_bounds(today):
     return start, start + dt.timedelta(days=6)
 
 
+# GROWTH § 2.4, week 1 of the ramp: what the machine should be producing in its first week.
+WEEK1_TARGET = {"messages sent": "15", "previews built": "6", "replies": "3", "conversations": "5",
+                "fixes / claims": "1", "trials": "1", "paid": "0–1"}
+CHANNEL_COLS = ("sent", "replies", "conversations", "fixes", "trials", "paid", "churned")
+
+
+def week_events(start, end):
+    return [e for e in pipeline_events() if start.isoformat() <= e["date"] <= end.isoformat()]
+
+
+def event_source(e, state):
+    """The channel to file an event under: its own, else the one the lead came in on."""
+    return e.get("source") or lead_source(state.get(e["key"]) or {}) or "unknown"
+
+
+def followups(start, end, state):
+    """(due in the week, answered since) — the § 2.4 row nobody else counts."""
+    due = done = 0
+    for lead in state.values():
+        for i, e in enumerate(lead["history"]):
+            when = e.get("next")
+            if not when or not (start.isoformat() <= when <= end.isoformat()):
+                continue
+            due += 1
+            if any(x["date"] >= when for x in lead["history"][i + 1:]):
+                done += 1
+    return due, done
+
+
+def week_numbers(start, end):
+    """Everything the Sunday review reports (B52): the funnel per channel, the § 2.4 indicators."""
+    state = pipeline_state()
+    evs = week_events(start, end)
+    messaged = {e["key"] for e in pipeline_events() if e.get("outcome") == "messaged"}
+    by = {}
+    for e in evs:
+        src = event_source(e, state)
+        row = by.setdefault(src, dict.fromkeys(CHANNEL_COLS, 0))
+        o = e.get("outcome")
+        if o == "messaged":
+            row["sent"] += 1
+        if o in CONVERSATION:
+            row["conversations"] += 1
+            if e["key"] in messaged:
+                row["replies"] += 1            # an answer to something we sent
+        if o == "trial":
+            row["trials"] += 1
+        if o == "won":
+            row["paid"] += 1
+        if o == "churned":
+            row["churned"] += 1
+    previews = [m for m in previews_all() if start.isoformat() <= (m.get("built") or "") <= end.isoformat()]
+    linked = [m for m in previews if f"place:{m.get('place_id')}" in messaged]
+    for m in previews_all():
+        when = m.get("claimed_on") or ""
+        if m.get("claimed") and start.isoformat() <= when <= end.isoformat():
+            lead = state.get(f"place:{m.get('place_id')}") or {}
+            by.setdefault(lead_source(lead) or "unknown", dict.fromkeys(CHANNEL_COLS, 0))["fixes"] += 1
+    total = {c: sum(r[c] for r in by.values()) for c in CHANNEL_COLS}
+    due, done = followups(start, end, state)
+    return {"week_of": start.isoformat(), "by_channel": by, "total": total,
+            "indicators": {"messages sent": total["sent"], "previews built": len(previews),
+                           "previews linked": len(linked), "replies": total["replies"],
+                           "conversations": total["conversations"], "fixes / claims": total["fixes"],
+                           "trials": total["trials"], "paid": total["paid"],
+                           "follow-ups due": due, "follow-ups done": done},
+            "pipeline": {s: sum(1 for l in state.values() if l.get("stage") == s) for s in STAGES},
+            "won_total": sum(1 for l in state.values() if l.get("stage") == "won"),
+            "due_now": len(due_by(now_date()))}
+
+
+def week_by_channel(w, start):
+    """The Sunday message: under 25 lines, one row a channel, then the § 2.4 indicators."""
+    lines = [f"Week of {start.strftime('%-d %b')} — by channel · " + " · ".join(CHANNEL_COLS)]
+    order = sorted((s for s, r in w["by_channel"].items() if any(r.values())),
+                   key=lambda s: (-w["by_channel"][s]["sent"], s))
+    for src in order:
+        r = w["by_channel"][src]
+        lines.append(f"  {src:<9} " + " · ".join(str(r[c]) for c in CHANNEL_COLS))
+    lines.append(f"  {'total':<9} " + " · ".join(str(w['total'][c]) for c in CHANNEL_COLS))
+    if not order:
+        lines.append("  (nothing logged this week — `leads log` after every conversation)")
+    lines.append("Indicators (GROWTH § 2.4, week 1 in brackets):")
+    ind = w["indicators"]
+    shown = [f"{k} {v}" + (f" [{WEEK1_TARGET[k]}]" if k in WEEK1_TARGET else "")
+             for k, v in ind.items() if not k.startswith("follow-ups")]
+    shown.append(f"follow-ups due {ind['follow-ups due']}, done {ind['follow-ups done']}")
+    for i in range(0, len(shown), 3):
+        lines.append("  " + " · ".join(shown[i:i + 3]))
+    lines.append("Pipeline now: " + " · ".join(f"{w['pipeline'][s]} {s}" for s in STAGES if w["pipeline"][s])
+                 + f" · {w['due_now']} follow-ups due")
+    lines.append(f"Target: 3 paying by 31 Oct, 10 by 31 Dec — {w['won_total']} won so far.")
+    lines.append("One change for the week: pick the row above that is furthest from its § 2.4 number.")
+    return "\n".join(lines) + "\n"
+
+
 def cmd_week(args):
-    today = dt.datetime.now(TZ).date()
+    today = now_date()
     start, end = week_bounds(today - dt.timedelta(weeks=args.ago))
-    evs = [e for e in pipeline_events() if start.isoformat() <= e["date"] <= end.isoformat()]
+    if args.by == "channel" or args.json:
+        w = week_numbers(start, end)
+        msg = week_by_channel(w, start)
+        if args.json:
+            print(json.dumps(dict(w, message=msg), indent=1, default=str))
+            return
+        print(msg, end="")
+        return
+    evs = week_events(start, end)
     counts = {o: sum(1 for e in evs if e["outcome"] == o) for o in OUTCOMES}
     convo = sum(counts[o] for o in ("visited", "talked", "interested", "demo", "later", "won", "lost"))
     state = pipeline_state()
@@ -2658,6 +2964,450 @@ def cmd_week(args):
     print(f"Kits: {kits} Saturday, {remote} remote this week.")
     won = sum(1 for l in state.values() if l.get("stage") == "won")
     print(f"Target: 3 paying by 31 Oct, 10 by 31 Dec — {won} won so far.")
+
+
+# ---- the cadence, the 07:30 message and the brief (B48; the week by channel is B52) ------
+
+OUTREACH_STATE = Path(os.environ.get("OUTREACH_STATE", Path.home() / ".local/state/claude-tools/outreach"))
+EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+
+# GROWTH § 5.5. Day 0 is the fault and the preview; 90 is back in the pool, which the kit's
+# own suppression already does. A day-3 touch is a DM or a second email, never a text to a cell.
+TOUCH_WHAT = {
+    3: "the other channel, one line: the preview's up, text Patch anything on it",
+    10: "the preview comes down soon — want it kept? it's free to claim",
+    30: "a fresh read of the listing: one new thing wrong, or the offer stands",
+}
+TOUCH_SHORT = {3: "the other channel", 10: "the preview expiry", 30: "a fresh read of the listing"}
+
+# GROWTH § 6.2, verbatim: the six objections and the answer to each. The brief carries the one
+# that fits the segment, then the one that usually follows it.
+OBJECTIONS = {
+    "nephew": ('"My nephew does my website."',
+               "Keep him. This is for the 4pm \"we're closed Monday\" that he's not answering. $99 and it's "
+               "done in a minute; he can still do the big stuff."),
+    "referrals": ('"All my work is referrals, I don\'t need a website."',
+                  "Your referrals still Google you before they call. Right now they hit a dead link / a Facebook "
+                  "page / nothing. That's the thing to fix; the rest is optional."),
+    "directory": ('"I\'m on Thumbtack / Angi."',
+                  "Then you're paying for every lead and sharing it with four others. A site of your own is where "
+                  "the ones who already chose you land. Keep Thumbtack; stop being only on Thumbtack."),
+    "ai": ('"AI will break something / say something wrong."',
+           "It changes only your site, inside a folder that holds only your things, and every change is saved so "
+           "\"undo that\" works. It never posts for you or answers a customer unless you tell it to, and it says "
+           "it's AI if anyone asks."),
+    "price": ('"$99 is a lot."',
+              "It's a website, hosting, the changes and someone to call, on one bill. The $50 plan is the same "
+              "thing for a menu or a price list that changes now and then; the $10 plan just keeps a site up. "
+              "Start where you're comfortable; moving up is a text."),
+    "think": ('"Let me think about it."',
+              "Sure. What day should I text you? — a date, logged; the day-10 preview expiry does the rest."),
+}
+# The one each segment hears first (GROWTH § 3.1–3.5: services sell against referrals, the rest against price),
+# and the one that follows it. A directory profile as the website overrides both.
+SEGMENT_OBJECTION = {"services": ("referrals", "price"), "creatives": ("price", "referrals"),
+                     "retail": ("price", "referrals"), "nonprofit": ("price", "think"),
+                     "restaurant": ("nephew", "price")}
+
+
+def env_value(name):
+    """A toolbelt setting by name (never a printed value; these are links and flags, not keys)."""
+    return (os.environ.get(name) or _env_file(ENV_FILE).get(name) or "").strip() or None
+
+
+def previews_on():
+    return (env_value("LEADS_KIT_PREVIEWS") or "").lower() in ("1", "true", "yes", "on")
+
+
+def lead_email(lead):
+    if lead.get("email"):
+        return lead["email"]
+    m = EMAIL_RE.search(lead.get("reach") or "")
+    return m.group(0) if m else None
+
+
+def lead_handle(lead):
+    """The page to message this lead on, from the reach line the kit recorded."""
+    r = lead.get("reach") or ""
+    m = re.search(r"Instagram @([A-Za-z0-9_.]+)", r)
+    if m:
+        return f"instagram.com/{m.group(1)}"
+    m = re.search(r"(facebook\.com/[^\s·]+)", r)
+    if m:
+        return m.group(1)
+    m = re.search(r"([A-Za-z][A-Za-z ]*) profile", r)
+    return f"their {m.group(1)} profile" if m else None
+
+
+def first_message(lead):
+    for e in lead.get("history") or []:
+        if e.get("outcome") == "messaged":
+            return e
+    return None
+
+
+def answered_since(lead):
+    """True once somebody talked back: the cadence chases silence only."""
+    m = first_message(lead)
+    if not m:
+        return True
+    return any(e.get("outcome") in CONVERSATION and e["date"] >= m["date"] for e in lead["history"])
+
+
+def touches_done(lead):
+    return {int(e["touch"]) for e in lead.get("history") or [] if e.get("kind") == "touch_due" and e.get("touch")}
+
+
+def touch_channel(lead, touch):
+    """§ 5.5: day 3 is the *other* channel; 10 and 30 are Patch's, so email where there is an address.
+    Never SMS — a cold text is the one touch the law forbids (§ 8.1). `call` means Taylor's thumb."""
+    has_mail, has_dm = bool(lead_email(lead)), bool(lead_handle(lead))
+    want = ("dm" if lead_source(lead) == "email" else "email") if touch == 3 else "email"
+    if want == "email" and has_mail:
+        return "email"
+    if want == "dm" and has_dm:
+        return "dm"
+    if has_dm:
+        return "dm"
+    return "email" if has_mail else "call"
+
+
+def cadence_rows(today, state=None):
+    """[(lead, touch, channel, due)] — each silent lead's next touch, due today or already late."""
+    out = []
+    for lead in (state or pipeline_state()).values():
+        if lead.get("stage") in ("won", "lost", "trialing", "churned") or answered_since(lead):
+            continue
+        last = lead["history"][-1]
+        if last.get("next_by") == "hand" and lead.get("next"):
+            continue                                  # a date Taylor named wins over the cadence
+        done, d0 = touches_done(lead), dt.date.fromisoformat(first_message(lead)["date"])
+        floor = max(done) if done else 0
+        ready = [t for t in CADENCE if t > floor and d0 + dt.timedelta(days=t) <= today]
+        if ready:
+            # the latest touch that has come due, never a catch-up queue: a day-3 line missed while
+            # the timer was off is not worth sending on day 12 — the day-10 one is.
+            touch = ready[-1]
+            out.append((lead, touch, touch_channel(lead, touch), d0 + dt.timedelta(days=touch)))
+    out.sort(key=lambda r: (r[3].isoformat(), r[0]["name"]))
+    return out
+
+
+def record_touch(lead, touch, channel, due, today):
+    """The touch as a pipeline event, so `leads due` and the 07:30 message see it like any follow-up."""
+    event = {"ts": dt.datetime.now(TZ).isoformat(timespec="seconds"), "date": today.isoformat(),
+             "key": lead["key"], "place_id": lead.get("place_id"), "name": lead["name"], "city": lead.get("city"),
+             "outcome": "touch_due", "kind": "touch_due", "stage": lead.get("stage") or "contacted",
+             "touch": touch, "channel": channel, "next": due.isoformat(), "source": lead_source(lead),
+             "note": TOUCH_WHAT[touch]}
+    PIPELINE.parent.mkdir(parents=True, exist_ok=True)
+    with open(PIPELINE, "a") as f:
+        f.write(json.dumps({k: v for k, v in event.items() if v is not None}) + "\n")
+    return event
+
+
+def touch_do(lead, touch, channel):
+    """The one thing to do about this touch — a line Taylor can act on, or the command that drafts it."""
+    if channel == "email":
+        if touch in (3, 10):     # the approved letters; day 30 is one line off the fresh read, not a template
+            return f"outreach send --touch {touch} --dry-run  (drafts it to {lead_email(lead)})"
+        return f"one line to {lead_email(lead)} off the read below"
+    if channel == "dm":
+        return f"DM {lead_handle(lead)}"
+    return f"call {lead.get('phone') or 'them'} — no page and no address (B61 hasn't found one)"
+
+
+def cmd_cadence(args):
+    today = now_date()
+    rows = cadence_rows(today)
+    if not rows:
+        print("No touches due: every messaged lead has either answered or isn't at day 3 yet.")
+        return
+    lines = []
+    for lead, touch, channel, due in rows:
+        if not args.dry_run:
+            record_touch(lead, touch, channel, due, today)
+        late = (today - due).days
+        lines.append(f"  {lead['name']} — day {touch}{f' ({late}d late)' if late else ''} by {channel}: "
+                     f"{touch_do(lead, touch, channel)}")
+    print(f"{len(rows)} touch{'es' if len(rows) != 1 else ''} due{' (dry run: nothing written)' if args.dry_run else ''}:")
+    print("\n".join(lines))
+    dm = [r for r in rows if r[2] != "email"]
+    if dm:
+        print(f"{len(dm)} for your thumb; the email ones are the schedule's `outreach send --touch N`.")
+
+
+def due_touch(lead, today):
+    """(what this lead is owed, the thing to do) for a row in `leads due` — a cadence touch, a date
+    Taylor named, or the outcome's own default follow-up."""
+    last = lead["history"][-1]
+    if last.get("kind") == "touch_due":
+        touch, channel = int(last.get("touch") or 0), last.get("channel") or "dm"
+        return f"day {touch}, {TOUCH_SHORT.get(touch, 'a follow-up')}", touch_do(lead, touch, channel)
+    if last.get("next_by") == "hand":
+        when = dt.date.fromisoformat(lead["next"])
+        return f"you said {when.strftime('%a')}", f"call {lead.get('phone') or lead_handle(lead) or 'them'}"
+    _, days, meaning = OUTCOMES.get(last.get("outcome") or "", ("", None, "a follow-up"))
+    return meaning, f"call {lead.get('phone') or lead_handle(lead) or 'them'}"
+
+
+def thirty_day_read(lead, args, today):
+    """§ 5.5's day 30: one fresh Place Details call (cached seven days), for a row due today only."""
+    pid = lead.get("place_id")
+    if not pid:
+        return None
+    key, where = (None, None) if args.census_only else places_key()
+    if not (key or args.fixture):
+        return "no Places key here — read the listing by hand"
+    places = Places(key, where, fixture=args.fixture)
+    details = places.get(pid)
+    if places.calls:
+        ledger_append({"ts": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()), "kind": "places_details",
+                       "tool": "leads", "calls": places.calls, "cost_usd": round(places.calls * DETAILS_COST_USD, 3),
+                       "billed_to": f"google:GOOGLE_MAPS_API_KEY({where})", "project": "global",
+                       "for": f"day-30 read {lead['name']} {today}"})
+    if not details:
+        return places.failed or "the listing wouldn't read"
+    row = (_census_by_id(pid) or [{}])[0] or {"name": lead["name"]}
+    fs, _ = lead_faults(row, details, today)
+    was = (first_message(lead) or {}).get("was") or ""
+    if not fs:
+        return "the listing is clean now — lead with what a site would add"
+    new = [f for f in fs if f not in was]
+    return (f"new since the message: {new[0]}" if new else f"still {fs[0]} — the offer stands")
+
+
+def yesterdays_replies(day):
+    """(the lane is configured, [rows]) — read from `outreach`'s inbox log, never written here."""
+    if not OUTREACH_STATE.exists():
+        return False, []
+    p = OUTREACH_STATE / "replies.jsonl"
+    rows = []
+    for line in (p.read_text().splitlines() if p.exists() else []):
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if r.get("date") == day.isoformat():
+            rows.append(r)
+    return True, rows
+
+
+def inbound_rows(today, state=None):
+    """What came to us since yesterday (the relay's inbound lane logs `leads log NAME inbound …`):
+    the site form, the demo line, a reply on a channel we weren't watching."""
+    since = (today - dt.timedelta(days=1)).isoformat()
+    out = []
+    for lead in (state or pipeline_state()).values():
+        for e in lead["history"]:
+            if e.get("outcome") == "inbound" and since <= e["date"] <= today.isoformat():
+                out.append({"name": lead["name"], "date": e["date"], "note": e.get("note"),
+                            "phone": lead.get("phone") or e.get("phone"), "key": lead["key"]})
+    return sorted(out, key=lambda r: (r["date"], r["name"]), reverse=True)
+
+
+def warmest(today, state=None):
+    """The first call of the day (§ 5.1): the warmest thing in the pipeline, and why in one line."""
+    best = None
+    for lead in (state or pipeline_state()).values():
+        if lead.get("stage") in ("won", "lost", "churned"):
+            continue
+        last = lead["history"][-1]
+        rank = {"inbound": 5, "interested": 4, "demo": 4, "trial": 3,
+                "talked": 2, "visited": 2}.get(last.get("outcome") or "")
+        if not rank:
+            continue
+        if lead.get("next") and lead["next"] <= today.isoformat():
+            rank += 1                                  # their own date has come
+        if best is None or (rank, last["date"]) > (best[1], best[2]["date"]):
+            best = (lead, rank, last)
+    if not best:
+        return None
+    lead, _, last = best
+    why = (f"{last['outcome']} {dt.date.fromisoformat(last['date']).strftime('%-d %b')}"
+           + (f": \"{last['note']}\"" if last.get("note") else ""))
+    return {"name": lead["name"], "phone": lead.get("phone"), "why": why, "key": lead["key"]}
+
+
+def todays_kit(args, today):
+    """Today's six: the remote run already saved today, else one run now (about $0.15 of Places;
+    previews too when LEADS_KIT_PREVIEWS is set)."""
+    folder = STATE / "remote"
+    saved = sorted(folder.glob(f"{today.isoformat()}*.json"), key=lambda p: p.stat().st_mtime) if folder.exists() else []
+    if saved and not args.fresh:
+        try:
+            return json.loads(saved[-1].read_text()), False
+        except ValueError:
+            pass
+    segment = resolve_segment(args.segment)
+    ns = argparse.Namespace(census_only=args.census_only, fixture=args.fixture, refresh=False, radius=30.0,
+                            min_reviews=25 if segment == "restaurant" else None, allow_repeat=False,
+                            n=args.n, previews=previews_on(), no_save=args.no_save)
+    try:
+        _, picks = (build_remote if segment == "restaurant" else lambda a: build_segment_remote(a, segment))(ns)
+    except SystemExit:
+        return {"date": today.isoformat(), "segment": segment, "picks": []}, True
+    return kit_json(picks, segment, today), True
+
+
+def today_data(args, today):
+    """Everything the 07:30 message says, as data (`--json` prints this and the message itself)."""
+    kit, fresh = todays_kit(args, today)
+    lane, reps = yesterdays_replies(today - dt.timedelta(days=1))
+    state = pipeline_state()
+    due = []
+    for lead in due_by(today):
+        what, do = due_touch(lead, today)
+        row = {"name": lead["name"], "city": lead.get("city"), "what": what, "do": do,
+               "late": (today - dt.date.fromisoformat(lead["next"])).days, "key": lead["key"]}
+        last = lead["history"][-1]
+        if last.get("kind") == "touch_due" and int(last.get("touch") or 0) == 30:
+            row["listing"] = thirty_day_read(lead, args, today)
+        due.append(row)
+    words = []
+    if (env_value("OUTREACH_AUTO") or "") != "1":
+        n = sum(1 for p in kit["picks"] if p.get("email"))
+        words = [f"go — send the {n} email{'s' if n != 1 else ''} in today's six" if n else
+                 "go — nothing to send by email today (no addresses; B61 is finding them)",
+                 "go 1 3 — only those", "hold 4 — hold one back"]
+    return {"date": today.isoformat(), "segment": kit.get("segment"), "fresh_kit": fresh,
+            "six": kit["picks"], "lane": lane, "replies": reps, "inbound": inbound_rows(today, state),
+            "due": due, "first_call": warmest(today, state), "words": words}
+
+
+def today_message(d, n_due=6):
+    """The message itself: under 40 lines, one line a pick, and nothing that isn't in `d`."""
+    day = dt.date.fromisoformat(d["date"])
+    six, due = d["six"], d["due"]
+    head = (f"Morning — {day.strftime('%a %-d %b')} · {SEGMENT_TITLE.get(d['segment'], 'leads').lower()} · "
+            f"{len(six)} to send, {len(d['replies'])} repl{'y' if len(d['replies']) == 1 else 'ies'} yesterday, "
+            f"{len(due)} follow-up{'s' if len(due) != 1 else ''} due")
+    lines = [head, ""]
+    for i, p in enumerate(six, 1):
+        reach_bit = ("@" + p["instagram"] if p.get("instagram") else
+                     p.get("facebook") or p.get("email") or p.get("phone") or "no way in yet")
+        bits = [f"{i}. {p['name']}", p.get("category") or p.get("segment") or "", p.get("city") or "",
+                (p.get("faults") or ["nothing obvious"])[0], reach_bit]
+        if p.get("preview_url"):
+            bits.append(p["preview_url"])
+        lines.append(" · ".join(b for b in bits if b))
+    if not six:
+        lines.append("No kit today — the pool is empty or every lead is already in the pipeline (`leads candidates`).")
+    lines.append("")
+    if not d["lane"]:
+        lines.append("Yesterday: the email lane isn't running yet (`outreach doctor`), so replies are whatever came to your phone.")
+    elif not d["replies"]:
+        lines.append("Yesterday: no replies.")
+    else:
+        by = {}
+        for r in d["replies"]:
+            by.setdefault(r.get("class") or "other", []).append(r.get("name") or r.get("from") or "?")
+        lines.append("Yesterday: " + " · ".join(f"{k} — {', '.join(v[:3])}" for k, v in sorted(by.items())))
+    if d.get("inbound"):
+        lines.append(f"What came to us ({len(d['inbound'])}) — answer these first:")
+        for r in d["inbound"][:4]:
+            lines.append(f"  {r['name']}{' · ' + r['phone'] if r.get('phone') else ''} — {r.get('note') or 'no note'}")
+        if len(d["inbound"]) > 4:
+            lines.append(f"  +{len(d['inbound']) - 4} more — `leads pipeline`")
+    lines.append("")
+    if due:
+        lines.append(f"Due today ({len(due)}):")
+        for r in due[:n_due]:
+            late = f" · {r['late']}d late" if r["late"] > 0 else ""
+            lines.append(f"  {r['name']} — {r['what']}{late}: {r['do']}")
+            if r.get("listing"):
+                lines.append(f"     the listing now: {r['listing']}")
+        if len(due) > n_due:
+            lines.append(f"  +{len(due) - n_due} more — `leads due`")
+    else:
+        lines.append("Due today: nothing.")
+    lines.append("")
+    fc = d["first_call"]
+    if fc:
+        lines.append(f"First call: {fc['name']}{' · ' + fc['phone'] if fc.get('phone') else ''} — {fc['why']}")
+        lines.append(f"  the brief: leads brief \"{fc['name']}\"")
+    elif six:
+        lines.append(f"First call: nobody warm yet — the six above are the day's work.")
+    if d["words"]:
+        lines += ["", "Needs a word: " + " · ".join(d["words"])]
+    return "\n".join(lines) + "\n"
+
+
+def cmd_today(args):
+    today = now_date()
+    d = today_data(args, today)
+    msg = today_message(d)
+    if args.json:
+        print(json.dumps(dict(d, message=msg), indent=1, default=str))
+        return
+    print(msg, end="")
+
+
+def objections_for(segment, presence_class):
+    keys = list(SEGMENT_OBJECTION.get(segment or "", ("price", "think")))
+    if presence_class == "directory":
+        keys = ["directory"] + [k for k in keys if k != "directory"]
+    return [(k, *OBJECTIONS[k]) for k in keys[:2]]
+
+
+def cmd_brief(args):
+    """One screen before a call (§ 6.2): the business, the faults, the preview, the listing, the history,
+    the objection that is coming and its answer, the close, the booking link. No Places call unless --live."""
+    today = now_date()
+    key, pid, name, city, row, _ = resolve_lead(" ".join(args.name), args.place)
+    lead = pipeline_state().get(key)
+    if row is None and pid:
+        row = (_census_by_id(pid) or [None])[0]
+    details = None
+    if args.live and pid:
+        k, where = places_key()
+        places = Places(k, where, fixture=args.fixture)
+        details = places.get(pid)
+        if places.calls:
+            ledger_append({"ts": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()), "kind": "places_details",
+                           "tool": "leads", "calls": places.calls, "cost_usd": round(places.calls * DETAILS_COST_USD, 3),
+                           "billed_to": f"google:GOOGLE_MAPS_API_KEY({where})", "project": "global",
+                           "for": f"brief {name}"})
+    if not lead and not row:
+        die(f"{name} isn't in the pipeline or the census — `leads log \"{name}\" talked …` first")
+    segment = (row or {}).get("segment") or ("restaurant" if row else None)
+    fs, summary = lead_faults(row, details, today) if row else ([], None)
+    if not fs and lead:
+        fs = [x for x in ((first_message(lead) or {}).get("was") or "").split("; ") if x]
+    pv = preview_find(name) or (next((m for m in previews_all() if m.get("place_id") == pid), None) if pid else None)
+
+    print(f"{name}{' — ' + city if city else ''}"
+          + (f" · {(row or {}).get('category') or SEGMENT_NOUN.get(segment or '', '')}" if row else ""))
+    if summary:
+        print(f"  Google: {summary}")
+    phone = (lead or {}).get("phone") or (row or {}).get("phone")
+    contact = " · ".join(x for x in (phone, (lead or {}).get("reach"), lead_email(lead or {}),
+                                     clean_maps((row or {}).get("google_maps_uri") or "") or None) if x)
+    if contact:
+        print(f"  {contact}")
+    print("  Wrong: " + ("; ".join(fs[:3]) if fs else "nothing obvious — lead with what a site would add"))
+    print(f"  Preview: {pv['url']} (down {dt.date.fromisoformat(pv['expires']).strftime('%-d %b')})" if pv
+          else "  Preview: none yet — `leads preview \"" + name + "\"`")
+    if lead:
+        print(f"  Stage: {lead['stage']}" + (f", follow up {lead['next']}" if lead.get("next") else "")
+              + (f" · came in by {lead_source(lead)}" if lead_source(lead) else ""))
+        for e in lead["history"]:
+            what = (f"day {e.get('touch')} touch ({e.get('channel')})" if e.get("kind") == "touch_due"
+                    else e.get("outcome") or "")
+            print(f"    {e['date']}  {what:<16} {e.get('note') or ''}".rstrip())
+    else:
+        print("  Stage: not in the pipeline yet — this is a cold call")
+    print()
+    for _, q, a in objections_for(segment, (row or {}).get("presence")):
+        print(f"  They'll say {q}")
+        print(f"    You say: {a}")
+    print()
+    print("  " + SEGMENT_CLOSE)
+    if segment in SEGMENT_LADDER:
+        print("  " + SEGMENT_LADDER[segment])
+    book = env_value("LEADS_BOOKING_URL")
+    print(f"  Book them while you're on the phone: {book}" if book else
+          "  Booking link: not set yet (LEADS_BOOKING_URL, TAYLOR-TODO §1) — name a day and `leads log … --next`")
 
 
 def cmd_pipeline(args):
@@ -2786,6 +3536,16 @@ def cmd_doctor(args):
                     pool = business_candidates([seg])
                     print(f"  {seg}: {len(pool)} in the kit's pool (phone, ≥{SEGMENT_MIN_REVIEWS} reviews, no site of their own); "
                           f"{sum(c['miles'] <= 10 for c in pool)} within 10 mi")
+        table = reach_table()
+        if table is None:
+            print("reach: no reach table yet — B61 (client-leads/scripts/reach.py) hasn't run; the kit's picks "
+                  "carry only what the census's own columns hold")
+        else:
+            ig = sum(1 for r in table.values() if r["instagram"])
+            fb = sum(1 for r in table.values() if r["facebook"])
+            em = sum(1 for r in table.values() if r["email"])
+            print(f"reach: {len(table)} rows searched — {ig} Instagram, {fb} Facebook, {em} email"
+                  + (f"; newest check {max((r['checked'] or '')[:10] for r in table.values())}" if table else ""))
         print(f"default segment: {default_segment()}" + (" (LEADS_SEGMENT)" if os.environ.get("LEADS_SEGMENT") else
                                                        f" (services once the services census has {DEFAULT_POOL_MIN} in the kit's pool, else restaurant)"))
     key, where = places_key()
@@ -2915,6 +3675,8 @@ def main():
     lg.add_argument("--email")
     lg.add_argument("--phone")
     lg.add_argument("--via", help="counter, dm, email, group, phone, referral")
+    lg.add_argument("--source", choices=SOURCES, help="the channel, for the week's cut (default: from --via, "
+                                                      "the channel this lead is already on, or the reach the kit used)")
     lg.add_argument("--place", help="census place id, when the name matched the wrong one")
     lg.add_argument("--n", type=int, default=6, help="size of tomorrow's list")
     lg.set_defaults(fn=cmd_log)
@@ -2928,10 +3690,32 @@ def main():
     se = sub.add_parser("sent", help="picks from the last remote kit that went out: leads sent 1 3 4 | all")
     se.add_argument("which", nargs="+")
     se.add_argument("--via", default="dm")
+    se.add_argument("--source", choices=SOURCES, help="the channel (default: from --via)")
     se.set_defaults(fn=cmd_sent)
 
     du = sub.add_parser("due", help="follow-ups due today")
     du.set_defaults(fn=cmd_due)
+
+    td = sub.add_parser("today", help="the 07:30 message: the six, yesterday's replies, what's due, the first call")
+    td.add_argument("--n", type=int, default=6, help="picks in the kit (default 6)")
+    td.add_argument("--segment", choices=SEGMENTS + ("all",))
+    td.add_argument("--fresh", action="store_true", help="run a new kit even if one ran today")
+    td.add_argument("--census-only", action="store_true", help="no Google calls")
+    td.add_argument("--no-save", action="store_true")
+    td.add_argument("--json", action="store_true", help="the message and everything in it")
+    td.add_argument("--fixture", help="dir of <place_id>.json Place Details (tests)")
+    td.set_defaults(fn=cmd_today)
+
+    br = sub.add_parser("brief", help="one screen before a call: the fault, the preview, the history, the objection, the close")
+    br.add_argument("name", nargs="+", help='"Name" or "Name, City"')
+    br.add_argument("--place", help="census place id, when the name matched the wrong one")
+    br.add_argument("--live", action="store_true", help="read the Google listing too (one Places call)")
+    br.add_argument("--fixture", help="dir of <place_id>.json Place Details (tests)")
+    br.set_defaults(fn=cmd_brief)
+
+    cd = sub.add_parser("cadence", help="the day 3 / 10 / 30 touches a silent lead is owed (§ 5.5)")
+    cd.add_argument("--dry-run", action="store_true", help="say what is due, write nothing")
+    cd.set_defaults(fn=cmd_cadence)
 
     sh = sub.add_parser("show", help="one lead's history")
     sh.add_argument("name", nargs="+")
@@ -2940,6 +3724,8 @@ def main():
 
     wk = sub.add_parser("week", help="this week's numbers")
     wk.add_argument("--ago", type=int, default=0, help="weeks back")
+    wk.add_argument("--by", choices=["channel"], help="the Sunday review (B52): the funnel per channel and the § 2.4 rows")
+    wk.add_argument("--json", action="store_true", help="the same numbers, for GROWTH § 13's row")
     wk.set_defaults(fn=cmd_week)
 
     pp = sub.add_parser("pipeline", help="every lead by stage")

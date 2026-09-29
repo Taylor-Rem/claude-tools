@@ -44,6 +44,7 @@ import calendar
 import json
 import math
 import os
+import random
 import re
 import shutil
 import struct
@@ -188,6 +189,7 @@ WATCH_PROMPT = (
 )
 
 # Pexels src sizes. large2x = 1880w, comfortably under a 2000px original cap.
+GEN_ASPECTS = ("1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9")   # Gemini's image sizes
 PEXELS_SIZES = ("original", "large2x", "large", "medium", "small", "portrait", "landscape", "tiny")
 
 
@@ -356,9 +358,38 @@ def load_styles():
 
 # ---------------------------------------------------------------- stock
 
+def read_skip(path):
+    """Pexels ids to leave out: one a line, bare or as JSON with "id" ("pexels:123" or 123)."""
+    out = set()
+    if not path:
+        return out
+    try:
+        lines = Path(path).read_text().splitlines()
+    except OSError:
+        die(f"--skip-file {path}: can't read it")
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("{"):
+            try:
+                line = str(json.loads(line).get("id") or json.loads(line).get("pexels_id") or "")
+            except ValueError:
+                continue
+        out.add(line.split(":", 1)[-1])
+    return out
+
+
 def cmd_stock(args):
+    """Search Pexels and save the photos. --seed picks n from the first twenty results by a seed
+    (the same seed, the same pick) after dropping every id in --skip-file, so two callers asking
+    the same question get different photos (leads preview, plan 28). --width asks Pexels for that
+    width, compressed (its own resizer), instead of a fixed --size. --json prints one object per
+    photo saved ({path, id, photographer, alt, url}) and nothing else."""
     key = need_key("PEXELS_API_KEY")
-    params = {"query": args.query, "per_page": args.n, "page": args.page}
+    skip = read_skip(args.skip_file)
+    per_page = max(args.n, 20) if (args.seed is not None or skip) else args.n
+    params = {"query": args.query, "per_page": min(per_page, 80), "page": args.page}
     if args.orientation:
         params["orientation"] = args.orientation
     if args.color:
@@ -367,22 +398,35 @@ def cmd_stock(args):
     if r.status_code != 200:
         die(f"Pexels search failed: HTTP {r.status_code} {r.text[:200]}")
     data = r.json()
-    photos = data.get("photos", [])
+    photos = [p for p in data.get("photos", []) if str(p.get("id")) not in skip]
+    if args.seed is not None:
+        pool = photos[:20]
+        random.Random(str(args.seed)).shuffle(pool)
+        photos = pool[:args.n]
+    else:
+        photos = photos[:args.n]
+    say = (lambda *a, **k: None) if args.json else print
     if not photos:
-        print(f"No Pexels results for {args.query!r}.")
+        if args.json:
+            print("[]")
+        else:
+            print(f"No Pexels results for {args.query!r}" + (f" outside the {len(skip)} skipped" if skip else "") + ".")
         return
 
     dest = out_dir(args.out, slugify(args.query))
-    print(f"{data.get('total_results', '?')} results for {args.query!r}; page {args.page}; saving {len(photos)} to {dest}\n")
+    say(f"{data.get('total_results', '?')} results for {args.query!r}; page {args.page}; saving {len(photos)} to {dest}\n")
+    saved = []
     for i, p in enumerate(photos, 1):
-        url = p["src"][args.size]
-        ext = ".jpg" if ".jpeg" in url or ".jpg" in url else ".jpg"
-        name = f"{slugify(args.query, 32)}-{p['id']}{ext}"
+        if args.width:
+            url = p["src"]["original"].split("?")[0] + f"?auto=compress&cs=tinysrgb&w={args.width}"
+        else:
+            url = p["src"][args.size]
+        name = f"{slugify(args.query, 32)}-{p['id']}.jpg"
         path = dest / name
         if not path.exists():
             img = requests.get(url, timeout=60)
             if img.status_code != 200:
-                print(f"  [{i}] download failed for id {p['id']}")
+                say(f"  [{i}] download failed for id {p['id']}")
                 continue
             path.write_bytes(img.content)
         meta = {
@@ -392,18 +436,22 @@ def cmd_stock(args):
             "photographer": p.get("photographer"),
             "photographer_url": p.get("photographer_url"),
             "alt": p.get("alt"),
-            "size_variant": args.size,
+            "size_variant": f"w{args.width}" if args.width else args.size,
             "original_width": p.get("width"),
             "original_height": p.get("height"),
             "query": args.query,
             "license": "Pexels License — free for commercial use, no attribution required (credit appreciated)",
         }
         write_sidecar(path, meta)
+        saved.append({"path": str(path), "id": p["id"], "photographer": p.get("photographer"),
+                      "alt": p.get("alt"), "url": p["url"]})
         wh = image_size(path)
         dims = f"{wh[0]}x{wh[1]}" if wh else "?"
-        print(f"  [{i}] {path}")
-        print(f"      {dims}  by {p.get('photographer')}  — {p.get('alt') or '(no alt)'}")
-    if data.get("next_page"):
+        say(f"  [{i}] {path}")
+        say(f"      {dims}  by {p.get('photographer')}  — {p.get('alt') or '(no alt)'}")
+    if args.json:
+        print(json.dumps(saved, indent=1))
+    elif data.get("next_page") and args.seed is None:
         print(f"\nMore available: re-run with --page {args.page + 1}")
 
 
@@ -503,12 +551,14 @@ def cmd_gen(args):
     if args.aspect:
         body["generationConfig"]["imageConfig"]["aspectRatio"] = args.aspect
 
-    dest_dir = out_dir(args.out_dir, slugify(args.prompt))
+    # `--out DIR` (an existing directory) means "in there": before 2026-09-29 it was opened as a
+    # file after the image was paid for (leads preview --hero gen, B64).
+    dest_dir = out_dir(args.out if args.out and Path(args.out).is_dir() else args.out_dir, slugify(args.prompt))
     made = []
     for i in range(args.n):
         img_b64, mime = gemini_image(model, key, body)
         ext = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}.get(mime, ".png")
-        if args.out and args.n == 1:
+        if args.out and args.n == 1 and not Path(args.out).is_dir():
             path = Path(args.out).resolve()
             path.parent.mkdir(parents=True, exist_ok=True)
         else:
@@ -1294,6 +1344,10 @@ def main():
     s.add_argument("--color", help="e.g. red, orange, or a hex like 8b4513")
     s.add_argument("--size", choices=PEXELS_SIZES, default="large2x")
     s.add_argument("--out", help="directory (default ~/.cache/claude-tools/img/<query-slug>/)")
+    s.add_argument("--seed", help="pick -n from the first twenty results by this seed (same seed, same pick)")
+    s.add_argument("--skip-file", help="Pexels ids to leave out, one a line (or JSON lines with \"id\")")
+    s.add_argument("--width", type=int, help="ask Pexels for this width, compressed, instead of --size")
+    s.add_argument("--json", action="store_true", help="print the saved photos as JSON, nothing else")
     s.set_defaults(fn=cmd_stock)
 
     g = sub.add_parser("gen", help="generate an image with Gemini")
@@ -1301,7 +1355,7 @@ def main():
     g.add_argument("--style", default="plain", help="preset name (see `img styles`)")
     g.add_argument("--quality", choices=list(QUALITY), default="menu",
                    help="draft (lite, 3¢) | menu (flash 1K, 7¢, default) | hero (flash 2K, 10¢) | pro (2K, 13¢)")
-    g.add_argument("--aspect", help="1:1, 3:4, 4:3, 9:16, 16:9")
+    g.add_argument("--aspect", choices=GEN_ASPECTS, help=", ".join(GEN_ASPECTS) + " (checked before anything is paid for)")
     g.add_argument("--ref", action="append", help="reference image(s) to guide the generation")
     g.add_argument("-n", type=int, default=1, help="variations to generate")
     g.add_argument("--out", help="exact output file (only with -n 1)")

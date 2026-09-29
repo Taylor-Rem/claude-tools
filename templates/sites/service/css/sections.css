@@ -1,0 +1,258 @@
+/* ==========================================================================
+   The section library's layout (plan 28, B64). Loaded after css/style.css
+   (the tokens every kind of site shares) and before css/looks/<look>.css,
+   which sets the colours, the type, the radius and the hero's treatment.
+   To change the look of the whole site, change the one <link> to
+   css/looks/<look>.css in every page; to change a colour, edit that file.
+   The same file is in templates/sites/service and templates/sites/portfolio.
+   ========================================================================== */
+
+:root {
+  --radius: 6px;
+  --accent-ink: #ffffff;          /* text on an accent-filled button */
+  --display-weight: 600;
+  --display-case: none;
+  --display-tracking: -0.01em;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.05), 0 10px 30px rgba(0, 0, 0, 0.07);
+  --section-pad: clamp(3.5rem, 8vw, 6.5rem);
+  --wide: 72rem;
+}
+
+body { font-family: var(--font-body); }
+
+h1, h2, h3, .wordmark {
+  font-family: var(--font-display);
+  font-weight: var(--display-weight);
+  text-transform: var(--display-case);
+  letter-spacing: var(--display-tracking);
+}
+h2 { font-size: clamp(1.8rem, 4.2vw, 2.7rem); line-height: 1.08; margin-bottom: 1rem; }
+h3 { font-size: 1.2rem; line-height: 1.2; }
+
+/* ---- header: the name, the sections, the one way to reach them -------- */
+
+.site-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  flex-wrap: nowrap;
+  gap: 1rem 1.75rem;
+  padding: 0.8rem var(--page-pad);
+}
+.wordmark { font-size: 1.3rem; line-height: 1.15; white-space: normal; font-weight: 700; }
+.site-nav { margin-left: auto; gap: 0.25rem 1.4rem; }
+.site-nav a { font-size: 0.82rem; font-weight: 600; letter-spacing: 0.06em; }
+.header-cta {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0.5rem 1rem;
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 700;
+  font-size: 0.92rem;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.header-cta:hover { background: var(--accent-dim); color: var(--accent-ink); }
+.header-cta .cta-short { display: none; }
+@media (max-width: 52rem) {
+  .site-nav { display: none; }              /* the page is one scroll on a phone; the call button stays */
+  .header-cta { margin-left: auto; }
+  .header-cta .cta-full { display: none; }
+  .header-cta .cta-short { display: inline; }
+  .wordmark { font-size: 1.08rem; }
+}
+
+/* ---- buttons ----------------------------------------------------------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 50px;
+  padding: 0.75rem 1.4rem;
+  border: 2px solid var(--accent);
+  border-radius: var(--radius);
+  font-weight: 700;
+  font-size: 1rem;
+  line-height: 1.2;
+  text-decoration: none;
+  cursor: pointer;
+}
+.btn-primary { background: var(--accent); color: var(--accent-ink); }
+.btn-primary:hover { background: var(--accent-dim); border-color: var(--accent-dim); color: var(--accent-ink); }
+.btn-secondary { background: transparent; color: var(--ink); border-color: currentColor; }
+.btn-secondary:hover { color: var(--accent); }
+
+/* ---- hero (the look file decides where the photo goes) ----------------- */
+
+.hero-block { position: relative; }
+.hero-media { position: relative; margin: 0; overflow: hidden; }
+.hero-media img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.hero-media img[height] { height: 100%; }
+.hero-copy { position: relative; padding: clamp(2.5rem, 7vw, 5.5rem) var(--page-pad); }
+.hero-kicker {
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 0.9rem;
+}
+.hero-heading { font-size: clamp(2.3rem, 6.4vw, 4.6rem); line-height: 1.02; max-width: 17ch; }
+.hero-sub { margin-top: 1.15rem; font-size: clamp(1.05rem, 2vw, 1.25rem); color: var(--ink-dim); max-width: 36rem; }
+.hero-actions { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 1.8rem; }
+.hero-note { margin-top: 1.1rem; font-size: 0.95rem; color: var(--ink-dim); }
+
+/* ---- the strip under the hero: rating, area, hours ---------------------- */
+
+.proof { background: var(--bg-raised); border-bottom: 1px solid var(--bg-line); padding: 1.1rem var(--page-pad); }
+.proof-list {
+  list-style: none;
+  max-width: var(--wide);
+  margin: 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.5rem 2.25rem;
+  font-weight: 600;
+  font-size: 0.98rem;
+}
+.proof-list li { display: flex; align-items: center; gap: 0.5rem; min-height: 32px; }
+.proof-list li::before {
+  content: "";
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: none;
+}
+.proof-list a { color: var(--ink); display: inline-block; padding: 0.3rem 0; }
+@media (max-width: 40rem) {
+  .proof-list { flex-direction: column; align-items: flex-start; gap: 0.25rem; }
+}
+
+/* ---- sections ---------------------------------------------------------- */
+
+.section { padding: var(--section-pad) var(--page-pad); border-bottom: 0; }
+.section.alt { background: var(--bg-raised); }
+.section-inner { max-width: var(--wide); }
+.section-head { max-width: 44rem; margin-bottom: clamp(1.75rem, 4vw, 2.75rem); }
+.section-head .lede { color: var(--ink-dim); font-size: 1.12rem; }
+.kicker { letter-spacing: 0.16em; }
+
+/* services: numbered cards */
+.service-list {
+  list-style: none;
+  display: grid;
+  gap: 1rem;
+}
+@media (min-width: 40rem) { .service-list { grid-template-columns: repeat(2, 1fr); } }
+@media (min-width: 64rem) { .service-list { grid-template-columns: repeat(3, 1fr); } }
+.service-list li {
+  background: var(--bg);
+  border: 1px solid var(--bg-line);
+  border-radius: var(--radius);
+  padding: 1.5rem 1.4rem 1.6rem;
+}
+.section:not(.alt) .service-list li { background: var(--bg-raised); }
+.service-n {
+  display: block;
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--accent);
+  margin-bottom: 0.9rem;
+}
+.service-list h3 { margin-bottom: 0.45rem; }
+.service-list p { color: var(--ink-dim); font-size: 0.98rem; }
+
+/* about: words beside a picture */
+.about-grid { display: grid; gap: clamp(1.75rem, 5vw, 4rem); align-items: center; }
+@media (min-width: 52rem) { .about-grid.has-image { grid-template-columns: 1.1fr 1fr; } }
+.about-grid .lede { font-size: 1.2rem; }
+.about-media { position: relative; margin: 0; }
+.about-media img { width: 100%; height: auto; aspect-ratio: 4 / 3; object-fit: cover; border-radius: var(--radius); }
+
+/* area: the towns */
+.place-list { list-style: none; display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 1.5rem; }
+.place-list li {
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--bg-line);
+  border-radius: 999px;
+  background: var(--bg-raised);
+  font-weight: 600;
+}
+.section.alt .place-list li { background: var(--bg); }
+
+/* gallery */
+.gallery-grid { list-style: none; display: grid; gap: 0.9rem; }
+@media (min-width: 40rem) { .gallery-grid { grid-template-columns: repeat(3, 1fr); } }
+.gallery-grid figure { position: relative; margin: 0; }
+.gallery-grid img { width: 100%; height: auto; aspect-ratio: 4 / 3; object-fit: cover; border-radius: var(--radius); }
+.gallery-more { margin-top: 1.5rem; }
+.gallery-more a { display: inline-block; padding: 0.4rem 0; font-weight: 600; }
+.gallery-empty { color: var(--ink-dim); }
+
+/* quote / contact: the words on one side, the form on the other */
+.form-grid { display: grid; gap: clamp(1.75rem, 5vw, 4rem); align-items: start; }
+@media (min-width: 52rem) { .form-grid { grid-template-columns: 1fr 1.15fr; } }
+.form-card {
+  background: var(--bg-raised);
+  border: 1px solid var(--bg-line);
+  border-radius: var(--radius);
+  padding: clamp(1.25rem, 3vw, 2rem);
+  box-shadow: var(--shadow);
+}
+.section.alt .form-card { background: var(--bg); }
+.form-card .site-form { max-width: none; }
+.form-fields { border: 0; margin: 0; padding: 0; min-width: 0; display: grid; gap: 0.9rem; }
+.form-fields[disabled] { opacity: 0.6; }
+.site-form input, .site-form textarea { border-radius: calc(var(--radius) * 0.6); min-height: 44px; }
+.site-form label { font-weight: 600; font-size: 0.95rem; }
+.site-form .btn { justify-self: start; }
+.form-off-note {
+  margin-bottom: 1rem;
+  padding: 0.75rem 1rem;
+  border-radius: calc(var(--radius) * 0.6);
+  background: var(--bg);
+  border: 1px dashed var(--ink-dim);
+  font-weight: 600;
+}
+.contact-lines { list-style: none; margin-top: 1.25rem; display: grid; gap: 0.35rem; }
+.contact-lines a { display: inline-block; padding: 0.3rem 0; font-weight: 600; }
+
+/* booking slots (the calendar reads /api/bookings on a live site) */
+.booking-slots { border: 0; padding: 0; margin: 0; display: grid; gap: 0.75rem; }
+.booking-slots legend { font-weight: 600; margin-bottom: 0.5rem; }
+.booking-day { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+.booking-date { flex-basis: 100%; margin: 0; color: var(--ink-dim); }
+.booking-slot { display: inline-flex !important; align-items: center; gap: 0.4rem; padding: 0.45rem 0.8rem; min-height: 44px;
+  border: 1px solid var(--bg-line); border-radius: 3px; background: var(--bg-raised); cursor: pointer; }
+.booking-slot input { width: 1.5rem; height: 1.5rem; margin: 0; padding: 0; }
+
+/* details: hours, where, contact */
+.details-grid { gap: 2rem; }
+.details-grid h3 {
+  font-family: var(--font-body);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 0.6rem;
+}
+.details-grid li + li { margin-top: 0.2rem; }
+.details-grid a { display: inline-block; padding: 0.25rem 0; }
+
+/* the photos page's own heading */
+.page-head { padding: clamp(2.5rem, 6vw, 4rem) var(--page-pad) 0; }
+.page-head h1 { font-size: clamp(2.2rem, 6vw, 3.6rem); }
+.page-head p { margin-top: 0.75rem; color: var(--ink-dim); }
+
+/* footer */
+.site-footer { padding: 2.5rem var(--page-pad) 3rem; border-top: 1px solid var(--bg-line); }
+.site-footer p { margin-left: auto; margin-right: auto; }
+.site-footer a { display: inline-block; min-height: 24px; padding: 0.15rem 0; }

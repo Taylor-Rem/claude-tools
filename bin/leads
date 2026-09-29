@@ -175,10 +175,13 @@ import os
 import re
 import shutil
 import sqlite3
+import struct
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -1851,11 +1854,18 @@ SITE_TEMPLATES = TOOLBELT / "templates" / "sites"
 PREVIEW_BIN = Path(os.environ.get("LEADS_PREVIEW_BIN", TOOLBELT / "bin"))
 SITE_BIN = PREVIEW_BIN / "site"
 CLIENT_BIN = PREVIEW_BIN / "client"
-IMG_BIN = TOOLBELT / "bin" / "img"
+# `img` for the photos; LEADS_IMG_BIN points at a stand-in so the tests never reach Pexels or Gemini.
+IMG_BIN = Path(os.environ.get("LEADS_IMG_BIN", TOOLBELT / "bin" / "img"))
 # The footer sentence, word for word. patchlamp/CLAIMS.md § Previews carries it;
-# `tests/test_leads_preview.py` pins it. Change one and change all three.
+# `tests/test_leads_preview.py` pins it. Change one and change all three. "Claim it" links to the
+# preview's own claim/ page, a noindex redirect to CLAIM_START filled with the business (plan 28).
 PREVIEW_FOOTER = ("A preview Patchlamp made for {name}. Not their official site. "
                   "Claim it, or ask us to take it down: founder@patchlamp.com")
+CLAIM_START = os.environ.get("LEADS_CLAIM_START", "https://patchlamp.com/start")
+# Every stock or generated picture used by any preview, one JSON line each ({id, slug, role, term,
+# date}): the next preview skips an id already on another one (plan 28 § Contracts, gate 6).
+PREVIEW_IMAGES = PREVIEWS / "images.jsonl"
+IMAGE_REUSE_WINDOW = 60              # previews back that a photo may not repeat within
 
 
 def now_date():
@@ -2015,41 +2025,655 @@ def fill_preview(text, values):
     return text
 
 
+# ---- photos: stock by a seed, never one another preview already shows (plan 28, B64) ------
+
+def image_registry():
+    rows = []
+    if PREVIEW_IMAGES.exists():
+        for line in PREVIEW_IMAGES.read_text().splitlines():
+            try:
+                rows.append(json.loads(line))
+            except ValueError:
+                continue
+    return rows
+
+
+def image_ids_in_use(slug, role=None):
+    """Ids on the last IMAGE_REUSE_WINDOW other previews, and on this one's other pictures: a new
+    pick skips them (a rebuild may keep the photo it had in the same place)."""
+    rows = image_registry()
+    recent, ids = [], set()
+    for r in reversed(rows):
+        s = r.get("slug")
+        if s == slug:
+            if r.get("role") != role:
+                ids.add(str(r.get("id")))
+            continue
+        if s not in recent:
+            if len(recent) >= IMAGE_REUSE_WINDOW:
+                break
+            recent.append(s)
+        ids.add(str(r.get("id")))
+    return ids
+
+
+def image_register(slug, role, img, term):
+    PREVIEW_IMAGES.parent.mkdir(parents=True, exist_ok=True)
+    with PREVIEW_IMAGES.open("a") as f:
+        f.write(json.dumps({"id": img["id"], "slug": slug, "role": role, "source": img["source"],
+                            "term": term, "date": now_date().isoformat()}) + "\n")
+
+
+def _seed_index(seed, n):
+    return int(hashlib.sha1(seed.encode()).hexdigest(), 16) % max(n, 1)
+
+
+def image_dims(path):
+    """(w, h) of a PNG or JPEG without Pillow, or (1600, 1000) when it can't be read."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(26)
+            if head[:8] == b"\x89PNG\r\n\x1a\n":
+                return struct.unpack(">II", head[16:24])
+            if head[:2] == b"\xff\xd8":
+                f.seek(2)
+                while True:
+                    marker = f.read(2)
+                    if len(marker) < 2 or marker[0] != 0xFF:
+                        break
+                    if marker[1] in (0xC0, 0xC1, 0xC2):
+                        f.read(3)
+                        h, w = struct.unpack(">HH", f.read(4))
+                        return w, h
+                    f.seek(struct.unpack(">H", f.read(2))[0] - 2, 1)
+    except (OSError, struct.error):
+        pass
+    return 1600, 1000
+
+
+def pick_stock(slug, role, terms, dest, width, orientation="landscape"):
+    """One Pexels photo for `role` (hero, g1…): the term and the pick chosen by the slug (so a
+    rebuild keeps its photos), from the first twenty results, skipping every id another preview
+    already shows. Writes dest (a file path). Returns the content.json image row, or None."""
+    terms = [t for t in (terms or []) if t]
+    if not terms:
+        return None
+    skip = image_ids_in_use(slug, role)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    side = dest.with_suffix(".json")
+    try:                                   # a rebuild keeps the photo it had, unless another preview took it since
+        kept = json.loads(side.read_text())
+        if dest.exists() and kept.get("id") not in skip and kept.get("term") in terms:
+            return {k: kept[k] for k in ("file", "source", "id", "credit", "alt")}
+    except (OSError, ValueError, KeyError):
+        pass
+    start = _seed_index(f"{slug}:{role}", len(terms))
+    for k in range(len(terms)):
+        term = terms[(start + k) % len(terms)]
+        with tempfile.TemporaryDirectory() as tmp:
+            skipf = Path(tmp) / "skip.txt"
+            skipf.write_text("\n".join(sorted(i.split(":", 1)[-1] for i in skip if i.startswith("pexels:"))) + "\n")
+            r = subprocess.run([str(IMG_BIN), "stock", term, "-n", "1", "--orientation", orientation,
+                                "--width", str(width), "--seed", f"{slug}:{role}", "--skip-file", str(skipf),
+                                "--out", str(Path(tmp) / "out"), "--json"], capture_output=True, text=True)
+            try:
+                got = json.loads(r.stdout or "[]") if r.returncode == 0 else []
+            except ValueError:
+                got = []
+            if not got:
+                continue
+            g = got[0]
+            shutil.move(g["path"], dest)
+        row = {"file": str(dest), "source": "stock", "id": f"pexels:{g['id']}",
+               "credit": f"Photo: {g.get('photographer') or 'unknown'} on Pexels",
+               "alt": (g.get("alt") or term).strip().rstrip(".")[:140] or term}
+        image_register(slug, role, row, term)
+        side.write_text(json.dumps(dict(row, term=term)) + "\n")
+        return row
+    print(f"leads: no stock photo for {slug} {role} ({', '.join(terms[:2])}) — PEXELS_API_KEY?", file=sys.stderr)
+    return None
+
+
+def gen_image(slug, role, term, trade, dest):
+    """One generated picture (Gemini, through `img gen`, which writes its own ledger row). `img gen
+    --out` takes a FILE; 16:9 is an aspect it accepts. Returns the image row, or None."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    side = dest.with_suffix(".json")
+    try:                                   # a rebuild never pays twice for the same picture
+        kept = json.loads(side.read_text())
+        if dest.exists() and kept.get("term") == term:
+            return {k: kept[k] for k in ("file", "source", "id", "credit", "alt")}
+    except (OSError, ValueError, KeyError):
+        pass
+    prompt = (f"A realistic photograph for a {trade}'s website: {term}. Natural light, the work and "
+              f"the place, no people's faces, no text, no logos.")
+    r = subprocess.run([str(IMG_BIN), "gen", "--aspect", "16:9", "--quality", "menu", "--out", str(dest), prompt],
+                       capture_output=True, text=True)
+    if r.returncode != 0 or not dest.exists():
+        print(f"leads: img gen failed for {slug} ({(r.stderr or r.stdout).strip()[-160:]}) — no {role}", file=sys.stderr)
+        return None
+    row = {"file": str(dest), "source": "generated",
+           "id": "gen:" + hashlib.sha1(dest.read_bytes()).hexdigest()[:16],
+           "credit": "Generated image", "alt": term[:1].upper() + term[1:]}
+    image_register(slug, role, row, term)
+    side.write_text(json.dumps(dict(row, term=term)) + "\n")
+    return row
+
+
+def preview_images(slug, copy, mode, into, gallery=4):
+    """The pictures a preview carries: a hero and up to `gallery` more, all stock by default, the
+    hero generated with --hero gen, none with --hero none. NEVER one of their Google photos."""
+    if mode == "none":
+        return {}
+    heroes = copy.get("heroes") or [copy.get("hero")]
+    shots = copy.get("gallery") or heroes
+    out = {}
+    if mode == "gen":
+        row = gen_image(slug, "hero", heroes[0], copy.get("trade") or "local business", into / "hero.png")
+    else:
+        row = pick_stock(slug, "hero", heroes, into / "hero.jpg", 1600)
+    if row:
+        out["hero"] = row
+    for i in range(1, gallery + 1):
+        order = shots[i - 1:] + shots[:i - 1]           # a different first term for each picture
+        row = pick_stock(slug, f"g{i}", order, into / f"g{i}.jpg", 1000)
+        if row:
+            out[f"g{i}"] = row
+    return out
+
+
 def preview_hero(slug, dest, term, mode):
-    """The hero photo: one stock landscape (Pexels, free) or one generated image. NEVER one of
-    their Google photos. Returns (relative src, credit, cost) or (None, None, 0.0)."""
+    """The legacy one-page preview's hero (the templates without a section library yet): one stock
+    landscape or one generated image under dest/images. Returns (relative src, kind, cost)."""
     if mode == "none":
         return None, None, 0.0
-    (dest / "images").mkdir(parents=True, exist_ok=True)
-    out = dest / "images"
-    if mode == "gen":
-        r = subprocess.run([str(IMG_BIN), "gen", "--aspect", "3:2", "--quality", "menu",
-                            "--out", str(out), term], capture_output=True, text=True)
-        if r.returncode != 0:
-            print(f"leads: img gen failed for {slug} ({(r.stderr or r.stdout).strip()[:120]}) — no hero",
-                  file=sys.stderr)
-            return None, None, 0.0
-        made = sorted(out.glob("*.png")) + sorted(out.glob("*.jpg"))
-        if not made:
-            return None, None, 0.0
-        src = made[-1].rename(out / ("hero" + made[-1].suffix))
-        # img gen wrote its own ledger row for the dollars; the preview row records the mode.
-        return f"images/{src.name}", "generated", 0.0
-    r = subprocess.run([str(IMG_BIN), "stock", "-n", "1", "--orientation", "landscape",
-                        "--size", "large", "--out", str(out), term], capture_output=True, text=True)
-    made = sorted(p for p in out.glob("*") if p.suffix.lower() in (".jpg", ".jpeg", ".png"))
-    if r.returncode != 0 or not made:
-        print(f"leads: no stock photo for {slug} ({(r.stderr or r.stdout).strip().splitlines()[-1][:120] if (r.stderr or r.stdout).strip() else 'PEXELS_API_KEY?'})"
-              " — the page goes out without a hero", file=sys.stderr)
+    copy = {"heroes": [term], "trade": "local business"}
+    rows = preview_images(slug, copy, mode, dest / "images", gallery=0)
+    row = rows.get("hero")
+    if not row:
         return None, None, 0.0
-    src = made[0].rename(out / ("hero" + made[0].suffix.lower()))
-    for p in out.glob("*"):
-        if p != src and p.is_file():
-            p.unlink()
-    return f"images/{src.name}", "stock", 0.0
+    return f"images/{Path(row['file']).name}", row["source"], 0.0
+
+
+# ---- hours a person reads ---------------------------------------------------------------
+
+def hours_for_people(details, c, say=None):
+    """The hours as the site says them. facts.hours.say wins; a service-area trade that Google lists
+    as "Open 24 hours" every day is "Call or text any day" (a handyman is not open all night)."""
+    if say:
+        return [say]
+    hrs = hours_lines(details)
+    sab = (details or {}).get("pureServiceAreaBusiness") or (c.get("segment") in ("services", "creatives"))
+    if sab and hrs and all("24 hours" in h.lower() for h in hrs):
+        return ["Call or text any day"]
+    return hrs
+
+
+# ---- the renderer: content.json -> a whole site (plan 28 § Contracts, B64) ---------------------
+#
+# A template with a section library (templates/sites/<type>/sections/*.html, css/looks/*.css,
+# fonts/) is rendered from a content.json: the sections in order into sections/_page.html, the
+# type's stylesheet, the library's, the look's, its fonts, its script and its 404, and a photos
+# page. The overlay a preview carries sits between markers so the claim can cut it without
+# guessing at prose:
+#   <!--p:NAME--> … <!--/p:NAME-->     preview only: the claim deletes the block
+#   <!--c:NAME\n … \n/c:NAME-->        claim only: commented out on the preview, uncommented by the claim
+# Forms are shown and switched off on a preview (a disabled fieldset, "This form goes live when the
+# site is claimed.") and switched on by the claim. The section templates use a small language:
+# {{key}} (escaped), {{&key}} (raw), <!--each:key-->…<!--/each:key-->, <!--if:key-->…<!--/if:key-->,
+# <!--ifnot:key-->…; a {text, facts} object renders as its text.
+
+SECTION_TYPES = ("hero", "proof", "services", "area", "about", "gallery", "quote", "contact",
+                 "details", "booking")
+SECTION_NEEDS = {"hero": ("heading",), "proof": ("items",), "services": ("heading", "items"),
+                 "area": ("heading",), "about": ("heading", "paragraphs"), "gallery": ("heading",),
+                 "quote": ("heading",), "contact": ("heading",), "details": ("heading", "where"),
+                 "booking": ("heading",)}
+TEXT_KEYS = ("heading", "kicker", "intro", "sub", "secondary", "note", "text", "where", "title")
+TEXT_LISTS = ("paragraphs", "places", "hours")
+NAV = {"services": ("index.html#services", "Services"), "area": ("index.html#area", "Area"),
+       "about": ("index.html#about", "About"), "gallery": ("photos.html", "Photos"),
+       "booking": ("index.html#booking", "Book"), "quote": ("index.html#quote", "Get a quote"),
+       "contact": ("index.html#contact", "Contact"), "details": ("index.html#details", "Hours")}
+_EACH = re.compile(r"<!--each:([\w.]+)-->\n?(.*?)<!--/each:\1-->\n?", re.S)
+_IF = re.compile(r"<!--(if|ifnot):([\w.]+)-->\n?(.*?)<!--/\1:\2-->\n?", re.S)
+_VAR = re.compile(r"\{\{(&?)([\w.]+)\}\}")
+
+
+def _lookup(ctx, key):
+    cur = ctx
+    for part in key.split("."):
+        if isinstance(cur, dict) and part in cur:
+            cur = cur[part]
+        else:
+            return None
+    return cur
+
+
+def _text(v):
+    return v.get("text") if isinstance(v, dict) and "text" in v else v
+
+
+def render_tpl(tpl, ctx):
+    """The section language (above). Loops first, then conditions, then values, one pass each, so a
+    value is never read again as template."""
+    def each(m):
+        items = _lookup(ctx, m.group(1)) or []
+        return "".join(render_tpl(m.group(2), dict(ctx, item=it, n=f"{i + 1:02d}",
+                                                   item_class="lede" if i == 0 else ""))
+                       for i, it in enumerate(items))
+    tpl = _EACH.sub(each, tpl)
+
+    def cond(m):
+        v = bool(_text(_lookup(ctx, m.group(2))))
+        return render_tpl(m.group(3), ctx) if v == (m.group(1) == "if") else ""
+    tpl = _IF.sub(cond, tpl)
+
+    def var(m):
+        v = _text(_lookup(ctx, m.group(2)))
+        v = "" if v is None else v
+        return str(v) if m.group(1) else esc(v)
+    return _VAR.sub(var, tpl)
+
+
+def template_looks(kind):
+    d = SITE_TEMPLATES / kind / "css" / "looks"
+    return sorted(p.stem for p in d.glob("*.css")) if d.is_dir() else []
+
+
+def has_library(kind):
+    return (SITE_TEMPLATES / kind / "sections" / "_page.html").exists() and bool(template_looks(kind))
+
+
+def content_texts(content):
+    """Every text in a content.json, as (where, value): what the schema and the generic cap read."""
+    out = [("cta", content.get("cta"))]
+    for i, s in enumerate(content.get("sections") or []):
+        at = f"sections[{i}] {s.get('type')}"
+        for k in TEXT_KEYS:
+            if k in s:
+                out.append((f"{at}.{k}", s[k]))
+        for k in TEXT_LISTS:
+            for j, v in enumerate(s.get(k) or []):
+                out.append((f"{at}.{k}[{j}]", v))
+        for j, it in enumerate(s.get("items") or []):
+            if isinstance(it, dict) and "title" in it:
+                out += [(f"{at}.items[{j}].title", it.get("title")), (f"{at}.items[{j}].text", it.get("text"))]
+            else:
+                out.append((f"{at}.items[{j}]", it))
+        for j, it in enumerate(s.get("links") or []):
+            out.append((f"{at}.links[{j}]", it))
+        if "phone" in s:
+            out.append((f"{at}.phone", s["phone"]))
+    return out
+
+
+def validate_content(content, base, look=None):
+    """The content.json contract (plan 28 § Contracts, schema 1). Returns a list of problems."""
+    errs = []
+    if not isinstance(content, dict):
+        return ["content.json is not an object"]
+    if content.get("schema", 1) != 1:
+        errs.append(f"schema {content.get('schema')!r}: this renderer reads schema 1")
+    for k in ("slug", "template", "look", "name", "cta", "sections"):
+        if not content.get(k):
+            errs.append(f"missing {k}")
+    if errs:
+        return errs
+    if not re.fullmatch(r"[a-z0-9-]{3,80}", content["slug"]):
+        errs.append(f"slug {content['slug']!r}: lowercase letters, digits and dashes, 3-80")
+    kind = content["template"]
+    if not has_library(kind):
+        errs.append(f"template {kind!r} has no section library (templates/sites/{kind}/sections, css/looks)")
+        return errs
+    want = look or content["look"]
+    if want not in template_looks(kind):
+        errs.append(f"look {want!r}: the {kind} template has {', '.join(template_looks(kind))}")
+    lib = SITE_TEMPLATES / kind / "sections"
+    images = content.get("images") or {}
+    for key, im in images.items():
+        if not isinstance(im, dict):
+            errs.append(f"images.{key} is not an object")
+            continue
+        for f in ("file", "source", "id", "alt"):
+            if not im.get(f):
+                errs.append(f"images.{key}: missing {f}")
+        if im.get("source") not in ("stock", "generated"):
+            errs.append(f"images.{key}: source is stock or generated")
+        p = Path(im.get("file") or "")
+        if not p.is_absolute():
+            p = base / p
+        if im.get("file") and not p.is_file():
+            errs.append(f"images.{key}: no file at {p}")
+    types = []
+    for i, s in enumerate(content["sections"]):
+        t = s.get("type") if isinstance(s, dict) else None
+        if t not in SECTION_TYPES or not (lib / f"{t}.html").exists():
+            errs.append(f"sections[{i}]: type {t!r} is not in the {kind} library "
+                        f"({', '.join(p.stem for p in sorted(lib.glob('[a-z]*.html')) if p.stem != 'photos_head')})")
+            continue
+        types.append(t)
+        for need in SECTION_NEEDS[t]:
+            if not s.get(need):
+                errs.append(f"sections[{i}] {t}: missing {need}")
+        for key in ([s.get("image")] if s.get("image") else []) + list(s.get("images") or []):
+            if key not in images:
+                errs.append(f"sections[{i}] {t}: image {key!r} is not in images{{}}")
+    if types.count("hero") != 1:
+        errs.append("exactly one hero section")
+    generic = set(content.get("generic") or [])
+    for where, v in content_texts(content):
+        if not isinstance(v, dict) or "text" not in v or not isinstance(v.get("facts", None), list):
+            errs.append(f"{where}: a text is {{\"text\": …, \"facts\": [...]}}")
+        elif not v["facts"] and v["text"] not in generic:
+            errs.append(f"{where}: no facts and not listed in generic[]: {v['text'][:60]!r}")
+    if not (content["cta"].get("href") if isinstance(content["cta"], dict) else None):
+        errs.append("cta: missing href")
+    return errs
+
+
+def _facts_beside(base):
+    try:
+        return json.loads((base / "facts.json").read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def claim_link(content, base):
+    """patchlamp.com/start filled with the business, the one the footer's "Claim it" opens (B66
+    reads business, city, category and preview from it)."""
+    facts = _facts_beside(base)
+    q = [("business", content["name"])]
+    for k in ("city", "category"):
+        v = content.get(k) or facts.get(k)
+        if v:
+            q.append((k, v))
+    q.append(("preview", content["slug"]))
+    return CLAIM_START + "?" + urllib.parse.urlencode(q)
+
+
+def _copy_site_files(tdir, out, name, year):
+    vals = {"NAME": esc(name), "YEAR": str(year)}
+    (out / "css" / "looks").mkdir(parents=True, exist_ok=True)
+    (out / "js").mkdir(parents=True, exist_ok=True)
+    (out / "css" / "style.css").write_text(fill_preview((tdir / "css" / "style.css").read_text(), vals))
+    if (tdir / "css" / "sections.css").exists():
+        shutil.copy2(tdir / "css" / "sections.css", out / "css" / "sections.css")
+    for p in sorted((tdir / "css" / "looks").glob("*.css")):
+        shutil.copy2(p, out / "css" / "looks" / p.name)
+    if (tdir / "fonts").is_dir():
+        shutil.copytree(tdir / "fonts", out / "fonts", dirs_exist_ok=True)
+    (out / "js" / "main.js").write_text(fill_preview((tdir / "js" / "main.js").read_text(), vals))
+    if (tdir / "404.html").exists():
+        (out / "404.html").write_text(fill_preview((tdir / "404.html").read_text(), vals))
+    (out / "css" / "preview.css").write_text((PREVIEW_OVERLAY / "css" / "preview.css").read_text())
+
+
+def render_content(content, base, out, today=None, days=PREVIEW_DAYS, look=None):
+    """content.json -> the whole site under `out` (index.html, photos.html, 404.html, css/, fonts/,
+    images/, js/, claim/). Dies on a content.json that breaks the contract. Returns a summary."""
+    today = today or now_date()
+    errs = validate_content(content, base, look)
+    if errs:
+        die("content.json doesn't fit the contract (plan 28 § Contracts):\n  " + "\n  ".join(errs))
+    kind, look = content["template"], look or content["look"]
+    tdir = SITE_TEMPLATES / kind
+    lib = tdir / "sections"
+    name, slug = content["name"], content["slug"]
+    if out.exists():
+        shutil.rmtree(out)
+    out.mkdir(parents=True)
+    _copy_site_files(tdir, out, name, today.year)
+
+    imgs = {}
+    for key, im in (content.get("images") or {}).items():
+        src = Path(im["file"]) if Path(im["file"]).is_absolute() else base / im["file"]
+        (out / "images").mkdir(exist_ok=True)
+        target = out / "images" / (key + src.suffix.lower())
+        shutil.copy2(src, target)
+        w, h = image_dims(target)
+        label = "Stock photo — their own go here" if im["source"] == "stock" else "Made with AI — their own go here"
+        imgs[key] = {"src": f"images/{target.name}", "alt": im["alt"], "w": w, "h": h, "label": label,
+                     "credit": im.get("credit") or "", "source": im["source"], "id": im["id"]}
+
+    cta = dict(content["cta"])
+    cta.setdefault("short", (_text(cta) or "Call").split(" ")[0])
+    types = [s["type"] for s in content["sections"]]
+    second = next((f"#{t}" for t in ("quote", "booking", "contact", "details") if t in types), "#details")
+    gallery_keys = []
+    for s in content["sections"]:
+        gallery_keys += [k for k in (s.get("images") or []) if k not in gallery_keys]
+    photo_keys = [k for k in (["hero"] if "hero" in imgs else []) + gallery_keys + [
+        s.get("image") for s in content["sections"] if s.get("image")] if k]
+    photo_keys = list(dict.fromkeys(photo_keys))
+    has_photos = True             # every site has its photos page, as the template does (the claim keeps it)
+
+    def section_html(s, alt):
+        ctx = dict(s, name=name, cta=cta, alt=" alt" if alt else "", secondary_href=second,
+                   image=imgs.get(s.get("image")) if s.get("image") else None,
+                   images=[imgs[k] for k in (s.get("images") or []) if k in imgs],
+                   has_image=" has-image" if s.get("image") else "")
+        if s["type"] == "gallery":
+            ctx["more"] = has_photos and len(photo_keys) > len(ctx["images"])
+        html_ = render_tpl((lib / f"{s['type']}.html").read_text(), ctx)
+        if s.get("claim_only"):
+            # the claimed site gets it (the template's own feature); the preview shows nothing of it
+            inner = re.sub(r"[ \t]*<!--(?!c:|/c:).*?-->\n?", "", claim_page(html_), flags=re.S).replace("-->", "")
+            return f"<!--c:{s['type']}\n{inner.rstrip()}\n/c:{s['type']}-->\n"
+        return html_
+
+    body, alt = [], False
+    for s in content["sections"]:
+        banded = s["type"] not in ("hero", "proof")
+        body.append(section_html(s, alt and banded))
+        if banded and not s.get("claim_only"):
+            alt = not alt
+    hero = next(s for s in content["sections"] if s["type"] == "hero")
+    shown = [t for t in ("services", "about", "area", "booking", "quote", "contact")
+             if t in types and not any(x.get("claim_only") for x in content["sections"] if x["type"] == t)]
+    ask = [t for t in shown if t in ("booking", "quote", "contact")][-1:]
+    nav = [{"href": NAV[t][0], "label": NAV[t][1]}
+           for t in [t for t in shown if t not in ("booking", "quote", "contact")][:2] + ["gallery"] + ask]
+    expires = today + dt.timedelta(days=days)
+    page_ctx = {"bar": render_tpl((PREVIEW_OVERLAY / "bar.html").read_text(), {"name": name}),
+                "name": name, "look": look, "cta": cta, "nav": nav, "year": today.year,
+                "photos": has_photos, "admin": bool(json.loads((tdir / "template.json").read_text()).get("db")),
+                "expires_long": expires.strftime("%-d %B %Y"), "built_long": today.strftime("%-d %B %Y"),
+                "description": f"{name} — {_text(hero['heading'])}"}
+    frame = (lib / "_page.html").read_text()
+    pages = {"index.html": render_tpl(frame, dict(page_ctx, page="home", page_title=name,
+                                                   sections="".join(body)))}
+    if has_photos:
+        head = render_tpl((lib / "photos_head.html").read_text(), {"heading": "Photos"})
+        gal = render_tpl((lib / "gallery.html").read_text(),
+                         {"heading": f"{name}, in pictures", "alt": "", "more": False,
+                          "images": [imgs[k] for k in photo_keys]})
+        pages["photos.html"] = render_tpl(frame, dict(page_ctx, page="photos", page_title=f"Photos — {name}",
+                                                       sections=head + gal))
+    for fname, html_ in pages.items():
+        html_ = re.sub(r"\n{3,}", "\n\n", html_)
+        left = sorted(set(re.findall(r"\{\{&?[\w.]+\}\}", html_)))
+        if left:
+            die(f"unfilled in {slug}/{fname}: {', '.join(left)}")
+        (out / fname).write_text(html_)
+    link = claim_link(content, base)
+    (out / "claim").mkdir(exist_ok=True)
+    (out / "claim" / "index.html").write_text(fill_preview((PREVIEW_OVERLAY / "claim.html").read_text(),
+                                                           {"NAME": esc(name), "CLAIM_URL": esc(link)}))
+    size = sum(p.stat().st_size for p in out.rglob("*") if p.is_file())
+    return {"slug": slug, "template": kind, "look": look, "out": str(out), "pages": sorted(pages),
+            "images": {k: {"id": v["id"], "source": v["source"]} for k, v in imgs.items()},
+            "claim_url": link, "expires": expires.isoformat(), "bytes": size}
+
+
+def content_from_listing(c, details, copy, slug, look, images, kind):
+    """`leads preview NAME`'s content.json: the listing's facts (name, city, phone, rating, hours)
+    and the category's words from categories.json, the category's words all declared generic (none
+    of them is something this business told us), and the preview says so above the list."""
+    name = clean_name(c["name"])
+    city = (c.get("locality") or (c.get("city") or "").replace(", Utah", "")).strip()
+    d = details or {}
+    phone = d.get("nationalPhoneNumber") or c.get("phone") or ""
+    rating = d.get("rating") if details else c.get("rating")
+    reviews = d.get("userRatingCount") if details else c.get("reviews")
+    maps = clean_maps(d.get("googleMapsUri") or c.get("google_maps_uri"))
+    words = {"name": name, "city": city or "the valley", "category": copy["category"], "trade": copy["trade"]}
+    generic = []
+
+    def T(text, *facts):
+        if not facts:
+            generic.append(text)
+        return {"text": text, "facts": list(facts)}
+
+    where = preview_where(c, details, city)
+    label = copy["category"][:1].upper() + copy["category"][1:]
+    cta = dict(T(f"Call {phone}", "listing:phone"), href=f"tel:{phone_href(phone)}") if phone else \
+        dict(T("See the listing", "listing:maps"), href=maps or "#details")
+    hours = hours_for_people(details, c)
+    heads = [h for h, _ in copy["services"]]
+    hero = {"type": "hero", "kicker": T(f"{label} · {city}" if city else label, "listing:category", "listing:city"),
+            "heading": T(copy["tagline"].format(**words), "listing:category", "listing:city"),
+            "sub": T(" · ".join(heads[:3])), "secondary": T(copy["cta"])}
+    if "hero" in images:
+        hero["image"] = "hero"
+    proof = []
+    if rating is not None and reviews:
+        proof.append(dict(T(f"{float(rating):.1f}★ on Google · {reviews} review{'s' if reviews != 1 else ''}",
+                            "listing:rating"), **({"href": maps} if maps else {})))
+    proof.append(T(where, "listing:city"))
+    if len(hours) == 1:
+        proof.append(T(hours[0], "listing:hours"))
+    sections = [hero]
+    if proof:
+        sections.append({"type": "proof", "items": proof})
+    sections.append({"type": "services", "heading": T("What we do"),
+                     "note": T(f"What a {copy['trade']} is usually asked for — written from the category on "
+                               f"their Google listing, not from anything {name} has told us. On their own site "
+                               f"this is their list, in their words."),
+                     "items": [{"title": T(h), "text": T(l.format(**words))} for h, l in copy["services"]]})
+    about = {"type": "about", "heading": T(f"About {name}"), "paragraphs": [T(copy["intro"].format(**words))]}
+    if "g1" in images:
+        about["image"] = "g1"
+    gal = [k for k in ("g2", "g3", "g4") if k in images]
+    phone_row = dict(T(phone, "listing:phone"), href=f"tel:{phone_href(phone)}") if phone else None
+    links = [dict(T("See us on Google", "listing:maps"), href=maps)] if maps else []
+    if kind == "service":
+        sections.append(about)
+        if gal:
+            sections.append({"type": "gallery", "heading": T("Recent work"), "images": gal})
+        q = {"type": "quote", "heading": T("Ask for a quote"),
+             "intro": T("Tell us what you need and we'll get back to you with a price.")}
+        if phone_row:
+            q["phone"] = phone_row
+        sections.append(q)
+        # the service template's calendar: on the claimed site from day one, never on the preview
+        sections.append({"type": "booking", "claim_only": True, "heading": T("Book a visit"),
+                         "intro": T("Pick an open time. We'll confirm by email or phone.")})
+    else:
+        if gal:
+            sections.append({"type": "gallery", "heading": T("Selected work"), "images": gal})
+        sections.append(about)
+        sections.append({"type": "contact", "heading": T("Get in touch"),
+                         "intro": T("Call to ask about a date."), "links": links})
+    det = {"type": "details", "heading": T("Hours and contact"), "where": T(where, "listing:city"),
+           "hours": [T(h, "listing:hours") for h in hours], "links": links}
+    if phone_row:
+        det["phone"] = phone_row
+    sections.append(det)
+    return {"schema": 1, "slug": slug, "template": kind, "look": look, "name": name,
+            "place_id": c.get("place_id"), "city": city, "category": c.get("category") or copy["category"],
+            "cta": cta, "images": images, "sections": sections, "generic": sorted(set(generic))}
+
+
+def preview_content_dir(slug):
+    return PREVIEWS / "content" / slug
 
 
 def build_preview(c, details, args, taken, today=None):
+    """One preview. A template with a section library: write content.json from the listing and
+    categories.json, then render it (the one renderer, `--from`'s). Else the legacy one page."""
+    today = today or now_date()
+    copy = preview_copy(c.get("category"))
+    kind = copy["template"]
+    if not has_library(kind):
+        return build_legacy_preview(c, details, args, taken, today)
+    name = clean_name(c["name"])
+    city = (c.get("locality") or (c.get("city") or "").replace(", Utah", "")).strip()
+    slug = (c.get("_slug") or preview_slug(name, city, taken))
+    looks = template_looks(kind)
+    look = getattr(args, "look", None) or looks[_seed_index(slug, len(looks))]
+    if look not in looks:
+        die(f"--look {look}: the {kind} template has {', '.join(looks)}")
+    cdir = preview_content_dir(slug)
+    (cdir / "images").mkdir(parents=True, exist_ok=True)       # kept: a rebuild keeps its photos
+    images = preview_images(slug, copy, args.hero, cdir / "images")
+    for im in images.values():
+        im["file"] = str(Path(im["file"]).relative_to(cdir))
+    content = content_from_listing(c, details, copy, slug, look, images, kind)
+    (cdir / "content.json").write_text(json.dumps(content, indent=1, ensure_ascii=False) + "\n")
+    info = render_content(content, cdir, preview_site_dir() / slug, today=today, days=args.days)
+    d = details or {}
+    meta = {"slug": slug, "place_id": c.get("place_id"), "name": name, "city": city,
+            "category": copy["category"], "segment": c.get("segment") or "", "template": kind, "look": look,
+            "phone": d.get("nationalPhoneNumber") or c.get("phone") or "",
+            "rating": d.get("rating") if details else c.get("rating"),
+            "reviews": d.get("userRatingCount") if details else c.get("reviews"),
+            "maps_url": clean_maps(d.get("googleMapsUri") or c.get("google_maps_uri")),
+            "hero": (images.get("hero") or {}).get("source", "none"), "images": sorted(i["id"] for i in images.values()),
+            "built": today.isoformat(), "expires": info["expires"], "days": args.days,
+            "hours": bool(hours_lines(details)), "url": preview_url(slug), "claimed": None,
+            "content": str(cdir / "content.json"), "claim_url": info["claim_url"], "cost_usd": 0.0}
+    preview_save(meta)
+    ledger_append({"ts": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()), "kind": "preview",
+                   "tool": "leads", "cost_usd": 0.0, "billed_to": "none", "project": "global", "slug": slug,
+                   "hero": meta["hero"], "look": look, "for": f"preview {name} ({copy['category']})"})
+    return meta
+
+
+def preview_from(args):
+    """`leads preview --from content.json [--out DIR] [--look L]`: render one content.json. With
+    --out the site goes there and nothing is recorded; without it the site goes into the previews
+    tree at <slug>/ with its manifest (what ls, --claim and --remove read)."""
+    src = Path(args.from_file).expanduser().resolve()
+    try:
+        content = json.loads(src.read_text())
+    except (OSError, ValueError) as exc:
+        die(f"{src}: {exc}")
+    today = now_date()
+    if args.out:
+        info = render_content(content, src.parent, Path(args.out).expanduser().resolve(), today=today,
+                              days=args.days, look=args.look)
+    else:
+        info = render_content(content, src.parent, preview_site_dir() / content["slug"], today=today,
+                              days=args.days, look=args.look)
+        preview_root_files()
+        facts = _facts_beside(src.parent)
+        old = next((m for m in previews_all() if m["slug"] == content["slug"]), {})
+        meta = dict(old, slug=content["slug"], place_id=content.get("place_id") or facts.get("place_id"),
+                    name=content["name"], city=content.get("city") or facts.get("city") or "",
+                    category=content.get("category") or facts.get("category") or "",
+                    segment=content.get("segment") or facts.get("segment") or old.get("segment") or "",
+                    template=info["template"], look=info["look"], built=today.isoformat(),
+                    expires=info["expires"], days=args.days, url=preview_url(content["slug"]),
+                    claimed=old.get("claimed"), content=str(src), claim_url=info["claim_url"],
+                    hero=(info["images"].get("hero") or {}).get("source", "none"),
+                    images=sorted(v["id"] for v in info["images"].values()),
+                    hours=any(s.get("hours") for s in content["sections"] if s.get("type") == "details"),
+                    cost_usd=old.get("cost_usd", 0.0))
+        preview_save(meta)
+        if not args.no_publish:
+            ok, _ = preview_publish(dry=args.dry_run)
+            if not ok:
+                die("the publish failed; the site is under " + info["out"], 2)
+    if args.json:
+        print(json.dumps(info, indent=1))
+        return
+    print(f"rendered {info['slug']} ({info['template']}, look {info['look']}) -> {info['out']}  "
+          f"[{', '.join(info['pages'])}, {info['bytes'] // 1024} KB]")
+    print(f"  claim link: {info['claim_url']}")
+
+
+def build_legacy_preview(c, details, args, taken, today=None):
     """One preview: the segment's template filled from the listing. Returns its manifest."""
     today = today or now_date()
     copy = preview_copy(c.get("category"))
@@ -2076,7 +2700,7 @@ def build_preview(c, details, args, taken, today=None):
     reviews = d.get("userRatingCount") if details else c.get("reviews")
     maps = clean_maps(d.get("googleMapsUri") or c.get("google_maps_uri"))
     hero_src, hero_kind, hero_cost = preview_hero(slug, dest, copy["hero"], args.hero)
-    hrs = hours_lines(details)
+    hrs = hours_for_people(details, c)
     expires = today + dt.timedelta(days=args.days)
     words = {"name": name, "city": city or "the valley", "category": copy["category"], "trade": copy["trade"]}
 
@@ -2114,6 +2738,11 @@ def build_preview(c, details, args, taken, today=None):
     if "{{" in page:
         die(f"unfilled placeholder in {slug}: " + ", ".join(sorted(set(re.findall(r'\{\{[A-Z_]+\}\}', page)))))
     (dest / "index.html").write_text(re.sub(r"\n{3,}", "\n\n", page))
+    link = claim_link({"name": name, "slug": slug, "city": city, "category": c.get("category") or copy["category"]},
+                      dest)
+    (dest / "claim").mkdir(exist_ok=True)
+    (dest / "claim" / "index.html").write_text(fill_preview((PREVIEW_OVERLAY / "claim.html").read_text(),
+                                                            {"NAME": esc(name), "CLAIM_URL": esc(link)}))
     meta = {"slug": slug, "place_id": c.get("place_id"), "name": name, "city": city,
             "category": copy["category"], "segment": c.get("segment") or "", "template": kind,
             "phone": phone, "rating": rating, "reviews": reviews, "maps_url": maps,
@@ -2254,10 +2883,10 @@ def preview_kit_picks(segment, n):
     return [c["place_id"] for c in candidates_for(segment, None) if c["place_id"] not in have][:n]
 
 
-def make_previews(rows, hero="stock", days=PREVIEW_DAYS, publish=True, dry=False):
+def make_previews(rows, hero="stock", days=PREVIEW_DAYS, publish=True, dry=False, look=None):
     """Build a preview for each (candidate, details) and publish the tree once. A place that already
     has one is rebuilt in place, keeping its slug so a link already sent still works."""
-    opts = argparse.Namespace(hero=hero, days=days)
+    opts = argparse.Namespace(hero=hero, days=days, look=look)
     preview_root_files()       # the tree is complete on disk whether or not it is published
     taken = {m["slug"] for m in previews_all()}
     made = []
@@ -2279,7 +2908,7 @@ def make_previews(rows, hero="stock", days=PREVIEW_DAYS, publish=True, dry=False
 def previews_build(args):
     rows = preview_rows_for(args)
     made, ok = make_previews(rows, hero=args.hero, days=args.days,
-                             publish=not args.no_publish, dry=args.dry_run)
+                             publish=not args.no_publish, dry=args.dry_run, look=args.look)
     if args.no_publish:
         print(f"built {len(made)} preview(s) under {preview_site_dir()} — not published (--no-publish)")
     elif not ok:
@@ -2288,7 +2917,8 @@ def previews_build(args):
         print(json.dumps(made, indent=1))
         return
     for m in made:
-        print(f"  {m['name']} ({m['category']}, {m['template']} template) -> {m['url']}"
+        print(f"  {m['name']} ({m['category']}, {m['template']} template"
+              + (f", look {m['look']}" if m.get("look") else "") + f") -> {m['url']}"
               + ("" if m["hours"] else "  [no hours on Google]"))
     print(f"{len(made)} preview(s); each comes down {made[0]['expires'] if made else '-'} unless claimed "
           f"(`leads preview sweep`, or `leads preview --remove NAME` now).")
@@ -2349,6 +2979,8 @@ def kit_json(picks, segment, today):
 
 
 def cmd_preview(args):
+    if args.from_file:
+        return preview_from(args)
     if args.remove:
         return preview_remove(args)
     if args.claim:
@@ -2414,51 +3046,46 @@ def preview_remove(args):
     print(f"{m['url']} is gone; reply to the owner that it's down.")
 
 
-CLAIM_STRIP = ("p:robots", "p:css", "p:bar", "p:caveat", "p:footer", "p:herocap")
-
-
-def claim_html(page, name, year, has_photos):
-    """The preview page as the client's own home page: every preview-only block cut at its
-    markers, the disclaimers replaced with the site's own words. The markers are in
-    templates/sites/_preview/page.html, so this never guesses at prose."""
-    for tag in CLAIM_STRIP:
-        page = re.sub(rf"<!--{tag}-->.*?<!--/{tag}-->\n?", "", page, flags=re.S)
-    page = page.replace("<!--c:head-->",
-                        f"  <title>{esc(name)}</title>\n"
-                        f'  <meta name="description" content="{esc(name)}">')
-    page = page.replace("<!--c:nav-->", '      <a href="photos.html">Photos</a>' if has_photos else "")
-    page = page.replace("<!--c:what-->", '        <h3>What we do</h3>')
-    page = page.replace("<!--c:footer-->", f'    <p class="copyright">&copy; {year} {esc(name)}</p>')
-    page = page.replace('<link rel="stylesheet" href="css/preview.css">', "")
-    # preview.css does not travel, so nothing may depend on its classes; and the page is theirs now.
-    page = page.replace('class="preview-h3"', 'class="site-h3"').replace(">Their listing on Google<", ">See us on Google<")
-    return re.sub(r"\n{3,}", "\n\n", page)
-
-
 def preview_claim(args):
     """A claimed preview becomes the client's site: `client new` + `site new` from the same
-    template, then the preview's own filled page as index.html, committed and published."""
+    template, then the WHOLE rendered tree copied over it with the overlay cut at its markers and
+    the forms switched on (plan 28, B64). It never overwrites a page with a thinner one: every form
+    the template's own home page has must be on the page that replaces it, or nothing is copied.
+    A legacy one-page preview (a template with no section library yet) keeps the template's home
+    page and leaves the preview's page in the workspace's incoming/ for Patch to fold in."""
     m = preview_find(args.claim)
     if not m:
         die(f"no preview for {args.claim!r} (`leads preview ls`)")
     slug = args.slug or slugify(clean_name(m["name"]))
     ws = PROJECTS / "clients" / slug
     repo = f"{slug}-site"
-    page = (preview_site_dir() / m["slug"] / "index.html")
+    tree = preview_site_dir() / m["slug"]
+    page = tree / "index.html"
     if not page.exists():
         die(f"{page} is gone — rebuild it first: leads preview \"{m['name']}\"")
-    print(f"claim {m['name']} -> clients/{slug}, site {repo} from the {m['template']} template")
+    library = (tree / "css" / "sections.css").exists()
+    files = claim_files(tree) if library else []
+    print(f"claim {m['name']} -> clients/{slug}, site {repo} from the {m['template']} template"
+          + (f", look {m.get('look')}" if m.get("look") else ""))
+    copy = preview_copy(m["category"])
     steps = [[str(CLIENT_BIN), "new", slug, "--name", m["name"]],
              [str(SITE_BIN), "new", repo, "--template", m["template"], "--primary",
-              "--tagline", preview_copy(m["category"])["tagline"].format(
-                  name=m["name"], city=m["city"] or "the valley", category=m["category"],
-                  trade=preview_copy(m["category"])["trade"])]]
+              "--tagline", copy["tagline"].format(name=m["name"], city=m["city"] or "the valley",
+                                                  category=m["category"], trade=copy["trade"])]]
     if args.dry_run:
         for s in steps:
             print("  would run: " + " ".join(s[0].rsplit("/", 1)[-1:] + s[1:]))
-        print(f"  would copy {page} -> clients/{slug}/repos/{repo}/index.html (preview blocks cut: "
-              + ", ".join(CLAIM_STRIP) + ")")
-        print(f"  would copy the hero and css, commit, push, `site publish {repo}`")
+        if library:
+            print(f"  would copy the whole rendered site ({len(files)} files) over the template's: "
+                  + ", ".join(f for f in files if "/" not in f)
+                  + ", " + ", ".join(sorted({f.split('/')[0] + '/' for f in files if '/' in f})))
+            print("  would cut the preview's overlay at its markers (the bar, noindex, the footer, the image "
+                  "labels, the caveat), switch the forms on, and leave out claim/ and css/preview.css")
+            print("  would refuse if the new home page lacks a form the template's has")
+        else:
+            print(f"  would keep the {m['template']} template's own index.html (its forms); the preview's page "
+                  f"goes to clients/{slug}/incoming/preview-index.html for Patch to fold in; the hero is copied")
+        print(f"  would commit, push, `site publish {repo}`")
         print(f"  would mark {m['slug']} claimed and take the preview down")
         return
     r = subprocess.run(steps[0], capture_output=True, text=True)
@@ -2471,17 +3098,24 @@ def preview_claim(args):
     dest = ws / "repos" / repo
     if r.returncode != 0 or not dest.exists():
         die(f"site new {repo} failed; the workspace is made — finish it by hand from {dest}", 2)
-    has_photos = (dest / "photos.html").exists()
-    (dest / "index.html").write_text(claim_html(page.read_text(), m["name"], now_date().year, has_photos))
-    src_img = preview_site_dir() / m["slug"] / "images"
-    if src_img.is_dir():
-        (dest / "images").mkdir(exist_ok=True)
-        for p in src_img.iterdir():
-            if p.is_file():
-                shutil.copy2(p, dest / "images" / p.name)
+    if library:
+        claim_tree(tree, dest)
+    else:
+        has_photos = (dest / "photos.html").exists()
+        (ws / "incoming").mkdir(exist_ok=True)
+        (ws / "incoming" / "preview-index.html").write_text(
+            claim_html(page.read_text(), m["name"], now_date().year, has_photos))
+        src_img = tree / "images"
+        if src_img.is_dir():
+            (dest / "images").mkdir(exist_ok=True)
+            for p in src_img.iterdir():
+                if p.is_file():
+                    shutil.copy2(p, dest / "images" / p.name)
+        print(f"  the {m['template']} template has no section library yet: its own home page stays (with its "
+              f"forms); the preview's page is clients/{slug}/incoming/preview-index.html")
     for git_args in (["add", "-A"],
                      ["-c", "user.name=Patch (claude-tools leads)", "-c", "user.email=noreply@anthropic.com",
-                      "commit", "-q", "-m", f"The page {m['name']} claimed, from their Patchlamp preview"],
+                      "commit", "-q", "-m", f"The site {m['name']} claimed, from their Patchlamp preview"],
                      ["push", "-q"]):
         g = subprocess.run(["git", "-C", str(dest), *git_args], capture_output=True, text=True)
         if g.returncode != 0:
@@ -2492,6 +3126,69 @@ def preview_claim(args):
     preview_save(m)
     print(f"claimed: clients/{slug} · repos/{repo} · the preview is marked claimed "
           f"(`leads preview --remove {m['slug']}` takes it off the previews host)")
+
+
+CLAIM_LEAVE = ("claim/", "css/preview.css")
+
+
+def claim_files(tree):
+    """The rendered site's files a claim copies: all of them but the claim redirect and the overlay's stylesheet."""
+    return sorted(p.relative_to(tree).as_posix() for p in tree.rglob("*")
+                  if p.is_file() and not any(p.relative_to(tree).as_posix().startswith(x) for x in CLAIM_LEAVE))
+
+
+def claim_page(html_):
+    """A rendered page as the client's own: every <!--p:NAME-->…<!--/p:NAME--> block cut, every
+    <!--c:NAME … /c:NAME--> block uncommented (the forms switched on, the copyright, the title)."""
+    html_ = re.sub(r"[ \t]*<!--p:([\w-]+)-->.*?<!--/p:\1-->\n?", "", html_, flags=re.S)
+    html_ = re.sub(r"<!--c:([\w-]+)\n(.*?)\n[ \t]*/c:\1-->\n?", lambda m: m.group(2) + "\n", html_, flags=re.S)
+    return re.sub(r"\n{3,}", "\n\n", html_)
+
+
+def form_actions(html_):
+    return set(re.findall(r'<form[^>]*\baction="([^"]+)"', html_ or ""))
+
+
+def claim_tree(tree, dest):
+    """Copy the rendered site into the client repo (after `site new`), overlay cut, forms on."""
+    files = claim_files(tree)
+    pages = {f: claim_page((tree / f).read_text()) for f in files if f.endswith(".html")}
+    for f, html_ in pages.items():
+        left = re.findall(r"<!--/?[pc]:[\w-]+|noindex|class=\"demo-bar\"|disabled>", html_)
+        if left:
+            die(f"the claimed {f} still carries preview markup ({', '.join(sorted(set(left))[:4])}); nothing copied")
+    old = (dest / "index.html").read_text() if (dest / "index.html").exists() else ""
+    lost = form_actions(old) - form_actions(pages.get("index.html", ""))
+    if lost:
+        die(f"the rendered home page has no form for {', '.join(sorted(lost))}, which the template's has — "
+            f"a claim never replaces a page with a thinner one; add the section to content.json and render again")
+    for f in files:
+        target = dest / f
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if f in pages:
+            target.write_text(pages[f])
+        else:
+            shutil.copy2(tree / f, target)
+    print(f"  copied {len(files)} files: the overlay cut, the forms on ({', '.join(sorted(form_actions(pages.get('index.html', ''))) ) or 'no forms'})")
+
+
+LEGACY_STRIP = ("p:robots", "p:css", "p:bar", "p:caveat", "p:footer", "p:herocap")
+
+
+def claim_html(page, name, year, has_photos):
+    """The legacy one-page preview as a page of the client's own: every preview-only block cut at
+    its markers, the disclaimers replaced with the site's own words."""
+    for tag in LEGACY_STRIP:
+        page = re.sub(rf"<!--{tag}-->.*?<!--/{tag}-->\n?", "", page, flags=re.S)
+    page = page.replace("<!--c:head-->",
+                        f"  <title>{esc(name)}</title>\n"
+                        f'  <meta name="description" content="{esc(name)}">')
+    page = page.replace("<!--c:nav-->", '      <a href="photos.html">Photos</a>' if has_photos else "")
+    page = page.replace("<!--c:what-->", '        <h3>What we do</h3>')
+    page = page.replace("<!--c:footer-->", f'    <p class="copyright">&copy; {year} {esc(name)}</p>')
+    page = page.replace('<link rel="stylesheet" href="css/preview.css">', "")
+    page = page.replace('class="preview-h3"', 'class="site-h3"').replace(">Their listing on Google<", ">See us on Google<")
+    return re.sub(r"\n{3,}", "\n\n", page)
 
 
 # ---- the pipeline (B7) ----------------------------------------------------------------
@@ -3842,6 +4539,10 @@ def main():
     pv.add_argument("--refresh", action="store_true", help="ignore the 7-day listing cache")
     pv.add_argument("--json", action="store_true")
     pv.add_argument("--fixture", help="dir of <place_id>.json Place Details (tests)")
+    pv.add_argument("--from", dest="from_file", metavar="CONTENT_JSON",
+                    help="render one content.json (plan 28 § Contracts) with the template's section library")
+    pv.add_argument("--out", help="with --from: render into DIR and record nothing (else the previews tree + manifest)")
+    pv.add_argument("--look", help="the look (css/looks/<look>.css): overrides content.json's, or picks one for NAME")
     pv.set_defaults(fn=cmd_preview)
 
     d = sub.add_parser("doctor")

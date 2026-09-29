@@ -1,0 +1,21 @@
+    <section class="section contact{{alt}}" id="contact">
+      <div class="section-inner reveal">
+        <div class="section-head">
+<!--if:kicker-->
+          <p class="kicker">{{kicker}}</p>
+<!--/if:kicker-->
+          <h2>{{heading}}</h2>
+<!--if:intro-->
+          <p class="lede">{{intro}}</p>
+<!--/if:intro-->
+        </div>
+        <div class="hero-actions">
+<!--if:cta.href-->
+          <a class="btn btn-primary" href="{{cta.href}}">{{cta.text}}</a>
+<!--/if:cta.href-->
+<!--each:links-->
+          <a class="btn btn-secondary" href="{{item.href}}">{{item.text}}</a>
+<!--/each:links-->
+        </div>
+      </div>
+    </section>

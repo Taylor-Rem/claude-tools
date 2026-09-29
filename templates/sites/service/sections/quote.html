@@ -1,0 +1,48 @@
+    <section class="section quote{{alt}}" id="quote">
+      <div class="section-inner reveal">
+        <div class="form-grid">
+          <div class="section-head">
+<!--if:kicker-->
+            <p class="kicker">{{kicker}}</p>
+<!--/if:kicker-->
+            <h2>{{heading}}</h2>
+<!--if:intro-->
+            <p class="lede">{{intro}}</p>
+<!--/if:intro-->
+<!--if:phone.href-->
+            <ul class="contact-lines">
+              <li><a href="{{phone.href}}">{{phone.text}}</a></li>
+            </ul>
+<!--/if:phone.href-->
+          </div>
+          <div class="form-card">
+            <form class="site-form" id="form" action="/api/submissions" method="post">
+              <input type="hidden" name="_form" value="quote">
+<!--p:formoff-->
+              <p class="form-off-note">This form goes live when the site is claimed.</p>
+              <fieldset class="form-fields" disabled>
+<!--/p:formoff-->
+<!--c:formon
+              <fieldset class="form-fields">
+/c:formon-->
+                <label>Name <input name="name" required autocomplete="name"></label>
+                <label>Email <input name="email" type="email" required autocomplete="email"></label>
+                <label>Phone <input name="phone" type="tel" autocomplete="tel"></label>
+                <label>What do you need? <textarea name="message" rows="4" required></textarea></label>
+                <input name="website" type="text" tabindex="-1" autocomplete="off" aria-hidden="true" style="position:absolute;left:-9999px">
+                <button class="btn btn-primary" type="submit">Send</button>
+              </fieldset>
+              <p class="form-thanks" hidden>Thanks — we've got it and we'll be in touch.</p>
+              <p class="form-sorry" hidden>That didn't go through. Please try again.</p>
+              <script>
+                (function () {
+                  var f = document.getElementById("form"), q = location.search;
+                  if (/[?&]sent=0/.test(q) && location.hash === "#form") f.querySelector(".form-sorry").hidden = false;
+                  else if (/[?&]sent=quote/.test(q)) f.querySelector(".form-thanks").hidden = false;
+                })();
+              </script>
+            </form>
+          </div>
+        </div>
+      </div>
+    </section>

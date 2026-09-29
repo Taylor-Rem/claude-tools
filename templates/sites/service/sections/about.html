@@ -1,0 +1,23 @@
+    <section class="section about{{alt}}" id="about">
+      <div class="section-inner reveal">
+        <div class="about-grid{{has_image}}">
+          <div>
+<!--if:kicker-->
+            <p class="kicker">{{kicker}}</p>
+<!--/if:kicker-->
+            <h2>{{heading}}</h2>
+<!--each:paragraphs-->
+            <p class="{{item_class}}">{{item}}</p>
+<!--/each:paragraphs-->
+          </div>
+<!--if:image-->
+          <figure class="about-media">
+            <img src="{{image.src}}" alt="{{image.alt}}" width="{{image.w}}" height="{{image.h}}" loading="lazy">
+<!--p:label-->
+            <figcaption class="img-label">{{image.label}}</figcaption>
+<!--/p:label-->
+          </figure>
+<!--/if:image-->
+        </div>
+      </div>
+    </section>

@@ -1,0 +1,30 @@
+    <section class="hero-block" id="hero">
+<!--if:image-->
+      <figure class="hero-media">
+        <img src="{{image.src}}" alt="{{image.alt}}" width="{{image.w}}" height="{{image.h}}" fetchpriority="high">
+<!--p:label-->
+        <figcaption class="img-label">{{image.label}}</figcaption>
+<!--/p:label-->
+      </figure>
+<!--/if:image-->
+      <div class="hero-copy">
+<!--if:kicker-->
+        <p class="hero-kicker">{{kicker}}</p>
+<!--/if:kicker-->
+        <h1 class="hero-heading">{{heading}}</h1>
+<!--if:sub-->
+        <p class="hero-sub">{{sub}}</p>
+<!--/if:sub-->
+        <div class="hero-actions">
+<!--if:cta.href-->
+          <a class="btn btn-primary" href="{{cta.href}}">{{cta.text}}</a>
+<!--/if:cta.href-->
+<!--if:secondary-->
+          <a class="btn btn-secondary" href="{{secondary_href}}">{{secondary}}</a>
+<!--/if:secondary-->
+        </div>
+<!--if:note-->
+        <p class="hero-note">{{note}}</p>
+<!--/if:note-->
+      </div>
+    </section>

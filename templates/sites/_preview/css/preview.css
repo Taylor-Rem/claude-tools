@@ -51,9 +51,41 @@
 .preview-note {
   max-width: var(--measure);
   margin: 0 auto var(--space);
-  color: var(--ink);
+  color: inherit;
   font-size: 1rem;
+  font-weight: 600;
 }
+
+/* Every stock or generated picture on a preview says so, on the picture
+   (plan 28, B64). The claim cuts these at their markers. */
+.img-label {
+  position: absolute;
+  top: 0.6rem;
+  right: 0.6rem;
+  z-index: 2;
+  max-width: calc(100% - 1.2rem);
+  padding: 0.25rem 0.6rem;
+  border-radius: 999px;
+  background: rgba(17, 17, 17, 0.78);
+  color: #ffffff;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+/* "What a pool company is usually asked for — written from the category…" */
+.preview-caveat {
+  margin-top: 1rem;
+  padding: 0.75rem 1rem;
+  border-left: 3px solid var(--accent);
+  background: var(--bg);
+  color: var(--ink-dim);
+  font-size: 0.95rem;
+}
+.section.alt .preview-caveat { background: var(--bg-raised); }
 
 /* The project root page (no business on it at all). */
 .root-page { padding: var(--space-xl) var(--page-pad); text-align: center; }

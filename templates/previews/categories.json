@@ -1,5 +1,5 @@
 {
-  "_comment": "The preview engine's copy table (ROADMAP/GROWTH B45, plan ~/projects/plans/19-preview-sites.md). One row per category in client-leads/scripts/services.json, so a preview is filled without a model call: `leads preview` reads this, never invents a service a business didn't say it does. GROWTH § 15.2 #3 reuses the same table to build a client's site at activation. Keys: template (templates/sites/<type>), trade (what to call them in a sentence), tagline (under the name; {city} is the listing's city), intro (one line of About; {name}, {city}), services (four to six lines the category implies, each a heading + a plain line), hero (the img stock search term), cta (the button word). Every services line must be something the category itself means, not a claim about this business: a plumber's list says 'Drain and sewer' because plumbers do drains, and the page says 'what a <trade> is usually asked for' above it, never 'our services'.",
+  "_comment": "The preview engine's copy table (ROADMAP/GROWTH B45, plan ~/projects/plans/19-preview-sites.md). One row per category in client-leads/scripts/services.json, so a preview is filled without a model call: `leads preview` reads this, never invents a service a business didn't say it does. GROWTH § 15.2 #3 reuses the same table to build a client's site at activation. Keys: template (templates/sites/<type>), trade (what to call them in a sentence), tagline (under the name; {city} is the listing's city), intro (one line of About; {name}, {city}), services (four to six lines the category implies, each a heading + a plain line), hero (the img stock search term), cta (the button word). Every services line must be something the category itself means, not a claim about this business: a plumber's list says 'Drain and sewer' because plumbers do drains, and the page says 'what a <trade> is usually asked for' above it, never 'our services'. heroes and gallery (B64, plan 28): several stock search terms a category, places and work before people; `leads preview` picks among them by the preview's slug and never reuses a photo another preview shows (previews/images.jsonl).",
   "_default": {
     "template": "business",
     "trade": "local business",
@@ -11,7 +11,9 @@
       ["Getting a quote", "A phone call today, or a form on the finished site."]
     ],
     "hero": "small business storefront",
-    "cta": "Call"
+    "cta": "Call",
+    "heroes": ["small business storefront", "main street shops", "local shop exterior"],
+    "gallery": ["small business interior", "local shop", "workbench tools", "main street"]
   },
   "categories": {
     "pool service": {
@@ -27,7 +29,9 @@
         ["Spas and hot tubs", "Drain, clean, refill and balance."]
       ],
       "hero": "clean swimming pool backyard",
-      "cta": "Ask about weekly service"
+      "cta": "Ask about weekly service",
+      "heroes": ["backyard swimming pool clear water", "swimming pool sunny backyard patio", "pool water surface blue", "residential pool deck"],
+      "gallery": ["pool cleaning net skimmer", "swimming pool pump equipment", "clear pool water tiles", "hot tub spa backyard", "pool vacuum cleaning"]
     },
     "landscaping": {
       "template": "service",
@@ -42,7 +46,9 @@
         ["Upkeep", "Trimming, weeding and seasonal colour."]
       ],
       "hero": "landscaped front yard",
-      "cta": "Ask for a yard quote"
+      "cta": "Ask for a yard quote",
+      "heroes": ["landscaped front yard garden", "stone patio garden landscaping", "garden path flower beds house", "modern backyard landscaping"],
+      "gallery": ["flower bed mulch landscaping", "retaining wall stone garden", "sprinkler watering lawn", "hedge trimming garden", "paver patio backyard"]
     },
     "lawn care": {
       "template": "service",
@@ -57,7 +63,9 @@
         ["Sprinkler checks", "Heads adjusted so the grass gets the water."]
       ],
       "hero": "green mowed lawn house",
-      "cta": "Ask for a mowing price"
+      "cta": "Ask for a mowing price",
+      "heroes": ["freshly mowed lawn stripes", "green lawn front yard house", "lawn mower grass cutting", "backyard lawn sunny"],
+      "gallery": ["lawn mower close up grass", "grass edging sidewalk", "lawn sprinkler water", "fallen leaves rake lawn", "green grass texture"]
     },
     "snow removal": {
       "template": "service",
@@ -72,7 +80,9 @@
         ["Season contracts", "One price for the winter."]
       ],
       "hero": "snow plow driveway winter",
-      "cta": "Ask about this winter"
+      "cta": "Ask about this winter",
+      "heroes": ["snow plow truck night", "snow covered driveway house", "snow shovel driveway winter", "snowy street plow"],
+      "gallery": ["shoveling snow sidewalk", "snow blower driveway", "salt ice melt sidewalk", "snowy house winter", "icicles roof gutter"]
     },
     "house cleaning": {
       "template": "service",
@@ -87,7 +97,9 @@
         ["Airbnb turnovers", "Same-day, linens included."]
       ],
       "hero": "clean tidy living room",
-      "cta": "Ask for a cleaning quote"
+      "cta": "Ask for a cleaning quote",
+      "heroes": ["clean bright living room", "spotless modern kitchen", "clean tidy bedroom interior", "bright clean bathroom"],
+      "gallery": ["cleaning supplies bucket", "wiping kitchen counter", "vacuum cleaner carpet", "folded towels clean", "mop floor cleaning"]
     },
     "pest control": {
       "template": "service",
@@ -102,7 +114,9 @@
         ["One-off visits", "For the problem that turned up this week."]
       ],
       "hero": "house exterior yard utah",
-      "cta": "Ask about a treatment"
+      "cta": "Ask about a treatment",
+      "heroes": ["suburban house exterior lawn", "house foundation yard", "home exterior garden sunny", "residential street houses"],
+      "gallery": ["pest control sprayer", "house eaves exterior", "garden yard fence", "basement window exterior", "house siding close up"]
     },
     "pressure washing": {
       "template": "service",
@@ -117,7 +131,9 @@
         ["Commercial", "Sidewalks and drive-thrus after hours."]
       ],
       "hero": "pressure washing driveway",
-      "cta": "Ask for a wash quote"
+      "cta": "Ask for a wash quote",
+      "heroes": ["pressure washing concrete driveway", "power washing deck", "pressure washer patio clean", "clean driveway house"],
+      "gallery": ["pressure washer spray", "power washing fence", "clean concrete before after", "washing house siding", "patio stones cleaning"]
     },
     "mobile detailing": {
       "template": "service",
@@ -132,7 +148,9 @@
         ["Headlights and trim", "Restored instead of replaced."]
       ],
       "hero": "car detailing polishing",
-      "cta": "Book a detail"
+      "cta": "Book a detail",
+      "heroes": ["car detailing polish shine", "clean car paint reflection", "car wash foam detailing", "polished black car"],
+      "gallery": ["car interior detailing", "car wheel cleaning", "microfiber cloth car", "car headlight polish", "car seats clean interior"]
     },
     "handyman": {
       "template": "service",
@@ -147,7 +165,9 @@
         ["The punch list", "One visit, the whole page of it."]
       ],
       "hero": "handyman tools home repair",
-      "cta": "Send the list"
+      "cta": "Send the list",
+      "heroes": ["handyman tools workbench", "home repair tools wall", "toolbox hammer screwdriver", "drill wood workbench"],
+      "gallery": ["fixing cabinet door", "tape measure wood", "painting wall roller", "wall shelf install", "screwdriver hardware"]
     },
     "plumber": {
       "template": "service",
@@ -162,7 +182,9 @@
         ["Remodels", "Rough-in and trim for a kitchen or bath."]
       ],
       "hero": "plumber pipe wrench sink",
-      "cta": "Call about a leak"
+      "cta": "Call about a leak",
+      "heroes": ["plumbing pipes wrench", "kitchen sink faucet", "copper pipes plumbing", "bathroom faucet water"],
+      "gallery": ["pipe wrench tools", "water heater tank", "plumbing under sink", "shower head water", "pvc pipes fittings"]
     },
     "electrician": {
       "template": "service",
@@ -177,7 +199,9 @@
         ["EV chargers", "A 240-volt circuit and the charger on it."]
       ],
       "hero": "electrician wiring panel",
-      "cta": "Ask about a job"
+      "cta": "Ask about a job",
+      "heroes": ["electrical panel wiring", "electrician tools wires", "light switch wall", "electrical wires close up"],
+      "gallery": ["circuit breaker panel", "pendant lights kitchen", "outlet wall electrical", "multimeter tool", "ceiling light fixture"]
     },
     "HVAC": {
       "template": "service",
@@ -192,7 +216,9 @@
         ["Thermostats", "Fitted and set up."]
       ],
       "hero": "hvac technician air conditioner",
-      "cta": "Ask about a tune-up"
+      "cta": "Ask about a tune-up",
+      "heroes": ["air conditioner unit house", "hvac outdoor unit", "furnace utility room", "thermostat wall"],
+      "gallery": ["air vent ceiling", "hvac ductwork", "air filter replacement", "heat pump outside", "thermostat close up"]
     },
     "painter": {
       "template": "service",
@@ -207,7 +233,9 @@
         ["Repairs first", "Drywall and rot fixed before the paint."]
       ],
       "hero": "painter painting wall interior",
-      "cta": "Ask for a painting quote"
+      "cta": "Ask for a painting quote",
+      "heroes": ["painting wall roller", "fresh painted room interior", "paint cans brushes", "house exterior painting"],
+      "gallery": ["paint roller tray", "color swatches wall", "painter tape wall", "paint brush trim", "freshly painted door"]
     },
     "garage door": {
       "template": "service",
@@ -222,7 +250,9 @@
         ["Tune-ups", "Balanced, lubricated, safety tested."]
       ],
       "hero": "garage door house exterior",
-      "cta": "Call about a door"
+      "cta": "Call about a door",
+      "heroes": ["garage door house exterior", "modern garage door", "double garage door driveway", "wooden garage door"],
+      "gallery": ["garage door opener", "garage door springs", "garage interior", "house front garage", "garage door panel"]
     },
     "roofing": {
       "template": "service",
@@ -237,7 +267,9 @@
         ["Gutters and vents", "Replaced with the roof."]
       ],
       "hero": "roofer shingle roof house",
-      "cta": "Ask for a roof look"
+      "cta": "Ask for a roof look",
+      "heroes": ["roof shingles house", "new roof house exterior", "roofing shingles close up", "roof tiles"],
+      "gallery": ["roof gutter", "shingle texture", "roof ridge", "house roof sky", "metal roof"]
     },
     "photographer": {
       "template": "portfolio",
@@ -252,7 +284,9 @@
         ["Prints and files", "Delivered in a gallery of their own."]
       ],
       "hero": "photographer camera portrait session",
-      "cta": "Ask about a session"
+      "cta": "Ask about a session",
+      "heroes": ["camera lens photography", "photography studio lights", "vintage camera", "landscape photography mountains"],
+      "gallery": ["camera on tripod", "photo prints table", "mountain lake landscape", "golden hour field", "film camera"]
     },
     "wedding DJ": {
       "template": "portfolio",
@@ -267,7 +301,9 @@
         ["The plan", "Requests, do-not-plays, the timeline."]
       ],
       "hero": "wedding dj dance floor lights",
-      "cta": "Check a date"
+      "cta": "Check a date",
+      "heroes": ["dj turntable lights", "dance floor party lights", "dj mixer close up", "wedding reception lights"],
+      "gallery": ["dj headphones mixer", "string lights reception", "speaker stage lights", "vinyl record player", "party lights crowd dancing"]
     },
     "florist": {
       "template": "portfolio",
@@ -282,7 +318,9 @@
         ["Standing orders", "Fresh flowers on a schedule."]
       ],
       "hero": "florist flower arrangement shop",
-      "cta": "Order flowers"
+      "cta": "Order flowers",
+      "heroes": ["flower bouquet", "florist shop flowers", "flower arrangement table", "fresh flowers bunch"],
+      "gallery": ["roses bouquet", "wedding flowers table", "florist workbench", "peonies vase", "flower shop buckets"]
     },
     "event planner": {
       "template": "portfolio",
@@ -297,7 +335,9 @@
         ["Day-of", "Someone else holding the schedule."]
       ],
       "hero": "event table setting celebration",
-      "cta": "Ask about a date"
+      "cta": "Ask about a date",
+      "heroes": ["event table setting", "wedding reception decor", "party decorations table", "outdoor event string lights"],
+      "gallery": ["table centerpiece", "place settings dinner", "event venue chairs", "balloon decor party", "candles table decor"]
     },
     "cake": {
       "template": "store",
@@ -312,7 +352,9 @@
         ["Pickup and delivery", "Local, on the day it's needed."]
       ],
       "hero": "decorated celebration cake bakery",
-      "cta": "Order a cake"
+      "cta": "Order a cake",
+      "heroes": ["decorated celebration cake", "wedding cake", "cake decorating", "cupcakes display"],
+      "gallery": ["birthday cake candles", "frosting piping", "layer cake slice", "cookies decorated", "dessert table"]
     },
     "tutor": {
       "template": "service",
@@ -327,7 +369,9 @@
         ["Sessions", "In person or online, weekly."]
       ],
       "hero": "tutor student studying table",
-      "cta": "Ask about sessions"
+      "cta": "Ask about sessions",
+      "heroes": ["study desk books notebook", "student notebook pencil", "library books study", "math homework notebook"],
+      "gallery": ["books stack", "writing notes", "calculator notebook", "desk lamp books", "pencils paper"]
     },
     "music teacher": {
       "template": "service",
@@ -342,7 +386,9 @@
         ["Scheduling", "A standing slot in the week."]
       ],
       "hero": "music lesson piano student",
-      "cta": "Ask about lessons"
+      "cta": "Ask about lessons",
+      "heroes": ["piano keys", "guitar lesson", "sheet music piano", "violin sheet music"],
+      "gallery": ["acoustic guitar", "piano close up", "music notes", "drum set", "ukulele"]
     },
     "dance studio": {
       "template": "service",
@@ -357,7 +403,9 @@
         ["Trial class", "Come and try one first."]
       ],
       "hero": "dance class studio students",
-      "cta": "Ask about a class"
+      "cta": "Ask about a class",
+      "heroes": ["dance studio mirror", "ballet shoes", "dance studio wood floor", "dance class"],
+      "gallery": ["ballet barre", "tap shoes", "dance studio lights", "pointe shoes", "studio mirror floor"]
     },
     "personal trainer": {
       "template": "service",
@@ -372,7 +420,9 @@
         ["First session", "An assessment and a plan."]
       ],
       "hero": "personal trainer gym session",
-      "cta": "Book a first session"
+      "cta": "Book a first session",
+      "heroes": ["gym dumbbells", "home gym weights", "fitness equipment", "kettlebells gym"],
+      "gallery": ["dumbbell rack", "yoga mat weights", "running shoes", "barbell plates", "fitness workout"]
     },
     "bakery": {
       "template": "store",
@@ -387,7 +437,9 @@
         ["Pickup", "Come by, or ring ahead."]
       ],
       "hero": "bakery bread pastry counter",
-      "cta": "See what's baking"
+      "cta": "See what's baking",
+      "heroes": ["bakery bread pastry counter", "fresh bread loaves", "croissants bakery", "bakery display"],
+      "gallery": ["sourdough bread", "pastry dough baking", "cinnamon rolls", "bread oven", "baguettes"]
     },
     "farm stand": {
       "template": "store",
@@ -402,7 +454,9 @@
         ["Where to find us", "The stand, and the markets."]
       ],
       "hero": "farm stand produce vegetables",
-      "cta": "See what's in season"
+      "cta": "See what's in season",
+      "heroes": ["farm stand produce", "fresh vegetables market", "farmers market", "fruit stand"],
+      "gallery": ["tomatoes basket", "sweet corn", "peaches crate", "pumpkins farm", "fresh eggs"]
     },
     "boutique": {
       "template": "store",
@@ -417,7 +471,9 @@
         ["Pickup and hold", "Ring and we'll put it aside."]
       ],
       "hero": "boutique shop interior clothing",
-      "cta": "See the shop"
+      "cta": "See the shop",
+      "heroes": ["boutique shop interior", "clothing rack shop", "boutique store display", "shop interior"],
+      "gallery": ["clothes hangers", "accessories display", "shop window", "folded sweaters", "jewelry display"]
     },
     "custom furniture": {
       "template": "portfolio",
@@ -432,7 +488,9 @@
         ["How it works", "A drawing, a price, a date."]
       ],
       "hero": "handmade wood furniture workshop",
-      "cta": "Ask about a piece"
+      "cta": "Ask about a piece",
+      "heroes": ["handmade wood furniture", "woodworking workshop", "wood dining table", "wooden chair craftsmanship"],
+      "gallery": ["wood grain", "woodworking tools", "wood shavings", "joinery wood", "finished wood table"]
     },
     "nursery": {
       "template": "store",
@@ -447,7 +505,9 @@
         ["Advice", "What will actually live in that spot."]
       ],
       "hero": "garden nursery plants greenhouse",
-      "cta": "See what's in stock"
+      "cta": "See what's in stock",
+      "heroes": ["garden nursery plants greenhouse", "potted plants nursery", "greenhouse plants", "flowers nursery"],
+      "gallery": ["seedlings trays", "succulents pots", "garden center", "potted flowers", "trees nursery"]
     },
     "bike shop": {
       "template": "store",
@@ -462,7 +522,9 @@
         ["Fitting", "Set up so it doesn't hurt to ride."]
       ],
       "hero": "bike shop bicycle repair",
-      "cta": "Book a repair"
+      "cta": "Book a repair",
+      "heroes": ["bike shop bicycle repair", "bicycle workshop", "bicycles shop", "mountain bike"],
+      "gallery": ["bike tools", "bicycle chain", "bike wheel", "road bike", "bike helmet"]
     },
     "church": {
       "template": "nonprofit",
@@ -477,7 +539,9 @@
         ["Visiting", "What to expect the first time."]
       ],
       "hero": "church building community",
-      "cta": "Service times"
+      "cta": "Service times",
+      "heroes": ["church building", "church interior pews", "chapel exterior", "church steeple"],
+      "gallery": ["hymn books", "church window", "candles church", "community gathering hall", "church doors"]
     },
     "nonprofit": {
       "template": "nonprofit",
@@ -492,7 +556,9 @@
         ["Contact", "Who picks up the phone."]
       ],
       "hero": "volunteers community nonprofit",
-      "cta": "Get involved"
+      "cta": "Get involved",
+      "heroes": ["volunteers community", "community garden", "food drive boxes", "volunteer hands"],
+      "gallery": ["donation boxes", "community event", "helping hands", "charity volunteers", "neighborhood park"]
     },
     "youth league": {
       "template": "nonprofit",
@@ -507,7 +573,9 @@
         ["Where", "The fields and the parking."]
       ],
       "hero": "youth sports team field",
-      "cta": "Registration"
+      "cta": "Registration",
+      "heroes": ["youth soccer field", "youth sports team", "soccer ball field", "baseball field"],
+      "gallery": ["soccer goal", "sports equipment", "basketball court", "youth baseball", "soccer cleats"]
     }
   }
 }

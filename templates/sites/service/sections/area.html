@@ -1,0 +1,20 @@
+    <section class="section area{{alt}}" id="area">
+      <div class="section-inner reveal">
+        <div class="section-head">
+<!--if:kicker-->
+          <p class="kicker">{{kicker}}</p>
+<!--/if:kicker-->
+          <h2>{{heading}}</h2>
+<!--if:text-->
+          <p class="lede">{{text}}</p>
+<!--/if:text-->
+        </div>
+<!--if:places-->
+        <ul class="place-list">
+<!--each:places-->
+          <li>{{item}}</li>
+<!--/each:places-->
+        </ul>
+<!--/if:places-->
+      </div>
+    </section>

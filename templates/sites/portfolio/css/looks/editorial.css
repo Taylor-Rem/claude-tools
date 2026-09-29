@@ -1,0 +1,49 @@
+/* Look: editorial — a magazine page. Paper ground, deep brown ink, one rust
+   accent; DM Serif Display headings over DM Sans; the hero is split, a tall
+   photo on the left and the words on the right.
+   Fonts are this site's own files (fonts/, SIL OFL). */
+
+@font-face { font-family: "DM Serif Display"; font-weight: 400; font-style: normal; font-display: swap;
+  src: url("../../fonts/dm-serif-display-latin-400-normal.woff2") format("woff2"); }
+@font-face { font-family: "DM Sans"; font-weight: 100 1000; font-style: normal; font-display: swap;
+  src: url("../../fonts/dm-sans-latin-wght-normal.woff2") format("woff2"); }
+
+:root {
+  --bg: #f5efe6;
+  --bg-raised: #fbf8f3;
+  --bg-line: #e2d7c6;
+  --ink: #241b15;
+  --ink-dim: #5f5247;
+  --accent: #8c3a17;
+  --accent-dim: #6e2d11;
+  --accent-ink: #ffffff;
+  --font-display: "DM Serif Display", Georgia, "Times New Roman", serif;
+  --font-body: "DM Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --display-weight: 400;
+  --display-tracking: -0.01em;
+  --radius: 4px;
+}
+
+.site-header { background: var(--bg); }
+.site-nav a { font-size: 0.8rem; }
+
+/* the hero: a tall photo left, the words right (words first on a phone) */
+.hero-block { display: grid; }
+.hero-media { order: 2; }
+.hero-media img { aspect-ratio: 4 / 3; }
+.hero-copy { align-self: center; }
+.hero-heading { font-size: clamp(2.5rem, 6vw, 4.8rem); line-height: 1.02; }
+.hero-kicker { color: var(--accent); }
+@media (min-width: 56rem) {
+  .hero-block { grid-template-columns: 1fr 1fr; min-height: min(82vh, 44rem); }
+  .hero-media { order: 0; }
+  .hero-media img { aspect-ratio: auto; height: 100%; min-height: 30rem; }
+  .hero-copy { padding-left: clamp(2rem, 5vw, 5rem); }
+}
+
+.proof { background: var(--ink); color: var(--bg); border-bottom: 0; }
+.proof-list a { color: var(--bg); }
+.proof-list li::before { background: #d98a5f; }
+.service-list li { background: transparent !important; border: 0; border-bottom: 1px solid var(--bg-line); border-radius: 0; padding: 1.25rem 0; }
+.service-n { font-family: var(--font-display); font-size: 2rem; font-weight: 400; line-height: 1; }
+.kicker { color: var(--accent); }

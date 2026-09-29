@@ -1,0 +1,58 @@
+/* Look: classic — established and warm. Cream ground, deep green accent;
+   Fraunces headings over Source Sans 3; the hero is a wide photo band with
+   the words on a card that overlaps its lower edge.
+   Fonts are this site's own files (fonts/, SIL OFL). */
+
+@font-face { font-family: "Fraunces"; font-weight: 100 900; font-style: normal; font-display: swap;
+  src: url("../../fonts/fraunces-latin-wght-normal.woff2") format("woff2"); }
+@font-face { font-family: "Source Sans 3"; font-weight: 200 900; font-style: normal; font-display: swap;
+  src: url("../../fonts/source-sans-3-latin-wght-normal.woff2") format("woff2"); }
+
+:root {
+  --bg: #faf6ef;
+  --bg-raised: #ffffff;
+  --bg-line: #e6ddcd;
+  --ink: #2a2118;
+  --ink-dim: #5d5245;
+  --accent: #2f5d43;
+  --accent-dim: #224632;
+  --accent-ink: #ffffff;
+  --font-display: "Fraunces", Georgia, "Times New Roman", serif;
+  --font-body: "Source Sans 3", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --display-weight: 560;
+  --display-tracking: -0.015em;
+  --radius: 8px;
+}
+
+body { font-size: 1.1rem; }
+.site-header { background: var(--bg); }
+.wordmark { font-weight: 600; }
+
+/* the hero: a photo band, the words on a card over its lower edge */
+.hero-block { display: grid; padding-bottom: clamp(2.5rem, 6vw, 4.5rem); }
+.hero-media img { height: clamp(15rem, 54vh, 34rem); }
+.hero-copy {
+  width: calc(100% - 2 * var(--page-pad));
+  max-width: 58rem;
+  margin: clamp(-7rem, -12vw, -3.5rem) auto 0;
+  padding: clamp(1.75rem, 4.5vw, 3.25rem);
+  background: var(--bg-raised);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  text-align: center;
+}
+.hero-heading { margin: 0 auto; font-size: clamp(2.1rem, 5.4vw, 3.9rem); line-height: 1.06; }
+.hero-sub { margin-left: auto; margin-right: auto; }
+.hero-actions { justify-content: center; }
+.hero-kicker { color: #6b4f2a; }
+@media (max-width: 40rem) {
+  .hero-media img { height: 12.5rem; }
+  .hero-copy { margin-top: -2.5rem; padding: 1.5rem 1.25rem; }
+}
+
+.proof { background: transparent; border-bottom: 1px solid var(--bg-line); }
+.service-list li { border-left: 3px solid var(--accent); border-radius: 0 var(--radius) var(--radius) 0; }
+.service-n { font-style: italic; font-weight: 500; font-size: 1.1rem; }
+.kicker { color: #6b4f2a; }
+.site-footer { background: #2a2118; color: #e8e0d2; border-top: 0; }
+.site-footer a { color: #ffffff; }

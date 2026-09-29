@@ -1,0 +1,79 @@
+    <section class="section booking{{alt}}" id="booking">
+      <div class="section-inner reveal">
+        <div class="form-grid">
+          <div class="section-head">
+<!--if:kicker-->
+            <p class="kicker">{{kicker}}</p>
+<!--/if:kicker-->
+            <h2>{{heading}}</h2>
+<!--if:intro-->
+            <p class="lede">{{intro}}</p>
+<!--/if:intro-->
+          </div>
+          <div class="form-card">
+            <!-- The times come from the database (booking_slots): open them on /admin/slots, or by text. -->
+            <form class="site-form booking-form" id="book" action="/api/bookings" method="post">
+<!--p:formoff-->
+              <p class="form-off-note">This calendar goes live when the site is claimed.</p>
+              <fieldset class="form-fields" disabled>
+<!--/p:formoff-->
+<!--c:formon
+              <fieldset class="form-fields">
+/c:formon-->
+                <fieldset class="booking-slots">
+                  <legend>Pick a time</legend>
+                  <div data-slots>
+<!--p:slots-->
+                    <p class="muted">The open times show here.</p>
+<!--/p:slots-->
+<!--c:slots
+                    <p class="muted">Loading the open times…</p>
+/c:slots-->
+                  </div>
+                </fieldset>
+                <label>Name <input name="name" required autocomplete="name"></label>
+                <label>Email <input name="email" type="email" autocomplete="email"></label>
+                <label>Phone <input name="phone" type="tel" autocomplete="tel"></label>
+                <label>Anything we should know? <textarea name="notes" rows="3"></textarea></label>
+                <input name="website" type="text" tabindex="-1" autocomplete="off" aria-hidden="true" style="position:absolute;left:-9999px">
+                <button class="btn btn-primary" type="submit">Book it</button>
+              </fieldset>
+              <p class="form-thanks" data-sent="booking" hidden>Booked — we've got you down and we'll confirm by email or phone.</p>
+              <p class="form-sorry" data-sent="full" hidden>That time was just taken or closed. Please pick another.</p>
+              <p class="form-sorry" data-sent="0" hidden>That didn't go through: pick a time, and leave a name and an email or phone.</p>
+<!--c:bookingjs
+              <script>
+                (function () {
+                  var form = document.getElementById("book");
+                  var box = form.querySelector("[data-slots]");
+                  var sent = (location.search.match(/[?&]sent=([a-z0-9-]+)/) || [])[1];
+                  if (sent && location.hash === "#book") form.querySelectorAll("[data-sent]").forEach(function (p) { p.hidden = p.getAttribute("data-sent") !== sent; });
+                  function at(s) { var p = s.split(/[-T:]/); return new Date(Date.UTC(+p[0], p[1] - 1, +p[2], +p[3], +p[4])); }
+                  var day = new Intl.DateTimeFormat("en-US", { timeZone: "UTC", weekday: "long", month: "long", day: "numeric" });
+                  var time = new Intl.DateTimeFormat("en-US", { timeZone: "UTC", hour: "numeric", minute: "2-digit" });
+                  function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text) e.textContent = text; return e; }
+                  fetch("/api/bookings", { headers: { accept: "application/json" } })
+                    .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+                    .then(function (data) {
+                      box.textContent = "";
+                      if (!data.slots.length) { box.appendChild(el("p", "muted", "No open times right now. Ask for a quote instead and we'll find one.")); return; }
+                      var group = null, last = "";
+                      data.slots.forEach(function (s) {
+                        var d = day.format(at(s.starts_at));
+                        if (d !== last) { group = el("div", "booking-day"); group.appendChild(el("p", "booking-date", d)); box.appendChild(group); last = d; }
+                        var label = el("label", "booking-slot");
+                        var input = el("input"); input.type = "radio"; input.name = "slot"; input.value = s.id; input.required = true;
+                        label.appendChild(input);
+                        label.appendChild(document.createTextNode(" " + time.format(at(s.starts_at)) + (s.label ? " · " + s.label : "") + (s.places > 1 ? " (" + s.places + " places)" : "")));
+                        group.appendChild(label);
+                      });
+                    })
+                    .catch(function () { box.textContent = ""; box.appendChild(el("p", "muted", "The calendar didn't load. Please try again in a minute.")); });
+                })();
+              </script>
+/c:bookingjs-->
+            </form>
+          </div>
+        </div>
+      </div>
+    </section>

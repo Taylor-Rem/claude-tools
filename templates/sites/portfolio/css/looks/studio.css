@@ -1,0 +1,47 @@
+/* Look: studio — the work first. White ground, black ink, one terracotta
+   accent; Instrument Serif headings over Inter; the hero is the name's line
+   set large, with a wide photo below it.
+   Fonts are this site's own files (fonts/, SIL OFL). */
+
+@font-face { font-family: "Instrument Serif"; font-weight: 400; font-style: normal; font-display: swap;
+  src: url("../../fonts/instrument-serif-latin-400-normal.woff2") format("woff2"); }
+@font-face { font-family: "Inter"; font-weight: 100 900; font-style: normal; font-display: swap;
+  src: url("../../fonts/inter-latin-wght-normal.woff2") format("woff2"); }
+
+:root {
+  --bg: #ffffff;
+  --bg-raised: #f6f5f3;
+  --bg-line: #e6e3de;
+  --ink: #141414;
+  --ink-dim: #5b5853;
+  --accent: #9a3b1b;
+  --accent-dim: #7a2e14;
+  --accent-ink: #ffffff;
+  --font-display: "Instrument Serif", Georgia, "Times New Roman", serif;
+  --font-body: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --display-weight: 400;
+  --display-tracking: -0.01em;
+  --radius: 2px;
+}
+
+body { font-size: 1.02rem; }
+.site-header { background: #ffffff; border-bottom-color: transparent; }
+.wordmark { font-size: 1.45rem; }
+.site-nav a { text-transform: none; letter-spacing: 0; font-weight: 500; font-size: 0.95rem; color: var(--ink); }
+
+/* the hero: big words, then the picture */
+.hero-block { display: flex; flex-direction: column; padding-bottom: clamp(2rem, 5vw, 3.5rem); }
+.hero-copy { order: 1; width: 100%; max-width: var(--wide); margin: 0 auto; padding-top: clamp(2rem, 6vw, 5rem); padding-bottom: clamp(1.75rem, 4vw, 3rem); }
+.hero-media { order: 2; width: calc(100% - 2 * var(--page-pad)); max-width: var(--wide); margin: 0 auto; }
+.hero-media img { aspect-ratio: 21 / 9; }
+.hero-heading { font-size: clamp(2.9rem, 8.5vw, 6.4rem); line-height: 0.98; max-width: 15ch; }
+.hero-kicker { color: var(--ink-dim); font-weight: 600; letter-spacing: 0.14em; }
+@media (max-width: 40rem) {
+  .hero-media img { aspect-ratio: 4 / 3; }
+}
+
+.proof { background: transparent; border-top: 1px solid var(--bg-line); }
+.service-list li { background: transparent !important; border: 0; border-top: 1px solid var(--ink); border-radius: 0; padding-left: 0; }
+.service-n { font-family: var(--font-body); font-size: 0.8rem; color: var(--ink-dim); }
+.service-list h3 { font-size: 1.6rem; }
+.kicker { color: var(--ink-dim); }

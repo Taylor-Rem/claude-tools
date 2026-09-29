@@ -1,0 +1,118 @@
+#!/usr/bin/env python3
+"""A fake `claude` for prep's tests (PREP_CLAUDE): no network, no model.
+
+  claude auth status --json         → FAKE_CLAUDE_AUTH: subscription (default) | apikey | out
+  claude -p … (prompt on stdin)     → FAKE_CLAUDE_MODE decides what it writes into the cwd:
+      good    copy FAKE_CLAUDE_FACTS into facts.json
+      bad     a facts.json that fails the lint (a review's words, a price); on --resume, the good one
+      skip    a skip verdict with its reason
+      fable   the good file, but the result says it ran on a Fable model
+      hang    sleep 60s (the time cap's test)
+      nothing write nothing
+
+Every call appends {argv, cwd, api_key_seen, path_has_prep} to FAKE_CLAUDE_LOG. Before writing, it
+drives the stamped settings' PreToolUse hook the way Claude Code would (a Meta fetch, an ordinary
+fetch, a search, a read outside the directory) and runs `prep facts lint facts.json` through PATH, so
+the tests see the boundary and the lint wired as a real session sees them.
+"""
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+import uuid
+from pathlib import Path
+
+argv = sys.argv[1:]
+log = os.environ.get("FAKE_CLAUDE_LOG")
+
+
+def note(extra=None):
+    if not log:
+        return
+    row = {"argv": argv, "cwd": os.getcwd(), "api_key_seen": bool(os.environ.get("ANTHROPIC_API_KEY")),
+           "path_has_prep": bool(shutil.which("prep"))}
+    row.update(extra or {})
+    with open(log, "a") as f:
+        f.write(json.dumps(row) + "\n")
+
+
+def opt(name, default=None):
+    return argv[argv.index(name) + 1] if name in argv else default
+
+
+if argv[:2] == ["auth", "status"]:
+    note()
+    mode = os.environ.get("FAKE_CLAUDE_AUTH", "subscription")
+    print(json.dumps({"subscription": {"loggedIn": True, "authMethod": "claude.ai", "subscriptionType": "max"},
+                      "apikey": {"loggedIn": True, "authMethod": "api_key"},
+                      "out": {"loggedIn": False}}[mode]))
+    sys.exit(0)
+
+if "-p" not in argv:
+    print("fake claude: only -p and auth status", file=sys.stderr)
+    sys.exit(2)
+
+prompt = sys.stdin.read()
+mode = os.environ.get("FAKE_CLAUDE_MODE", "good")
+model = opt("--model")
+resume = opt("--resume")
+settings = json.loads(Path(opt("--settings")).read_text()) if opt("--settings") else {}
+sid = resume or str(uuid.uuid4())
+events, denials = [], []
+
+
+def emit(ev):
+    events.append(ev)
+    print(json.dumps(ev), flush=True)
+
+
+emit({"type": "system", "subtype": "init", "session_id": sid, "model": model, "cwd": os.getcwd()})
+
+hook_cmds = [h["command"] for g in (settings.get("hooks") or {}).get("PreToolUse") or [] for h in g.get("hooks") or []]
+hooks = []
+if not resume:
+    for tool, ti in (("WebFetch", {"url": "https://www.facebook.com/mikespoolcare", "prompt": "t"}),
+                     ("WebSearch", {"query": "\"Mike's Pool Care\" American Fork Utah"}),
+                     ("WebFetch", {"url": "https://example.com/", "prompt": "t"}),
+                     ("Read", {"file_path": "/etc/hostname"})):
+        emit({"type": "assistant", "session_id": sid, "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": f"t{len(hooks)}", "name": tool, "input": ti}]}})
+        codes = []
+        for cmd in hook_cmds:
+            r = subprocess.run(cmd, shell=True, input=json.dumps({"tool_name": tool, "tool_input": ti, "cwd": os.getcwd(),
+                                                                   "hook_event_name": "PreToolUse"}),
+                               capture_output=True, text=True)
+            codes.append(r.returncode)
+        refused = any(c == 2 for c in codes)
+        hooks.append({"tool": tool, "input": ti, "codes": codes, "refused": refused})
+        if refused:
+            denials.append({"tool_name": tool, "tool_input": ti})
+
+if mode == "hang":
+    time.sleep(60)
+
+facts_src = os.environ.get("FAKE_CLAUDE_FACTS")
+if mode in ("good", "fable") or (mode == "bad" and resume):
+    shutil.copyfile(facts_src, "facts.json")
+elif mode == "bad":
+    doc = json.loads(Path(facts_src).read_text())
+    doc["facts"][1]["text"] = "Weekly cleaning all season and they fixed our pump."
+    doc["about"][0]["text"] = "Spring openings from $180."
+    Path("facts.json").write_text(json.dumps(doc))
+elif mode == "skip":
+    doc = json.loads(Path("facts.json").read_text())
+    doc.update(verdict="skip", skip_reason="has its own site: https://mikespoolcare.example")
+    Path("facts.json").write_text(json.dumps(doc))
+
+lint = subprocess.run("prep facts lint facts.json", shell=True, capture_output=True, text=True)
+note({"mode": mode, "resume": resume, "hooks": hooks, "lint_exit": lint.returncode, "prompt": prompt[:400]})
+
+ran_on = "claude-fable-5" if mode == "fable" else model
+emit({"type": "result", "subtype": "success", "is_error": False, "session_id": sid, "num_turns": 7,
+      "result": "done", "total_cost_usd": 0.1234,
+      "usage": {"input_tokens": 100, "output_tokens": 50, "cache_read_input_tokens": 1000,
+                "cache_creation_input_tokens": 200},
+      "modelUsage": {ran_on: {"inputTokens": 100, "outputTokens": 50, "costUSD": 0.1234}},
+      "permission_denials": denials})

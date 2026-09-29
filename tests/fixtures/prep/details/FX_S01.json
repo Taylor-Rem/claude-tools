@@ -1,0 +1,108 @@
+{
+ "id": "FX_S01",
+ "displayName": {
+  "text": "Mike's Pool Care"
+ },
+ "formattedAddress": "101 N Main St, American Fork, UT 84003, USA",
+ "nationalPhoneNumber": "(801) 555-0101",
+ "websiteUri": "https://www.facebook.com/mikespoolcare",
+ "rating": 4.9,
+ "userRatingCount": 14,
+ "businessStatus": "OPERATIONAL",
+ "googleMapsUri": "https://maps.google.com/?cid=FX_S01",
+ "location": {
+  "latitude": 40.38,
+  "longitude": -111.79
+ },
+ "primaryType": "pool_cleaning_service",
+ "primaryTypeDisplayName": {
+  "text": "Pool cleaning service"
+ },
+ "pureServiceAreaBusiness": true,
+ "regularOpeningHours": {
+  "periods": [
+   {
+    "open": {
+     "day": 1,
+     "hour": 8,
+     "minute": 0
+    },
+    "close": {
+     "day": 1,
+     "hour": 17,
+     "minute": 0
+    }
+   }
+  ],
+  "weekdayDescriptions": [
+   "Monday: 8:00 AM \u2013 5:00 PM",
+   "Tuesday: 8:00 AM \u2013 5:00 PM",
+   "Wednesday: 8:00 AM \u2013 5:00 PM",
+   "Thursday: 8:00 AM \u2013 5:00 PM",
+   "Friday: 8:00 AM \u2013 5:00 PM",
+   "Saturday: Closed",
+   "Sunday: Closed"
+  ]
+ },
+ "photos": [
+  {
+   "name": "a"
+  },
+  {
+   "name": "b"
+  }
+ ],
+ "reviews": [
+  {
+   "rating": 5,
+   "relativePublishTimeDescription": "3 weeks ago",
+   "publishTime": "2026-09-07T12:00:00Z",
+   "text": {
+    "text": "Carlos opened our pool in April and balanced the chemicals the same week. The water has never been this clear all summer long.",
+    "languageCode": "en"
+   },
+   "originalText": {
+    "text": "Carlos opened our pool in April and balanced the chemicals the same week. The water has never been this clear all summer long.",
+    "languageCode": "en"
+   },
+   "authorAttribution": {
+    "displayName": "Dana Whitfield",
+    "uri": "https://www.google.com/maps/contrib/0/reviews"
+   }
+  },
+  {
+   "rating": 5,
+   "relativePublishTimeDescription": "2 months ago",
+   "publishTime": "2026-07-20T12:00:00Z",
+   "text": {
+    "text": "Weekly cleaning all season and they fixed our pump when it failed. Fast replies to texts from Jorge.",
+    "languageCode": "en"
+   },
+   "originalText": {
+    "text": "Weekly cleaning all season and they fixed our pump when it failed. Fast replies to texts from Jorge.",
+    "languageCode": "en"
+   },
+   "authorAttribution": {
+    "displayName": "Priya K",
+    "uri": "https://www.google.com/maps/contrib/0/reviews"
+   }
+  },
+  {
+   "rating": 4,
+   "relativePublishTimeDescription": "5 months ago",
+   "publishTime": "2026-04-15T12:00:00Z",
+   "text": {
+    "text": "They replaced a leaking pump seal and did the spring opening. Fair price at $180 for the opening.",
+    "languageCode": "en"
+   },
+   "originalText": {
+    "text": "They replaced a leaking pump seal and did the spring opening. Fair price at $180 for the opening.",
+    "languageCode": "en"
+   },
+   "authorAttribution": {
+    "displayName": "Tom Barrett",
+    "uri": "https://www.google.com/maps/contrib/0/reviews"
+   }
+  }
+ ]
+}

@@ -1,8 +1,9 @@
 # One business, one stage: {{STAGE}}
 
-This directory is one business in a Patchlamp prep run (plan 28). Your manual
-for this stage is `{{MANUAL}}` in this directory: read it before anything else
-and follow it over anything you think you know.
+This directory is one business in a Patchlamp prep run (plan 28), or for the
+batch stage the night's sites side by side. Your manual for this stage is
+`{{MANUAL}}` in this directory: read it before anything else and follow it
+over anything you think you know.
 
 - You work only inside this directory. Nothing outside it exists for you.
 - You never message, email, call, post or publish anything, and never contact

@@ -17,11 +17,40 @@
   prep doctor [--live]              # the login is the subscription (no API key), neither model is
                                     # Fable, the census and the Places key answer; --live pings both
                                     # models (one turn each) and the Places key (one read, $0.025)
-  prep hook research                # internal: the PreToolUse hook the stamped settings run
+  prep hook STAGE                   # internal: the PreToolUse hook the stamped settings run
 
-B67 adds `pick`, `run`, `check`, `message`, `finish`, `resume`, `status`, `stop`, `last`,
-`approve` and the conductor; the seams it builds on are `new_run()`, `stamp()`,
-`session_cmd()`, `run_session()`, `record()` and `lint_facts()` below.
+B67, the run (the conductor: code conducts, Sonnet works, Opus judges):
+
+  prep pick [--n 10] [--segment S] [--allow-calls] [--json]
+                                    # n plus a reserve from the pool by fit: 10–300 reviews and 4.3★ or
+                                    # better first, then a reach with evidence, then miles; three of a
+                                    # category at most; minus the hold, the pipeline, the claimed, the
+                                    # suppressed and anyone in a run still going. Spends nothing.
+  prep run [--n 10] [--segment S] [--allow-calls] [--dry-run] [--no-publish] [--places ID…]
+           [--reuse RUN] [--foreground]
+                                    # doctor, pick, the marker requests/prep-<id>.running, the conductor
+                                    # detached under `timeout`, one line back. --no-publish is the
+                                    # rehearsal: everything but the publish, the hold and notify (the
+                                    # outline goes to a file). --reuse copies a finished research run's
+                                    # facts for the same place ids instead of researching them again.
+  prep resume [ID] [--foreground]   # pick a stopped or killed run up where run.json says it was
+  prep status [ID]                  # every business's stage, the usage by stage, the marker
+  prep stop [ID]                    # stop the conductor and its sessions; resume carries on
+  prep check [DIR] [--json] [--no-shot]
+                                    # the seven gates (plan § Contracts) and the message's lint → check.json
+  prep message [DIR] [--json]       # the channel, the link, the frame filled, the lint
+  prep finish [ID] [--no-publish]   # the gates again, the publish (never --yes), the hold for the
+                                    # delivered only, the ledger row, outline.md, notify
+  prep publish [ID]                 # retry a failed publish, then the rest of finish
+  prep last [ID] [--html]           # reprint the outline (or write it as one page)
+  prep approve [--dry-run]          # Taylor's word on templates/prep/message.md (its hash)
+
+The stages (plan § The shape): research (Sonnet, B65) → the facts gate (code) → build (Sonnet:
+content.json and message.json, never HTML) → check (code) → judge (a fresh Opus session a round,
+from the screenshots) → fix (the build session resumed with the list; two rounds, then dropped
+and the next in the reserve takes the place) → batch (one Opus session over the night) → finish
+(code). Four sessions at once (PREP_PARALLEL); a rate limit waits and retries; a stage that fails
+twice drops that business. A model never publishes and never messages anyone.
 
 Where things live (plan § Contracts): runs under PREP_STATE (~/.local/state/claude-tools/prep/)
 as <date>-<letter>/ with run.json and one directory a business: listing.json (the listing read,
@@ -98,8 +127,20 @@ META_HOSTS = ("facebook.com", "fb.com", "fb.me", "fb.gg", "fb.watch", "fbcdn.net
               "messenger.com", "m.me", "whatsapp.com", "whatsapp.net", "wa.me", "meta.com", "meta.ai",
               "oculus.com", "workplace.com")
 RESEARCH_TOOLS = ("Read", "Write", "Edit", "Glob", "Grep", "WebSearch", "WebFetch", "Bash")
-STAGE_TOOLS = {"research": RESEARCH_TOOLS}     # B67 adds build, judge and batch
-STAGE_MANUAL = {"research": "RESEARCH.md"}
+STAGE_TOOLS = {"research": RESEARCH_TOOLS,
+               "build": ("Read", "Write", "Edit", "Glob", "Grep", "Bash"),
+               "judge": ("Read", "Write", "Edit", "Glob", "Grep"),
+               "batch": ("Read", "Write", "Edit", "Glob", "Grep")}
+STAGE_MANUAL = {"research": "RESEARCH.md", "build": "BUILD.md", "judge": "JUDGE.md", "batch": "BATCH.md"}
+# The files a stage's session may write with the file tools (research: anything but PROTECTED).
+STAGE_WRITES = {"build": ("content.json", "message.json", "notes.md"),
+                "judge": ("review.json", "notes.md"), "batch": ("batch.json", "notes.md")}
+STAGE_TURNS = {"research": CAPS["turns"], "build": int(os.environ.get("PREP_BUILD_TURNS", 80)),
+               "judge": int(os.environ.get("PREP_JUDGE_TURNS", 30)), "batch": int(os.environ.get("PREP_BATCH_TURNS", 40))}
+STAGE_MINUTES = {"build": float(os.environ.get("PREP_BUILD_MINUTES", 20)),
+                 "fix": float(os.environ.get("PREP_FIX_MINUTES", 12)),
+                 "judge": float(os.environ.get("PREP_JUDGE_MINUTES", 8)),
+                 "batch": float(os.environ.get("PREP_BATCH_MINUTES", 15))}
 LINT_COMMAND = "prep facts lint facts.json"
 PROTECTED = ("log", ".claude", "listing.json", "packet.json", "RESEARCH.md", "CLAUDE.md")
 
@@ -695,26 +736,35 @@ def new_run(run_id=None, kind="research"):
 _RUN_LOCK = threading.Lock()
 
 
-def record(run_dir, slug, stage, entry):
-    """Merge one business's stage result into run.json and add its usage to the stage's total."""
+def _add_usage(run, stage, sessions):
+    u = run.setdefault("usage", {}).setdefault(stage, {"sessions": 0, "input_tokens": 0, "output_tokens": 0,
+                                                        "cache_read_input_tokens": 0,
+                                                        "cache_creation_input_tokens": 0, "plan_usd_list": 0.0,
+                                                        "permission_denials": 0, "models": []})
+    for s in sessions or []:
+        u["sessions"] += 1
+        for k in ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"):
+            u[k] += int((s.get("usage") or {}).get(k) or 0)
+        u["plan_usd_list"] = round(u["plan_usd_list"] + float(s.get("plan_usd_list") or 0), 4)
+        u["permission_denials"] += int(s.get("permission_denials") or 0)
+        u["models"] = sorted(set(u["models"]) | set(s.get("models") or []))
+        if s.get("refusals"):
+            u.setdefault("refusals", []).extend(s["refusals"][:20])
+
+
+def record(run_dir, slug, stage, entry, usage_stage=None):
+    """Merge one business's stage result into run.json and add its usage to the stage's total.
+    `usage_stage` (B67, additive): the stage the usage is counted under when the entry's key is a round
+    of it (`judge-2` → `judge`); default the key itself. `slug` None records run-level usage only."""
     with _RUN_LOCK:
         run = read_json(run_dir / "run.json", {})
-        b = run.setdefault("businesses", {}).setdefault(slug, {})
-        b.setdefault("stages", {})[stage] = entry
-        for k in ("place_id", "name", "status", "reason"):
-            if k in entry:
-                b[k] = entry[k]
-        u = run.setdefault("usage", {}).setdefault(stage, {"sessions": 0, "input_tokens": 0, "output_tokens": 0,
-                                                            "cache_read_input_tokens": 0,
-                                                            "cache_creation_input_tokens": 0, "plan_usd_list": 0.0,
-                                                            "permission_denials": 0, "models": []})
-        for s in entry.get("sessions") or []:
-            u["sessions"] += 1
-            for k in ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"):
-                u[k] += int((s.get("usage") or {}).get(k) or 0)
-            u["plan_usd_list"] = round(u["plan_usd_list"] + float(s.get("plan_usd_list") or 0), 4)
-            u["permission_denials"] += int(s.get("permission_denials") or 0)
-            u["models"] = sorted(set(u["models"]) | set(s.get("models") or []))
+        if slug is not None:
+            b = run.setdefault("businesses", {}).setdefault(slug, {})
+            b.setdefault("stages", {})[stage] = entry
+            for k in ("place_id", "name", "status", "reason"):
+                if k in entry:
+                    b[k] = entry[k]
+        _add_usage(run, usage_stage or stage, entry.get("sessions"))
         write_json(run_dir / "run.json", run)
 
 
@@ -737,7 +787,8 @@ def stamp(workdir, stage, pkt, listing):
     claude_md = (TEMPLATE / "CLAUDE.md").read_text().replace("{{STAGE}}", stage).replace("{{MANUAL}}", manual)
     (workdir / "CLAUDE.md").write_text(claude_md)
     write_json(workdir / ".claude" / "settings.json", settings_for(stage, workdir))
-    write_json(workdir / "packet.json", pkt)
+    if pkt is not None:
+        write_json(workdir / "packet.json", pkt)
     if listing is not None:
         write_json(workdir / "listing.json", listing)
     if stage == "research" and not (workdir / "facts.json").exists():
@@ -784,6 +835,7 @@ def session_env():
     env = {k: v for k, v in os.environ.items() if k not in SCRUB_ENV}
     env["PATH"] = f"{BIN}{os.pathsep}{env.get('PATH', '/usr/bin:/bin')}"
     env["PREP_BIN"] = str(SELF)
+    env["SHOT_SANDBOX"] = "1"          # B67: a session's `shot` stays inside its directory, no private hosts
     return env
 
 
@@ -794,10 +846,49 @@ def session_cmd(stage, model, workdir, resume=None, max_turns=None):
            "--restricted", "--tools", ",".join(STAGE_TOOLS[stage]),
            "--settings", str(Path(workdir) / ".claude" / "settings.json"),
            "--permission-mode", "dontAsk", "--strict-mcp-config", "--disable-slash-commands",
-           "--max-turns", str(max_turns or CAPS["turns"])]
+           "--max-turns", str(max_turns or STAGE_TURNS.get(stage) or CAPS["turns"])]
     if resume:
         cmd += ["--resume", resume]
     return cmd
+
+
+RATE_WORDS = re.compile(r"rate.?limit|usage limit|too many requests|\b429\b|overloaded|limit (?:reached|will reset)"
+                        r"|resets? at", re.I)
+
+
+def is_rate_limited(summary, err_path=None):
+    """A session that ended on a limit (the plan's or the API's): wait and retry, never a failure."""
+    if summary.get("ok"):
+        return False
+    text = (summary.get("result_text") or "") + " " + (summary.get("error") or "")
+    try:
+        if err_path and Path(err_path).exists():
+            text += " " + Path(err_path).read_text(errors="replace")[-2000:]
+    except OSError:
+        pass
+    return bool(RATE_WORDS.search(text))
+
+
+def _short_input(ti):
+    if not isinstance(ti, dict):
+        return str(ti)[:120]
+    for k in ("url", "command", "file_path", "query", "path", "pattern"):
+        if ti.get(k):
+            return str(ti[k])[:160]
+    return json.dumps(ti)[:120]
+
+
+def _session_pid_file(workdir, pid):
+    """<run>/pids/<pid>: the sessions a conductor has open, so `prep stop` and `prep resume` can end
+    what a killed conductor left behind. Only when the directory is inside a run."""
+    run_dir = Path(workdir).parent if (Path(workdir).parent / "run.json").exists() else None
+    if run_dir is None:
+        return None
+    d = run_dir / "pids"
+    d.mkdir(exist_ok=True)
+    p = d / str(pid)
+    p.write_text(str(workdir) + "\n")
+    return p
 
 
 def run_session(workdir, stage, model, prompt, seconds, resume=None, tag=None):
@@ -815,6 +906,7 @@ def run_session(workdir, stage, model, prompt, seconds, resume=None, tag=None):
                                     env=session_env(), start_new_session=True, text=True)
         except OSError as exc:
             return {"ok": False, "error": f"can't start claude ({exc})", "tag": tag}
+        pid_file = _session_pid_file(workdir, proc.pid)
         try:
             proc.communicate(prompt, timeout=seconds)
         except subprocess.TimeoutExpired:
@@ -828,6 +920,8 @@ def run_session(workdir, stage, model, prompt, seconds, resume=None, tag=None):
                 except (ProcessLookupError, PermissionError):
                     pass
                 proc.wait()
+        if pid_file:
+            pid_file.unlink(missing_ok=True)
     result = None
     for line in stream_path.read_text(errors="replace").splitlines():
         try:
@@ -848,7 +942,12 @@ def run_session(workdir, stage, model, prompt, seconds, resume=None, tag=None):
                   ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")},
         "plan_usd_list": (result or {}).get("total_cost_usd"),
         "permission_denials": len((result or {}).get("permission_denials") or []),
+        # B67, additive: what was refused (tool and target), the result's own words, and whether it was a limit
+        "refusals": [f"{d.get('tool_name')}: {_short_input(d.get('tool_input'))}"
+                     for d in (result or {}).get("permission_denials") or [] if isinstance(d, dict)],
+        "result_text": str((result or {}).get("result") or "")[:300],
     }
+    summary["rate_limited"] = is_rate_limited(summary, err_path)
     if any("fable" in m.lower() for m in models):
         summary["ok"] = False
         summary["error"] = f"the session ran on {', '.join(models)}: Fable is never a prep model"
@@ -872,20 +971,23 @@ list and § Confidence say how), run the lint again until it prints OK, then sto
 fix needs one."""
 
 
-def research_one(place_id, run_dir, dry=False, spend=None, fetch=True):
+def research_one(place_id, run_dir, dry=False, spend=None, fetch=True, slug=None):
+    """One business researched. `slug` (B67, additive): the directory the conductor already named at
+    the pick, used as is."""
     pkt, why = packet(place_id, fetch=fetch, spend=spend)
     if pkt is None:
         return {"place_id": place_id, "status": "failed", "reason": why}
     with _RUN_LOCK:
         run = read_json(run_dir / "run.json", {})
         taken = {s for s, b in (run.get("businesses") or {}).items() if b.get("place_id") != place_id}
-        slug = pkt["slug"]
-        if slug in taken:
-            slug = slugify(f"{pkt['slug']}-{pkt['city']}")
-        n = 2
-        while slug in taken:
-            slug = f"{pkt['slug']}-{n}"
-            n += 1
+        if not slug:
+            slug = pkt["slug"]
+            if slug in taken:
+                slug = slugify(f"{pkt['slug']}-{pkt['city']}")
+            n = 2
+            while slug in taken:
+                slug = f"{pkt['slug']}-{n}"
+                n += 1
         pkt["slug"] = slug
         (run_dir / slug).mkdir(exist_ok=True)
         run.setdefault("businesses", {}).setdefault(slug, {"place_id": place_id, "name": pkt["name"]})
@@ -1121,6 +1223,9 @@ def hook_decide(stage, event, root):
     tool = event.get("tool_name") or ""
     ti = event.get("tool_input") or {}
     caps = read_json(root / "log" / f"{stage}.caps.json", {"searches": 0, "fetches": 0, "denied": 0})
+    if tool in ("WebFetch", "WebSearch") and stage != "research":
+        return False, f"{tool} is not a {stage} tool: everything you need is in this directory", \
+            ti.get("url") or ti.get("query") or ""
     if tool == "WebFetch":
         url = ti.get("url") or ""
         if is_meta(url):
@@ -1146,13 +1251,130 @@ def hook_decide(stage, event, root):
             rel = p.relative_to(root)
             if rel.parts and rel.parts[0] in PROTECTED:
                 return False, f"{rel} is the launcher's, not yours to change", str(rel)
+            if stage in STAGE_WRITES and rel.as_posix() not in STAGE_WRITES[stage]:
+                return False, (f"{rel}: here you write only {', '.join(STAGE_WRITES[stage])}"
+                               + (" (the site is rendered from content.json by `leads preview`, never written)"
+                                  if stage == "build" else "")), str(rel)
         return True, None, str(p.relative_to(root)) if p else target
     if tool == "Bash":
         cmd = " ".join((ti.get("command") or "").split())
-        if cmd == LINT_COMMAND:
-            return True, None, cmd
-        return False, f"the one command here is `{LINT_COMMAND}`", cmd
-    return False, f"{tool} is not a research tool", ""
+        if stage == "research":
+            if cmd == LINT_COMMAND:
+                return True, None, cmd
+            return False, f"the one command here is `{LINT_COMMAND}`", cmd
+        if stage == "build":
+            ok, why = build_command_ok(cmd, root)
+            return ok, why, cmd
+        return False, f"no commands in the {stage} stage: read, then write {STAGE_WRITES[stage][0]}", cmd
+    return False, f"{tool} is not a {stage} tool", ""
+
+
+BUILD_COMMANDS = ("leads preview --from content.json --out site [--look L]",
+                  "shot [check|text] site/… [--mobile|--desktop] [--full] [--out shots/….png]",
+                  "img stock \"term\" [-n N] [--orientation O] [--width W] --out images/… [--json]",
+                  "prep check [--json]", "prep message [--json]", LINT_COMMAND)
+SHOT_FLAGS = {"--mobile", "--desktop", "--tablet", "--laptop", "--full", "--dark", "--light", "--jpg", "--all-sizes",
+              "--json", "--no-links"}
+SHOT_VALUED = {"--out", "--wait", "--selector", "--width", "--height", "--dpr", "--timeout", "--wait-for",
+               "--scroll-to"}
+IMG_VALUED = {"-n", "--orientation", "--width", "--seed", "--out", "--skip-file"}
+
+
+def build_command_ok(cmd, root):
+    """(allow, why) for one Bash command in the build stage: the renderer into site/, `shot` on the
+    directory's own files, `img stock` into images/, `prep check`, `prep message`, the lint. One plain
+    command: no pipes, redirects, substitutions or chains."""
+    refuse = f"allowed here: {'; '.join(BUILD_COMMANDS)}"
+    if re.search(r"[;&|`$<>\\\n]", cmd):
+        return False, "one plain command at a time (no pipes, redirects, chains or substitutions); " + refuse
+    try:
+        argv = shlex.split(cmd)
+    except ValueError:
+        return False, "unreadable command; " + refuse
+    if not argv:
+        return False, refuse
+
+    def inside(path, sub=None):
+        ok, p = _inside(path, root)
+        if not ok or p is None:
+            return False
+        if sub:
+            rel = p.relative_to(root)
+            return bool(rel.parts) and rel.parts[0] == sub
+        return True
+
+    head, rest = argv[0], argv[1:]
+    if head == "prep":
+        if rest in (["check"], ["check", "."], ["check", "--json"], ["check", ".", "--json"], ["message"],
+                    ["message", "."], ["message", "--json"], ["facts", "lint", "facts.json"]):
+            return True, None
+        return False, refuse
+    if head == "leads":
+        if rest[:1] != ["preview"]:
+            return False, "only `leads preview --from content.json --out site` here; " + refuse
+        opts, i, extra = {}, 1, []
+        while i < len(rest):
+            a = rest[i]
+            if a in ("--from", "--out", "--look") and i + 1 < len(rest):
+                opts[a] = rest[i + 1]
+                i += 2
+            elif a == "--json":
+                i += 1
+            else:
+                extra.append(a)
+                i += 1
+        if extra or opts.get("--from") not in ("content.json", "./content.json") or \
+                opts.get("--out") not in ("site", "./site", "site/"):
+            return False, "only `leads preview --from content.json --out site [--look L]` (never without --out); " + refuse
+        if "--look" in opts and not re.fullmatch(r"[a-z]{2,20}", opts["--look"]):
+            return False, "--look is a look's name"
+        return True, None
+    if head == "shot":
+        args = rest[1:] if rest[:1] and rest[0] in ("check", "text") else rest
+        i, targets = 0, []
+        while i < len(args):
+            a = args[i]
+            if a in SHOT_FLAGS:
+                i += 1
+            elif a in SHOT_VALUED and i + 1 < len(args):
+                if a == "--out" and not inside(args[i + 1], "shots"):
+                    return False, "shot --out goes under shots/ in this directory"
+                i += 2
+            elif a.startswith("-"):
+                return False, f"shot {a} is not allowed here"
+            else:
+                targets.append(a)
+                i += 1
+        if len(targets) != 1 or "://" in targets[0] or not inside(targets[0]):
+            return False, "shot looks at this directory's own site/ files only; " + refuse
+        return True, None
+    if head == "img":
+        if rest[:1] != ["stock"] or len(rest) < 2:
+            return False, "only `img stock` here (stock photos, free; nothing generated); " + refuse
+        i, terms, out = 1, [], None
+        while i < len(rest):
+            a = rest[i]
+            if a == "--json":
+                i += 1
+            elif a in IMG_VALUED and i + 1 < len(rest):
+                if a == "--out":
+                    out = rest[i + 1]
+                if a == "-n" and not (rest[i + 1].isdigit() and 1 <= int(rest[i + 1]) <= 5):
+                    return False, "img stock -n is 1 to 5"
+                if a == "--skip-file" and not inside(rest[i + 1]):
+                    return False, "--skip-file is a file in this directory"
+                i += 2
+            elif a.startswith("-"):
+                return False, f"img stock {a} is not allowed here"
+            else:
+                terms.append(a)
+                i += 1
+        if not out or not inside(out, "images"):
+            return False, "img stock --out goes under images/ in this directory (and is required)"
+        if len(terms) != 1:
+            return False, "img stock takes one quoted search term"
+        return True, None
+    return False, refuse
 
 
 def cmd_hook(args):

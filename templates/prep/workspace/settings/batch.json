@@ -1,0 +1,82 @@
+{
+  "permissions": {
+    "defaultMode": "dontAsk",
+    "allow": [
+      "Read(/{{DIR}}/**)",
+      "Write(/{{DIR}}/batch.json)",
+      "Edit(/{{DIR}}/batch.json)",
+      "Write(/{{DIR}}/notes.md)",
+      "Edit(/{{DIR}}/notes.md)",
+      "Glob",
+      "Grep"
+    ],
+    "deny": [
+      "WebFetch",
+      "WebSearch",
+      "Bash",
+      "WebFetch(domain:facebook.com)",
+      "WebFetch(domain:*.facebook.com)",
+      "WebFetch(domain:fb.com)",
+      "WebFetch(domain:*.fb.com)",
+      "WebFetch(domain:fb.me)",
+      "WebFetch(domain:*.fb.me)",
+      "WebFetch(domain:fb.gg)",
+      "WebFetch(domain:*.fb.gg)",
+      "WebFetch(domain:fb.watch)",
+      "WebFetch(domain:*.fb.watch)",
+      "WebFetch(domain:fbcdn.net)",
+      "WebFetch(domain:*.fbcdn.net)",
+      "WebFetch(domain:fbsbx.com)",
+      "WebFetch(domain:*.fbsbx.com)",
+      "WebFetch(domain:facebook.net)",
+      "WebFetch(domain:*.facebook.net)",
+      "WebFetch(domain:instagram.com)",
+      "WebFetch(domain:*.instagram.com)",
+      "WebFetch(domain:instagr.am)",
+      "WebFetch(domain:*.instagr.am)",
+      "WebFetch(domain:cdninstagram.com)",
+      "WebFetch(domain:*.cdninstagram.com)",
+      "WebFetch(domain:ig.me)",
+      "WebFetch(domain:*.ig.me)",
+      "WebFetch(domain:threads.net)",
+      "WebFetch(domain:*.threads.net)",
+      "WebFetch(domain:threads.com)",
+      "WebFetch(domain:*.threads.com)",
+      "WebFetch(domain:messenger.com)",
+      "WebFetch(domain:*.messenger.com)",
+      "WebFetch(domain:m.me)",
+      "WebFetch(domain:*.m.me)",
+      "WebFetch(domain:whatsapp.com)",
+      "WebFetch(domain:*.whatsapp.com)",
+      "WebFetch(domain:whatsapp.net)",
+      "WebFetch(domain:*.whatsapp.net)",
+      "WebFetch(domain:wa.me)",
+      "WebFetch(domain:*.wa.me)",
+      "WebFetch(domain:meta.com)",
+      "WebFetch(domain:*.meta.com)",
+      "WebFetch(domain:meta.ai)",
+      "WebFetch(domain:*.meta.ai)",
+      "Read(~/.config/**)",
+      "Read(~/.ssh/**)",
+      "Read(~/.claude/**)",
+      "Read(~/.claude-relay/**)",
+      "Read(~/projects/**)",
+      "Read(~/.local/state/claude-tools/leads/**)",
+      "Read(/etc/**)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{{HOOK}}",
+            "timeout": 20
+          }
+        ]
+      }
+    ]
+  }
+}

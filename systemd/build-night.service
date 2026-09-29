@@ -1,0 +1,8 @@
+[Unit]
+Description=Patchlamp: the nightly build window (a headless /continue with a three-hour cap; GROWTH.md § 19.5)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/build-night
+TimeoutStartSec=3h20m
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin

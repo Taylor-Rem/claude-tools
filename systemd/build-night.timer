@@ -1,0 +1,9 @@
+[Unit]
+Description=Patchlamp: run the nightly build window at 21:30 (VISION § Decided 2026-09-28 "Selling first" #18; enable for four weeks, then disable)
+
+[Timer]
+OnCalendar=*-*-* 21:30:00
+Persistent=false
+
+[Install]
+WantedBy=timers.target

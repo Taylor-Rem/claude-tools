@@ -19,9 +19,27 @@ B25 (the remote lane), B7 (the pipeline: log, follow-ups, the week).
   leads kit --census-only      # no Places calls: what the census alone knows
   leads candidates [--n 20]    # the ranked pool the kit picks from (no spend)
   leads kit --remote           # today's six ready-to-send messages (ROADMAP B25): DM, email, faults
+  leads kit --remote --previews # the same, with a preview site built for every pick (B45)
   leads diagnose "Name[, City]" [--group "Utah Small Business Owners"]
                                # three lines to paste under a group post, and the lead logged
+  leads preview "Name, City"   # that lead's own website, filled from the census row (B45)
+  leads preview --kit          # one for each of today's remote-kit picks
+  leads preview ls             # every preview, how long it has left
+  leads preview sweep          # the expired ones come down (LEADS_NOW moves the clock)
+  leads preview --remove NAME  # a takedown, now
+  leads preview --claim NAME --slug mikes-pool-care   # client new + site new from the same files
   leads doctor
+
+Preview sites (B45, plan ~/projects/plans/19-preview-sites.md): the segment's
+template filled from the listing alone — name, category → the services that
+category implies (templates/previews/categories.json, one row per category in
+client-leads/scripts/services.json), phone, city, hours, "5.0★ on Google, 88
+reviews" linking to the listing, one stock photo. Never their Google photos,
+never the text of a review, never a street address, never a price. All of them
+live in one Cloudflare Pages project at previews.patchlamp.com/<slug>/, noindex
+twice over (a robots meta and X-Robots-Tag from the project's _headers), with
+the footer that says what the page is and a 30-day expiry. Deterministic: no
+model call, so six previews cost $0.
 
 Segments (B44, VISION § Decided 2026-09-28: services first, restaurants one of five):
   kit, kit --remote, candidates and next read the services census (B43's
@@ -77,6 +95,18 @@ Config, by name, never printed:
                         Without it every email draft says it isn't ready to send.
   LEADS_GROUPS_LOG      the human-readable log of remote and group-thread leads
                         (default ~/projects/social/leads-from-groups.md)
+  LEADS_PREVIEWS        the previews' state: site/ (what is uploaded) and
+                        meta/<slug>.json (never uploaded). Default
+                        ~/.local/state/claude-tools/previews
+  LEADS_PREVIEW_PROJECT the Pages project they all live in (patchlamp-previews)
+  LEADS_PREVIEW_HOST    the host to build links from, when it isn't the one the
+                        last publish reported (tests)
+  LEADS_PREVIEW_YES     =1 passes `site previews --yes`, which is what lets the
+                        very first publish create the Pages project. Until
+                        Taylor gives that word, a publish stops and says so
+                        (GROWTH § 10, TAYLOR-TODO §1 "Preview sites").
+  LEADS_NOW             an ISO date standing in for today, for the previews'
+                        expiry only (so `sweep` is provable without waiting)
   LEADS_PIPELINE        the pipeline, one event per line (default
                         ~/projects/private-docs/leads/pipeline.jsonl: backed up
                         nightly, in no repo — it holds names and numbers). The
@@ -88,15 +118,30 @@ addresses. The census holds no owner names or email addresses; what it does
 hold is each place's top search results, which is where an Instagram handle
 or a Facebook page is found. Leads with one are picked first, and the draft
 says which channel to use. Owner names are not claimed.
+
+The kit's machine-readable seam (`leads kit --remote --json`), which
+`bin/outreach` (B46) reads. Add keys; never rename one:
+
+  {"date": "2026-09-28", "segment": "services",
+   "picks": [{"place_id", "name", "first" (the first name the business carries,
+              else the business), "category", "segment", "city", "phone",
+              "email"|null, "instagram" (handle)|null, "facebook" (url)|null,
+              "faults": [str], "preview_url"|null, "maps_url",
+              "message" (the DM draft) and "summary" beyond the agreed shape}]}
+
+`leads kit --json` without --remote is unchanged: the picks as a plain list.
 """
 
 import argparse
 import datetime as dt
+import html
 import json
 import math
 import os
 import re
+import shutil
 import sqlite3
+import subprocess
 import sys
 import time
 import urllib.error
@@ -790,6 +835,7 @@ def build_kit(args):
     cands = census_candidates(args.min_reviews)
     skip = {} if args.allow_repeat else recently_kitted(for_date)
     skip.update({pid: "pipeline" for pid in pipeline_skip()})
+    skip.update({pid: "claimed" for pid in claimed_places()})   # B45: they took the preview; they're a client
     pool = [c for c in cands if c["miles"] <= args.radius and c["place_id"] not in skip]
     if not pool:
         die(f"no candidates within {args.radius} miles of home; widen --radius")
@@ -945,6 +991,7 @@ def build_segment_kit(args, segment):
     cands = candidates_for(segment, args.min_reviews)
     skip = {} if args.allow_repeat else recently_kitted(for_date)
     skip.update({pid: "pipeline" for pid in pipeline_skip()})
+    skip.update({pid: "claimed" for pid in claimed_places()})   # B45: they took the preview; they're a client
     pool, widened = nearest_pool(cands, args.radius, args.n, skip)
     if not pool:
         die(f"no {SEGMENT_NOUN[segment]} left to kit (all kitted or in the pipeline); --allow-repeat" if cands else
@@ -1187,6 +1234,7 @@ def build_remote(args):
     cands = census_candidates(args.min_reviews)
     skip = {} if args.allow_repeat else contacted()
     skip.update({pid: "pipeline" for pid in pipeline_skip()})
+    skip.update({pid: "claimed" for pid in claimed_places()})   # B45: they took the preview; they're a client
     chains = chain_names()
     pool = [c for c in cands if c["miles"] <= args.radius and c["place_id"] not in skip
             and (c["name"] or "").lower() not in chains]
@@ -1220,6 +1268,8 @@ def build_remote(args):
         ledger_append({"ts": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()), "kind": "places_details",
                        "tool": "leads", "calls": places.calls, "cost_usd": round(places.calls * DETAILS_COST_USD, 3),
                        "billed_to": f"google:GOOGLE_MAPS_API_KEY({where})", "project": "global", "for": f"remote {today}"})
+    kit_previews(picks, build=getattr(args, "previews", False),      # B45: a link per pick, built with --previews
+                 publish=not getattr(args, "no_save", False))
     mode = "fixture" if args.fixture else "google" if (key and not places.failed) else "census"
     page = render_remote(picks, today, mode, places.failed, census_stamp(cands))
     if not args.fixture and not args.no_save:
@@ -1266,6 +1316,8 @@ def _render_remote(picks, today, mode, note, census_date, emails):
             lines.append(f"   No handle or address found — call {p.get('phone') or 'them'}; the message is the opener")
         if p.get("variant") == "tool":
             lines.append("   (a service business with no way to book online: the tool message, B40)")
+        if p.get("preview_url"):
+            lines.append(f"   Their preview site: {p['preview_url']}")
         lines.append(f"   \"{p.get('message') or dm_text(p, p['faults'])}\"")
         if emails:
             subject, _ = email_draft(p, p["faults"])
@@ -1376,6 +1428,7 @@ def build_segment_remote(args, segment):
     cands = [c for c in candidates_for(segment, args.min_reviews) if is_business(c)]
     skip = {} if args.allow_repeat else contacted()
     skip.update({pid: "pipeline" for pid in pipeline_skip()})
+    skip.update({pid: "claimed" for pid in claimed_places()})   # B45: they took the preview; they're a client
     chains = chain_names()
     pool, _ = nearest_pool([c for c in cands if (c["name"] or "").lower() not in chains], args.radius, args.n, skip)
     if not pool:
@@ -1401,6 +1454,8 @@ def build_segment_remote(args, segment):
         c["summary"] = c["summary"].replace(" · (census only)", "")
         c["variant"], c["message"] = "listing", segment_dm_text(c, c["faults"])
         picks.append(c)
+    kit_previews(picks, build=getattr(args, "previews", False),      # B45: a link per pick, built with --previews
+                 publish=not getattr(args, "no_save", False))
     if places.calls:
         ledger_append({"ts": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()), "kind": "places_details",
                        "tool": "leads", "calls": places.calls, "cost_usd": round(places.calls * DETAILS_COST_USD, 3),
@@ -1446,6 +1501,8 @@ def render_segment_remote(picks, segment, today, mode, note, census_date, emails
             lines.append(f"   Message on {rc['directory'][0]}: {rc['directory'][1]}")
         else:
             lines.append(f"   No page to message — call {p.get('phone') or 'them'}; the message is the opener")
+        if p.get("preview_url"):
+            lines.append(f"   Their preview site: {p['preview_url']}")
         lines.append(f"   \"{p['message']}\"")
         if emails:
             subject, _ = segment_email(p, p["faults"])
@@ -1615,6 +1672,684 @@ def cmd_diagnose(args):
                     "reach": rline, "wrong": "; ".join(fs[:3])}])
 
 
+# ---- preview sites (B45; plan ~/projects/plans/19-preview-sites.md) -----------------------
+#
+# A lead's own website, built before the first message, from the census row and
+# the Google listing alone. Deterministic: the fill is the segment's template
+# plus templates/previews/categories.json (one row per category in
+# client-leads/scripts/services.json — the services a category implies, the
+# tagline, the intro, a stock-photo term). No model call, so six previews cost
+# nothing but the Place Details the kit already paid for.
+#
+# What is NEVER on a preview: their Google photos (Google's terms, and the
+# photographer's copyright), the text of any review, a street address (a
+# one-truck trade works from home; the city is what the page says), a claim
+# about the business we did not read on the listing, and a price.
+#
+# Everything lives under ~/.local/state/claude-tools/previews (LEADS_PREVIEWS):
+#   site/                what is uploaded: the root page, _headers, robots.txt,
+#                        and <slug>/ per preview
+#   meta/<slug>.json     the manifest (place_id, expiry, cost) — never uploaded
+# One Cloudflare Pages project holds them all, so a publish is one upload of the
+# whole tree: removing one preview is deleting its folder and publishing again,
+# which is why a takedown takes a minute rather than an hour.
+
+PREVIEWS = Path(os.environ.get("LEADS_PREVIEWS", Path.home() / ".local/state/claude-tools/previews"))
+PREVIEW_PROJECT = os.environ.get("LEADS_PREVIEW_PROJECT", "patchlamp-previews")
+PREVIEW_DOMAIN = os.environ.get("LEADS_PREVIEW_DOMAIN", "previews.patchlamp.com")
+PREVIEW_DAYS = 30
+TOOLBELT = Path(__file__).resolve().parent.parent
+PREVIEW_TABLE = TOOLBELT / "templates" / "previews" / "categories.json"
+PREVIEW_OVERLAY = TOOLBELT / "templates" / "sites" / "_preview"
+SITE_TEMPLATES = TOOLBELT / "templates" / "sites"
+# The toolbelt commands a preview shells out to. LEADS_PREVIEW_BIN points them at stand-ins so the
+# tests can prove the claim and the publish without a Cloudflare project or a GitHub repo.
+PREVIEW_BIN = Path(os.environ.get("LEADS_PREVIEW_BIN", TOOLBELT / "bin"))
+SITE_BIN = PREVIEW_BIN / "site"
+CLIENT_BIN = PREVIEW_BIN / "client"
+IMG_BIN = TOOLBELT / "bin" / "img"
+# The footer sentence, word for word. patchlamp/CLAIMS.md § Previews carries it;
+# `tests/test_leads_preview.py` pins it. Change one and change all three.
+PREVIEW_FOOTER = ("A preview Patchlamp made for {name}. Not their official site. "
+                  "Claim it, or ask us to take it down: founder@patchlamp.com")
+
+
+def now_date():
+    """Today in Denver, or LEADS_NOW — the clock a preview's 30 days are measured against
+    (so `sweep` can be proven by moving the clock instead of waiting a month)."""
+    s = (os.environ.get("LEADS_NOW") or "").strip()
+    if not s:
+        return dt.datetime.now(TZ).date()
+    try:
+        return dt.date.fromisoformat(s)
+    except ValueError:
+        die("LEADS_NOW is a date: YYYY-MM-DD")
+
+
+def esc(text):
+    """Safe both in text and inside a double-quoted attribute, and still readable in the source:
+    an apostrophe in a business name stays an apostrophe ("Mike's Pool Care"), not &#x27;."""
+    return html.escape(str(text or ""), quote=False).replace('"', "&quot;")
+
+
+def slugify(text):
+    """"Mike's Pool Care" -> mikes-pool-care: an apostrophe closes up, everything else separates."""
+    s = re.sub(r"['\u2019]", "", (text or "").lower())
+    return re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", s)).strip("-")
+
+
+def preview_copy(category):
+    """The category's copy row from templates/previews/categories.json, over the default.
+    An unknown category (a name looked up live, a segment we never scanned) still gets a page."""
+    try:
+        table = json.loads(PREVIEW_TABLE.read_text())
+    except (OSError, ValueError) as exc:
+        die(f"{PREVIEW_TABLE}: {exc}")
+    row = dict(table["_default"])
+    row.update(table["categories"].get(category or "", {}))
+    row["category"] = category or "local business"
+    return row
+
+
+def preview_meta_dir():
+    return PREVIEWS / "meta"
+
+
+def preview_site_dir():
+    return PREVIEWS / "site"
+
+
+def previews_all():
+    d = preview_meta_dir()
+    out = []
+    for p in sorted(d.glob("*.json")) if d.exists() else []:
+        try:
+            out.append(json.loads(p.read_text()))
+        except ValueError:
+            print(f"leads: {p} is not valid JSON — skipped", file=sys.stderr)
+    return out
+
+
+def preview_save(meta):
+    preview_meta_dir().mkdir(parents=True, exist_ok=True)
+    (preview_meta_dir() / f"{meta['slug']}.json").write_text(json.dumps(meta, indent=1, sort_keys=True) + "\n")
+
+
+def preview_find(key):
+    """A preview by slug, place id, or business name (the way `leads show` matches one)."""
+    want = (key or "").strip().lower()
+    rows = previews_all()
+    for m in rows:
+        if want in (m["slug"], (m.get("place_id") or "").lower()):
+            return m
+    hits = [m for m in rows if want == clean_name(m["name"]).lower()] or \
+           [m for m in rows if want and want in m["name"].lower()]
+    if len(hits) > 1:
+        die("that matches " + ", ".join(m["slug"] for m in hits[:6]) + " — name the slug")
+    return hits[0] if hits else None
+
+
+def preview_slug(name, city, taken):
+    base = "-".join(x for x in (slugify(clean_name(name)), slugify(city)) if x)[:60].strip("-") or "preview"
+    slug, n = base, 2
+    while slug in taken:
+        slug, n = f"{base}-{n}", n + 1
+    return slug
+
+
+def phone_href(phone):
+    digits = re.sub(r"\D", "", phone or "")
+    if len(digits) == 10:
+        return "+1" + digits
+    if len(digits) == 11 and digits.startswith("1"):
+        return "+" + digits
+    return "+" + digits if digits else ""
+
+
+WEEK_ORDER = [1, 2, 3, 4, 5, 6, 0]           # Monday first, the way a week reads on a site
+LONG_DAY = {"sunday": 0, "monday": 1, "tuesday": 2, "wednesday": 3, "thursday": 4, "friday": 5, "saturday": 6}
+
+
+def _group_week(per_day):
+    """{day index: 'what it says'} -> ['Mon-Fri: 8am-6pm', 'Sat: 9am-2pm', 'Sun: closed'],
+    runs of identical days folded into one line."""
+    out, i = [], 0
+    while i < len(WEEK_ORDER):
+        val = per_day.get(WEEK_ORDER[i]) or "closed"
+        j = i
+        while j + 1 < len(WEEK_ORDER) and (per_day.get(WEEK_ORDER[j + 1]) or "closed") == val:
+            j += 1
+        label = DAYS[WEEK_ORDER[i]] if j == i else f"{DAYS[WEEK_ORDER[i]]}-{DAYS[WEEK_ORDER[j]]}"
+        out.append(f"{label}: {val}")
+        i = j + 1
+    return out
+
+
+def hours_lines(details):
+    """The listing's hours as a site shows them: ['Mon-Fri: 8am-6pm', 'Sat: 9am-2pm', 'Sun: closed'],
+    or [] when Google has none. Google's own weekdayDescriptions when the listing carries them (its
+    wording, its rounding), else the periods, which is what the recorded fixtures hold. A single
+    period with an open and no close is Google's "open 24 hours, every day"."""
+    hours = (details or {}).get("regularOpeningHours") or {}
+    descs = hours.get("weekdayDescriptions") or []
+    if descs:
+        per_day = {}
+        for line in descs:
+            day, _, rest = line.partition(":")
+            d = LONG_DAY.get(day.strip().lower())
+            if d is not None:
+                per_day[d] = re.sub(r"\s*[\u2013\u2014-]\s*", "-", rest.strip().replace("\u202f", " ")) or "closed"
+        if per_day:
+            return _group_week(per_day)
+    periods = hours.get("periods")
+    if not periods:
+        return []
+    if len(periods) == 1 and "close" not in periods[0]:
+        return ["Open 24 hours, every day"]
+    per_day = {}
+    for pd in periods:
+        o, c = pd.get("open") or {}, pd.get("close")
+        span = clock((o.get("hour", 0), o.get("minute", 0))) + (
+            "-" + clock((c.get("hour", 0), c.get("minute", 0))) if c else " onwards")
+        day = o.get("day")
+        if day is None:
+            continue
+        per_day[day] = (per_day[day] + ", " + span) if day in per_day else span
+    return _group_week(per_day) if per_day else []
+
+
+def preview_where(c, details, city):
+    """The city, never the street: a one-truck trade's listing address is often the owner's house."""
+    if (details or {}).get("pureServiceAreaBusiness") or (c.get("segment") in ("services", "creatives")):
+        return f"{city} and the towns nearby" if city else "The Wasatch Front"
+    return f"{city}, Utah" if city else "Utah"
+
+
+def fill_preview(text, values):
+    for k, v in values.items():
+        text = text.replace("{{" + k + "}}", str(v))
+    return text
+
+
+def preview_hero(slug, dest, term, mode):
+    """The hero photo: one stock landscape (Pexels, free) or one generated image. NEVER one of
+    their Google photos. Returns (relative src, credit, cost) or (None, None, 0.0)."""
+    if mode == "none":
+        return None, None, 0.0
+    (dest / "images").mkdir(parents=True, exist_ok=True)
+    out = dest / "images"
+    if mode == "gen":
+        r = subprocess.run([str(IMG_BIN), "gen", "--aspect", "3:2", "--quality", "menu",
+                            "--out", str(out), term], capture_output=True, text=True)
+        if r.returncode != 0:
+            print(f"leads: img gen failed for {slug} ({(r.stderr or r.stdout).strip()[:120]}) — no hero",
+                  file=sys.stderr)
+            return None, None, 0.0
+        made = sorted(out.glob("*.png")) + sorted(out.glob("*.jpg"))
+        if not made:
+            return None, None, 0.0
+        src = made[-1].rename(out / ("hero" + made[-1].suffix))
+        # img gen wrote its own ledger row for the dollars; the preview row records the mode.
+        return f"images/{src.name}", "generated", 0.0
+    r = subprocess.run([str(IMG_BIN), "stock", "-n", "1", "--orientation", "landscape",
+                        "--size", "large", "--out", str(out), term], capture_output=True, text=True)
+    made = sorted(p for p in out.glob("*") if p.suffix.lower() in (".jpg", ".jpeg", ".png"))
+    if r.returncode != 0 or not made:
+        print(f"leads: no stock photo for {slug} ({(r.stderr or r.stdout).strip().splitlines()[-1][:120] if (r.stderr or r.stdout).strip() else 'PEXELS_API_KEY?'})"
+              " — the page goes out without a hero", file=sys.stderr)
+        return None, None, 0.0
+    src = made[0].rename(out / ("hero" + made[0].suffix.lower()))
+    for p in out.glob("*"):
+        if p != src and p.is_file():
+            p.unlink()
+    return f"images/{src.name}", "stock", 0.0
+
+
+def build_preview(c, details, args, taken, today=None):
+    """One preview: the segment's template filled from the listing. Returns its manifest."""
+    today = today or now_date()
+    copy = preview_copy(c.get("category"))
+    kind = copy["template"]
+    tdir = SITE_TEMPLATES / kind
+    if not (tdir / "css" / "style.css").exists():
+        die(f"templates/sites/{kind} has no css/style.css (categories.json points at it)")
+    name = clean_name(c["name"])
+    city = (c.get("locality") or (c.get("city") or "").replace(", Utah", "")).strip()
+    slug = (c.get("_slug") or preview_slug(name, city, taken))
+    dest = preview_site_dir() / slug
+    if dest.exists():
+        shutil.rmtree(dest)
+    (dest / "css").mkdir(parents=True, exist_ok=True)
+    (dest / "js").mkdir(parents=True, exist_ok=True)
+    vals = {"NAME": esc(name), "YEAR": str(today.year)}
+    (dest / "css" / "style.css").write_text(fill_preview((tdir / "css" / "style.css").read_text(), vals))
+    (dest / "css" / "preview.css").write_text((PREVIEW_OVERLAY / "css" / "preview.css").read_text())
+    (dest / "js" / "main.js").write_text(fill_preview((tdir / "js" / "main.js").read_text(), vals))
+
+    d = details or {}
+    phone = d.get("nationalPhoneNumber") or c.get("phone") or ""
+    rating = d.get("rating") if details else c.get("rating")
+    reviews = d.get("userRatingCount") if details else c.get("reviews")
+    maps = clean_maps(d.get("googleMapsUri") or c.get("google_maps_uri"))
+    hero_src, hero_kind, hero_cost = preview_hero(slug, dest, copy["hero"], args.hero)
+    hrs = hours_lines(details)
+    expires = today + dt.timedelta(days=args.days)
+    words = {"name": name, "city": city or "the valley", "category": copy["category"], "trade": copy["trade"]}
+
+    hero_block = ""
+    if hero_src:
+        hero_block = (f'    <figure class="hero-photo">\n'
+                      f'      <img src="{hero_src}" alt="{esc(copy["trade"]).capitalize()} work" width="1200" height="400">\n'
+                      f'<!--p:herocap-->\n'
+                      f'      <figcaption>A stock photo, not {esc(name)}\'s — their own go here.</figcaption>\n'
+                      f'<!--/p:herocap-->\n'
+                      f'    </figure>')
+    rating_block = ""
+    if rating is not None and reviews:
+        line = (f'<span class="stars">{float(rating):.1f}&#9733;</span> on Google, '
+                f'{reviews} review{"s" if reviews != 1 else ""}')
+        rating_block = (f'        <p class="rating-line">{line}'
+                        + (f' &mdash; <a href="{esc(maps)}">see the listing</a>' if maps else "") + '</p>')
+    hours_block = ("            <ul>\n" + "\n".join(f"              <li>{esc(h)}</li>" for h in hrs) + "\n            </ul>"
+                   if hrs else
+                   f'            <p class="muted">Google doesn\'t show hours for {esc(name)} yet &mdash; '
+                   f'this is where they go.</p>')
+    services = "\n".join(f'          <li><h3>{esc(h)}</h3><p class="card-meta">{esc(l.format(**words))}</p></li>'
+                         for h, l in copy["services"])
+    listing_li = f'              <li><a href="{esc(maps)}">Their listing on Google</a></li>' if maps else ""
+
+    page = fill_preview((PREVIEW_OVERLAY / "page.html").read_text(), {
+        "NAME": esc(name), "TAGLINE": esc(copy["tagline"].format(**words)),
+        "INTRO": esc(copy["intro"].format(**words)), "TRADE": esc(copy["trade"]),
+        "CTA": esc(copy["cta"]), "PHONE": esc(phone or "no number on Google"),
+        "PHONE_HREF": esc(phone_href(phone)), "HERO_BLOCK": hero_block, "RATING_BLOCK": rating_block,
+        "SERVICES": services, "WHERE": esc(preview_where(c, details, city)), "HOURS_BLOCK": hours_block,
+        "LISTING_LI": listing_li, "YEAR": str(today.year),
+        "EXPIRES_LONG": expires.strftime("%-d %B %Y"), "BUILT_LONG": today.strftime("%-d %B %Y"),
+    })
+    if "{{" in page:
+        die(f"unfilled placeholder in {slug}: " + ", ".join(sorted(set(re.findall(r'\{\{[A-Z_]+\}\}', page)))))
+    (dest / "index.html").write_text(re.sub(r"\n{3,}", "\n\n", page))
+    meta = {"slug": slug, "place_id": c.get("place_id"), "name": name, "city": city,
+            "category": copy["category"], "segment": c.get("segment") or "", "template": kind,
+            "phone": phone, "rating": rating, "reviews": reviews, "maps_url": maps,
+            "hero": hero_kind or "none", "built": today.isoformat(), "expires": expires.isoformat(),
+            "days": args.days, "hours": bool(hrs), "url": preview_url(slug), "claimed": None,
+            "cost_usd": round(hero_cost, 4)}
+    preview_save(meta)
+    ledger_append({"ts": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()), "kind": "preview",
+                   "tool": "leads", "cost_usd": round(hero_cost, 4), "billed_to": "none",
+                   "project": "global", "slug": slug, "hero": hero_kind or "none",
+                   "for": f"preview {meta['name']} ({copy['category']})"})
+    return meta
+
+
+def preview_host():
+    """The host previews are served from: the custom domain once its CNAME exists, else the
+    project's own pages.dev host (resolved once and remembered)."""
+    cache = PREVIEWS / "project.json"
+    if os.environ.get("LEADS_PREVIEW_HOST"):
+        return os.environ["LEADS_PREVIEW_HOST"]
+    try:
+        row = json.loads(cache.read_text())
+    except (OSError, ValueError):
+        row = {}
+    return row.get("domain") or row.get("pages_host") or f"{PREVIEW_PROJECT}.pages.dev"
+
+
+def preview_url(slug):
+    return f"https://{preview_host()}/{slug}/"
+
+
+def preview_root_files():
+    """The files the previews project needs at its root: the "nothing to see here" page, the
+    404 an expired preview falls to, robots.txt and _headers (both halves of noindex)."""
+    site = preview_site_dir()
+    (site / "css").mkdir(parents=True, exist_ok=True)
+    (site / "js").mkdir(parents=True, exist_ok=True)
+    base = SITE_TEMPLATES / "business"
+    (site / "css" / "style.css").write_text(fill_preview((base / "css" / "style.css").read_text(),
+                                                         {"NAME": "Patchlamp previews"}))
+    (site / "css" / "preview.css").write_text((PREVIEW_OVERLAY / "css" / "preview.css").read_text())
+    (site / "js" / "main.js").write_text(fill_preview((base / "js" / "main.js").read_text(),
+                                                      {"NAME": "Patchlamp previews"}))
+    (site / "index.html").write_text((PREVIEW_OVERLAY / "root.html").read_text())
+    (site / "404.html").write_text((PREVIEW_OVERLAY / "404.html").read_text())
+    (site / "robots.txt").write_text((PREVIEW_OVERLAY / "robots.txt").read_text())
+    (site / "_headers").write_text((PREVIEW_OVERLAY / "_headers").read_text())
+
+
+def preview_publish(dry=False):
+    """The whole tree -> the one Pages project, through `site previews` (SITE_ADMIN: it makes and
+    writes an account-level project). Returns (ok, the host it reports)."""
+    preview_root_files()
+    cmd = [str(SITE_BIN), "previews", str(preview_site_dir()), "--project", PREVIEW_PROJECT]
+    if dry:
+        cmd.append("--dry-run")
+    if os.environ.get("LEADS_PREVIEW_YES") == "1":      # Taylor's word, once, for the project's first publish
+        cmd.append("--yes")
+    r = subprocess.run(cmd, capture_output=True, text=True, env=dict(os.environ, SITE_ADMIN="1"))
+    out = (r.stdout + r.stderr).strip()
+    print(out)
+    host = None
+    m = re.search(r"pages host:\s*(\S+)", out)
+    if m:
+        host = m.group(1)
+        PREVIEWS.mkdir(parents=True, exist_ok=True)
+        row = {}
+        try:
+            row = json.loads((PREVIEWS / "project.json").read_text())
+        except (OSError, ValueError):
+            pass
+        row["pages_host"] = host
+        row["project"] = PREVIEW_PROJECT
+        for dom in re.findall(r"domain:\s*(\S+)\s+active", out):
+            row["domain"] = dom
+        (PREVIEWS / "project.json").write_text(json.dumps(row, indent=1, sort_keys=True) + "\n")
+    return r.returncode == 0, host
+
+
+def preview_rows_for(args):
+    """The businesses to build previews for: the names given, or today's remote-kit picks, or the
+    nearest N of the segment's pool. Each comes back as (candidate, details)."""
+    segment = resolve_segment(args.segment)
+    key, where = (None, None) if args.census_only else places_key()
+    places = Places(key, where, fixture=args.fixture, refresh=args.refresh)
+    rows, cands = [], candidates_for(segment, args.min_reviews)
+    by_id = {c["place_id"]: c for c in cands}
+    if args.name:
+        for raw in args.name:
+            nm, _, city = raw.partition(",")
+            hits = census_lookup(nm.strip(), city.strip() or None)
+            if not hits:
+                die(f"{raw!r} isn't in the census — `leads candidates --segment {segment}` lists the pool, "
+                    f'or name the city: "Name, American Fork"')
+            c = by_id.get(hits[0][1]["place_id"]) or hits[0][1]
+            if len(hits) > 1 and not city.strip():
+                print("leads: also matched " + ", ".join(f"{h[1]['name']} ({h[1]['locality'] or '?'})"
+                                                         for h in hits[1:3]) + " — add the city to pick another",
+                      file=sys.stderr)
+            rows.append(c)
+    elif args.kit:
+        picks = preview_kit_picks(segment, args.n)
+        if not picks:
+            die(f"no remote kit today and no {SEGMENT_NOUN[segment]} in the pool; "
+                f"run `leads kit --remote` first, or name a business")
+        rows = [by_id.get(p) or _census_by_id(p) for p in picks]
+        rows = [r for r in rows if r]
+    else:
+        die("which business? `leads preview \"Name, City\"`, or --kit for today's six")
+    out = []
+    for c in rows[:max(args.n, len(args.name or []))]:
+        details = places.get(c["place_id"]) if (key or args.fixture) else None
+        if places.failed and not args.fixture:
+            details = None
+        out.append((c, details))
+    if places.calls:
+        ledger_append({"ts": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()), "kind": "places_details",
+                       "tool": "leads", "calls": places.calls, "cost_usd": round(places.calls * DETAILS_COST_USD, 3),
+                       "billed_to": f"google:GOOGLE_MAPS_API_KEY({where})", "project": "global",
+                       "for": f"previews {segment} {now_date()}"})
+    return out
+
+
+def preview_kit_picks(segment, n):
+    """Today's remote-kit place ids for this segment (so a preview matches the message that carries
+    its link), else the nearest n of the pool that aren't previewed yet."""
+    today = now_date().isoformat()
+    log = STATE / "remote.jsonl"
+    if log.exists():
+        for line in reversed(log.read_text().splitlines()):
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if row.get("for") == today and (row.get("segment") or "restaurant") == segment:
+                return row.get("place_ids") or []
+    have = {m.get("place_id") for m in previews_all()}
+    return [c["place_id"] for c in candidates_for(segment, None) if c["place_id"] not in have][:n]
+
+
+def make_previews(rows, hero="stock", days=PREVIEW_DAYS, publish=True, dry=False):
+    """Build a preview for each (candidate, details) and publish the tree once. A place that already
+    has one is rebuilt in place, keeping its slug so a link already sent still works."""
+    opts = argparse.Namespace(hero=hero, days=days)
+    preview_root_files()       # the tree is complete on disk whether or not it is published
+    taken = {m["slug"] for m in previews_all()}
+    made = []
+    for c, details in rows:
+        existing = next((m for m in previews_all() if m.get("place_id") == c["place_id"]), None)
+        if existing:
+            c = dict(c, _slug=existing["slug"])
+        made.append(build_preview(c, details, opts, taken))
+        taken.add(made[-1]["slug"])
+    ok = True
+    if publish and made:
+        ok, _ = preview_publish(dry=dry)
+    for m in made:
+        m["url"] = preview_url(m["slug"])
+        preview_save(m)
+    return made, ok
+
+
+def previews_build(args):
+    rows = preview_rows_for(args)
+    made, ok = make_previews(rows, hero=args.hero, days=args.days,
+                             publish=not args.no_publish, dry=args.dry_run)
+    if args.no_publish:
+        print(f"built {len(made)} preview(s) under {preview_site_dir()} — not published (--no-publish)")
+    elif not ok:
+        die("the publish failed; the filled pages are still under " + str(preview_site_dir()), 2)
+    if args.json:
+        print(json.dumps(made, indent=1))
+        return
+    for m in made:
+        print(f"  {m['name']} ({m['category']}, {m['template']} template) -> {m['url']}"
+              + ("" if m["hours"] else "  [no hours on Google]"))
+    print(f"{len(made)} preview(s); each comes down {made[0]['expires'] if made else '-'} unless claimed "
+          f"(`leads preview sweep`, or `leads preview --remove NAME` now).")
+
+
+def kit_previews(picks, build=False, publish=True):
+    """Hang a preview link on each of the kit's picks: the one it already has, and with --previews
+    one built for every pick that hasn't got one. Sets `preview_url` (or None) on each pick."""
+    rows = previews_all()
+    have = {m.get("place_id"): m for m in rows if not m.get("claimed")}
+    claimed = {m.get("place_id") for m in rows if m.get("claimed")}
+    if build:
+        missing = [(c, c.get("details")) for c in picks
+                   if c["place_id"] not in have and c["place_id"] not in claimed]
+        if missing:
+            made, ok = make_previews(missing, publish=publish)
+            if not ok:
+                print("leads: the previews didn't publish — the messages go out without the link",
+                      file=sys.stderr)
+                made = []
+            for m in made:
+                have[m["place_id"]] = m
+    for c in picks:
+        m = have.get(c["place_id"])
+        c["preview_url"] = m["url"] if m else None
+        if m and c.get("message"):
+            c["message"] += preview_sentence(m["url"])
+    return picks
+
+
+def preview_sentence(url):
+    """The line a message adds when the lead already has a page to look at."""
+    return (f" I also built you a page to see what one could look like: {url} — nothing to sign, "
+            f"and I'll take it down the moment you say so.")
+
+
+def kit_json(picks, segment, today):
+    """The seam `bin/outreach` reads (B46): one object per pick, the keys documented in the
+    docstring above. Add keys, never rename one."""
+    out = []
+    for c in picks:
+        rc = c.get("reach") or {}
+        fb = rc.get("facebook")
+        out.append({
+            "place_id": c.get("place_id"), "name": clean_name(c["name"]),
+            "first": first_name(c["name"]) or clean_name(c["name"]),
+            "category": c.get("category") or "", "segment": c.get("segment") or segment,
+            "city": c.get("locality") or (c.get("city") or "").replace(", Utah", ""),
+            "phone": c.get("phone") or None, "email": rc.get("email") or None,
+            "instagram": rc.get("instagram") or None,
+            "facebook": ("https://" + fb if fb and not fb.startswith("http") else fb) or None,
+            "faults": list(c.get("faults") or []), "preview_url": c.get("preview_url"),
+            "maps_url": c.get("maps") or clean_maps(c.get("google_maps_uri")),
+            # beyond the agreed shape, and additive: the draft itself, so a caller doesn't rebuild it
+            "message": c.get("message"), "summary": c.get("summary"),
+        })
+    return {"date": today.isoformat(), "segment": segment, "picks": out}
+
+
+def cmd_preview(args):
+    if args.remove:
+        return preview_remove(args)
+    if args.claim:
+        return preview_claim(args)
+    first = (args.name or [None])[0]
+    if first in ("ls", "list"):
+        return preview_ls(args)
+    if first == "sweep":
+        return preview_sweep(args)
+    return previews_build(args)
+
+
+def preview_ls(args):
+    rows = sorted(previews_all(), key=lambda m: m["expires"])
+    today = now_date()
+    if not rows:
+        print(f"no previews yet ({preview_meta_dir()}); `leads preview --kit` builds today's")
+        return
+    print(f"{len(rows)} preview(s) on https://{preview_host()}/ (project {PREVIEW_PROJECT}); today {today}")
+    w = max(len(m["slug"]) for m in rows)
+    for m in rows:
+        left = (dt.date.fromisoformat(m["expires"]) - today).days
+        state = "CLAIMED " + m["claimed"] if m.get("claimed") else (
+            "EXPIRED" if left < 0 else f"{left}d left")
+        print(f"  {m['slug']:<{w}}  {state:<16} {m['name']} · {m['category']} · {m['city'] or '-'}")
+    if args.json:
+        print(json.dumps(rows, indent=1))
+
+
+def preview_sweep(args):
+    """Every preview past its 30 days comes down (the tree, the manifest, one publish)."""
+    today = now_date()
+    gone = [m for m in previews_all() if not m.get("claimed") and dt.date.fromisoformat(m["expires"]) < today]
+    if not gone:
+        print(f"nothing expired as of {today} ({len(previews_all())} preview(s) live)")
+        return
+    for m in gone:
+        print(f"  removing {m['slug']} ({m['name']}, expired {m['expires']})")
+        if not args.dry_run:
+            shutil.rmtree(preview_site_dir() / m["slug"], ignore_errors=True)
+            (preview_meta_dir() / f"{m['slug']}.json").unlink(missing_ok=True)
+    if args.dry_run:
+        print(f"dry run: {len(gone)} would come down")
+        return
+    preview_root_files()
+    if not args.no_publish:
+        preview_publish()
+    print(f"{len(gone)} preview(s) removed; {len(previews_all())} left")
+
+
+def preview_remove(args):
+    """A takedown: the folder, the manifest, one publish. Minutes, not the hour we promise."""
+    m = preview_find(args.remove)
+    if not m:
+        die(f"no preview for {args.remove!r} (`leads preview ls`)")
+    shutil.rmtree(preview_site_dir() / m["slug"], ignore_errors=True)
+    (preview_meta_dir() / f"{m['slug']}.json").unlink(missing_ok=True)
+    print(f"removed {m['slug']} ({m['name']})")
+    if not args.no_publish:
+        ok, _ = preview_publish(dry=args.dry_run)
+        if not ok:
+            die("the files are gone locally but the publish failed — run `leads preview sweep` again", 2)
+    print(f"{m['url']} is gone; reply to the owner that it's down.")
+
+
+CLAIM_STRIP = ("p:robots", "p:css", "p:bar", "p:caveat", "p:footer", "p:herocap")
+
+
+def claim_html(page, name, year, has_photos):
+    """The preview page as the client's own home page: every preview-only block cut at its
+    markers, the disclaimers replaced with the site's own words. The markers are in
+    templates/sites/_preview/page.html, so this never guesses at prose."""
+    for tag in CLAIM_STRIP:
+        page = re.sub(rf"<!--{tag}-->.*?<!--/{tag}-->\n?", "", page, flags=re.S)
+    page = page.replace("<!--c:head-->",
+                        f"  <title>{esc(name)}</title>\n"
+                        f'  <meta name="description" content="{esc(name)}">')
+    page = page.replace("<!--c:nav-->", '      <a href="photos.html">Photos</a>' if has_photos else "")
+    page = page.replace("<!--c:what-->", '        <h3>What we do</h3>')
+    page = page.replace("<!--c:footer-->", f'    <p class="copyright">&copy; {year} {esc(name)}</p>')
+    page = page.replace('<link rel="stylesheet" href="css/preview.css">', "")
+    # preview.css does not travel, so nothing may depend on its classes; and the page is theirs now.
+    page = page.replace('class="preview-h3"', 'class="site-h3"').replace(">Their listing on Google<", ">See us on Google<")
+    return re.sub(r"\n{3,}", "\n\n", page)
+
+
+def preview_claim(args):
+    """A claimed preview becomes the client's site: `client new` + `site new` from the same
+    template, then the preview's own filled page as index.html, committed and published."""
+    m = preview_find(args.claim)
+    if not m:
+        die(f"no preview for {args.claim!r} (`leads preview ls`)")
+    slug = args.slug or slugify(clean_name(m["name"]))
+    ws = PROJECTS / "clients" / slug
+    repo = f"{slug}-site"
+    page = (preview_site_dir() / m["slug"] / "index.html")
+    if not page.exists():
+        die(f"{page} is gone — rebuild it first: leads preview \"{m['name']}\"")
+    print(f"claim {m['name']} -> clients/{slug}, site {repo} from the {m['template']} template")
+    steps = [[str(CLIENT_BIN), "new", slug, "--name", m["name"]],
+             [str(SITE_BIN), "new", repo, "--template", m["template"], "--primary",
+              "--tagline", preview_copy(m["category"])["tagline"].format(
+                  name=m["name"], city=m["city"] or "the valley", category=m["category"],
+                  trade=preview_copy(m["category"])["trade"])]]
+    if args.dry_run:
+        for s in steps:
+            print("  would run: " + " ".join(s[0].rsplit("/", 1)[-1:] + s[1:]))
+        print(f"  would copy {page} -> clients/{slug}/repos/{repo}/index.html (preview blocks cut: "
+              + ", ".join(CLAIM_STRIP) + ")")
+        print(f"  would copy the hero and css, commit, push, `site publish {repo}`")
+        print(f"  would mark {m['slug']} claimed and take the preview down")
+        return
+    r = subprocess.run(steps[0], capture_output=True, text=True)
+    if r.returncode != 0 and not ws.exists():
+        die(f"client new {slug} failed: {(r.stderr or r.stdout).strip()[:300]}")
+    print((r.stdout or "").strip()[-400:])
+    r = subprocess.run(steps[1], capture_output=True, text=True, cwd=str(ws),
+                       env=dict(os.environ, SITE_ADMIN="1"))
+    print((r.stdout + r.stderr).strip()[-800:])
+    dest = ws / "repos" / repo
+    if r.returncode != 0 or not dest.exists():
+        die(f"site new {repo} failed; the workspace is made — finish it by hand from {dest}", 2)
+    has_photos = (dest / "photos.html").exists()
+    (dest / "index.html").write_text(claim_html(page.read_text(), m["name"], now_date().year, has_photos))
+    src_img = preview_site_dir() / m["slug"] / "images"
+    if src_img.is_dir():
+        (dest / "images").mkdir(exist_ok=True)
+        for p in src_img.iterdir():
+            if p.is_file():
+                shutil.copy2(p, dest / "images" / p.name)
+    for git_args in (["add", "-A"],
+                     ["-c", "user.name=Patch (claude-tools leads)", "-c", "user.email=noreply@anthropic.com",
+                      "commit", "-q", "-m", f"The page {m['name']} claimed, from their Patchlamp preview"],
+                     ["push", "-q"]):
+        g = subprocess.run(["git", "-C", str(dest), *git_args], capture_output=True, text=True)
+        if g.returncode != 0:
+            print(f"leads: git {git_args[0]} in {dest}: {(g.stderr or g.stdout).strip()[:160]}", file=sys.stderr)
+    r = subprocess.run([str(SITE_BIN), "publish", repo], capture_output=True, text=True, cwd=str(ws))
+    print((r.stdout + r.stderr).strip()[-600:])
+    m["claimed"] = slug
+    preview_save(m)
+    print(f"claimed: clients/{slug} · repos/{repo} · the preview is marked claimed "
+          f"(`leads preview --remove {m['slug']}` takes it off the previews host)")
+
+
 # ---- the pipeline (B7) ----------------------------------------------------------------
 
 PIPELINE = Path(os.environ.get("LEADS_PIPELINE", PROJECTS / "private-docs/leads/pipeline.jsonl"))
@@ -1693,6 +2428,15 @@ def pipeline_state():
                 lead[f] = e[f]
         lead["last"] = e["date"]
     return leads
+
+
+def claimed_places():
+    """Place ids whose preview was claimed (B45): a client, not a lead. Cheap and never raises —
+    the previews' manifests are small JSON files and may not exist at all."""
+    try:
+        return {m["place_id"] for m in previews_all() if m.get("claimed") and m.get("place_id")}
+    except OSError:
+        return set()
 
 
 def pipeline_skip():
@@ -1959,7 +2703,7 @@ def cmd_kit(args):
         else:
             page, picks = build_segment_remote(args, segment)
         if args.json:
-            print(json.dumps([{k: v for k, v in p.items() if k != "details"} for p in picks], indent=1, default=str))
+            print(json.dumps(kit_json(picks, segment, now_date()), indent=1, default=str))
             return
         print(page, end="")
         return
@@ -2072,7 +2816,56 @@ def cmd_doctor(args):
     print(f"next Saturday: {next_saturday()}")
     print(f"remote lane: {GROUPS_LOG} {'exists' if GROUPS_LOG.exists() else '(created on first lead)'}; "
           f"postal address for cold email: {'set' if mail_address() else 'NOT set — drafts say not ready (TAYLOR-TODO §1)'}")
+    ok = preview_doctor() and ok
     sys.exit(0 if ok else 1)
+
+
+def preview_doctor():
+    """The previews half (B45): the copy table, the overlay, what's live, what's expiring."""
+    ok = True
+    print(f"previews: {PREVIEWS}  project {PREVIEW_PROJECT}  host https://{preview_host()}/")
+    try:
+        table = json.loads(PREVIEW_TABLE.read_text())
+        cats = table["categories"]
+    except (OSError, ValueError, KeyError) as exc:
+        print(f"  copy table: FAIL {PREVIEW_TABLE} ({exc})")
+        return False
+    missing = sorted({v["template"] for v in cats.values()} - {d.name for d in SITE_TEMPLATES.iterdir() if d.is_dir()})
+    print(f"  copy table: {len(cats)} categories -> templates "
+          + ", ".join(sorted({v["template"] for v in cats.values()}))
+          + (f"  MISSING {', '.join(missing)}" if missing else ""))
+    ok = ok and not missing
+    for f in ("page.html", "root.html", "404.html", "_headers", "robots.txt", "css/preview.css"):
+        if not (PREVIEW_OVERLAY / f).exists():
+            print(f"  overlay: MISSING templates/sites/_preview/{f}")
+            ok = False
+    if "noindex" not in (PREVIEW_OVERLAY / "_headers").read_text(errors="replace"):
+        print("  overlay: FAIL _headers does not say noindex")
+        ok = False
+    rows, today = previews_all(), now_date()
+    live = [m for m in rows if not m.get("claimed")]
+    expired = [m for m in live if dt.date.fromisoformat(m["expires"]) < today]
+    soon = [m for m in live if 0 <= (dt.date.fromisoformat(m["expires"]) - today).days <= 5]
+    print(f"  built: {len(rows)} ({len(live)} live, {len(rows) - len(live)} claimed); "
+          f"{len(expired)} expired (leads preview sweep), {len(soon)} down within 5 days")
+    on_disk = {d.name for d in preview_site_dir().iterdir() if d.is_dir() and d.name != "css" and d.name != "js" and d.name != "images"} \
+        if preview_site_dir().exists() else set()
+    orphan = sorted(on_disk - {m["slug"] for m in rows})
+    if orphan:
+        print(f"  WARN folders with no manifest (a publish would still serve them): {', '.join(orphan[:6])}")
+    row = {}
+    try:
+        row = json.loads((PREVIEWS / "project.json").read_text())
+    except (OSError, ValueError):
+        pass
+    if row.get("domain"):
+        print(f"  domain: {row['domain']} (the link in a message)")
+    else:
+        print(f"  domain: {PREVIEW_DOMAIN} not attached yet — links use the pages.dev host "
+              f"(TAYLOR-TODO §1 \"previews.patchlamp.com\")")
+    print(f"  hero photos: img stock (Pexels, free) by default; `--hero gen` costs one image and "
+          f"logs its own ledger row")
+    return ok
 
 
 def main():
@@ -2093,6 +2886,9 @@ def main():
     k.add_argument("--json", action="store_true")
     k.add_argument("--fixture", help="dir of <place_id>.json Place Details (tests)")
     k.add_argument("--remote", action="store_true", help="today's six ready-to-send messages, not Saturday's counters (B25; radius 30)")
+    k.add_argument("--previews", action="store_true",
+                   help="with --remote: build a preview site for any pick that hasn't got one (B45) and put its "
+                        "link in the message")
     k.set_defaults(fn=cmd_kit)
 
     g = sub.add_parser("diagnose", help="three lines on a business's Google listing, for a group thread")
@@ -2149,6 +2945,27 @@ def main():
     pp = sub.add_parser("pipeline", help="every lead by stage")
     pp.add_argument("--all", action="store_true", help="list won and lost too")
     pp.set_defaults(fn=cmd_pipeline)
+
+    pv = sub.add_parser("preview", help="a lead's own website, built from the census row (B45): NAME | --kit | ls | sweep")
+    pv.add_argument("name", nargs="*", help='"Name" or "Name, City" (several allowed); or `ls` / `sweep`')
+    pv.add_argument("--kit", action="store_true", help="today's remote-kit picks (else the nearest of the pool)")
+    pv.add_argument("--n", type=int, default=6)
+    pv.add_argument("--segment", choices=SEGMENTS + ("all",))
+    pv.add_argument("--min-reviews", type=int, default=None)
+    pv.add_argument("--days", type=int, default=PREVIEW_DAYS, help=f"days before it expires (default {PREVIEW_DAYS})")
+    pv.add_argument("--hero", choices=["stock", "gen", "none"], default="stock",
+                    help="the one photo: a Pexels stock landscape (free, default), one generated image, or none. "
+                         "Never one of their Google photos.")
+    pv.add_argument("--remove", metavar="NAME", help="take one down now (the folder, the manifest, one publish)")
+    pv.add_argument("--claim", metavar="NAME", help="turn it into a client site: client new + site new from the same files")
+    pv.add_argument("--slug", help="with --claim: the client workspace slug (default: from the name)")
+    pv.add_argument("--no-publish", action="store_true", help="fill the files, upload nothing")
+    pv.add_argument("--dry-run", action="store_true", help="say what would happen, change nothing live")
+    pv.add_argument("--census-only", action="store_true", help="no Google calls (no hours, no rating)")
+    pv.add_argument("--refresh", action="store_true", help="ignore the 7-day listing cache")
+    pv.add_argument("--json", action="store_true")
+    pv.add_argument("--fixture", help="dir of <place_id>.json Place Details (tests)")
+    pv.set_defaults(fn=cmd_preview)
 
     d = sub.add_parser("doctor")
     d.set_defaults(fn=cmd_doctor)

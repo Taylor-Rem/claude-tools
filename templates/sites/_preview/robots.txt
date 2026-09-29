@@ -1,0 +1,4 @@
+# Nothing in this project is for a search engine: every page is a preview
+# built for a business that has not claimed it (ROADMAP/GROWTH B45).
+User-agent: *
+Disallow: /

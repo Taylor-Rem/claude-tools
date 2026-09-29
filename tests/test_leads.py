@@ -19,6 +19,12 @@ def run(*args, env=None):
     return subprocess.run([sys.executable, str(LEADS), *args], capture_output=True, text=True, env=e)
 
 
+def picks(result):
+    """`kit --remote --json` is B45's envelope: {date, segment, picks: [...]} (bin/leads docstring).
+    `kit --json` without --remote is still the plain list."""
+    return json.loads(result.stdout)["picks"]
+
+
 @unittest.skipUnless((Path.home() / "projects/client-leads/wasatch.db").exists(), "needs the census")
 class KitTest(unittest.TestCase):
     def setUp(self):
@@ -27,6 +33,7 @@ class KitTest(unittest.TestCase):
                     "LEADS_GROUPS_LOG": str(Path(self.tmp.name) / "leads-from-groups.md"),
                     "CLAUDE_TOOLS_ENV": str(Path(self.tmp.name) / "no-env"), "LEADS_MAIL_ADDRESS": "",
                     "GOOGLE_MAPS_API_KEY": "", "LEADS_PIPELINE": str(Path(self.tmp.name) / "pipeline.jsonl"),
+                    "LEADS_PREVIEWS": str(Path(self.tmp.name) / "previews"),
                     "LEADS_SEGMENT": "restaurant"}     # these are the restaurant kit's tests; B44's segments are below
 
     def tearDown(self):
@@ -75,12 +82,16 @@ class KitTest(unittest.TestCase):
     def test_remote_kit_is_six_messages_that_each_name_a_real_fault(self):
         r = run("kit", "--remote", "--census-only", "--json", "--no-save", env=self.env)
         self.assertEqual(r.returncode, 0, r.stderr)
-        rows = json.loads(r.stdout)
+        envelope = json.loads(r.stdout)
+        self.assertEqual(sorted(envelope), ["date", "picks", "segment"])
+        self.assertEqual(envelope["segment"], "restaurant")
+        rows = envelope["picks"]
         self.assertEqual(len(rows), 6)
         for x in rows:
             self.assertTrue(x["faults"], x["name"])
             self.assertFalse(any(f.startswith(("only ", "rating ")) for f in x["faults"]), x["faults"])
-        reachable = [x for x in rows if x["reach"]["instagram"] or x["reach"]["facebook"] or x["reach"]["email"]]
+            self.assertIsNone(x["preview_url"], "no preview without --previews")
+        reachable = [x for x in rows if x["instagram"] or x["facebook"] or x["email"]]
         self.assertEqual(len(reachable), 6, "messageable leads come first")
 
     def test_remote_page_fits_one_message_and_is_honest_about_email(self):
@@ -95,7 +106,7 @@ class KitTest(unittest.TestCase):
         log = (Path(self.tmp.name) / "leads-from-groups.md").read_text()
         self.assertEqual(log.count("| remote kit |"), 6)
         # tomorrow's kit doesn't repeat today's six
-        again = json.loads(run("kit", "--remote", "--census-only", "--json", "--no-save", env=self.env).stdout)
+        again = picks(run("kit", "--remote", "--census-only", "--json", "--no-save", env=self.env))
         first = json.loads((Path(self.tmp.name) / "remote.jsonl").read_text().splitlines()[0])["place_ids"]
         self.assertFalse(set(first) & {x["place_id"] for x in again})
         env = dict(self.env, LEADS_MAIL_ADDRESS="PO Box 1, American Fork, UT 84003")
@@ -218,7 +229,7 @@ class KitTest(unittest.TestCase):
         self.assertIn("interested: 1", pipe)
         self.assertIn("lost: 1", pipe)
         # the kits leave a lost lead and one with a follow-up ahead alone
-        kit = json.loads(run("kit", "--remote", "--census-only", "--json", "--no-save", env=self.env).stdout)
+        kit = picks(run("kit", "--remote", "--census-only", "--json", "--no-save", env=self.env))
         self.assertNotIn("Off Road Mexican Food", [x["name"] for x in kit])
         self.assertNotIn("WHISTLE WOK", [x["name"] for x in kit])
 
@@ -279,7 +290,7 @@ class SegmentTest(unittest.TestCase):
         self.env = {"LEADS_DB": str(self.db), "LEADS_STATE": str(t / "state"), "LEADS_LEDGER": str(t / "ledger.jsonl"),
                     "LEADS_GROUPS_LOG": str(t / "leads-from-groups.md"), "CLAUDE_TOOLS_ENV": str(t / "no-env"),
                     "LEADS_MAIL_ADDRESS": "", "GOOGLE_MAPS_API_KEY": "", "LEADS_PIPELINE": str(t / "pipeline.jsonl"),
-                    "LEADS_SEGMENT": ""}
+                    "LEADS_PREVIEWS": str(t / "previews"), "LEADS_SEGMENT": ""}
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -339,7 +350,7 @@ class SegmentTest(unittest.TestCase):
     def test_remote_creatives_is_six_messages_greeted_by_name(self):
         r = run("kit", "--remote", "--segment", "creatives", "--census-only", "--json", "--no-save", env=self.env)
         self.assertEqual(r.returncode, 0, r.stderr)
-        rows = json.loads(r.stdout)
+        rows = picks(r)
         self.assertEqual(len(rows), 6)
         msgs = {x["name"]: x["message"] for x in rows}
         self.assertTrue(msgs["Photography by Jenna"].startswith("Hi Jenna — "))

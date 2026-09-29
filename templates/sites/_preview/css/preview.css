@@ -1,0 +1,61 @@
+/* ==========================================================================
+   The preview overlay (ROADMAP/GROWTH B45) — loaded after the type's own
+   style.css, so it inherits every :root token and adds only what a preview
+   page needs. `leads preview --claim` drops this file: a claimed site is the
+   type's stylesheet and nothing else.
+   ========================================================================== */
+
+/* The stock hero. One photo, wide, never one of their Google photos. */
+.hero-photo {
+  margin: 0 auto;
+  max-width: 64rem;
+  padding: 0 var(--page-pad);
+}
+.hero-photo img {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 3 / 1;
+  object-fit: cover;
+  border-radius: 3px;
+  background: var(--bg-line);
+}
+/* A 3:1 band is a letterbox slot on a phone; give it more height there. */
+@media (max-width: 40rem) {
+  .hero-photo img { aspect-ratio: 16 / 10; }
+}
+.hero-photo figcaption {
+  color: var(--ink-dim);
+  font-size: 0.85rem;
+  margin-top: 0.4rem;
+}
+
+/* "5.0 stars on Google, 88 reviews" — the listing's own numbers, linked. */
+.rating-line {
+  margin-top: var(--space);
+  font-family: var(--font-display);
+  font-size: 1.1rem;
+}
+.rating-line .stars { color: var(--accent); }
+/* A thumb has to be able to hit it: an inline link in one line of prose is
+   about 18px tall, which `shot check --mobile` rightly flags. */
+.rating-line a {
+  display: inline-block;
+  min-height: 24px;
+  padding: 0.15rem 0;
+}
+
+.preview-h3 { margin-top: var(--space-lg); }
+
+/* The footer sentence that says what this page is. Not small print. */
+.preview-note {
+  max-width: var(--measure);
+  margin: 0 auto var(--space);
+  color: var(--ink);
+  font-size: 1rem;
+}
+
+/* The project root page (no business on it at all). */
+.root-page { padding: var(--space-xl) var(--page-pad); text-align: center; }
+.root-page p { margin-left: auto; margin-right: auto; }
+.root-page a { display: inline-block; min-height: 24px; padding: 0.15rem 0; }

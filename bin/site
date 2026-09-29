@@ -103,6 +103,7 @@ TEMPLATE_META = "template.json"                   # in each type's folder; about
 DB_BIN = HERE / "bin" / "db"
 NEWSLETTER_BIN = HERE / "bin" / "newsletter"
 COMPAT_DATE = "2026-09-01"                        # Workers runtime date for the site's Functions
+PREVIEWS_PROJECT = "patchlamp-previews"           # B45: the one project every lead preview lives in
 DRY = False
 CREATED = set()                                   # Pages projects made in this run
 
@@ -1202,6 +1203,70 @@ def cmd_shell(a):
         sys.exit(1)
 
 
+def cmd_previews(a):
+    """A whole directory tree -> the one previews Pages project, by direct upload (ROADMAP/GROWTH
+    B45, plan ~/projects/plans/19-preview-sites.md). Not a client site: there is no workspace, no
+    repo and no registry row — `leads preview` owns the tree under
+    ~/.local/state/claude-tools/previews and this only puts it on the host. One project holds every
+    preview at /<slug>/, so a publish is the whole set and a takedown is a folder deleted and this
+    run again. The project's own `_headers` (X-Robots-Tag) and robots.txt come up with the tree."""
+    global DRY
+    DRY = a.dry_run
+    require_admin("previews")
+    src = Path(a.dir).expanduser().resolve()
+    project = a.project or PREVIEWS_PROJECT
+    if not NAME_RE.match(project):
+        die(f"{project!r} is not a valid Pages project name")
+    if a.ls:
+        p = cf_project(project)
+        if not p:
+            die(f"no Pages project {project} yet (publish once to make it)")
+        say(f"project: {project}")
+        say(f"pages host: {pages_host(project)}")
+        for dm in cf_domains(project):
+            say(f"domain: {dm['name']} {dm.get('status')}")
+        dep = p.get("latest_deployment") or {}
+        say(f"last publish: {(dep.get('created_on') or '-')[:19]}")
+        return
+    if not (src / "index.html").exists():
+        die(f"{src} has no index.html at its root; `leads preview` writes the tree")
+    for want in ("_headers", "robots.txt"):
+        if not (src / want).exists():
+            die(f"{src} has no {want} — a preview project without it could be indexed; "
+                f"`leads preview` writes both (templates/sites/_preview/)")
+    if "noindex" not in (src / "_headers").read_text():
+        die(f"{src}/_headers does not say noindex; refusing to publish previews that can be indexed")
+    if not DRY and not cf_project(project) and not a.yes:
+        die(f"there is no Pages project {project} yet, so this is the first time a preview naming a real "
+            f"business would be on the internet. That is Taylor's word to give (GROWTH § 10, TAYLOR-TODO §1 "
+            f"\"Preview sites\"). With it: the same command plus --yes.")
+    cf_ensure_project(project)
+    n = sum(1 for p in src.rglob("*") if p.is_file())
+    slugs = sorted(d.name for d in src.iterdir() if d.is_dir() and (d / "index.html").exists())
+    say(f"publishing {src} ({n} files, {len(slugs)} preview(s)) -> {project}")
+    code, log = wrangler("pages", "deploy", str(src), "--project-name", project, "--branch", "main",
+                         "--commit-dirty=true", "--commit-message", f"{len(slugs)} previews", cwd=src.parent)
+    if DRY:
+        say("dry run: nothing published")
+        say(f"pages host: {pages_host(project)}")
+        return
+    if code != 0:
+        die("wrangler pages deploy failed:\n" + "\n".join(log.splitlines()[-8:]))
+    host = pages_host(project)
+    say(f"pages host: {host}")
+    for dm in cf_domains(project):
+        say(f"domain: {dm['name']} {dm.get('status')}")
+    prod = f"https://{host}/"
+    up = wait_live(prod, "", seconds=90)
+    xr = curl_header(prod, "X-Robots-Tag") if up else None
+    say(f"  {prod} {'— serving' if up else '— not serving yet (check in a minute)'}"
+        + (f"  X-Robots-Tag: {xr}" if xr else ""))
+    if up and not (xr and "noindex" in xr):
+        say("  WARN the host is not sending X-Robots-Tag: noindex — check _headers reached the root")
+    for s in slugs:
+        say(f"  {prod}{s}/")
+
+
 def cmd_adopt(a):
     """Register an existing repo (made for GitHub Pages) as a Cloudflare site
     and create its project. Doesn't touch DNS or GitHub Pages: publish, look,
@@ -1778,6 +1843,14 @@ def main():
     pb.add_argument("name", nargs="?", help="repo name under ./repos (optional when there is one)")
     pb.add_argument("--dry-run", action="store_true")
     pb.set_defaults(fn=cmd_publish)
+    pv = sub.add_parser("previews", help=f"(SITE_ADMIN=1) publish a preview tree to the one {PREVIEWS_PROJECT} project (B45; `leads preview` drives it)")
+    pv.add_argument("dir", nargs="?", default=".", help="the tree to upload (default .)")
+    pv.add_argument("--project", help=f"Pages project (default {PREVIEWS_PROJECT})")
+    pv.add_argument("--ls", action="store_true", help="the project, its host and its domains; upload nothing")
+    pv.add_argument("--yes", action="store_true",
+                    help="create the project on the first publish — Taylor's word, once (TAYLOR-TODO §1)")
+    pv.add_argument("--dry-run", action="store_true")
+    pv.set_defaults(fn=cmd_previews)
     ad = sub.add_parser("adopt", help="register an existing repo as a Cloudflare site and create its project (SITE_ADMIN=1)")
     ad.add_argument("name"); ad.add_argument("--project", help="Pages project name (default: the repo name)")
     ad.add_argument("--dry-run", action="store_true")

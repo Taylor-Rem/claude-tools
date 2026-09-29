@@ -1,0 +1,11 @@
+# Cloudflare Pages reads this file (it is not served). The previews project's
+# own headers: every page in it is a preview Patchlamp built for a business
+# that has not asked for it, so nothing here may ever be indexed. The
+# X-Robots-Tag is the half a crawler obeys even when it never parses the HTML
+# (a PDF, an image, a page fetched by an API); the <meta name="robots"> in
+# page.html is the other half. Both, always.
+/*
+  X-Robots-Tag: noindex, nofollow, noarchive, nosnippet
+  Cache-Control: no-cache
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin

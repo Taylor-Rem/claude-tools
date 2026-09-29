@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+<!--p:robots-->
+  <!-- A preview Patchlamp built for a business that has not asked for it and
+       does not own it: it must never be indexed. `_headers` at the root of the
+       previews project sends X-Robots-Tag on top of this. -->
+  <meta name="robots" content="noindex, nofollow, noarchive">
+  <title>{{NAME}} — a preview by Patchlamp</title>
+  <meta name="description" content="A preview website Patchlamp made for {{NAME}}. Not their official site.">
+<!--/p:robots-->
+<!--c:head-->
+  <link rel="stylesheet" href="css/style.css">
+<!--p:css-->
+  <link rel="stylesheet" href="css/preview.css">
+<!--/p:css-->
+</head>
+<body>
+
+<!--p:bar-->
+  <p class="demo-bar">A preview — not {{NAME}}'s official website.
+    <a href="https://patchlamp.com/">Patchlamp</a> made it from their public Google listing.</p>
+<!--/p:bar-->
+
+  <header class="site-header">
+    <a class="wordmark" href="#top">{{NAME}}</a>
+    <nav class="site-nav" aria-label="Site">
+      <a href="#what">What we do</a>
+      <a href="#details">Hours and contact</a>
+<!--c:nav-->
+    </nav>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <h1 class="hero-title">{{NAME}}</h1>
+      <p class="hero-tagline">{{TAGLINE}}</p>
+      <div class="button-row">
+        <a class="button" href="tel:{{PHONE_HREF}}">{{CTA}}: {{PHONE}}</a>
+      </div>
+    </section>
+
+{{HERO_BLOCK}}
+
+    <section class="section" id="what">
+      <div class="section-inner reveal">
+        <p class="kicker">About</p>
+        <h2>{{NAME}}</h2>
+        <p class="lede">{{INTRO}}</p>
+{{RATING_BLOCK}}
+<!--p:caveat-->
+        <h3 class="preview-h3">What a {{TRADE}} is usually asked for</h3>
+        <p class="muted">Written from the category on their Google listing, not from anything
+          {{NAME}} has told us. On their own site this is their list, in their words.</p>
+<!--/p:caveat-->
+<!--c:what-->
+        <ul class="card-list">
+{{SERVICES}}
+        </ul>
+      </div>
+    </section>
+
+    <section class="section" id="details">
+      <div class="section-inner reveal">
+        <p class="kicker">Details</p>
+        <h2>Hours and contact</h2>
+        <div class="details-grid">
+          <div>
+            <h3>Where</h3>
+            <address>{{WHERE}}</address>
+          </div>
+          <div>
+            <h3>Hours</h3>
+{{HOURS_BLOCK}}
+          </div>
+          <div>
+            <h3>Contact</h3>
+            <ul>
+              <li><a href="tel:{{PHONE_HREF}}">{{PHONE}}</a></li>
+{{LISTING_LI}}
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+<!--p:footer-->
+    <p class="preview-note">A preview Patchlamp made for {{NAME}}. Not their official site.
+      Claim it, or ask us to take it down: <a href="mailto:founder@patchlamp.com">founder@patchlamp.com</a></p>
+    <p class="copyright muted">This preview comes down on {{EXPIRES_LONG}} unless it is claimed.
+      Built {{BUILT_LONG}} by <a href="https://patchlamp.com/">Patchlamp</a>.</p>
+<!--/p:footer-->
+<!--c:footer-->
+  </footer>
+
+  <script src="js/main.js"></script>
+</body>
+</html>

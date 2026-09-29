@@ -1,0 +1,513 @@
+{
+  "_comment": "The preview engine's copy table (ROADMAP/GROWTH B45, plan ~/projects/plans/19-preview-sites.md). One row per category in client-leads/scripts/services.json, so a preview is filled without a model call: `leads preview` reads this, never invents a service a business didn't say it does. GROWTH § 15.2 #3 reuses the same table to build a client's site at activation. Keys: template (templates/sites/<type>), trade (what to call them in a sentence), tagline (under the name; {city} is the listing's city), intro (one line of About; {name}, {city}), services (four to six lines the category implies, each a heading + a plain line), hero (the img stock search term), cta (the button word). Every services line must be something the category itself means, not a claim about this business: a plumber's list says 'Drain and sewer' because plumbers do drains, and the page says 'what a <trade> is usually asked for' above it, never 'our services'.",
+  "_default": {
+    "template": "business",
+    "trade": "local business",
+    "tagline": "A {category} in {city}",
+    "intro": "{name} is a {category} working in and around {city}. This page is a starting point: the details below come from their Google listing.",
+    "services": [
+      ["What they do", "The work this business is known for locally."],
+      ["Where", "{city} and the towns around it."],
+      ["Getting a quote", "A phone call today, or a form on the finished site."]
+    ],
+    "hero": "small business storefront",
+    "cta": "Call"
+  },
+  "categories": {
+    "pool service": {
+      "template": "service",
+      "trade": "pool company",
+      "tagline": "Pool and spa care in {city}",
+      "intro": "{name} keeps pools and spas swimmable in {city} and the towns around it — weekly service, openings and closings, and the repairs in between.",
+      "services": [
+        ["Weekly service", "Skim, brush, vacuum, empty the baskets, test and balance the water."],
+        ["Openings and closings", "Uncover and start up in spring, winterise and cover in autumn."],
+        ["Equipment repair", "Pumps, filters, heaters, salt cells and automation."],
+        ["Green-to-clean", "A neglected pool brought back over a few visits."],
+        ["Spas and hot tubs", "Drain, clean, refill and balance."]
+      ],
+      "hero": "clean swimming pool backyard",
+      "cta": "Ask about weekly service"
+    },
+    "landscaping": {
+      "template": "service",
+      "trade": "landscaper",
+      "tagline": "Landscaping in {city}",
+      "intro": "{name} designs, builds and looks after yards in {city} and nearby — planting, hardscape and the upkeep that keeps it looking new.",
+      "services": [
+        ["Design and planting", "Beds, trees, shrubs and the plan they go in."],
+        ["Sprinklers", "Install, repair, adjust and winterise."],
+        ["Hardscape", "Patios, walls, paths and edging."],
+        ["Clean-ups", "Spring and autumn, hauling included."],
+        ["Upkeep", "Trimming, weeding and seasonal colour."]
+      ],
+      "hero": "landscaped front yard",
+      "cta": "Ask for a yard quote"
+    },
+    "lawn care": {
+      "template": "service",
+      "trade": "lawn care company",
+      "tagline": "Lawn care in {city}",
+      "intro": "{name} mows and feeds lawns in {city} and the streets around it, on a schedule so nobody has to remember to call.",
+      "services": [
+        ["Mowing", "Weekly or every other week, edged and blown clean."],
+        ["Fertiliser and weed control", "A seasonal programme, not a one-off."],
+        ["Aeration and overseeding", "Autumn, so spring comes in thick."],
+        ["Clean-ups", "Leaves out, beds tidied."],
+        ["Sprinkler checks", "Heads adjusted so the grass gets the water."]
+      ],
+      "hero": "green mowed lawn house",
+      "cta": "Ask for a mowing price"
+    },
+    "snow removal": {
+      "template": "service",
+      "trade": "snow removal company",
+      "tagline": "Snow removal in {city}",
+      "intro": "{name} clears driveways, walks and lots in {city} through the winter — on a contract for the season or when the storm comes.",
+      "services": [
+        ["Driveways and walks", "Cleared before the morning."],
+        ["Commercial lots", "Plowed and salted overnight."],
+        ["Ice melt", "Applied where it refreezes."],
+        ["Roof and gutter ice", "Dams cleared before they leak."],
+        ["Season contracts", "One price for the winter."]
+      ],
+      "hero": "snow plow driveway winter",
+      "cta": "Ask about this winter"
+    },
+    "house cleaning": {
+      "template": "service",
+      "trade": "cleaning company",
+      "tagline": "House cleaning in {city}",
+      "intro": "{name} cleans homes in {city} and nearby — regular visits, deep cleans, and the ones that have to be done by a deadline.",
+      "services": [
+        ["Regular cleans", "Weekly, fortnightly or monthly."],
+        ["Deep cleans", "Baseboards, inside appliances, the parts that get skipped."],
+        ["Move in and move out", "Empty house, ready for the walk-through."],
+        ["After a build", "Dust out of every corner."],
+        ["Airbnb turnovers", "Same-day, linens included."]
+      ],
+      "hero": "clean tidy living room",
+      "cta": "Ask for a cleaning quote"
+    },
+    "pest control": {
+      "template": "service",
+      "trade": "pest control company",
+      "tagline": "Pest control in {city}",
+      "intro": "{name} handles the pests that come with a Utah yard in {city} — ants and spiders in summer, mice in autumn, wasps whenever they build.",
+      "services": [
+        ["Quarterly service", "Inside and out, four times a year."],
+        ["Ants and spiders", "Treated at the perimeter and where they come in."],
+        ["Wasps and hornets", "Nests removed."],
+        ["Mice and voles", "Found, sealed out, trapped."],
+        ["One-off visits", "For the problem that turned up this week."]
+      ],
+      "hero": "house exterior yard utah",
+      "cta": "Ask about a treatment"
+    },
+    "pressure washing": {
+      "template": "service",
+      "trade": "pressure washing company",
+      "tagline": "Pressure washing in {city}",
+      "intro": "{name} washes the outside of houses and driveways in {city} — the concrete, the siding, the fence and the deck.",
+      "services": [
+        ["Driveways and concrete", "Oil, rust and the grey washed out."],
+        ["House washing", "Siding and soffits, soft-washed."],
+        ["Decks and fences", "Cleaned, ready to seal."],
+        ["Gutters", "Faces cleaned, insides flushed."],
+        ["Commercial", "Sidewalks and drive-thrus after hours."]
+      ],
+      "hero": "pressure washing driveway",
+      "cta": "Ask for a wash quote"
+    },
+    "mobile detailing": {
+      "template": "service",
+      "trade": "mobile detailer",
+      "tagline": "Mobile car detailing in {city}",
+      "intro": "{name} details cars where they are parked in {city} — at the house, at the office, water and power brought along.",
+      "services": [
+        ["Full detail", "Inside and out, in one visit."],
+        ["Interior", "Vacuum, shampoo, leather, glass."],
+        ["Exterior", "Wash, clay, polish, sealant."],
+        ["Ceramic coating", "Paint prepared and coated."],
+        ["Headlights and trim", "Restored instead of replaced."]
+      ],
+      "hero": "car detailing polishing",
+      "cta": "Book a detail"
+    },
+    "handyman": {
+      "template": "service",
+      "trade": "handyman",
+      "tagline": "Handyman work in {city}",
+      "intro": "{name} does the list of small jobs around a house in {city} — the ones too small for a contractor and too fiddly for a Saturday.",
+      "services": [
+        ["Repairs", "Doors, drywall, trim, fixtures."],
+        ["Mounting and assembly", "TVs, shelves, flat-pack, blinds."],
+        ["Bathrooms and kitchens", "Taps, toilets, disposals, caulk."],
+        ["Outside", "Fences, gates, decks, gutters."],
+        ["The punch list", "One visit, the whole page of it."]
+      ],
+      "hero": "handyman tools home repair",
+      "cta": "Send the list"
+    },
+    "plumber": {
+      "template": "service",
+      "trade": "plumber",
+      "tagline": "Plumbing in {city}",
+      "intro": "{name} is a plumber working in {city} and the towns around it — the leak today, the water heater this week, the remodel next month.",
+      "services": [
+        ["Leaks and repairs", "Found, cut out, put back."],
+        ["Drains and sewer", "Cleared, camera'd, replaced."],
+        ["Water heaters", "Tank and tankless, repaired or swapped."],
+        ["Fixtures", "Taps, toilets, disposals, softeners."],
+        ["Remodels", "Rough-in and trim for a kitchen or bath."]
+      ],
+      "hero": "plumber pipe wrench sink",
+      "cta": "Call about a leak"
+    },
+    "electrician": {
+      "template": "service",
+      "trade": "electrician",
+      "tagline": "Electrical work in {city}",
+      "intro": "{name} is an electrician working in {city} and nearby — panels, circuits, lighting and the outlet that never worked.",
+      "services": [
+        ["Panels and service", "Upgrades, breakers, grounding."],
+        ["Outlets and circuits", "Added, moved, made safe."],
+        ["Lighting", "Can lights, fixtures, outside and landscape."],
+        ["Fans and appliances", "Wired and hung."],
+        ["EV chargers", "A 240-volt circuit and the charger on it."]
+      ],
+      "hero": "electrician wiring panel",
+      "cta": "Ask about a job"
+    },
+    "HVAC": {
+      "template": "service",
+      "trade": "heating and air company",
+      "tagline": "Heating and air conditioning in {city}",
+      "intro": "{name} keeps furnaces and air conditioners running in {city} — the tune-up before the season and the call in the middle of it.",
+      "services": [
+        ["Repairs", "Furnace, air conditioner, heat pump."],
+        ["Tune-ups", "Before the heat and before the cold."],
+        ["Replacements", "Sized for the house, not the old unit."],
+        ["Air quality", "Filters, humidifiers, fresh-air intakes."],
+        ["Thermostats", "Fitted and set up."]
+      ],
+      "hero": "hvac technician air conditioner",
+      "cta": "Ask about a tune-up"
+    },
+    "painter": {
+      "template": "service",
+      "trade": "painter",
+      "tagline": "Painting in {city}",
+      "intro": "{name} paints houses inside and out in {city} — prepared properly, cut in by hand, cleaned up at the end of the day.",
+      "services": [
+        ["Interior", "Walls, ceilings, trim and doors."],
+        ["Exterior", "Prepped, primed, two coats."],
+        ["Cabinets", "Sprayed, in place or off site."],
+        ["Decks and fences", "Stained or sealed."],
+        ["Repairs first", "Drywall and rot fixed before the paint."]
+      ],
+      "hero": "painter painting wall interior",
+      "cta": "Ask for a painting quote"
+    },
+    "garage door": {
+      "template": "service",
+      "trade": "garage door company",
+      "tagline": "Garage doors in {city}",
+      "intro": "{name} fixes and fits garage doors in {city} — the spring that went at 6am, the opener that quit, the new door.",
+      "services": [
+        ["Springs and cables", "The most common failure, same day."],
+        ["Openers", "Repaired, replaced, set up on a phone."],
+        ["New doors", "Measured, fitted, old one hauled off."],
+        ["Rollers and tracks", "The rattle and the bind."],
+        ["Tune-ups", "Balanced, lubricated, safety tested."]
+      ],
+      "hero": "garage door house exterior",
+      "cta": "Call about a door"
+    },
+    "roofing": {
+      "template": "service",
+      "trade": "roofer",
+      "tagline": "Roofing in {city}",
+      "intro": "{name} repairs and replaces roofs in {city} and the towns around it, and looks at the ones that might just need a patch.",
+      "services": [
+        ["Repairs", "Leaks traced, shingles and flashing replaced."],
+        ["Replacement", "Torn off, decked, underlaid, shingled."],
+        ["Inspections", "Before buying, or after a storm."],
+        ["Storm and hail", "Documented for the insurance claim."],
+        ["Gutters and vents", "Replaced with the roof."]
+      ],
+      "hero": "roofer shingle roof house",
+      "cta": "Ask for a roof look"
+    },
+    "photographer": {
+      "template": "portfolio",
+      "trade": "photographer",
+      "tagline": "Photography in {city}",
+      "intro": "{name} photographs people and places around {city}. This page is a frame for that work — the pictures come from them.",
+      "services": [
+        ["Portraits", "Families, seniors, headshots."],
+        ["Weddings", "The day, start to finish."],
+        ["Events", "Parties, teams, company days."],
+        ["Business", "Product, food, the inside of a shop."],
+        ["Prints and files", "Delivered in a gallery of their own."]
+      ],
+      "hero": "photographer camera portrait session",
+      "cta": "Ask about a session"
+    },
+    "wedding DJ": {
+      "template": "portfolio",
+      "trade": "DJ",
+      "tagline": "Music for weddings and parties in {city}",
+      "intro": "{name} plays weddings and parties around {city} — the sound, the lights, and someone reading the room all night.",
+      "services": [
+        ["Weddings", "Ceremony, dinner and the dance floor."],
+        ["Parties", "Birthdays, company nights, school dances."],
+        ["Sound and mics", "For the toasts and the vows."],
+        ["Lighting", "Dance floor and uplighting."],
+        ["The plan", "Requests, do-not-plays, the timeline."]
+      ],
+      "hero": "wedding dj dance floor lights",
+      "cta": "Check a date"
+    },
+    "florist": {
+      "template": "portfolio",
+      "trade": "florist",
+      "tagline": "Flowers in {city}",
+      "intro": "{name} arranges flowers in {city} — the bunch for a Tuesday and the flowers for a wedding, made to order.",
+      "services": [
+        ["Arrangements", "Made for the day, for delivery or pickup."],
+        ["Weddings", "Bouquets, boutonnieres, ceremony and tables."],
+        ["Events", "Centrepieces and installations."],
+        ["Sympathy", "Sent to the home or the service."],
+        ["Standing orders", "Fresh flowers on a schedule."]
+      ],
+      "hero": "florist flower arrangement shop",
+      "cta": "Order flowers"
+    },
+    "event planner": {
+      "template": "portfolio",
+      "trade": "event planner",
+      "tagline": "Event planning in {city}",
+      "intro": "{name} plans and runs events around {city} — the vendors, the timeline and the person keeping it on it.",
+      "services": [
+        ["Weddings", "Full planning, or the month before and the day."],
+        ["Parties", "Showers, birthdays, anniversaries."],
+        ["Corporate", "Openings, retreats, holiday nights."],
+        ["Design", "Look, rentals, layout."],
+        ["Day-of", "Someone else holding the schedule."]
+      ],
+      "hero": "event table setting celebration",
+      "cta": "Ask about a date"
+    },
+    "cake": {
+      "template": "store",
+      "trade": "cake maker",
+      "tagline": "Cakes and desserts in {city}",
+      "intro": "{name} makes cakes to order in {city} — birthdays, weddings, and the trays for everything in between.",
+      "services": [
+        ["Custom cakes", "Ordered ahead, made for the day."],
+        ["Wedding cakes", "Tasting, design, delivery."],
+        ["Cupcakes and cookies", "By the dozen."],
+        ["Desserts by the tray", "For a party or an office."],
+        ["Pickup and delivery", "Local, on the day it's needed."]
+      ],
+      "hero": "decorated celebration cake bakery",
+      "cta": "Order a cake"
+    },
+    "tutor": {
+      "template": "service",
+      "trade": "tutor",
+      "tagline": "Tutoring in {city}",
+      "intro": "{name} tutors students in and around {city} — one at a time, at the pace the student actually needs.",
+      "services": [
+        ["Maths", "Elementary through calculus."],
+        ["Reading and writing", "Comprehension, essays, spelling."],
+        ["Test prep", "ACT, SAT, placement tests."],
+        ["Study skills", "Notes, homework, keeping a planner."],
+        ["Sessions", "In person or online, weekly."]
+      ],
+      "hero": "tutor student studying table",
+      "cta": "Ask about sessions"
+    },
+    "music teacher": {
+      "template": "service",
+      "trade": "music teacher",
+      "tagline": "Music lessons in {city}",
+      "intro": "{name} teaches music in {city} — weekly lessons, a recital to work towards, and practice that makes sense at home.",
+      "services": [
+        ["Lessons", "Weekly, for children and adults."],
+        ["Beginners", "First notes, first songs."],
+        ["Reading music", "Theory taught alongside playing."],
+        ["Recitals", "Something to play for."],
+        ["Scheduling", "A standing slot in the week."]
+      ],
+      "hero": "music lesson piano student",
+      "cta": "Ask about lessons"
+    },
+    "dance studio": {
+      "template": "service",
+      "trade": "dance studio",
+      "tagline": "Dance classes in {city}",
+      "intro": "{name} teaches dance in {city} — classes by age and level, through a season, with something to perform at the end.",
+      "services": [
+        ["Classes", "By age and level, through the season."],
+        ["Styles", "Ballet, jazz, hip hop, tap, contemporary."],
+        ["Company and competition", "For dancers who want more."],
+        ["Recitals", "A show at the end of the year."],
+        ["Trial class", "Come and try one first."]
+      ],
+      "hero": "dance class studio students",
+      "cta": "Ask about a class"
+    },
+    "personal trainer": {
+      "template": "service",
+      "trade": "personal trainer",
+      "tagline": "Personal training in {city}",
+      "intro": "{name} trains people in {city} — a plan written for one person, and somebody counting the reps.",
+      "services": [
+        ["One-to-one", "Sessions built around a goal."],
+        ["Small groups", "Two to four, cheaper each."],
+        ["Programmes", "Written to follow between sessions."],
+        ["Nutrition basics", "What to eat, without a fad."],
+        ["First session", "An assessment and a plan."]
+      ],
+      "hero": "personal trainer gym session",
+      "cta": "Book a first session"
+    },
+    "bakery": {
+      "template": "store",
+      "trade": "bakery",
+      "tagline": "Bakery in {city}",
+      "intro": "{name} bakes in {city} — bread and pastry in the morning, cakes and trays to order.",
+      "services": [
+        ["Bread", "Baked that morning."],
+        ["Pastry", "Croissants, rolls, doughnuts, scones."],
+        ["Cakes to order", "Birthdays and weddings, ordered ahead."],
+        ["Trays", "For an office or a party."],
+        ["Pickup", "Come by, or ring ahead."]
+      ],
+      "hero": "bakery bread pastry counter",
+      "cta": "See what's baking"
+    },
+    "farm stand": {
+      "template": "store",
+      "trade": "farm stand",
+      "tagline": "Local produce in {city}",
+      "intro": "{name} sells what it grows near {city} — picked close to the day it is sold, and changing with the season.",
+      "services": [
+        ["In season now", "What is being picked this week."],
+        ["Fruit and vegetables", "Grown here, not shipped in."],
+        ["Eggs and honey", "When there are any."],
+        ["Boxes", "A weekly box through the season."],
+        ["Where to find us", "The stand, and the markets."]
+      ],
+      "hero": "farm stand produce vegetables",
+      "cta": "See what's in season"
+    },
+    "boutique": {
+      "template": "store",
+      "trade": "boutique",
+      "tagline": "A boutique in {city}",
+      "intro": "{name} is a shop in {city} with things chosen one at a time — small runs, local makers, and staff who know the stock.",
+      "services": [
+        ["New in", "What arrived this week."],
+        ["Clothing and accessories", "Picked, not bulk-ordered."],
+        ["Gifts", "Wrapped while you wait."],
+        ["Local makers", "Shelf space for people nearby."],
+        ["Pickup and hold", "Ring and we'll put it aside."]
+      ],
+      "hero": "boutique shop interior clothing",
+      "cta": "See the shop"
+    },
+    "custom furniture": {
+      "template": "portfolio",
+      "trade": "furniture maker",
+      "tagline": "Custom furniture in {city}",
+      "intro": "{name} builds furniture to order near {city} — measured for the room it goes in, made from wood you can pick.",
+      "services": [
+        ["Tables", "Dining, coffee, desks."],
+        ["Built-ins", "Shelves, benches, mudrooms."],
+        ["Beds and dressers", "Sized to the room."],
+        ["Repairs and refinishing", "An old piece made good."],
+        ["How it works", "A drawing, a price, a date."]
+      ],
+      "hero": "handmade wood furniture workshop",
+      "cta": "Ask about a piece"
+    },
+    "nursery": {
+      "template": "store",
+      "trade": "nursery",
+      "tagline": "A garden nursery in {city}",
+      "intro": "{name} grows and sells plants in {city} — things that live through a Utah winter, and advice on where to put them.",
+      "services": [
+        ["Trees and shrubs", "Grown for this climate."],
+        ["Perennials and annuals", "By season."],
+        ["Vegetables and herbs", "Starts in spring."],
+        ["Soil and mulch", "By the bag or the yard."],
+        ["Advice", "What will actually live in that spot."]
+      ],
+      "hero": "garden nursery plants greenhouse",
+      "cta": "See what's in stock"
+    },
+    "bike shop": {
+      "template": "store",
+      "trade": "bike shop",
+      "tagline": "Bikes and repairs in {city}",
+      "intro": "{name} sells and fixes bikes in {city} — tune-ups while you wait when it's quiet, and the parts to keep an old one going.",
+      "services": [
+        ["Repairs", "Flats, brakes, gears, wheels."],
+        ["Tune-ups", "Standard and full."],
+        ["New bikes", "Road, mountain, kids, e-bikes."],
+        ["Parts and kit", "Tyres, tubes, helmets, racks."],
+        ["Fitting", "Set up so it doesn't hurt to ride."]
+      ],
+      "hero": "bike shop bicycle repair",
+      "cta": "Book a repair"
+    },
+    "church": {
+      "template": "nonprofit",
+      "trade": "church",
+      "tagline": "A church in {city}",
+      "intro": "{name} meets in {city}. This page is a starting point: service times and how to get in touch come from their Google listing.",
+      "services": [
+        ["Services", "When the congregation meets."],
+        ["Who we are", "What the congregation believes and does."],
+        ["For families", "Classes and groups for children and youth."],
+        ["Serving", "How to help, and who to ask."],
+        ["Visiting", "What to expect the first time."]
+      ],
+      "hero": "church building community",
+      "cta": "Service times"
+    },
+    "nonprofit": {
+      "template": "nonprofit",
+      "trade": "nonprofit",
+      "tagline": "A nonprofit in {city}",
+      "intro": "{name} works in and around {city}. This page is a starting point for the mission, the calendar and the ways to help.",
+      "services": [
+        ["The mission", "What the work is, in a sentence."],
+        ["What's on", "The next events and when they are."],
+        ["Volunteer", "The sign-up, kept in one list."],
+        ["Donate", "A link to their own giving page."],
+        ["Contact", "Who picks up the phone."]
+      ],
+      "hero": "volunteers community nonprofit",
+      "cta": "Get involved"
+    },
+    "youth league": {
+      "template": "nonprofit",
+      "trade": "youth league",
+      "tagline": "Youth sport in {city}",
+      "intro": "{name} runs youth sport in {city} — seasons, teams and the schedule parents need on a phone.",
+      "services": [
+        ["Registration", "When it opens and what it costs."],
+        ["Seasons and divisions", "By age and level."],
+        ["Schedules", "Games and practices, in one place."],
+        ["Coaches and volunteers", "How to sign up to help."],
+        ["Where", "The fields and the parking."]
+      ],
+      "hero": "youth sports team field",
+      "cta": "Registration"
+    }
+  }
+}

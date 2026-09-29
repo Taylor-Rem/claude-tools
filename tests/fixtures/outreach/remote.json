@@ -1,0 +1,128 @@
+{
+  "date": "2026-09-28",
+  "segment": "services",
+  "picks": [
+    {
+      "place_id": "ChIJfixture0000000000001",
+      "name": "Highland Pool & Spa",
+      "first": "Dave",
+      "category": "Pool cleaning service",
+      "segment": "services",
+      "city": "Highland",
+      "phone": "801-555-0101",
+      "email": "dave@highlandpoolspa.example",
+      "instagram": "highlandpoolspa",
+      "facebook": "facebook.com/highlandpoolspa",
+      "faults": [
+        "the website on your Google listing is a business.site page that doesn't load any more",
+        "no hours on the listing"
+      ],
+      "preview_url": "https://preview-highland-pool.pages.dev/",
+      "maps_url": "https://maps.google.com/?cid=1000000000000000001"
+    },
+    {
+      "place_id": "ChIJfixture0000000000002",
+      "name": "Cedar Hollow Lawn Care",
+      "first": "",
+      "category": "Lawn care service",
+      "segment": "services",
+      "city": "American Fork",
+      "phone": "801-555-0102",
+      "email": "hello@cedarhollowlawn.example",
+      "instagram": "",
+      "facebook": "facebook.com/cedarhollowlawn",
+      "faults": [
+        "there is no website on your Google listing at all"
+      ],
+      "preview_url": "https://preview-cedar-hollow.pages.dev/",
+      "maps_url": "https://maps.google.com/?cid=1000000000000000002"
+    },
+    {
+      "place_id": "ChIJfixture0000000000003",
+      "name": "Timp Peak Plumbing",
+      "first": "Marisol",
+      "category": "Plumber",
+      "segment": "services",
+      "city": "Pleasant Grove",
+      "phone": "801-555-0103",
+      "email": "marisol@timppeakplumbing.example",
+      "instagram": "",
+      "facebook": "",
+      "faults": [
+        "there is no way to book you online from Google or your website",
+        "only two photos on the listing"
+      ],
+      "preview_url": "https://preview-timp-peak.pages.dev/",
+      "maps_url": "https://maps.google.com/?cid=1000000000000000003"
+    },
+    {
+      "place_id": "ChIJfixture0000000000004",
+      "name": "Saratoga Blinds & Shutters",
+      "first": "Ken",
+      "category": "Window treatment store",
+      "segment": "retail",
+      "city": "Saratoga Springs",
+      "phone": "801-555-0104",
+      "email": "ken@saratogablinds.example",
+      "instagram": "saratogablinds",
+      "facebook": "",
+      "faults": [
+        "your Google listing points at a Facebook page you don't control"
+      ],
+      "preview_url": "https://preview-saratoga-blinds.pages.dev/",
+      "maps_url": "https://maps.google.com/?cid=1000000000000000004"
+    },
+    {
+      "place_id": "ChIJfixture0000000000005",
+      "name": "Lehi Mobile Detail",
+      "first": "Trey",
+      "category": "Car detailing service",
+      "segment": "services",
+      "city": "Lehi",
+      "phone": "801-555-0105",
+      "email": "trey@lehimobiledetail.example",
+      "instagram": "lehimobiledetail",
+      "facebook": "",
+      "faults": [
+        "Google says you're closed Saturdays and your Instagram says you're not",
+        "no hours on the listing"
+      ],
+      "preview_url": "https://preview-lehi-detail.pages.dev/",
+      "maps_url": "https://maps.google.com/?cid=1000000000000000005"
+    },
+    {
+      "place_id": "ChIJfixture0000000000006",
+      "name": "Alpine Ridge Dog Grooming",
+      "first": "Bee",
+      "category": "Pet groomer",
+      "segment": "services",
+      "city": "Alpine",
+      "phone": "801-555-0106",
+      "email": "bee@alpineridgegrooming.example",
+      "instagram": "",
+      "facebook": "facebook.com/alpineridgegrooming",
+      "faults": [
+        "your Google listing has almost no photos"
+      ],
+      "preview_url": "https://preview-alpine-ridge.pages.dev/",
+      "maps_url": "https://maps.google.com/?cid=1000000000000000006"
+    },
+    {
+      "place_id": "ChIJfixture0000000000007",
+      "name": "Vineyard Sprinkler Repair",
+      "first": "Hal",
+      "category": "Lawn sprinkler system contractor",
+      "segment": "services",
+      "city": "Vineyard",
+      "phone": "801-555-0107",
+      "email": "",
+      "instagram": "",
+      "facebook": "facebook.com/vineyardsprinkler",
+      "faults": [
+        "there is no website on your Google listing at all"
+      ],
+      "preview_url": "https://preview-vineyard-sprinkler.pages.dev/",
+      "maps_url": "https://maps.google.com/?cid=1000000000000000007"
+    }
+  ]
+}

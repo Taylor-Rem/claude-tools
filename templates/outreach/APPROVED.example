@@ -1,0 +1,14 @@
+# templates/outreach/APPROVED — Taylor's approval of the exact text that goes out.
+#
+# Copy this file to APPROVED (no .example) with the real hashes, or just run
+#   outreach approve
+# which prints one rendered sample of each letter, then writes the hashes.
+# `outreach send` refuses while APPROVED is missing, or while any hash here is
+# stale — so editing a letter un-approves it and Taylor reads it again.
+#
+# One line per template: <name> <sha256 of templates/outreach/<name>.md>
+# `outreach doctor` prints the current hashes.
+
+first  0000000000000000000000000000000000000000000000000000000000000000
+second 0000000000000000000000000000000000000000000000000000000000000000
+third  0000000000000000000000000000000000000000000000000000000000000000

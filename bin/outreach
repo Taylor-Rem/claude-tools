@@ -1,0 +1,1741 @@
+#!/usr/bin/env python3
+"""outreach — the email lane: the one outbound channel the machine runs end to end
+(ROADMAP B46, plan ~/projects/plans/20-email-lane.md, GROWTH § 5.3 / § 5.5 / § 8.1).
+
+  outreach send [--go] [--dry-run] [--only 1 3] [--hold 2] [--touch 0|3|10]
+                               # the day's approved emails: reads `leads kit --remote --json`,
+                               # skips no-address and suppressed picks, renders the approved
+                               # letter, sends, logs the pipeline through `leads`, one ledger row
+  outreach inbox [--dry-run]   # replies since the cursor: classified, the routine ones answered,
+                               # the warm ones handed to Taylor with a brief
+  outreach suppress add hello@x.example | ChIJ…      # off the list for good, both channels
+  outreach suppress ls
+  outreach status              # today's sends, the caps, replies by class, bounces, complaints
+  outreach warmup              # the provider's warm-up state, mailbox by mailbox
+  outreach approve             # Taylor's one command after reading templates/outreach/*.md
+  outreach doctor              # keys by name, the address, the template, the caps, the provider
+
+Why email and nothing else: CAN-SPAM has no B2B exception but permits a truthful,
+addressed, opt-out-honouring note, and it is the only cold channel where the
+machine may send, read the reply, answer and hand over (GROWTH § 8.1). A cold text
+or an AI voice call never becomes legal, so nothing here ever texts or dials.
+
+What every email carries (GROWTH § 5.3, checked, not promised): who Taylor is and
+where, the one fault from the pick's own listing, the preview link, Starter's exact
+price sentence if they want it kept, the phone and the booking link, the postal
+address, a plain line saying it is an advertisement from a local business, "reply
+'no thanks' and you won't hear from me again", and the one-line disclosure Taylor
+decided: Patch found it and drafted it, Taylor reads every one before it goes.
+
+The letters live in templates/outreach/ and Taylor approves their exact text once:
+APPROVED holds a sha256 per template and `send` refuses while one is missing or
+stale, so editing a letter un-approves it. The subjects come from the same file.
+`outreach doctor` renders a sample of each and checks the rules (four to six
+sentences, one link in the letter — the preview; the booking link, the phone and
+the address sit in the signature, which is not the pitch — the ad identification,
+the opt-out, the disclosure, and no money in a cold letter that isn't
+`{price_line}`).
+
+Two weeks of `go`: `send` does nothing without `--go` unless OUTREACH_AUTO=1 (the
+schedule passes `--go` on the morning Taylor replied `go`). Everything money- or
+volume-shaped is an environment number, never a sentence in a prompt:
+
+  OUTREACH_PER_DAY             sends a day. Default 0 — out of the box this tool
+                               sends nothing at all.
+  OUTREACH_MAX_REPLIES_PER_DAY machine replies a day (default 10); never more than
+                               one machine reply per thread per day, ever.
+  OUTREACH_AI_USD_PER_DAY      the classifier's daily spend (default 0.50); over it,
+                               nothing is machine-answered and everything unclear
+                               goes to Taylor.
+  OUTREACH_BOUNCE_MAX_PCT      the kill switch (default 3.0). Over it, or any spam
+                               complaint, `send` refuses, Taylor is notified and one
+                               TAYLOR-TODO §7 entry is filed.
+  OUTREACH_COMPLAINTS          complaints seen in Google Postmaster Tools (Instantly
+                               reports no complaint count of its own). Any value
+                               above zero trips the switch.
+  OUTREACH_AUTO                1 = the two weeks of `go` are over.
+  OUTREACH_PREVIEW_DAYS        how long a preview stands (default 14); the day-10
+                               letter names the date it comes down.
+
+Config, by name, never printed:
+  INSTANTLY_API_KEY       ~/.config/claude-tools/env. Never Resend (its terms forbid
+                          cold mail) and never patchlamp.com's domain — a burned
+                          domain would take the product's mail with it.
+  ANTHROPIC_KEY_OUTREACH  the classifier's key, falling back to ANTHROPIC_KEY_RELAY.
+  OUTREACH_FROM           the outreach mailbox (Instantly's `eaccount`).
+  OUTREACH_PROVIDER       instantly | fake. Default: instantly once the key is set,
+                          else fake. `--dry-run` never touches the network.
+  LEADS_MAIL_ADDRESS      the postal address every commercial email must carry.
+                          Required: without it nothing sends, as in `leads`.
+  LEADS_BOOKING_URL       the booking link (Cal.com).
+  PATCHLAMP_VOICE_NUMBER  the phone line; without it the phone line is dropped.
+  PATCHLAMP_DEMO_NUMBER   the demo number people text themselves (default
+                          435-901-7141).
+  OUTREACH_STATE          state dir (default ~/.local/state/claude-tools/outreach)
+  OUTREACH_TEMPLATES      the letters (default ../templates/outreach beside this file)
+  INSTANTLY_API_BASE / ANTHROPIC_API_BASE    tests only: stand-ins for the real hosts.
+  OUTREACH_LEADS_BIN / OUTREACH_NOTIFY_BIN   tests only: stand-ins for `leads` / `notify`.
+  OUTREACH_KIT_JSON       tests only: a kit file instead of running `leads`.
+
+The provider is an interface with two implementations. `fake` keeps everything in
+files under the state dir and is what the tests and `--dry-run` use. `instantly` is
+Instantly's API v2 (see the plan's § Contract for every endpoint). Instantly has no
+single-send endpoint on any plan — `/emails/send-test` never enters the Unibox and
+`/emails/reply` only replies — so a send is a campaign plus a lead: one campaign
+whose step is `{{subject_line}}` / `{{body_html}}`, and each pick a lead carrying
+its own rendered letter. Every sentence is therefore composed here, where the
+template checks run; Instantly is only the transport and the warm-up.
+
+Money: a send costs nothing of ours (the mailbox is a flat monthly bill), so its
+ledger row carries cost 0 and exists to count sends. Each classifier call is its own
+row with its real cost. Both land in ~/.local/state/claude-tools/ledger.jsonl.
+
+The pipeline is never written here: every conversation goes in through `leads log`
+and `leads sent`, so one tool owns that file.
+"""
+
+import argparse
+import datetime as dt
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+TOOLS = Path(__file__).resolve().parent.parent
+ENV_FILE = Path(os.environ.get("CLAUDE_TOOLS_ENV", Path.home() / ".config/claude-tools/env"))
+PROJECTS = Path(os.environ.get("PROJECTS_DIR", Path.home() / "projects"))
+STATE = Path(os.environ.get("OUTREACH_STATE", Path.home() / ".local/state/claude-tools/outreach"))
+LEDGER = Path(os.environ.get("OUTREACH_LEDGER", Path.home() / ".local/state/claude-tools/ledger.jsonl"))
+TEMPLATES = Path(os.environ.get("OUTREACH_TEMPLATES", TOOLS / "templates" / "outreach"))
+TODO = Path(os.environ.get("TAYLOR_TODO", PROJECTS / "TAYLOR-TODO.md"))
+TZ = ZoneInfo("America/Denver")
+
+LETTERS = ("first", "second", "third")
+ANSWERS = ("answer-price", "answer-how")
+TOUCH_TEMPLATE = {0: "first", 3: "second", 10: "third"}
+CLASSES = ("interested", "question", "not now", "no", "bounce", "out of office", "other")
+
+# The only price sentences that may leave this tool. Starter, exactly as /pricing and
+# patchlamp/CLAIMS.md state it; change these only with a CLAIMS.md row in hand.
+PRICE_LINE = "$99 a month, no contract, stated on the site"
+PRICES_LINE = ("The rest of the range is $10 a month for hosting on its own, then $50, $250, $400 "
+               "and $1,000 as the volume of changes goes up — all six are on the pricing page.")
+DEMO_NUMBER_DEFAULT = "435-901-7141"
+
+# The classifier. Haiku, no thinking, a couple of hundred tokens out.
+AI_MODEL = "claude-haiku-4-5"
+AI_PRICES = {"claude-haiku-4-5": (1.0, 5.0)}      # $ per 1M tokens in, out
+AI_MAX_TOKENS = 300
+ANTHROPIC_VERSION = "2023-06-01"
+
+# Instantly's timezone enum has no America/Denver; America/Boise is the same clock.
+TZ_INSTANTLY = "America/Boise"
+CAMPAIGN_DEFAULT = "Patchlamp — the email lane"
+
+DEFAULT_PER_DAY = 0                # send nothing until Taylor sets it
+DEFAULT_MAX_REPLIES = 10
+DEFAULT_AI_USD = 0.50
+DEFAULT_BOUNCE_PCT = 3.0
+DEFAULT_PREVIEW_DAYS = 14
+
+DRY = False
+
+# A "no" in any reasonable phrasing. Matched before anything else and before any
+# spend: a person asking to be left alone is never waiting on an API call.
+NO_PATTERNS = (r"\bno,?\s*thanks?\b", r"\bno\s*thank\s*you\b", r"\bunsubscribe\b", r"\bopt\s*-?\s*out\b",
+               r"\bremove\s+(?:me|us)\b", r"\btake\s+(?:me|us)\s+off\b", r"\bdo\s*n[o']?t\s+(?:contact|email|write)\b",
+               r"\bstop\s+(?:emailing|contacting|writing|messaging)?\b", r"\bnot\s+interested\b",
+               r"\bno\s+longer\s+interested\b", r"\bplease\s+stop\b", r"\bleave\s+(?:me|us)\s+alone\b")
+BOUNCE_FROM = ("mailer-daemon", "postmaster@", "no-reply@", "noreply@")
+BOUNCE_SUBJECTS = ("undeliverable", "delivery status notification", "mail delivery failed",
+                   "returned mail", "delivery incomplete", "address not found")
+OOF_PATTERNS = (r"\bout of (?:the )?office\b", r"\bon vacation\b", r"\baway from (?:the|my) (?:office|desk)\b",
+                r"\bautomatic reply\b", r"\bauto-?reply\b", r"\bparental leave\b", r"\bannual leave\b")
+# "call me", or a named time — these are Taylor's, never the machine's.
+CALLME_PATTERNS = (r"\bcall me\b", r"\bgive me a call\b", r"\bring me\b", r"\bphone me\b", r"\blet'?s talk\b",
+                   r"\bhappy to (?:talk|chat)\b", r"\bwhat'?s your number\b")
+WHEN_RE = re.compile(
+    r"\b(?:(?:mon|tues?|wed(?:nes)?|thur?s?|fri|sat(?:ur)?|sun)(?:day)?|tomorrow|today|this week|next week)\b"
+    r"(?:\s+(?:morning|afternoon|evening))?(?:\s+(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?"
+    r"|\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b", re.I)
+PRICE_QUESTION = (r"\bhow much\b", r"\bwhat(?:'s| is| does it) (?:it )?cost\b", r"\bprice|pricing|priced\b",
+                  r"\bper month\b", r"\bmonthly\b", r"\bcharge\b", r"\bquote\b", r"\bfee\b", r"\brates?\b")
+HOW_QUESTION = (r"\bhow does (?:it|this) work\b", r"\bhow do(?:es)? (?:it|you|this)\b", r"\bwhat (?:is|do) you\b",
+                r"\bwhat exactly\b", r"\btell me more\b", r"\bmore (?:info|information|details)\b",
+                r"\bwho are you\b", r"\bwhat'?s the catch\b", r"\bis this (?:a )?(?:bot|ai|real)\b")
+URL_RE = re.compile(r"https?://[^\s<>\"')]+", re.I)
+BARE_HOST_RE = re.compile(r"(?<![\w@./-])(?:[a-z0-9][a-z0-9-]*\.)+(?:com|net|org|co|io|ai|dev|app|us)(?:/[^\s]*)?",
+                          re.I)
+
+
+# ---- plumbing -------------------------------------------------------------------
+
+def die(msg, code=1):
+    print(f"outreach: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def say(msg=""):
+    print(msg, flush=True)
+
+
+def read_env():
+    """The toolbelt env file. Values stay in memory; nothing here ever prints one."""
+    keys = {}
+    if ENV_FILE.exists():
+        for line in ENV_FILE.read_text().splitlines():
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                keys[k.strip()] = v.strip().strip('"').strip("'")
+    return keys
+
+
+def toolbelt(name, default=None):
+    v = os.environ.get(name)
+    if v is None or v == "":
+        v = read_env().get(name)
+    return default if v is None or v == "" else v
+
+
+def env_num(name, default, cast=float):
+    raw = toolbelt(name)
+    if raw is None:
+        return default
+    try:
+        return cast(str(raw).strip())
+    except ValueError:
+        die(f"{name} should be a number, not {raw!r}")
+
+
+def today():
+    return dt.datetime.now(TZ).date()
+
+
+def now_iso():
+    return dt.datetime.now(TZ).isoformat(timespec="seconds")
+
+
+def state_dir(*parts):
+    p = STATE.joinpath(*parts) if parts else STATE
+    (p if not parts else p.parent).mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def read_jsonl(path):
+    if not Path(path).exists():
+        return []
+    out = []
+    for line in Path(path).read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return out
+
+
+def append_jsonl(path, row):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a") as f:
+        f.write(json.dumps(row) + "\n")
+
+
+def ledger_append(event):
+    """One line per billable (or countable) thing, `img`'s convention. Never fatal:
+    a ledger problem must not undo a send that already happened."""
+    if DRY:
+        return
+    try:
+        LEDGER.parent.mkdir(parents=True, exist_ok=True)
+        with open(LEDGER, "a") as f:
+            f.write(json.dumps(event) + "\n")
+    except OSError as exc:
+        print(f"outreach: ledger write failed ({exc})", file=sys.stderr)
+
+
+def ledger_ai_spend_today():
+    """What the classifier has already spent today, from the ledger alone. Ledger rows are
+    stamped UTC (the house convention) and a day here is Taylor's, so compare the instants —
+    a naive string prefix would reset the cap at 6pm."""
+    start = dt.datetime.combine(today(), dt.time(0, 0), TZ)
+    end = start + dt.timedelta(days=1)
+    total = 0.0
+    for row in read_jsonl(LEDGER):
+        if row.get("tool") != "outreach" or row.get("kind") != "claude":
+            continue
+        try:
+            when = dt.datetime.fromisoformat(str(row.get("ts", "")).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=dt.timezone.utc)
+        if start <= when < end:
+            total += float(row.get("cost_usd") or 0)
+    return round(total, 6)
+
+
+def http(method, url, headers=None, body=None, timeout=25):
+    """One request. Returns (status, parsed-or-text). Raises Unreachable on a network fault."""
+    data = None
+    headers = dict(headers or {})
+    if body is not None:
+        data = json.dumps(body).encode()
+        headers["Content-Type"] = "application/json"
+    headers.setdefault("Accept", "application/json")
+    headers.setdefault("User-Agent", "claude-tools/outreach")
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode(errors="replace")
+            return resp.status, (json.loads(raw) if raw.strip().startswith(("{", "[")) else raw)
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode(errors="replace")
+        return exc.code, (json.loads(raw) if raw.strip().startswith(("{", "[")) else raw)
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise Unreachable(f"{urllib.parse.urlsplit(url).netloc}: {exc}") from exc
+
+
+class Unreachable(Exception):
+    pass
+
+
+# ---- the letters ----------------------------------------------------------------
+
+class Template:
+    """One file in templates/outreach: a subject table, then the letter. `#` lines are
+    comments and never sent. A line whose placeholder is empty is dropped whole."""
+
+    def __init__(self, name, raw):
+        self.name, self.raw = name, raw
+        head, _, body = raw.partition("\n---\n")
+        if not body:
+            raise ValueError(f"{name}.md has no `---` line between the subjects and the letter")
+        self.subjects = []
+        for line in head.splitlines():
+            line = line.strip()
+            if line.startswith("#") or not line:
+                continue
+            m = re.match(r"^Subject\s+([a-z0-9_-]+)\s*:\s*(.+)$", line, re.I)
+            if m:
+                self.subjects.append((m.group(1).lower(), m.group(2).strip()))
+        if not self.subjects or self.subjects[-1][0] != "default":
+            raise ValueError(f"{name}.md needs subject lines ending with `Subject default:`")
+        self.body = "\n".join(l for l in body.splitlines() if not l.startswith("#")).strip("\n")
+
+    @property
+    def sha(self):
+        return hashlib.sha256(self.raw.encode()).hexdigest()
+
+    def subject_for(self, fault):
+        f = (fault or "").lower()
+        for key, text in self.subjects:
+            if key == "default":
+                continue
+            if any(w in f for w in SUBJECT_WORDS.get(key, (key,))):
+                return text
+        return self.subjects[-1][1]
+
+    def render(self, values, fault=""):
+        subject = fill(self.subject_for(fault), values)
+        lines = []
+        for line in self.body.splitlines():
+            holes = re.findall(r"\{([a-z_]+)\}", line)
+            if holes and line.strip() and all(not str(values.get(h) or "").strip() for h in holes):
+                continue                      # a line that is only an empty placeholder
+            if any(h in values and not str(values.get(h) or "").strip() for h in holes) and len(holes) == 1:
+                continue                      # "Phone: {phone}" with no phone
+            lines.append(fill(line, values))
+        out = "\n".join(lines)
+        out = re.sub(r"\n{3,}", "\n\n", out).strip() + "\n"
+        return subject, out
+
+
+SUBJECT_WORDS = {
+    "dead": ("doesn't load", "does not load", "business.site", "dead", "404", "broken"),
+    "website": ("no website", "no site of", "hasn't got a website", "no web site"),
+    "marketplace": ("doordash", "ubereats", "uber eats", "grubhub", "marketplace", "facebook page you don't control",
+                    "facebook page you do not control"),
+    "hours": ("no hours", "hours are missing", "no opening hours"),
+    "booking": ("no way to book", "no booking", "can't book", "cannot book"),
+    "photos": ("photo",),
+    "closed": ("says closed", "says you're closed", "says you are closed"),
+}
+
+
+def fill(text, values):
+    out = text
+    for k, v in values.items():
+        out = out.replace("{" + k + "}", "" if v is None else str(v))
+    return out
+
+
+def load_template(name):
+    p = TEMPLATES / f"{name}.md"
+    if not p.exists():
+        die(f"no template {p}")
+    try:
+        return Template(name, p.read_text())
+    except ValueError as exc:
+        die(str(exc))
+
+
+def approved():
+    """name -> sha from templates/outreach/APPROVED (Taylor's word on the exact text)."""
+    p = TEMPLATES / "APPROVED"
+    if not p.exists():
+        return {}
+    out = {}
+    for line in p.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) >= 2:
+            out[parts[0]] = parts[1]
+    return out
+
+
+def approval_problems(names):
+    ok = approved()
+    bad = []
+    for n in names:
+        t = load_template(n)
+        if n not in ok:
+            bad.append(f"{n}: not in APPROVED")
+        elif ok[n] != t.sha:
+            bad.append(f"{n}: the text changed since Taylor approved it")
+    return bad
+
+
+def sample_values(expiry=None):
+    return {
+        "first": "Dave", "business": "Highland Pool & Spa",
+        "fault": "the website on your Google listing is a page that doesn't load any more",
+        "preview_url": "https://preview-highland-pool.pages.dev/",
+        "price_line": PRICE_LINE, "prices_line": PRICES_LINE,
+        "phone": toolbelt("PATCHLAMP_VOICE_NUMBER") or "801-555-0100",
+        "booking": toolbelt("LEADS_BOOKING_URL") or "https://cal.com/taylor/15min",
+        "address": toolbelt("LEADS_MAIL_ADDRESS") or "PO Box 000, American Fork, UT 84003",
+        "demo": toolbelt("PATCHLAMP_DEMO_NUMBER", DEMO_NUMBER_DEFAULT),
+        "expiry": expiry or (today() + dt.timedelta(days=int(env_num("OUTREACH_PREVIEW_DAYS",
+                                                                    DEFAULT_PREVIEW_DAYS, int)))).strftime("%-d %B"),
+    }
+
+
+def sentences(text):
+    return [s for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s.strip()]
+
+
+def links(text):
+    return URL_RE.findall(text) + [h for h in BARE_HOST_RE.findall(text) if not URL_RE.search(h)]
+
+
+def check_template(name):
+    """The rules a letter has to keep, run against a rendered sample. Returns [problem, ...]."""
+    t = load_template(name)
+    subject, body = t.render(sample_values(), fault=sample_values()["fault"])
+    bad = []
+    low = body.lower()
+    if "no thanks" not in low:
+        bad.append("no opt-out line (\"reply 'no thanks'…\")")
+    if "advertisement" not in low and "this is an ad" not in low:
+        bad.append("no ad identification (CAN-SPAM)")
+    if "patch, my ai operator" not in low and "patch, my ai" not in low:
+        bad.append("no AI disclosure line")
+    addr = sample_values()["address"]
+    if addr not in body:
+        bad.append("no postal address")
+    if not subject.strip():
+        bad.append("empty subject")
+    if name in LETTERS:
+        paras = [p for p in body.split("\n\n") if p.strip()]
+        letter = next((p for p in paras if "preview" in p or paras.index(p) == 1), paras[1] if len(paras) > 1 else body)
+        n = len(sentences(letter))
+        # The day-0 note is four to six sentences (GROWTH § 5.3); the two follow-ups are
+        # meant to be one line (§ 5.5), so they get a floor of one and the same ceiling.
+        lo, hi = (4, 6) if name == "first" else (1, 6)
+        if not lo <= n <= hi:
+            bad.append(f"the letter is {n} sentences, not {lo} to {hi}")
+        found = links(letter)
+        if len(found) != 1:
+            bad.append(f"the letter has {len(found)} links, not one (the preview): {found}")
+        elif sample_values()["preview_url"] not in found[0]:
+            bad.append(f"the letter's one link isn't the preview: {found[0]}")
+        if re.search(r"\$\s?\d", t.raw.replace("{price_line}", "").replace("{prices_line}", "")):
+            bad.append("a cold letter names money that isn't {price_line}")
+    return bad
+
+
+def money_in(name):
+    t = load_template(name)
+    return re.findall(r"\$\s?[\d,]+(?:\.\d\d)?(?:[a-z ]{0,24})", t.raw.replace("{price_line}", "")
+                      .replace("{prices_line}", ""), re.I)
+
+
+# ---- suppression ----------------------------------------------------------------
+
+def suppress_file():
+    return state_dir("suppress.jsonl")
+
+
+def suppressed():
+    vals = set()
+    for row in read_jsonl(suppress_file()):
+        v = str(row.get("value") or "").strip().lower()
+        if v:
+            vals.add(v)
+    return vals
+
+
+def suppress_add(value, reason, provider=None):
+    """On the list before anything else, and told to the provider too. Idempotent."""
+    value = str(value).strip()
+    if not value:
+        return False
+    if value.lower() in suppressed():
+        return False
+    kind = "email" if "@" in value else "place"
+    if not DRY:
+        append_jsonl(suppress_file(), {"ts": now_iso(), "value": value, "kind": kind, "reason": reason})
+    if kind == "email" and provider is not None:
+        try:
+            provider.suppress(value)
+        except (Unreachable, ProviderError) as exc:
+            print(f"outreach: the provider's block list didn't take {value} ({exc}); "
+                  "it is on ours, so nothing goes out to it", file=sys.stderr)
+    return True
+
+
+# ---- the provider ---------------------------------------------------------------
+
+class ProviderError(Exception):
+    pass
+
+
+CURSOR_IDS = 500
+
+
+def advance(cursor, replies):
+    """The cursor is a high-water timestamp plus the ids already handled, because two
+    replies can land in the same second and a timestamp alone would swallow one."""
+    new = dict(cursor)
+    if not replies:
+        return new
+    seen = list(dict.fromkeys([r["id"] for r in replies] + list(cursor.get("ids") or [])))
+    new["ids"] = seen[:CURSOR_IDS]
+    stamps = [r["ts"] for r in replies if r.get("ts")]
+    if stamps:
+        new["ts"] = max([*stamps, cursor.get("ts") or ""])
+    return new
+
+
+class Provider:
+    name = "?"
+
+    def ensure_campaign(self):
+        raise NotImplementedError
+
+    def send(self, pick, subject, body):
+        raise NotImplementedError
+
+    def replies(self, cursor):
+        """-> ([reply, ...], new_cursor). A reply is {id, thread_id, from, subject, text,
+        ts, auto_reply, campaign_id}."""
+        raise NotImplementedError
+
+    def reply_to(self, reply, subject, body):
+        raise NotImplementedError
+
+    def suppress(self, value):
+        raise NotImplementedError
+
+    def analytics(self):
+        """-> {sent, bounced, replies, unsubscribed, complaints}; complaints None when
+        the provider has no count of its own."""
+        raise NotImplementedError
+
+    def warmup(self):
+        raise NotImplementedError
+
+    def ping(self):
+        raise NotImplementedError
+
+
+class Fake(Provider):
+    """Files under the state dir. What the tests and --dry-run use; it is also the only
+    provider that exists until Taylor's mailbox does."""
+
+    name = "fake"
+
+    def __init__(self, eaccount="outreach@example.invalid", root=None):
+        self.eaccount = eaccount
+        self.root = Path(root) if root else state_dir("fake")
+        self.root.mkdir(parents=True, exist_ok=True)
+
+    def _p(self, n):
+        return self.root / n
+
+    def ensure_campaign(self):
+        p = self._p("campaign.json")
+        if not p.exists() and not DRY:
+            p.write_text(json.dumps({"id": "fake-campaign", "name": toolbelt("OUTREACH_CAMPAIGN", CAMPAIGN_DEFAULT),
+                                     "created": now_iso()}))
+        return "fake-campaign"
+
+    def send(self, pick, subject, body):
+        row = {"ts": now_iso(), "id": f"fake-{int(time.time()*1000)}-{abs(hash(pick.get('email'))) % 9999}",
+               "to": pick.get("email"), "from": self.eaccount, "subject": subject, "text": body,
+               "campaign_id": self.ensure_campaign()}
+        if not DRY:
+            append_jsonl(self._p("outbox.jsonl"), row)
+        return {"id": row["id"], "how": "campaign"}
+
+    def replies(self, cursor):
+        rows = read_jsonl(self._p("inbox.jsonl"))
+        seen = set(cursor.get("ids") or [])
+        out = []
+        for r in rows:
+            rid = str(r.get("id") or "")
+            if rid in seen:                # the id, not the clock: two replies can share a second
+                continue
+            ts = str(r.get("ts") or r.get("timestamp_created") or "")
+            out.append({"id": rid, "thread_id": r.get("thread_id") or rid, "from": r.get("from") or r.get("lead"),
+                        "subject": r.get("subject") or "", "text": r.get("text") or r.get("body") or "",
+                        "ts": ts, "auto_reply": bool(r.get("auto_reply")), "campaign_id": r.get("campaign_id")})
+        out.sort(key=lambda r: r["ts"])
+        return out, advance(cursor, out)
+
+    def reply_to(self, reply, subject, body):
+        row = {"ts": now_iso(), "id": f"fake-reply-{int(time.time()*1000)}", "to": reply.get("from"),
+               "from": self.eaccount, "subject": subject, "text": body, "in_reply_to": reply.get("id")}
+        if not DRY:
+            append_jsonl(self._p("sent-replies.jsonl"), row)
+        return {"id": row["id"]}
+
+    def suppress(self, value):
+        if not DRY:
+            append_jsonl(self._p("blocklist.jsonl"), {"ts": now_iso(), "value": value})
+        return {"ok": True}
+
+    def analytics(self):
+        p = self._p("analytics.json")
+        if p.exists():
+            a = json.loads(p.read_text())
+        else:
+            a = {}
+        sent = a.get("sent", len(read_jsonl(self._p("outbox.jsonl"))))
+        return {"sent": sent, "bounced": a.get("bounced", 0), "replies": a.get("replies", 0),
+                "unsubscribed": a.get("unsubscribed", 0), "complaints": a.get("complaints", 0)}
+
+    def warmup(self):
+        p = self._p("warmup.json")
+        if p.exists():
+            return json.loads(p.read_text())
+        return {self.eaccount: {"sent": 0, "landed_inbox": 0, "landed_spam": 0, "state": "fake — no real mailbox"}}
+
+    def ping(self):
+        return True, f"fake provider, files under {self.root}"
+
+
+class Instantly(Provider):
+    """Instantly API v2. Endpoints and the reason a send is campaign-plus-lead are in
+    ~/projects/plans/20-email-lane.md § Contract."""
+
+    name = "instantly"
+
+    def __init__(self, key, eaccount, base=None, per_day=None):
+        self.key = key
+        self.eaccount = eaccount
+        self.base = (base or "https://api.instantly.ai").rstrip("/")
+        self.per_day = per_day
+        self.memo = state_dir("instantly.json")
+
+    def _req(self, method, path, body=None, query=None):
+        url = f"{self.base}{path}"
+        if query:
+            url += "?" + urllib.parse.urlencode({k: v for k, v in query.items() if v not in (None, "")})
+        if DRY and method != "GET":
+            say(f"  [dry-run] {method} {path} {json.dumps(body)[:200] if body else ''}")
+            return {"id": "dry-run", "dry_run": True}
+        status, data = http(method, url, headers={"Authorization": f"Bearer {self.key}"}, body=body)
+        if status == 401:
+            raise ProviderError("Instantly refused the key (401) — INSTANTLY_API_KEY is wrong or revoked")
+        if status == 402:
+            raise ProviderError("Instantly says the workspace has no active paid plan (402)")
+        if status == 429:
+            raise ProviderError("Instantly rate-limited us (429); the emails endpoint allows 20 a minute")
+        if status >= 400:
+            msg = data.get("message") if isinstance(data, dict) else str(data)[:200]
+            raise ProviderError(f"Instantly {method} {path} -> {status}: {msg}")
+        return data
+
+    def _remembered(self):
+        try:
+            return json.loads(self.memo.read_text()) if self.memo.exists() else {}
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _remember(self, **kw):
+        if DRY:
+            return
+        d = self._remembered()
+        d.update(kw)
+        try:
+            self.memo.write_text(json.dumps(d))
+        except OSError:
+            pass
+
+    def ensure_campaign(self):
+        name = toolbelt("OUTREACH_CAMPAIGN", CAMPAIGN_DEFAULT)
+        got = self._remembered().get("campaign_id")
+        if got:
+            return got
+        listed = self._req("GET", "/api/v2/campaigns", query={"limit": 100})
+        for item in (listed or {}).get("items", []) if isinstance(listed, dict) else []:
+            if item.get("name") == name:
+                self._remember(campaign_id=item.get("id"))
+                return item.get("id")
+        made = self._req("POST", "/api/v2/campaigns", body={
+            "name": name,
+            "campaign_schedule": {"schedules": [{
+                "name": "Weekday mornings", "timing": {"from": "08:00", "to": "16:00"},
+                "days": {"1": True, "2": True, "3": True, "4": True, "5": True, "0": False, "6": False},
+                "timezone": TZ_INSTANTLY}]},
+            # One step; the letter itself is a per-lead custom variable, so every sentence
+            # is composed in this tool where the template checks run.
+            "sequences": [{"steps": [{"type": "email", "delay": 0, "variants": [
+                {"subject": "{{subject_line}}", "body": "{{body_html}}"}]}]}],
+            "email_list": [self.eaccount],
+            "daily_limit": int(self.per_day) if self.per_day else None,
+            "stop_on_reply": True, "link_tracking": False, "open_tracking": False,
+            "text_only": True, "first_email_text_only": True,
+        })
+        cid = made.get("id") if isinstance(made, dict) else None
+        if cid and cid != "dry-run":
+            self._req("POST", f"/api/v2/campaigns/{cid}/activate")
+            self._remember(campaign_id=cid)
+        return cid
+
+    def send(self, pick, subject, body):
+        cid = self.ensure_campaign()
+        lead = self._req("POST", "/api/v2/leads", body={
+            "campaign": cid, "email": pick.get("email"),
+            "first_name": pick.get("first") or None, "company_name": pick.get("name") or None,
+            "phone": pick.get("phone") or None, "website": pick.get("preview_url") or None,
+            "skip_if_in_workspace": True, "skip_if_in_campaign": True,
+            "custom_variables": {"subject_line": subject, "body_html": html_lines(body),
+                                 "body_text": body, "place_id": pick.get("place_id") or ""},
+        })
+        return {"id": (lead or {}).get("id"), "how": "campaign", "campaign_id": cid}
+
+    def replies(self, cursor):
+        """GET /api/v2/emails has no `since` filter: newest first, and stop paging once a
+        page is older than the cursor. What is new is decided by the id, not the clock."""
+        cid = self._remembered().get("campaign_id")
+        seen, last = set(cursor.get("ids") or []), cursor.get("ts") or ""
+        out, after, pages = [], None, 0
+        while pages < 5:
+            pages += 1
+            page = self._req("GET", "/api/v2/emails",
+                             query={"limit": 100, "sort_order": "desc", "campaign_id": cid, "starting_after": after})
+            items = (page or {}).get("items") or []
+            stop = False
+            for it in items:
+                rid, ts = str(it.get("id") or ""), str(it.get("timestamp_created") or "")
+                if last and ts and ts < last:
+                    stop = True               # older than anything we have read; nothing beyond it is new
+                    continue
+                if rid in seen:
+                    continue
+                if it.get("ue_type") != 2:            # 2 = Received; 1/3 are ours, 4 scheduled
+                    continue
+                out.append({"id": rid, "thread_id": it.get("thread_id") or rid,
+                            "from": it.get("lead") or it.get("from_address_email"),
+                            "subject": it.get("subject") or "",
+                            "text": ((it.get("body") or {}).get("text")
+                                     or strip_html((it.get("body") or {}).get("html") or "")),
+                            "ts": ts, "auto_reply": bool(it.get("is_auto_reply")),
+                            "campaign_id": it.get("campaign_id")})
+            after = (page or {}).get("next_starting_after")
+            if stop or not after or not items:
+                break
+        out.sort(key=lambda r: r["ts"])
+        return out, advance(cursor, out)
+
+    def reply_to(self, reply, subject, body):
+        return self._req("POST", "/api/v2/emails/reply", body={
+            "eaccount": self.eaccount, "reply_to_uuid": reply.get("id"), "subject": subject,
+            "body": {"text": body, "html": html_lines(body)},
+        })
+
+    def suppress(self, value):
+        return self._req("POST", "/api/v2/block-lists-entries", body={"bl_value": value})
+
+    def analytics(self):
+        cid = self._remembered().get("campaign_id")
+        a = self._req("GET", "/api/v2/campaigns/analytics/overview", query={"id": cid}) or {}
+        if isinstance(a, list):
+            a = a[0] if a else {}
+        return {"sent": int(a.get("emails_sent_count") or 0), "bounced": int(a.get("bounced_count") or 0),
+                "replies": int(a.get("reply_count_unique") or 0),
+                "unsubscribed": int(a.get("unsubscribed_count") or 0),
+                # Instantly publishes no complaint count; Postmaster Tools is the source.
+                "complaints": None}
+
+    def warmup(self):
+        got = self._req("POST", "/api/v2/accounts/warmup-analytics", body={"emails": [self.eaccount]}) or {}
+        return got.get("aggregate_data") or got
+
+    def ping(self):
+        got = self._req("GET", "/api/v2/accounts", query={"limit": 1})
+        n = len((got or {}).get("items") or []) if isinstance(got, dict) else 0
+        return True, f"reachable; {n} mailbox(es) visible"
+
+
+def html_lines(text):
+    esc = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return esc.replace("\n", "<br/>\n")
+
+
+def strip_html(html):
+    t = re.sub(r"<br\s*/?>", "\n", html or "", flags=re.I)
+    t = re.sub(r"<[^>]+>", "", t)
+    return (t.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&nbsp;", " ")).strip()
+
+
+def pick_provider(want=None):
+    eaccount = toolbelt("OUTREACH_FROM") or "outreach@example.invalid"
+    key = toolbelt("INSTANTLY_API_KEY")
+    want = (want or toolbelt("OUTREACH_PROVIDER") or ("instantly" if key else "fake")).lower()
+    if DRY or want == "fake":
+        return Fake(eaccount)
+    if want != "instantly":
+        die(f"provider is instantly or fake, not {want!r}")
+    if not key:
+        die("INSTANTLY_API_KEY isn't set (see `outreach doctor`); nothing sends without the mailbox")
+    per_day = int(env_num("OUTREACH_PER_DAY", DEFAULT_PER_DAY, int))
+    return Instantly(key, eaccount, base=toolbelt("INSTANTLY_API_BASE"), per_day=per_day)
+
+
+# ---- the other tools ------------------------------------------------------------
+
+def tool_path(name):
+    """The sibling in this repo wins over PATH, so a `git pull` here updates it.
+    OUTREACH_LEADS_BIN / OUTREACH_NOTIFY_BIN override it (tests only)."""
+    override = toolbelt(f"OUTREACH_{name.upper()}_BIN")
+    if override:
+        return override
+    local = TOOLS / "bin" / name
+    if local.exists():
+        return str(local)
+    from shutil import which
+    return which(name) or str(local)
+
+
+def run_tool(args, why):
+    """A toolbelt command. On --dry-run it is printed, not run."""
+    if DRY:
+        say("  [dry-run] " + " ".join(args))
+        return True, ""
+    try:
+        r = subprocess.run(args, capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"outreach: {why} failed ({exc})", file=sys.stderr)
+        return False, str(exc)
+    if r.returncode != 0:
+        print(f"outreach: {why} failed: {(r.stderr or r.stdout).strip()[:300]}", file=sys.stderr)
+    return r.returncode == 0, (r.stdout or "").strip()
+
+
+def leads_log(name, outcome, note, place_id=None, email=None, via="email", next_when=None):
+    cmd = [tool_path("leads"), "log", name, outcome, note, "--via", via]
+    if place_id:
+        cmd += ["--place", place_id]
+    if email:
+        cmd += ["--email", email]
+    if next_when:
+        cmd += ["--next", next_when]
+    return run_tool(cmd, f"leads log {name} {outcome}")[0]
+
+
+def leads_sent(indices, via="email"):
+    if not indices:
+        return True
+    return run_tool([tool_path("leads"), "sent", *[str(i) for i in indices], "--via", via], "leads sent")[0]
+
+
+def notify(text):
+    return run_tool([tool_path("notify"), text], "notify")[0]
+
+
+SHAPE_PROBLEM = ("doesn't give the {date, segment, picks} shape yet (the plan's § Contract; "
+                 "wick is adding it to `leads kit --remote --json`)")
+
+
+def kit_shape(data, where):
+    if not isinstance(data, dict) or not isinstance(data.get("picks"), list):
+        return None, f"{where} {SHAPE_PROBLEM}"
+    return data, None
+
+
+def kit_json(path=None, free=False):
+    """(payload, problem). The shape is the plan's § Contract: {date, segment, picks}.
+    `free` adds --census-only --no-save, so `doctor` can check the shape without a
+    Places call: a doctor never spends money."""
+    path = path or toolbelt("OUTREACH_KIT_JSON")
+    if path:
+        p = Path(path).expanduser()
+        if not p.exists():
+            die(f"no kit file {p}")
+        try:
+            return kit_shape(json.loads(p.read_text()), str(p))
+        except json.JSONDecodeError as exc:
+            die(f"{p} isn't JSON ({exc})")
+    cmd = [tool_path("leads"), "kit", "--remote", "--json"] + (["--census-only", "--no-save"] if free else [])
+    shown = "`" + " ".join(["leads"] + cmd[1:]) + "`"
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return None, f"{shown} wouldn't run ({exc})"
+    if r.returncode != 0:
+        return None, f"{shown} exited {r.returncode}: {(r.stderr or '').strip()[:200]}"
+    try:
+        data = json.loads(r.stdout)
+    except json.JSONDecodeError:
+        return None, f"{shown} didn't print JSON"
+    return kit_shape(data, shown)
+
+
+# ---- caps and the kill switch ---------------------------------------------------
+
+def sends_file():
+    return state_dir("sends.jsonl")
+
+
+def replies_file():
+    return state_dir("replies.jsonl")
+
+
+def cursor_read():
+    p = state_dir("cursor.json")
+    try:
+        return json.loads(p.read_text()) if p.exists() else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def cursor_write(cur):
+    if DRY:
+        return
+    try:
+        state_dir("cursor.json").write_text(json.dumps(cur))
+    except OSError as exc:
+        print(f"outreach: couldn't save the inbox cursor ({exc})", file=sys.stderr)
+
+
+def sent_today(touch=None):
+    stamp = today().isoformat()
+    rows = [r for r in read_jsonl(sends_file()) if r.get("date") == stamp]
+    return [r for r in rows if touch is None or int(r.get("touch", 0)) == int(touch)]
+
+
+def machine_replies_today():
+    stamp = today().isoformat()
+    return [r for r in read_jsonl(replies_file()) if r.get("date") == stamp and r.get("answered")]
+
+
+def answered_thread_today(thread_id):
+    stamp = today().isoformat()
+    return any(r.get("thread_id") == thread_id and r.get("date") == stamp and r.get("answered")
+               for r in read_jsonl(replies_file()))
+
+
+def deliverability(provider):
+    """(ok, rate, complaints, line). The switch: bounces over the cap, or any complaint."""
+    cap = env_num("OUTREACH_BOUNCE_MAX_PCT", DEFAULT_BOUNCE_PCT)
+    try:
+        a = provider.analytics()
+    except (Unreachable, ProviderError) as exc:
+        return None, None, None, f"the provider's analytics wouldn't answer ({exc})"
+    sent, bounced = int(a.get("sent") or 0), int(a.get("bounced") or 0)
+    rate = (bounced / sent * 100) if sent else 0.0
+    complaints = a.get("complaints")
+    if complaints is None:
+        complaints = int(env_num("OUTREACH_COMPLAINTS", 0, int))
+        src = "OUTREACH_COMPLAINTS (Postmaster Tools)"
+    else:
+        complaints = int(complaints)
+        src = "the provider"
+    line = (f"{sent} sent, {bounced} bounced ({rate:.1f}%, cap {cap:.1f}%), "
+            f"{complaints} spam complaint(s) per {src}")
+    return (rate <= cap and complaints == 0), rate, complaints, line
+
+
+def file_todo_entry(title, one_line, steps, then, details):
+    """One entry at the end of TAYLOR-TODO §7, in the house shape."""
+    if DRY:
+        say(f"  [dry-run] would file TAYLOR-TODO §7: {title}")
+        return True
+    if not TODO.exists():
+        print(f"outreach: no {TODO}; the entry is only in this output", file=sys.stderr)
+        return False
+    text = TODO.read_text()
+    if "## 7." not in text:
+        print(f"outreach: {TODO} has no §7; the entry is only in this output", file=sys.stderr)
+        return False
+    if title in text:
+        return False                      # already filed; don't stack the same thing
+    lines = [f"\n- [ ] **{title}** {one_line}"]
+    for i, s in enumerate(steps, 1):
+        lines.append(f"  - **{i}.** {s}")
+    if then:
+        lines.append(f"  - **Then:** {then}")
+    if details:
+        lines.append(f"  - **Details:** {details}")
+    lines.append(f"  _(outreach, {today().isoformat()})_")
+    with open(TODO, "a") as f:
+        f.write("\n".join(lines) + "\n")
+    return True
+
+
+def trip_switch(line):
+    """Stop the lane, tell Taylor once, file it once."""
+    marker = state_dir("killswitch", f"{today().isoformat()}.txt")
+    already = marker.exists()
+    say(f"outreach: the lane is stopped — {line}")
+    if already:
+        say("  (already reported today)")
+        return
+    notify(f"Email lane stopped: {line}. Nothing else goes out until you say so.")
+    file_todo_entry(
+        "The email lane stopped itself: bounces or a spam complaint.",
+        f"`outreach send` refuses until this is cleared. {line}",
+        ["Open Google Postmaster Tools for the outreach domain and read the spam rate and the delivery errors.",
+         "Open Instantly → the campaign → Analytics and read which addresses bounced; they are already on our "
+         "suppression list (`outreach suppress ls`).",
+         "Fix the cause (a bad address source, a warm-up that ramped too fast, or the copy), then clear "
+         "`~/.local/state/claude-tools/outreach/killswitch/` and reply `go` to the morning message."],
+        "`outreach status` should show the bounce rate back under the cap before the next `send`.",
+        f"Filed by `outreach send` on {today().isoformat()}. The cap is OUTREACH_BOUNCE_MAX_PCT "
+        f"(default {DEFAULT_BOUNCE_PCT}%) and any complaint at all stops the lane; Google's own line is 0.3%, "
+        "aim 0.1% (research/2026-09-28-growth/channels-and-law.md § 2).")
+    if not DRY:
+        try:
+            marker.write_text(line + "\n")
+        except OSError:
+            pass
+
+
+# ---- the classifier -------------------------------------------------------------
+
+def quoted_off(text):
+    """The person's own words: everything above the first quoted line or 'On … wrote:'."""
+    out = []
+    for line in (text or "").splitlines():
+        s = line.strip()
+        if s.startswith(">") or re.match(r"^On .{5,60} wrote:$", s) or s.startswith("-----Original Message"):
+            break
+        out.append(line)
+    return "\n".join(out).strip()
+
+
+def rule_class(reply):
+    """The classes that must never wait on an API call: a no, a bounce, an auto-reply."""
+    body = quoted_off(reply.get("text") or "")
+    low = (body + " " + (reply.get("subject") or "")).lower()
+    frm = (reply.get("from") or "").lower()
+    if any(b in frm for b in BOUNCE_FROM) or any(s in (reply.get("subject") or "").lower() for s in BOUNCE_SUBJECTS):
+        return "bounce", "the sender or subject is a delivery notification"
+    if any(re.search(p, low) for p in NO_PATTERNS):
+        return "no", "the reply asks to be left alone"
+    if reply.get("auto_reply") or any(re.search(p, low) for p in OOF_PATTERNS):
+        return "out of office", "an automatic reply"
+    return None, None
+
+
+def guess_class(reply):
+    """The fallback when there is no classifier: nothing is machine-answered."""
+    low = quoted_off(reply.get("text") or "").lower()
+    if any(re.search(p, low) for p in CALLME_PATTERNS):
+        return "interested", "asks to talk"
+    return "other", "no classifier available, so a person reads it"
+
+
+def question_topic(reply):
+    low = quoted_off(reply.get("text") or "").lower()
+    if any(re.search(p, low) for p in PRICE_QUESTION):
+        return "price"
+    if any(re.search(p, low) for p in HOW_QUESTION):
+        return "how"
+    return None
+
+
+def named_time(reply):
+    m = WHEN_RE.search(quoted_off(reply.get("text") or ""))
+    return m.group(0).strip() if m else None
+
+
+def ai_classify(reply):
+    """One small Messages API call. Returns (row, spent) or (None, 0) when it can't run."""
+    key_name = "ANTHROPIC_KEY_OUTREACH" if toolbelt("ANTHROPIC_KEY_OUTREACH") else "ANTHROPIC_KEY_RELAY"
+    key = toolbelt(key_name)
+    if not key:
+        return None, 0.0
+    cap = env_num("OUTREACH_AI_USD_PER_DAY", DEFAULT_AI_USD)
+    if ledger_ai_spend_today() >= cap:
+        return None, 0.0
+    base = (toolbelt("ANTHROPIC_API_BASE") or "https://api.anthropic.com").rstrip("/")
+    body = quoted_off(reply.get("text") or "")[:4000]
+    system = (
+        "You sort replies to a cold email a one-man web shop in American Fork, Utah sent a local "
+        "business. Answer with one JSON object and nothing else:\n"
+        '{"class": one of ["interested","question","not now","no","bounce","out of office","other"], '
+        '"topic": "price" | "how" | null, "when": a time they named, verbatim, or null, '
+        '"why": one short clause}\n'
+        "Rules: anything asking to stop, unsubscribe, or saying not interested is \"no\". A bounce or "
+        "delivery failure is \"bounce\". A question purely about what it costs is class \"question\", "
+        "topic \"price\"; a question purely about what the thing is or how it works is class \"question\", "
+        "topic \"how\". Wanting a call, naming a time, or saying yes is \"interested\". Anything you are "
+        "not sure about is \"other\" — a person will read those, so never stretch."
+    )
+    try:
+        status, data = http("POST", f"{base}/v1/messages",
+                            headers={"x-api-key": key, "anthropic-version": ANTHROPIC_VERSION},
+                            body={"model": AI_MODEL, "max_tokens": AI_MAX_TOKENS, "system": system,
+                                  "messages": [{"role": "user", "content":
+                                                f"Subject: {reply.get('subject') or ''}\n\n{body}"}]})
+    except Unreachable as exc:
+        print(f"outreach: the classifier is unreachable ({exc}); this reply goes to Taylor", file=sys.stderr)
+        return None, 0.0
+    if status >= 400:
+        msg = data.get("error", {}).get("message") if isinstance(data, dict) else str(data)[:200]
+        print(f"outreach: the classifier answered {status} ({msg}); this reply goes to Taylor", file=sys.stderr)
+        return None, 0.0
+    usage = (data or {}).get("usage") or {}
+    tin, tout = int(usage.get("input_tokens") or 0), int(usage.get("output_tokens") or 0)
+    pin, pout = AI_PRICES.get(AI_MODEL, (1.0, 5.0))
+    cost = round(tin / 1e6 * pin + tout / 1e6 * pout, 6)
+    ledger_append({"ts": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()), "kind": "claude",
+                   "tool": "outreach", "model": AI_MODEL, "tokens_in": tin, "tokens_out": tout,
+                   "cost_usd": cost, "billed_to": f"anthropic:{key_name}", "project": "global",
+                   "for": f"classify {reply.get('id')}"})
+    text = "".join(b.get("text", "") for b in (data or {}).get("content", []) if b.get("type") == "text")
+    m = re.search(r"\{.*\}", text, re.S)
+    if not m:
+        return None, cost
+    try:
+        got = json.loads(m.group(0))
+    except json.JSONDecodeError:
+        return None, cost
+    cls = str(got.get("class") or "").strip().lower()
+    if cls not in CLASSES:
+        return None, cost
+    return {"class": cls, "topic": (got.get("topic") or None), "when": (got.get("when") or None),
+            "why": str(got.get("why") or "")[:120], "ai": True}, cost
+
+
+def wants_a_person(reply):
+    low = quoted_off(reply.get("text") or "").lower()
+    return any(re.search(p, low) for p in CALLME_PATTERNS)
+
+
+def classify(reply):
+    cls, why = rule_class(reply)
+    if cls:
+        return {"class": cls, "topic": None, "when": None, "why": why, "ai": False}
+    got, _ = ai_classify(reply)
+    if got:
+        if got["class"] == "question" and not got.get("topic"):
+            got["topic"] = question_topic(reply)
+        if not got.get("when"):
+            got["when"] = named_time(reply)
+        # A rule, not a judgement: somebody asking to be called gets a person, whatever
+        # else the classifier read in the message.
+        if got["class"] not in ("no", "bounce") and wants_a_person(reply):
+            got.update({"class": "interested", "topic": None,
+                        "why": (got.get("why") or "") + "; asks to talk, so it is Taylor's"})
+        return got
+    g = guess_class(reply)
+    return {"class": g[0], "topic": None, "when": named_time(reply), "why": g[1], "ai": False}
+
+
+# ---- lead lookup ---------------------------------------------------------------
+
+def sent_rows_by_email():
+    by = {}
+    for r in read_jsonl(sends_file()):
+        e = str(r.get("email") or "").lower()
+        if e:
+            by[e] = r
+    return by
+
+
+EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+
+
+def address_we_sent_to(reply):
+    """The address this reply is about. A bounce comes from MAILER-DAEMON and names the
+    real recipient in its body, so match any address we have actually written to."""
+    by = sent_rows_by_email()
+    frm = str(reply.get("from") or "").strip()
+    if frm.lower() in by:
+        return frm
+    haystack = f"{reply.get('subject') or ''}\n{reply.get('text') or ''}"
+    for found in EMAIL_RE.findall(haystack):
+        if found.lower() in by:
+            return found
+    return frm
+
+
+def who_replied(reply):
+    """The send this reply belongs to: (name, place_id, email, first)."""
+    addr = address_we_sent_to(reply)
+    row = sent_rows_by_email().get(addr.lower())
+    if row:
+        return row.get("name"), row.get("place_id"), row.get("email"), (row.get("first") or "")
+    return (addr.split("@")[0] or "someone"), None, addr, ""
+
+
+# ---- send ----------------------------------------------------------------------
+
+def values_for(pick, touch):
+    fault = to_them((pick.get("faults") or [""])[0])
+    days = int(env_num("OUTREACH_PREVIEW_DAYS", DEFAULT_PREVIEW_DAYS, int))
+    expiry = (today() + dt.timedelta(days=max(days - touch, 1))).strftime("%-d %B")
+    business = pick.get("name") or ""
+    return {
+        "first": greeting_name(pick.get("first"), business),
+        "business": business, "fault": fault, "preview_url": pick.get("preview_url") or "",
+        "price_line": PRICE_LINE, "prices_line": PRICES_LINE,
+        "phone": toolbelt("PATCHLAMP_VOICE_NUMBER") or "",
+        "booking": toolbelt("LEADS_BOOKING_URL") or "",
+        "address": toolbelt("LEADS_MAIL_ADDRESS") or "",
+        "demo": toolbelt("PATCHLAMP_DEMO_NUMBER", DEMO_NUMBER_DEFAULT),
+        "expiry": expiry,
+    }
+
+
+COMPANY_TAIL = re.compile(r"[,\s]+(?:llc|l\.l\.c\.?|inc|inc\.|co|co\.|corp|corp\.|ltd|ltd\.|pllc|lc)$", re.I)
+
+
+def to_them(fault):
+    """A fault is written about a place; a letter is written to it. `leads` phrases them in
+    the third person ("not a site of their own", "the area they serve")."""
+    f = (fault or "").strip()
+    f = f.replace("Google says closed", "Google says you're closed")
+    f = re.sub(r"\btheirs\b", "yours", f)
+    f = re.sub(r"\btheir\b", "your", f)
+    f = re.sub(r"\bthey\b", "you", f)
+    f = re.sub(r"\bthem\b", "you", f)
+    return f
+
+
+def greeting_name(first, business):
+    """"Hi Dave," when there is a person, "Hi Pinnacle Painting team," when `first` is just
+    the business name again (which is what the census gives for a company)."""
+    first = (first or "").strip()
+    plain = COMPANY_TAIL.sub("", (business or "").strip()).strip()
+    looks_like_a_person = first and len(first.split()) == 1 and first.lower() != (business or "").lower()
+    if looks_like_a_person:
+        return first
+    return f"{plain} team" if plain else "there"
+
+
+def cmd_send(args):
+    global DRY
+    per_day = int(env_num("OUTREACH_PER_DAY", DEFAULT_PER_DAY, int))
+    touch = int(args.touch)
+    if touch not in TOUCH_TEMPLATE:
+        die("--touch is 0, 3 or 10 (the day-0 note and the two follow-ups, GROWTH § 5.5)")
+    tname = TOUCH_TEMPLATE[touch]
+
+    addr = toolbelt("LEADS_MAIL_ADDRESS")
+    if not addr:
+        die("LEADS_MAIL_ADDRESS isn't set, so no email may go out: US law wants a real postal address on "
+            "every commercial email (TAYLOR-TODO §1). Nothing sent.")
+    bad = approval_problems([tname])
+    if bad:
+        die("the letter isn't approved — " + "; ".join(bad)
+            + f". Have Taylor read {TEMPLATES / (tname + '.md')} and run `outreach approve`. Nothing sent.")
+    checks = check_template(tname)
+    if checks:
+        die(f"{tname}.md breaks its own rules: " + "; ".join(checks) + ". Nothing sent.")
+
+    provider = pick_provider(args.provider)
+    ok, _, _, dline = deliverability(provider)
+    if ok is False:
+        trip_switch(dline)
+        sys.exit(1)
+    if ok is None:
+        # Sending blind would make the kill switch decorative: no numbers, no send.
+        die(f"can't read the bounce rate, so nothing goes out — {dline}")
+    say(f"Deliverability: {dline}")
+
+    payload, problem = kit_json(args.kit)
+    if problem:
+        say(f"Nothing to send: {problem}")
+        sys.exit(0)
+    picks = [p for p in (payload.get("picks") or []) if isinstance(p, dict)]
+    say(f"Kit {payload.get('date') or today()} · segment {payload.get('segment') or '?'} · {len(picks)} picks · "
+        f"touch day {touch} ({tname}) · provider {provider.name}{' · DRY RUN' if DRY else ''}")
+
+    if args.only:
+        keep = {int(i) for i in args.only}
+        picks = [p for i, p in enumerate(picks, 1) if i in keep]
+        say(f"  --only {' '.join(str(i) for i in sorted(keep))}")
+    if args.hold:
+        drop = {int(i) for i in args.hold}
+        picks = [p for i, p in enumerate(picks, 1) if i not in drop]
+        say(f"  --hold {' '.join(str(i) for i in sorted(drop))} (dropped)")
+
+    supp, already = suppressed(), {str(r.get("email") or "").lower() for r in sent_today(touch)}
+    plan, skipped = [], []
+    for i, p in enumerate(picks, 1):
+        email = (p.get("email") or "").strip()
+        if not email:
+            skipped.append((i, p.get("name"), "no address on the listing"))
+            continue
+        if email.lower() in supp or str(p.get("place_id") or "").lower() in supp:
+            skipped.append((i, p.get("name"), "suppressed"))
+            continue
+        if email.lower() in already:
+            skipped.append((i, p.get("name"), "already sent today"))
+            continue
+        plan.append((i, p))
+
+    room = per_day - len(sent_today(touch))
+    if per_day <= 0:
+        say(f"OUTREACH_PER_DAY is {per_day}, so nothing sends. Set it (14 days of a handful, then 20, then 40 — "
+            "GROWTH § 5.3) and try again.")
+        for i, name, why in skipped:
+            say(f"  {i}. {name} — skipped: {why}")
+        sys.exit(0)
+    if room <= 0:
+        say(f"The day's cap is spent: {len(sent_today(touch))} of {per_day} already went out.")
+        sys.exit(0)
+    if len(plan) > room:
+        say(f"  cap: {room} of {per_day} left today, so {len(plan) - room} pick(s) wait for tomorrow")
+        plan = plan[:room]
+
+    if not args.go and str(toolbelt("OUTREACH_AUTO") or "") != "1":
+        say(f"\nWaiting on `go` — {len(plan)} ready. Two weeks of Taylor's word before OUTREACH_AUTO=1 "
+            "(GROWTH § 5.3); the schedule passes --go on the morning he said it.")
+        for i, p in plan:
+            subject, _ = load_template(tname).render(values_for(p, touch),
+                                                    fault=(p.get("faults") or [""])[0])
+            say(f"  {i}. {p.get('name')} <{p.get('email')}> — \"{subject}\"")
+        for i, name, why in skipped:
+            say(f"  {i}. {name} — skipped: {why}")
+        sys.exit(0)
+
+    t = load_template(tname)
+    sent, indices, failed = [], [], 0
+    say("")
+    for i, p in plan:
+        vals = values_for(p, touch)
+        subject, letter = t.render(vals, fault=(p.get("faults") or [""])[0])
+        if touch == 10 and not vals["preview_url"]:
+            skipped.append((i, p.get("name"), "the day-10 letter needs a preview and there isn't one"))
+            continue
+        say(f"{i}. {p.get('name')} <{p.get('email')}> — \"{subject}\"")
+        if DRY or args.show:
+            say("".join(f"   | {l}\n" for l in letter.splitlines()))
+        try:
+            res = provider.send(p, subject, letter)
+        except (Unreachable, ProviderError) as exc:
+            say(f"   FAILED: {exc}")
+            failed += 1
+            continue
+        row = {"ts": now_iso(), "date": today().isoformat(), "touch": touch, "template": tname,
+               "place_id": p.get("place_id"), "name": p.get("name"), "first": p.get("first") or "",
+               "email": p.get("email"), "subject": subject, "provider": provider.name,
+               "provider_id": (res or {}).get("id"), "preview_url": p.get("preview_url"), "kit_index": i}
+        if not DRY:
+            append_jsonl(sends_file(), row)
+        ledger_append({"ts": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()), "kind": "outreach_email",
+                       "tool": "outreach", "calls": 1, "cost_usd": 0, "project": "global",
+                       "billed_to": f"{provider.name}:INSTANTLY_API_KEY" if provider.name == "instantly" else "fake",
+                       "for": f"{tname} day{touch} -> {p.get('name')} <{p.get('email')}>"})
+        sent.append(row)
+        indices.append(i)
+
+    # The pipeline is `leads`'. `sent` teaches the kit what went out; `log` records the subject.
+    if sent and not args.kit:
+        leads_sent(indices)
+    for row in sent:
+        leads_log(row["name"], "messaged", f"email: {row['subject']}",
+                  place_id=row.get("place_id"), email=row.get("email"))
+
+    say("")
+    say(f"Sent {len(sent)} of {per_day} today ({len(sent_today(touch))} logged) on {provider.name}"
+        f"{' — DRY RUN, nothing left the machine' if DRY else ''}.")
+    for i, name, why in skipped:
+        say(f"  {i}. {name} — skipped: {why}")
+    if sent and not DRY:
+        say("Replies: `outreach inbox` (the timer runs it every 15 minutes, 07:00–20:00).")
+    if failed and not sent:
+        die(f"every send failed ({failed}); the provider is the problem, not the picks")
+
+
+# ---- inbox ----------------------------------------------------------------------
+
+def answer_for(topic):
+    return {"price": "answer-price", "how": "answer-how"}.get(topic)
+
+
+def cmd_inbox(args):
+    provider = pick_provider(args.provider)
+    cap = int(env_num("OUTREACH_MAX_REPLIES_PER_DAY", DEFAULT_MAX_REPLIES, int))
+    room = cap - len(machine_replies_today())
+    cur = cursor_read()
+    try:
+        replies, new_cur = provider.replies(cur)
+    except (Unreachable, ProviderError) as exc:
+        die(f"couldn't read the replies: {exc}")
+    say(f"{len(replies)} new repl{'y' if len(replies) == 1 else 'ies'} on {provider.name}"
+        f" · {room} of {cap} machine replies left today{' · DRY RUN' if DRY else ''}")
+    if args.limit:
+        replies = replies[: int(args.limit)]
+    for r in replies:
+        name, pid, email, first = who_replied(r)
+        got = classify(r)
+        cls, why = got["class"], got.get("why") or ""
+        first200 = " ".join(quoted_off(r.get("text") or "").split())[:200]
+        say(f"\n{name} <{r.get('from')}> — {cls}{'' if got.get('ai') else ' (by rule)'}{': ' + why if why else ''}")
+        row = {"ts": now_iso(), "date": today().isoformat(), "email_id": r.get("id"),
+               "thread_id": r.get("thread_id"), "from": r.get("from"), "name": name, "place_id": pid,
+               "class": cls, "topic": got.get("topic"), "when": got.get("when"), "ai": bool(got.get("ai")),
+               "answered": False, "text": first200}
+
+        if cls == "no":
+            # Before anything else, and before any reply: the address and the place both go.
+            if suppress_add(email, "replied no thanks", provider):
+                say("  suppressed: the address is off the list for good")
+            if pid and suppress_add(pid, "replied no thanks", provider):
+                say(f"  suppressed: the place {pid} too, so no kit picks it up again")
+            leads_log(name, "lost", "replied no thanks to the email", place_id=pid, email=email, next_when="none")
+            say("  no reply sent, by policy")
+        elif cls == "bounce":
+            # The daemon's own address is worthless; suppress the recipient it names.
+            if suppress_add(email, "bounced", provider):
+                say(f"  suppressed: {email} bounced")
+            else:
+                say(f"  {email} was already suppressed")
+            say("  no reply sent; not a conversation, so nothing goes in the pipeline")
+        elif cls == "out of office":
+            say("  noted; nothing sent and nothing logged")
+        elif cls == "question" and answer_for(got.get("topic")):
+            tname = answer_for(got["topic"])
+            bad = approval_problems([tname])
+            if bad:
+                say(f"  NOT answered: {'; '.join(bad)} — handing it to Taylor instead")
+                notify(f"{name} asked about {got['topic']} and {tname} isn't approved: {first200}")
+                leads_log(name, "talked", f"asked: {first200[:120]}", place_id=pid, email=email)
+            elif answered_thread_today(r.get("thread_id")):
+                say("  already answered this thread today; one machine reply a thread a day, so it waits")
+            elif room <= 0:
+                say(f"  the day's reply cap ({cap}) is spent; it waits for tomorrow")
+            else:
+                t = load_template(tname)
+                subject, letter = t.render(values_for({"name": name, "first": first, "faults": []}, 0), fault="")
+                theirs = (r.get("subject") or "").strip()
+                if theirs:
+                    subject = theirs if theirs.lower().startswith("re:") else f"Re: {theirs}"
+                say(f"  answering: \"{subject}\"")
+                if DRY:
+                    say("".join(f"   | {l}\n" for l in letter.splitlines()))
+                try:
+                    provider.reply_to(r, subject, letter)
+                    row["answered"], row["answer_template"] = True, tname
+                    room -= 1
+                except (Unreachable, ProviderError) as exc:
+                    say(f"  the reply didn't go ({exc}); handing it to Taylor")
+                    notify(f"{name} asked about {got['topic']} and the reply failed: {first200}")
+                leads_log(name, "talked", f"asked: {first200[:120]}", place_id=pid, email=email)
+        else:
+            # interested, a named time, a question we won't answer, anything unclear: Taylor's.
+            when = got.get("when")
+            book = toolbelt("LEADS_BOOKING_URL") or "the booking link (LEADS_BOOKING_URL isn't set)"
+            tail = f"reply yes to book {when}" if when else f"reply yes to send the booking link ({book})"
+            notify(f"{name} replied: {first200} — leads brief pending; {tail}")
+            leads_log(name, "interested", f"replied to the email: {first200[:120]}",
+                      place_id=pid, email=email, next_when="tomorrow")
+            say(f"  handed to Taylor: {tail}")
+            say("  no machine reply — interested, a time, or unclear is never answered by the machine")
+
+        if not DRY:
+            append_jsonl(replies_file(), row)
+    cursor_write(new_cur)
+    if not replies:
+        say("Nothing new. The cursor is where it was.")
+
+
+# ---- the small commands ---------------------------------------------------------
+
+def cmd_suppress(args):
+    provider = pick_provider(args.provider) if args.action == "add" else None
+    if args.action == "ls":
+        rows = read_jsonl(suppress_file())
+        if not rows:
+            say("Nobody is suppressed yet.")
+            return
+        say(f"{len(rows)} suppressed:")
+        for r in rows:
+            say(f"  {r.get('value')}  ({r.get('kind')}, {r.get('reason') or 'no reason given'}, "
+                f"{str(r.get('ts'))[:10]})")
+        return
+    if not args.value:
+        die("say what: outreach suppress add hello@x.example | ChIJ…")
+    for v in args.value:
+        added = suppress_add(v, args.reason or "by hand", provider)
+        say(f"{'suppressed' if added else 'already suppressed'}: {v}")
+
+
+def cmd_status(args):
+    provider = pick_provider(args.provider)
+    per_day = int(env_num("OUTREACH_PER_DAY", DEFAULT_PER_DAY, int))
+    cap = int(env_num("OUTREACH_MAX_REPLIES_PER_DAY", DEFAULT_MAX_REPLIES, int))
+    ai_cap = env_num("OUTREACH_AI_USD_PER_DAY", DEFAULT_AI_USD)
+    stamp = today().isoformat()
+    day = [r for r in read_jsonl(sends_file()) if r.get("date") == stamp]
+    say(f"Email lane — {stamp} · provider {provider.name}")
+    say(f"  sends today: {len(day)} of {per_day}"
+        + ("  (0 means the lane is off until OUTREACH_PER_DAY is set)" if per_day <= 0 else ""))
+    by_touch = {}
+    for r in day:
+        by_touch[int(r.get("touch", 0))] = by_touch.get(int(r.get("touch", 0)), 0) + 1
+    if by_touch:
+        say("    " + ", ".join(f"day {k}: {v}" for k, v in sorted(by_touch.items())))
+    reps = read_jsonl(replies_file())
+    dayreps = [r for r in reps if r.get("date") == stamp]
+    say(f"  replies today: {len(dayreps)} ({len([r for r in dayreps if r.get('answered')])} answered by the "
+        f"machine, cap {cap})")
+    counts = {}
+    for r in reps:
+        counts[r.get("class") or "?"] = counts.get(r.get("class") or "?", 0) + 1
+    if counts:
+        say("  all replies by class: " + ", ".join(f"{k} {v}" for k, v in sorted(counts.items())))
+    say(f"  classifier spend today: ${ledger_ai_spend_today():.4f} of ${ai_cap:.2f}")
+    ok, _, _, dline = deliverability(provider)
+    say(f"  deliverability: {dline}")
+    if ok is False:
+        say("  THE LANE IS STOPPED by the kill switch; `outreach send` refuses until it is cleared.")
+    marker = STATE / "killswitch" / f"{stamp}.txt"
+    if marker.exists():
+        say(f"  kill switch tripped today: {marker.read_text().strip()}")
+    say(f"  suppressed: {len(suppressed())}")
+    bad = approval_problems(LETTERS + ANSWERS)
+    say("  templates: " + ("all approved" if not bad else "; ".join(bad)))
+
+
+def cmd_warmup(args):
+    provider = pick_provider(args.provider)
+    try:
+        data = provider.warmup()
+    except (Unreachable, ProviderError) as exc:
+        die(f"couldn't read the warm-up state: {exc}")
+    say(f"Warm-up — {provider.name}")
+    if not data:
+        say("  nothing yet.")
+        return
+    for who, d in (data.items() if isinstance(data, dict) else []):
+        if isinstance(d, dict):
+            sent = d.get("sent", "?")
+            inbox, spam = d.get("landed_inbox", "?"), d.get("landed_spam", "?")
+            say(f"  {who}: {sent} sent, {inbox} landed in the inbox, {spam} in spam"
+                + (f" — {d['state']}" if d.get("state") else ""))
+        else:
+            say(f"  {who}: {d}")
+    say("  The plan: fourteen days of a handful a day, then 20, then 40; two mailboxes to reach 80 "
+        "(GROWTH § 5.3). OUTREACH_PER_DAY is the number that actually governs.")
+
+
+def cmd_approve(args):
+    names = list(args.template) if args.template else list(LETTERS + ANSWERS)
+    say("The text as it will go out (one rendered sample each):\n")
+    problems = []
+    for n in names:
+        t = load_template(n)
+        subject, body = t.render(sample_values(), fault=sample_values()["fault"])
+        say(f"───── {n}.md ─────")
+        say(f"Subject: {subject}")
+        say(body)
+        bad = check_template(n)
+        money = money_in(n)
+        if bad:
+            problems += [f"{n}: {b}" for b in bad]
+            say("  PROBLEMS: " + "; ".join(bad))
+        if money:
+            say("  money in this text (check each against patchlamp.com/pricing): " + ", ".join(m.strip() for m in money))
+        say("")
+    if problems:
+        die("not approved — fix these first: " + "; ".join(problems))
+    if DRY:
+        say("[dry-run] APPROVED not written.")
+        return
+    lines = ["# templates/outreach/APPROVED — the exact text Taylor approved. `outreach send` refuses",
+             "# while a hash here is missing or stale, so editing a letter un-approves it.",
+             f"# Written by `outreach approve` on {today().isoformat()}.", ""]
+    keep = approved()
+    for n in LETTERS + ANSWERS:
+        keep[n] = load_template(n).sha if n in names else keep.get(n, "")
+    for n in LETTERS + ANSWERS:
+        if keep.get(n):
+            lines.append(f"{n:14s} {keep[n]}")
+    (TEMPLATES / "APPROVED").write_text("\n".join(lines) + "\n")
+    say(f"Approved {', '.join(names)} → {TEMPLATES / 'APPROVED'}")
+    say("Whoever ran this command approved it; it is Taylor's step, and the file records the exact hash.")
+
+
+def cmd_doctor(args):
+    ok = True
+    keys = read_env()
+    say("Keys and settings (by name; no value is ever printed)")
+    for k, need in (("INSTANTLY_API_KEY", True), ("ANTHROPIC_KEY_OUTREACH", False),
+                    ("ANTHROPIC_KEY_RELAY", False), ("OUTREACH_FROM", True),
+                    ("LEADS_MAIL_ADDRESS", True), ("LEADS_BOOKING_URL", True),
+                    ("PATCHLAMP_VOICE_NUMBER", False)):
+        set_ = bool(os.environ.get(k) or keys.get(k))
+        say(f"  {k}: {'set' if set_ else 'MISSING'}{'' if set_ or not need else '  (needed)'}")
+        if need and not set_:
+            ok = False
+    if not (toolbelt("ANTHROPIC_KEY_OUTREACH") or toolbelt("ANTHROPIC_KEY_RELAY")):
+        say("  no classifier key, so every reply would go to Taylor unread by the machine")
+        ok = False
+    say(f"  PATCHLAMP_DEMO_NUMBER: {toolbelt('PATCHLAMP_DEMO_NUMBER', DEMO_NUMBER_DEFAULT)}")
+
+    say("\nCaps (environment, not prose)")
+    per_day = int(env_num("OUTREACH_PER_DAY", DEFAULT_PER_DAY, int))
+    say(f"  OUTREACH_PER_DAY: {per_day}" + ("  (0 — the lane sends nothing)" if per_day <= 0 else ""))
+    say(f"  OUTREACH_MAX_REPLIES_PER_DAY: {int(env_num('OUTREACH_MAX_REPLIES_PER_DAY', DEFAULT_MAX_REPLIES, int))}")
+    say(f"  OUTREACH_AI_USD_PER_DAY: ${env_num('OUTREACH_AI_USD_PER_DAY', DEFAULT_AI_USD):.2f}"
+        f"  (spent today ${ledger_ai_spend_today():.4f})")
+    say(f"  OUTREACH_BOUNCE_MAX_PCT: {env_num('OUTREACH_BOUNCE_MAX_PCT', DEFAULT_BOUNCE_PCT):.1f}%"
+        f" · OUTREACH_COMPLAINTS: {int(env_num('OUTREACH_COMPLAINTS', 0, int))}")
+    say(f"  OUTREACH_AUTO: {toolbelt('OUTREACH_AUTO') or '0'} ("
+        + ("--go not needed" if str(toolbelt("OUTREACH_AUTO") or "") == "1" else "`send` needs --go") + ")")
+
+    say(f"\nTemplates ({TEMPLATES})")
+    appr = approved()
+    for n in LETTERS + ANSWERS:
+        p = TEMPLATES / f"{n}.md"
+        if not p.exists():
+            say(f"  {n}: MISSING")
+            ok = False
+            continue
+        t = load_template(n)
+        bad = check_template(n)
+        state = "approved" if appr.get(n) == t.sha else ("STALE — the text changed" if n in appr else "NOT APPROVED")
+        say(f"  {n}: {state}; sha {t.sha[:12]}…; {'rules ok' if not bad else 'PROBLEMS: ' + '; '.join(bad)}")
+        if bad or appr.get(n) != t.sha:
+            ok = False
+        money = money_in(n)
+        if money:
+            say(f"      money in the text (check /pricing): {', '.join(m.strip() for m in money)}")
+    if not (TEMPLATES / "APPROVED").exists():
+        say(f"  APPROVED is missing. Taylor reads the letters, then runs `outreach approve`.")
+
+    say("\nThe day's picks (census only here — a doctor spends nothing)")
+    payload, problem = kit_json(args.kit, free=True)
+    if problem:
+        say(f"  {problem}")
+        ok = False
+    else:
+        picks = payload.get("picks") or []
+        withmail = [p for p in picks if (p.get("email") or "").strip()]
+        say(f"  leads kit --remote --json: {len(picks)} picks, {len(withmail)} with an address, "
+            f"segment {payload.get('segment') or '?'}")
+
+    say("\nProvider")
+    provider = pick_provider(args.provider)
+    try:
+        good, detail = provider.ping()
+        say(f"  {provider.name}: {detail}")
+        if not good:
+            ok = False
+    except (Unreachable, ProviderError) as exc:
+        say(f"  {provider.name}: FAIL {exc}")
+        ok = False
+    _, _, _, dline = deliverability(provider)
+    say(f"  deliverability: {dline}")
+    say("  never Resend (its terms forbid cold mail) and never patchlamp.com's domain")
+
+    say("\nState and neighbours")
+    say(f"  state: {STATE}  ({len(read_jsonl(sends_file()))} sends, {len(read_jsonl(replies_file()))} replies, "
+        f"{len(suppressed())} suppressed)")
+    say(f"  ledger: {LEDGER}")
+    for t in ("leads", "notify"):
+        p = tool_path(t)
+        say(f"  {t}: {p if Path(p).exists() else 'MISSING — ' + p}")
+        if not Path(p).exists():
+            ok = False
+    sys.exit(0 if ok else 1)
+
+
+# ---- main ----------------------------------------------------------------------
+
+def main():
+    global DRY
+    ap = argparse.ArgumentParser(prog="outreach", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--dry-run", action="store_true", help="print everything, send nothing, write nothing")
+    common.add_argument("--provider", help="instantly | fake (default: instantly once the key is set)")
+    sub = ap.add_subparsers(dest="cmd")
+
+    s = sub.add_parser("send", parents=[common], help="the day's approved emails")
+    s.add_argument("--go", action="store_true", help="Taylor said go (or set OUTREACH_AUTO=1)")
+    s.add_argument("--only", nargs="+", help="only these picks, by kit number")
+    s.add_argument("--hold", nargs="+", help="drop these picks, by kit number")
+    s.add_argument("--touch", type=int, default=0, choices=(0, 3, 10), help="day 0, 3 or 10 (GROWTH § 5.5)")
+    s.add_argument("--kit", help="a kit JSON file instead of running `leads kit --remote --json` (tests)")
+    s.add_argument("--show", action="store_true", help="print each letter as it goes")
+    s.set_defaults(fn=cmd_send)
+
+    s = sub.add_parser("inbox", parents=[common], help="replies: classified, the routine ones answered")
+    s.add_argument("--limit", type=int, help="only the first N new replies")
+    s.set_defaults(fn=cmd_inbox)
+
+    s = sub.add_parser("suppress", parents=[common], help="off the list for good")
+    s.add_argument("action", choices=("add", "ls"))
+    s.add_argument("value", nargs="*", help="an email address or a census place id")
+    s.add_argument("--reason")
+    s.set_defaults(fn=cmd_suppress)
+
+    s = sub.add_parser("status", parents=[common], help="today's sends, the caps, the replies, the bounce rate")
+    s.set_defaults(fn=cmd_status)
+
+    s = sub.add_parser("warmup", parents=[common], help="the provider's warm-up state")
+    s.set_defaults(fn=cmd_warmup)
+
+    s = sub.add_parser("approve", parents=[common], help="print each letter, then record Taylor's approval")
+    s.add_argument("--template", action="append", help="just this one (repeatable)")
+    s.set_defaults(fn=cmd_approve)
+
+    s = sub.add_parser("doctor", parents=[common])
+    s.add_argument("--kit", help="a kit JSON file instead of running `leads kit --remote --json`")
+    s.set_defaults(fn=cmd_doctor)
+
+    args = ap.parse_args()
+    if not args.cmd:
+        ap.print_help()
+        sys.exit(0)
+    DRY = bool(getattr(args, "dry_run", False))
+    if not hasattr(args, "kit"):
+        args.kit = None
+    args.fn(args)
+
+
+if __name__ == "__main__":
+    main()

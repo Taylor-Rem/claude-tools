@@ -54,7 +54,8 @@ BRANCH = "main"
 # Everything the side-car mirrors, relative to WORK_TREE. TAYLOR-TODO.md is
 # the web page's file; the rest is the plan Cowork reads on the MacBook.
 TRACKED = [TODO_FILE.name, "ROADMAP.md", "VISION.md", "HISTORY.md", "CLAUDE.md", "GROWTH.md",
-           "COWORK.md", "plans", "mac", "requests", "social", "flint", ".gitattributes"]
+           "COWORK.md", "plans", "mac", "requests", "social", "flint", "research", ".gitattributes"]
+# `research` (2026-09-29, Flint, on Taylor's "commit everything"): the sourced briefs, so they are versioned and on the Mac.
 # `social` (added 2026-09-23, Flint): the group posts, the boards and the
 # day-1 mock posts, so Cowork can post them from the Mac (ROADMAP B24).
 # `flint` (2026-09-23): Cowork ↔ Flint mail — inbox/ (Cowork writes), outbox/ (Flint writes).
@@ -99,7 +100,7 @@ def tracked_paths():
 def write_exclude():
     """Only the tracked docs are ever seen by the side-car; everything else is excluded."""
     (GIT_DIR / "info").mkdir(exist_ok=True)
-    lines = ["*"] + [f"!/{t}" for t in TRACKED] + ["!/plans/**", "!/mac/**", "!/requests/**", "!/social/**", "!/flint/**"]
+    lines = ["*"] + [f"!/{t}" for t in TRACKED] + ["!/plans/**", "!/mac/**", "!/requests/**", "!/social/**", "!/flint/**", "!/research/**"]
     # The same union rule as a tracked .gitattributes, so the MacBook's clone
     # (which has no info/attributes of its own) merges the same way (2026-09-24).
     ga = WORK_TREE / ".gitattributes"

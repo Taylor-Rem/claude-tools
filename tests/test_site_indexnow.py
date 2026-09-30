@@ -213,6 +213,19 @@ class IndexNowTest(unittest.TestCase):
         self.assertIn("Patched by Patchlamp", (self.repo / "index.html").read_text(),
                       "the repo is the client's record and keeps the line")
 
+    def test_a_key_file_that_cannot_be_committed_leaves_no_dirt(self):
+        """A publish refuses a dirty tree, so a failed key commit must clean up after
+        itself or it breaks the next one."""
+        (self.repo / ".git" / "index.lock").write_text("")      # make git refuse to commit
+        out = self.publish()
+        (self.repo / ".git" / "index.lock").unlink()
+        self.assertIn("not committed", out)
+        self.assertEqual(FakeIndexNow.state["posts"], [])
+        self.assertEqual(list(self.repo.glob("*.txt")), [])
+        self.assertEqual(subprocess.run(["git", "-C", str(self.repo), "status", "--porcelain"],
+                                        capture_output=True, text=True).stdout.strip(), "")
+        self.assertIn("published acme-site", out)
+
     def test_a_dry_run_sends_nothing(self):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):

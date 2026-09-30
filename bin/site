@@ -678,12 +678,15 @@ def indexnow_key(d, meta, name, entry):
                     "commit", "-q", "-m", "IndexNow key file (site publish submits this site's URLs)",
                     "--", f.name, check=False)
     if code != 0:
+        # leave nothing uncommitted behind: the next publish refuses a dirty tree
+        git(d, "restore", "--staged", "--", f.name, check=False)
+        f.unlink(missing_ok=True)
         say(f"  note: IndexNow key file not committed ({out.splitlines()[-1] if out else 'git commit failed'}); no ping")
         return None
     code, out = git(d, "push", "-q", check=False)
     if code != 0:
         say(f"  note: IndexNow key file committed but not pushed ({out.splitlines()[-1] if out else 'git push failed'})")
-    say(f"  IndexNow: key file added to the repo (one text file at the site root)")
+    say("  IndexNow: key file added to the repo (one text file at the site root)")
     return key
 
 

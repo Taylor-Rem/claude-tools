@@ -22,6 +22,7 @@ before 2026-09-16 and goes away once Bleu Grave has moved.
   site domain <name> [example.com]     # custom domain on the project + the DNS lines   (SITE_ADMIN=1)
   site adopt <name> [--project P]      # register an existing repo as a Cloudflare site   (SITE_ADMIN=1)
   site transfer <name> <github-user> [--keep]  # hand the repo to the client             (SITE_ADMIN=1)
+  site handover [<name>] [--out DIR] [--no-upload]  # everything that is theirs -> handover/<date>/ + a zip (B69)
   site retire <name> [--delete-repo] [--keep-local]  # take a site down: Pages project + registry row (+ repo)  (SITE_ADMIN=1)
   site stamp <name>                    # (GitHub Pages only) build id into version.json + every page
   site template push [--template T]    # mirror templates/sites/<T> to <org>/site-template(-<T>)
@@ -2281,6 +2282,296 @@ def cmd_transfer(a):
         say(f"  removed repos/{a.name} from the workspace (everything is on GitHub; the relay no longer sees it)")
 
 
+# ---------------------------------------------------------------- handover (B69)
+# Leaving Patchlamp in an hour (VISION § Decided 2026-09-29): one command puts
+# everything that is the client's into handover/<date>/ and one zip beside it,
+# uploads the zip to their account page, and prints its path last for SEND-FILE.
+
+CHATS_BIN = HERE / "bin" / "chats"
+RELAY_DIR = Path(os.environ.get("RELAY_DIR", Path.home() / "projects" / "sms-relay"))
+HANDOVER_DIR = "handover"                          # in the workspace; ignores itself (handover/.gitignore)
+HANDOVER_MAX_BYTES = 20 * 1024 * 1024              # what patchlamp.com's account page takes (its chat-media cap)
+
+
+def is_demo(slug):
+    """The six template demos (as `demo` knows them): strangers text these, so a
+    demo's handover carries only the asker's own conversation."""
+    return slug == "testaurant" or slug.startswith("demo-")
+
+
+def handover_run(cmd, cwd, timeout=300):
+    """(code, stdout, stderr) of a sibling tool; never raises."""
+    try:
+        r = subprocess.run([str(c) for c in cmd], cwd=str(cwd), capture_output=True, text=True, timeout=timeout)
+        return r.returncode, r.stdout, r.stderr
+    except (OSError, subprocess.SubprocessError) as exc:
+        return 1, "", str(exc)
+
+
+def handover_repo(repo, out, name):
+    """The site's files as a zip (opens anywhere) and its whole history as a git
+    bundle (`git clone site-<name>.bundle`). Returns (lines, problems)."""
+    lines, problems = [], []
+    code, _, err = handover_run(["git", "-C", repo, "archive", "--format=zip", f"--prefix={name}/",
+                                 "-o", out / f"site-{name}.zip", "HEAD"], out)
+    if code:
+        problems.append(f"repos/{name}: git archive failed: {err.strip()[:160]}")
+    else:
+        lines.append(f"site-{name}.zip — the site's files as they are published (HEAD)")
+    code, _, err = handover_run(["git", "-C", repo, "bundle", "create", out / f"site-{name}.bundle", "--all"], out)
+    if code:
+        problems.append(f"repos/{name}: git bundle failed: {err.strip()[:160]}")
+    else:
+        lines.append(f"site-{name}.bundle — the same site with its whole history (`git clone site-{name}.bundle`)")
+    code, dirty, _ = handover_run(["git", "-C", repo, "status", "--porcelain"], out)
+    if code == 0 and dirty.strip():
+        problems.append(f"repos/{name}: uncommitted changes are not in the bundle (commit them and run it again)")
+    return lines, problems
+
+
+def handover_database(ws, out, name, started):
+    """`db export --site <name>`, copied into database/<name>/."""
+    code, so, se = handover_run([DB_BIN, "export", "--site", name], ws)
+    if code:
+        return [], [f"{name}: db export failed: {(se or so).strip()[:200]}"]
+    day = datetime.date.today().isoformat()
+    src = ws / "exports" / day
+    dest = out / "database" / name
+    dest.mkdir(parents=True, exist_ok=True)
+    n = 0
+    for p in sorted(src.glob("*")) if src.is_dir() else []:
+        if p.is_file() and p.stat().st_mtime >= started - 1:
+            shutil.copy2(p, dest / p.name)
+            n += 1
+    if not n:
+        return [f"database/{name}/ — empty: the database has no tables yet"], []
+    return [f"database/{name}/ — every table as CSV and JSON ({n} file{'s' if n != 1 else ''})"], []
+
+
+def handover_newsletter(ws, out):
+    code, so, se = handover_run([NEWSLETTER_BIN, "subscribers", "--json"], ws, timeout=90)
+    if code:
+        why = (se or so).strip()
+        if "isn't registered" in why or "newsletter setup" in why:
+            return [], [], "no mailing list on patchlamp.com"
+        return [], [f"newsletter: {why[:200]}"], ""
+    try:
+        subs = json.loads(so or "[]")
+    except ValueError:
+        return [], ["newsletter: the list didn't come back as JSON"], ""
+    import csv
+    cols = ["email"] + sorted({k for s in subs for k in s} - {"email"})
+    with open(out / "newsletter-subscribers.csv", "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
+        w.writeheader()
+        w.writerows(subs)
+    return [f"newsletter-subscribers.csv — your mailing list ({len(subs)} on it)"], [], ""
+
+
+def handover_chats(ws, out, slug):
+    cmd = [CHATS_BIN, "--project", slug, "-n", "0", "--out", out / "chats.html"]
+    if is_demo(slug):
+        who = os.environ.get("RELAY_SENDER_KEY", "")
+        if not who:
+            return [], [], "a demo: the conversation goes only to the person who had it (no RELAY_SENDER_KEY here)"
+        cmd += ["--from", who]
+    code, so, se = handover_run(cmd, ws, timeout=180)
+    if code or not (out / "chats.html").is_file():
+        return [], [f"chats: {(se or so).strip()[:200] or 'no page written'}"], ""
+    return ["chats.html — every conversation with Patch, the photos inside it (opens in any browser)"], [], ""
+
+
+def handover_schedules(out, slug):
+    """What runs for them on its own (the list on /account): relay state, read only."""
+    p = RELAY_DIR / "state" / "schedules.json"
+    try:
+        jobs = [j for j in json.loads(p.read_text()).get("jobs", [])
+                if j.get("project") == slug and j.get("state") != "stopped"]
+    except (OSError, ValueError):
+        jobs = []
+    keep = ("id", "human", "cron", "tz", "text", "kind", "state", "last_fired")
+    rows = [{k: j.get(k) for k in keep if j.get(k) is not None} for j in jobs]
+    (out / "schedules.json").write_text(json.dumps(rows, indent=2, ensure_ascii=False) + "\n")
+    return [f"schedules.json — what Patch runs for you on its own ({len(rows)} job{'s' if len(rows) != 1 else ''})"], rows
+
+
+def handover_readme(ws, meta, repos, have, rows, notes, day):
+    reg = registry_load().get(meta["slug"], {})
+    L = [f"# {meta.get('name') or meta['slug']} — everything that's yours", "",
+         f"Made {day} by Patch (`site handover`). Every file here opens without Patchlamp.", "",
+         "## What's in here", ""]
+    L += [f"- {h}" for h in have] + [""]
+    if notes:
+        L += ["Not included:", ""] + [f"- {n}" for n in notes] + [""]
+    L += ["## What runs where", ""]
+    for n in repos:
+        e = reg.get(n) or {}
+        L.append(f"### {n}")
+        L.append("")
+        if e.get("host") == "cloudflare":
+            host = e.get("pages_host") or f"{e.get('project')}.pages.dev"
+            L.append(f"- Served by Cloudflare Pages, project `{e.get('project')}`, at https://{host}/ .")
+        else:
+            L.append("- Served by GitHub Pages from its repository.")
+        slug = remote_slug(ws / "repos" / n)
+        if slug:
+            L.append(f"- The repository is github.com/{slug}. On request it is transferred to a GitHub account you control.")
+        for dm in e.get("domains") or []:
+            L.append(f"- Your domain {dm} is registered in your name at your registrar; it points at Cloudflare today.")
+        if (e.get("d1") or {}).get("name"):
+            L.append(f"- Its database is Cloudflare D1 `{e['d1']['name']}`; the /admin page and the forms that save to it "
+                     "run as Pages Functions (functions/ in the repo). On another host those parts need their own "
+                     "backend; the data is in database/ as CSV and JSON.")
+        L.append("")
+    L += ["## Moving the site somewhere else", "",
+          "1. Unzip `site-<name>.zip` and upload the files to any static host (Netlify, GitHub Pages, Cloudflare "
+          "on your own account, your own server). There is no build step.",
+          "2. At the registrar where you bought your domain, change its DNS records to the ones the new host gives you "
+          "(usually one CNAME for www and one A or ALIAS record for the bare domain). Or tell Patch where it's going "
+          "and Taylor points it for you.",
+          "3. We keep serving the site at its current address for thirty days after the handover, so there is no gap.",
+          ""]
+    if rows:
+        L += ["## What ran on its own", ""]
+        L += [f"- {r.get('human') or r.get('cron')}: {r.get('text')}" for r in rows] + [""]
+    L += ["## The rest", ""]
+    if any(h.startswith("newsletter-subscribers.csv") for h in have):
+        L.append("- The mailing list lived on patchlamp.com; it is newsletter-subscribers.csv, ready to import anywhere.")
+    L.append("- If you took payments through Patch, that Stripe account is yours, in your name; nothing changes there.")
+    if any(h.startswith("memory.md") for h in have):
+        L.append("- memory.md is what Patch kept about your business; schedules.json is what ran for you. Together "
+                 "they are your operating manual.")
+    L.append("")
+    return "\n".join(L)
+
+
+def handover_zip(out, dest):
+    import zipfile
+    with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as z:
+        for p in sorted(out.rglob("*")):
+            if p.is_file():
+                z.write(p, f"{dest.stem}/{p.relative_to(out)}")
+    return dest
+
+
+def handover_upload(slug, path):
+    """The zip to patchlamp.com, where the account page offers it behind the sign-in.
+    Returns the line to print."""
+    env = read_env()
+    secret = os.environ.get("PATCHLAMP_RELAY_SHARED_SECRET") or env.get("PATCHLAMP_RELAY_SHARED_SECRET")
+    base = (os.environ.get("PATCHLAMP_URL") or env.get("PATCHLAMP_URL") or "https://patchlamp.com").rstrip("/")
+    if not secret:
+        return "account page: not uploaded (no PATCHLAMP_RELAY_SHARED_SECRET in the toolbelt)"
+    size = path.stat().st_size
+    if size > HANDOVER_MAX_BYTES:
+        return (f"account page: not uploaded — {size / 1048576:.1f} MB is over the page's "
+                f"{HANDOVER_MAX_BYTES // 1048576} MB; attach it here or FORWARD-TO-TAYLOR to send it")
+    boundary = "----handover" + secrets.token_hex(12)
+    body = b"".join([
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{path.name}\"\r\n"
+        f"Content-Type: application/zip\r\n\r\n".encode(), path.read_bytes(), f"\r\n--{boundary}--\r\n".encode()])
+    req = urllib.request.Request(f"{base}/internal/relay/projects/{slug}/handover", data=body, method="POST", headers={
+        "Authorization": f"Bearer {secret}", "Accept": "application/json",
+        "Content-Type": f"multipart/form-data; boundary={boundary}", "User-Agent": "claude-tools site"})
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            res = json.loads(r.read().decode() or "{}")
+        return f"account page: uploaded — {res.get('account') or base + '/account'} (Your files)"
+    except urllib.error.HTTPError as exc:
+        return f"account page: not uploaded (HTTP {exc.code})"
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        return f"account page: not uploaded ({str(exc)[:120]})"
+
+
+def cmd_handover(a):
+    ws, meta = workspace()
+    slug = meta["slug"]
+    day = datetime.date.today().isoformat()
+    root = ws / HANDOVER_DIR
+    out = Path(a.out).expanduser() if a.out else root / day
+    if not out.is_absolute():
+        out = ws / out
+    repos = [a.name] if a.name else repos_of(ws)
+    for n in repos:
+        repo_dir(ws, n)
+    if a.dry_run:
+        say(f"would build {out}/ from: {', '.join('repos/' + n for n in repos) or 'no repos'}, the database export, "
+            f"the mailing list, the conversations, memory.md, the schedules, a README; zip beside it"
+            + ("" if a.no_upload or is_demo(slug) else "; upload to the account page"))
+        return
+    root.mkdir(parents=True, exist_ok=True)
+    (root / ".gitignore").write_text("# the client's own data: never in the clients/ repo\n*\n")
+    if out.exists():
+        shutil.rmtree(out)
+    out.mkdir(parents=True)
+    started = time.time()
+    have, problems, notes = [], [], []
+    for n in repos:
+        h, p = handover_repo(ws / "repos" / n, out, n)
+        have += h; problems += p
+    if not repos:
+        notes.append("no site repository in this workspace")
+    reg = registry_load().get(slug, {})
+    for n in repos:
+        if (reg.get(n, {}).get("d1") or {}).get("name"):
+            h, p = handover_database(ws, out, n, started)
+            have += h; problems += p
+    h, p, note = handover_newsletter(ws, out)
+    have += h; problems += p
+    if note:
+        notes.append(note)
+    h, p, note = handover_chats(ws, out, slug)
+    have += h; problems += p
+    if note:
+        notes.append(note)
+    rows = []
+    if is_demo(slug):
+        notes.append("memory.md and the schedules: a demo's are shared by everyone who texts it")
+    else:
+        if (ws / "memory.md").is_file():
+            shutil.copy2(ws / "memory.md", out / "memory.md")
+            have.append("memory.md — what Patch knows about your business")
+        else:
+            notes.append("memory.md: Patch hasn't written one for this business yet")
+        h, rows = handover_schedules(out, slug)
+        have += h
+    have.append("README.md — this page: what runs where, and how to move it")
+    (out / "README.md").write_text(handover_readme(ws, meta, repos, have, rows,
+                                                   notes + [f"{p} (Patch has passed it on)" for p in problems], day))
+    z = handover_zip(out, out.parent / f"{slug}-handover-{day}.zip")
+    say(f"handover for {meta.get('name') or slug}: {out}/")
+    for line in have:
+        say(f"  {line}")
+    for line in notes:
+        say(f"  not included: {line}")
+    for line in problems:
+        say(f"  PROBLEM {line}")
+    if a.no_upload or is_demo(slug):
+        say("account page: not uploaded" + (" (a demo has no account page)" if is_demo(slug) else " (--no-upload)"))
+    else:
+        say(handover_upload(slug, z))
+    say(f"{z.stat().st_size / 1048576:.1f} MB")
+    print(z.resolve())                              # last, for SEND-FILE; PROBLEM lines above say what's missing
+
+
+def handover_doctor(say_, fail_):
+    """Can a handover be built here? (site doctor's own lines, B69)"""
+    ws, meta = workspace()
+    say_("== handover")
+    for tool in (DB_BIN, NEWSLETTER_BIN, CHATS_BIN):
+        (say_ if tool.exists() else fail_)(f"  {tool.name}: {'present' if tool.exists() else 'MISSING'}")
+    if not shutil.which("git"):
+        fail_("git is not installed")
+    say_(f"  memory.md: {'present' if (ws / 'memory.md').is_file() else 'none yet'}")
+    say_(f"  relay schedules: {'readable' if (RELAY_DIR / 'state' / 'schedules.json').is_file() else 'not found (the list comes out empty)'}")
+    env = read_env()
+    has = bool(os.environ.get("PATCHLAMP_RELAY_SHARED_SECRET") or env.get("PATCHLAMP_RELAY_SHARED_SECRET"))
+    say_(f"  account page upload: {'on' if has else 'off (no PATCHLAMP_RELAY_SHARED_SECRET)'}"
+         + (" — a demo never uploads" if is_demo(meta['slug']) else ""))
+    last = sorted((ws / HANDOVER_DIR).glob("*.zip")) if (ws / HANDOVER_DIR).is_dir() else []
+    say_(f"  last handover: {last[-1].name if last else 'none'} (site handover builds one)")
+
+
 def cmd_retire(a):
     """Take a site down for good: its Pages project (custom domains first), its
     registry row, the workspace's live_url if it was this site, the local
@@ -2538,6 +2829,8 @@ def cmd_doctor(a):
     else:
         say("== not in a client workspace (cd ~/projects/clients/<slug> for per-repo checks)")
     watch_doctor(fail)
+    if (Path.cwd() / ".client.json").exists():
+        handover_doctor(say, fail)
     sys.exit(0 if ok else 1)
 
 
@@ -2618,6 +2911,12 @@ def main():
     t.add_argument("name"); t.add_argument("user")
     t.add_argument("--keep", action="store_true", help="keep the local clone in repos/")
     t.set_defaults(fn=cmd_transfer)
+    ho = sub.add_parser("handover", help="everything that is the client's -> handover/<date>/ + one zip for SEND-FILE, on their account page (B69)")
+    ho.add_argument("name", nargs="?", help="one repo under ./repos (default: every site here)")
+    ho.add_argument("--out", help="build here instead of handover/<date>/")
+    ho.add_argument("--no-upload", action="store_true", help="don't put the zip on the account page")
+    ho.add_argument("--dry-run", action="store_true")
+    ho.set_defaults(fn=cmd_handover)
     rt = sub.add_parser("retire", help="take a site down: Pages project, registry row, local clone; the repo stays unless --delete-repo (SITE_ADMIN=1)")
     rt.add_argument("name")
     rt.add_argument("--delete-repo", action="store_true", help="also delete the GitHub repo (throwaway runs)")

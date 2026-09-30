@@ -4,7 +4,8 @@ B25 (the remote lane), B7 (the pipeline: log, follow-ups, the week).
 
   leads log "Whistle Wok" talked "owner Mike, wants to see the demo" --who Mike --next fri
                                # one conversation; prints tomorrow's list back
-      outcomes: messaged visited talked inbound interested demo later trial won lost churned
+      outcomes: held messaged visited talked inbound interested demo later trial won lost churned
+      (held: not messaged, kept on file with a note — researching, or a weak fit)
       (inbound is the relay's lane: they came to us — the site form, the demo line, a reply)
       (each sets the stage and a default follow-up; --next overrides: tomorrow, fri, 3d, 2w, oct 3, none)
   leads sent 1 3 4             # those picks from today's remote kit went out (or: sent all)
@@ -3642,6 +3643,7 @@ PIPELINE = Path(os.environ.get("LEADS_PIPELINE", PROJECTS / "private-docs/leads/
 
 # outcome -> (stage, default days to the follow-up, what it means)
 OUTCOMES = {
+    "held":       ("held", None, "not messaged: Taylor is holding it back (researching, weak fit)"),
     "messaged":   ("contacted", 4, "a DM or email went out, no answer yet"),
     "visited":    ("contacted", 3, "walked in, the decision-maker wasn't there"),
     "talked":     ("contacted", 7, "talked to the owner or manager, no decision"),
@@ -3654,7 +3656,7 @@ OUTCOMES = {
     "lost":       ("lost", None, "said no, or not a fit"),
     "churned":    ("churned", None, "was paying, cancelled"),
 }
-STAGES = ["contacted", "interested", "negotiating", "trialing", "won", "lost", "churned"]
+STAGES = ["held", "contacted", "interested", "negotiating", "trialing", "won", "lost", "churned"]
 WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
 # The channel a touch came through, so the week can be cut by it (B52, GROWTH § 2.4). `--via` is
@@ -4272,7 +4274,7 @@ def cadence_rows(today, state=None):
     """[(lead, touch, channel, due)] — each silent lead's next touch, due today or already late."""
     out = []
     for lead in (state or pipeline_state()).values():
-        if lead.get("stage") in ("won", "lost", "trialing", "churned") or answered_since(lead):
+        if lead.get("stage") in ("held", "won", "lost", "trialing", "churned") or answered_since(lead):
             continue
         last = lead["history"][-1]
         if last.get("next_by") == "hand" and lead.get("next"):

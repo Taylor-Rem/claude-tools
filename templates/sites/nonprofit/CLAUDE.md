@@ -135,6 +135,16 @@ The events are plain HTML in `index.html` (`#events`, one `<li>` each):
 "add a work day on the 12th" is an edit, a commit and a publish. The donate
 button is a link to their own giving page; the site never takes money.
 
+## The email address
+
+The Contact block's `<a data-mail href="mailto:…">…</a>` is the address
+Patch answers for this business (`<slug>@mail.patchlamp.com`, or
+`hello@` their own domain). Keep the `data-mail` attribute on it and don't
+type an address into it by hand: `site mail {{REPO}}` rewrites every
+`data-mail` link from the mailbox on patchlamp.com, commits, pushes and
+publishes. Another address the owner gives you (their own inbox) goes in a
+plain `mailto:` link beside it.
+
 ## Hosting (for Taylor)
 
 Cloudflare Pages, one project per site, published by `site publish` from

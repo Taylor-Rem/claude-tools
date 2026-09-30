@@ -10,6 +10,7 @@ invitation on our one grant, and Patch can read the listing.
   connections google show              # the listing as Google has it: name, address, phone, website, hours
   connections google sync              # accept pending invitations and match listings now (the relay does it every 10 min)
   connections google grant             # the signed link founder@ opens once (Taylor)
+                                       # an owner's own Gmail grant (B75) lists as `google-mail (gmail.send) <email>`
   connections revoke [ID]              # drop the connection(s)
   connections doctor
 
@@ -106,12 +107,25 @@ def google_line(g):
             + f"; manager email {g.get('manager_email')}")
 
 
+def mail_grant(c):
+    """(kind as shown, label) — a `google-mail` row (B75, plan 34 § C7) shows the scope it
+    holds and the Gmail address it sends from: `google-mail (gmail.send) owner@gmail.com`."""
+    if c.get("kind") != "google-mail":
+        return c.get("kind"), c.get("label") or ""
+    meta = c.get("meta") if isinstance(c.get("meta"), dict) else {}
+    scopes = meta.get("scopes") or c.get("scopes") or ""
+    scopes = " ".join(scopes) if isinstance(scopes, list) else str(scopes)
+    email = meta.get("email") or c.get("email") or c.get("label") or ""
+    return ("google-mail (gmail.send)" if "gmail.send" in scopes else "google-mail"), email
+
+
 def print_rows(rows):
     if not rows:
         print("  no connections")
     for c in rows:
         when = (c.get("connected_at") or c.get("revoked_at") or c.get("invited_at") or "")[:16]
-        print(f"  {c['id']:>3}  {c.get('project') or '-':<18} {c['kind']:<8} {c['status']:<10} {c.get('label') or ''}  {when}"
+        kind, label = mail_grant(c)
+        print(f"  {c['id']:>3}  {c.get('project') or '-':<18} {kind:<8} {c['status']:<10} {label}  {when}"
               + (f"  ({c['reason']})" if c.get("reason") else ""))
 
 
@@ -155,6 +169,10 @@ def cmd_google(args):
     elif args.op == "show":
         slug = project_of(args)
         _, data = api("GET", f"/internal/relay/projects/{slug}/connections")
+        for m in (c for c in data.get("connections") or [] if c["kind"] == "google-mail"):
+            kind, email = mail_grant(m)
+            print(f"{slug}: {kind} {email} — {m['status']}"
+                  + ("; replies to their mail go out from this Gmail" if m["status"] == "connected" else ""))
         rows = [c for c in data.get("connections") or [] if c["kind"] == "google"]
         if not rows:
             print(f"{slug}: no Google connection. `connections google invite` files one.")

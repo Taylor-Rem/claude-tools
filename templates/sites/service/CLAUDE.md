@@ -145,6 +145,16 @@ say the date back:
 Close one: `UPDATE booking_slots SET status = 'closed' WHERE id = N`. The
 bookings README (claude-tools `templates/collections/bookings/`) has the rest.
 
+## The email address
+
+The Contact block's `<a data-mail href="mailto:…">…</a>` is the address
+Patch answers for this business (`<slug>@mail.patchlamp.com`, or
+`hello@` their own domain). Keep the `data-mail` attribute on it and don't
+type an address into it by hand: `site mail {{REPO}}` rewrites every
+`data-mail` link from the mailbox on patchlamp.com, commits, pushes and
+publishes. Another address the owner gives you (their own inbox) goes in a
+plain `mailto:` link beside it.
+
 ## Hosting (for Taylor)
 
 Cloudflare Pages, one project per site, published by `site publish` from

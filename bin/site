@@ -18,6 +18,9 @@ before 2026-09-16 and goes away once Bleu Grave has moved.
   site data <name> [--owner EMAIL] [--dry-run]   # give a site its own database + /admin (PLAYBOOK § Data)
   site publish [<name>] [--no-ping] [--dry-run]  # HEAD of ./repos/<name> -> its Pages project (must be committed + pushed)
   site shell [<name>] [--check]        # the /admin shell up to the toolbelt's (B41), commit, push, publish
+  site mail [<name>] [--domain D] [--check] [--dry-run]  # the site's address (B75): mailbox + Contact links, published
+  site mail platform [--check]         # the Resend domain mail.patchlamp.com + the Porkbun records   (SITE_ADMIN=1)
+  site mail doctor                     # the app's mail status, the DNS, this workspace's mailbox vs its links
   site ls                              # repos in ./repos with where they're served
   site domain <name> [example.com]     # custom domain on the project + the DNS lines   (SITE_ADMIN=1)
   site adopt <name> [--project P]      # register an existing repo as a Cloudflare site   (SITE_ADMIN=1)
@@ -90,7 +93,18 @@ uptime.json (version 1; add fields, never rename):
      domain: {name, host, expires, registrar, days_left, checked_at, error}, filed: {key: at}}}}
 A registry row may carry `watch_marker` (the string its home page must hold) or `watch: false`.
 
+Mail (B75, plan ~/projects/plans/34-email.md): every hosted site has an address Patch answers —
+<slug>@mail.patchlamp.com, or hello@<domain> for a domain on our Cloudflare account whose apex has no
+MX (`--domain`, SITE_ADMIN=1: the Resend domain with receiving on, its records written by the DNS API,
+verified, then the mailbox PUT; a domain with mail already refuses — the owner uses the forward). The
+mailbox lives on patchlamp.com (GET/PUT /internal/relay/projects/{slug}/mailbox); the site's Contact
+block shows it as <a data-mail href="mailto:{{MAIL}}">{{MAIL}}</a>, filled by `site new` and rewritten,
+committed, pushed and published by `site mail`. This tool never sends mail; the app does, on the
+owner's word, through the relay.
+
 Config, by name, never printed:
+  RESEND_API_KEY         `site mail platform` / `--domain` (a full-access key: it makes domains)
+  PATCHLAMP_RELAY_SHARED_SECRET  the mailbox on patchlamp.com (`site mail`, `site new`'s {{MAIL}}, doctor)
   CLOUDFLARE_API_TOKEN   ~/.config/claude-tools/env — Account: Cloudflare Pages Edit (+ D1 Edit for the data layer)
   CLOUDFLARE_ACCOUNT_ID  same file. Both required for new/publish/domain.
   GITHUB_TOKEN   passed to gh as GH_TOKEN; when absent, gh's own login is used.
@@ -819,9 +833,11 @@ def cmd_new(a):
         "YEAR": str(datetime.date.today().year),
         "TAGLINE": a.tagline or f"A short line about what {meta['name']} does.",
     }
+    mail = mail_for_new_site(meta["slug"])            # B75: the Contact block's address ('' = leave the line out)
     if DRY:
         say(f"  would create public repo {slug} from {TEMPLATE_DIR} (template {kind})")
-        say(f"  would clone it to repos/{name}, fill {', '.join(f'{{{{{k}}}}}' for k in values)}")
+        say(f"  would clone it to repos/{name}, fill {', '.join(f'{{{{{k}}}}}' for k in values)}, "
+            f"{{{{MAIL}}}} = {mail or '(none: the Contact line is left out)'}")
         if cloudflare:
             say(f"  would create Cloudflare Pages project {name}, register it, publish, and expect {url}")
         if a.db:
@@ -853,7 +869,7 @@ def cmd_new(a):
         except (UnicodeDecodeError, OSError):
             continue
         if "{{" in text:
-            text = fill(text, values)
+            text = fill_mail(fill(text, values), mail)
             p.write_text(text, encoding="utf-8")
             if "{{" in text:
                 unfilled.append(str(p.relative_to(dest)))
@@ -1994,6 +2010,553 @@ def watch_doctor(fail):
         fail(text) if row.get("outage") else say("  " + text)
 
 
+# ---------------------------------------------------------------- mail (B75)
+#
+# Plan ~/projects/plans/34-email.md. Every hosted client site has an address Patch
+# answers: <slug>@mail.patchlamp.com by default, `hello@<their domain>` for a domain
+# on our Cloudflare account whose apex has no mail. The mailbox itself lives on
+# patchlamp.com (GET/PUT /internal/relay/projects/{slug}/mailbox, § Contract C3); the
+# site shows it in its Contact block as <a data-mail href="mailto:…">…</a>, filled
+# by `site new` and rewritten by `site mail`. Mail in and out goes through Resend on
+# every domain; the relay polls the app, the app sends. This tool never sends mail.
+
+MAIL_DOMAIN = os.environ.get("PATCHLAMP_MAIL_DOMAIN") or "mail.patchlamp.com"
+MAIL_ZONE = "patchlamp.com"                         # mail.patchlamp.com's records live at Porkbun, in this zone
+RESEND_API = (os.environ.get("RESEND_API_BASE") or "https://api.resend.com").rstrip("/")   # env: tests only
+MAIL_LINK = re.compile(r'<a\b(?=[^>]*\bdata-mail\b)[^>]*>.*?</a>', re.S)
+MAIL_LINE = re.compile(r'(?m)^[ \t]*(?:<(li|p)\b[^>]*>)?[ \t]*<a\b(?=[^>]*\bdata-mail\b)[^>]*>[^<]*</a>'
+                       r'[ \t]*(?:</(?:li|p)>)?[ \t]*\r?\n')
+MAIL_NOT_YET = "the app doesn't have mail yet (patchlamp.com has no /internal/relay/…/mail routes; the B75 app half isn't deployed)"
+
+
+def mail_default(slug):
+    return f"{slug}@{MAIL_DOMAIN}"
+
+
+class AppMissing(Exception):
+    """patchlamp.com answered 404 for a route it doesn't have (yet)."""
+
+
+def app_call(method, path, body=None):
+    """(status, json) from patchlamp.com's relay API with the shared secret, never printed.
+    Raises AppMissing when the route itself isn't there; dies on anything else unexpected."""
+    env = read_env()
+    secret = os.environ.get("PATCHLAMP_RELAY_SHARED_SECRET") or env.get("PATCHLAMP_RELAY_SHARED_SECRET")
+    if not secret:
+        die("PATCHLAMP_RELAY_SHARED_SECRET is not in the toolbelt, so the mailbox on patchlamp.com can't be read")
+    base = (os.environ.get("PATCHLAMP_URL") or env.get("PATCHLAMP_URL") or "https://patchlamp.com").rstrip("/")
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(f"{base}{path}", data=data, method=method,
+                                 headers={"Authorization": f"Bearer {secret}", "Accept": "application/json",
+                                          "Content-Type": "application/json", "User-Agent": "claude-tools site"})
+    try:
+        with urllib.request.urlopen(req, timeout=25) as r:
+            return r.status, json.loads(r.read().decode() or "{}")
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode(errors="replace")
+        try:
+            payload = json.loads(raw)
+        except ValueError:
+            payload = None
+        msg = (payload or {}).get("error") or (payload or {}).get("message") or raw[:200]
+        if exc.code == 404 and (payload is None or "could not be found" in str(msg)):
+            raise AppMissing(path)
+        return exc.code, {"error": msg, **(payload if isinstance(payload, dict) else {})}
+    except (urllib.error.URLError, OSError) as exc:
+        die(f"patchlamp.com unreachable: {exc}")
+
+
+def mailbox_get(slug):
+    """The project's mailbox from patchlamp.com ({} when it has none). Dies plainly when
+    the app has no mail routes yet."""
+    try:
+        code, data = app_call("GET", f"/internal/relay/projects/{slug}/mailbox")
+    except AppMissing:
+        die(MAIL_NOT_YET)
+    if code == 404:
+        return {}
+    if code != 200:
+        die(f"patchlamp.com: HTTP {code} reading {slug}'s mailbox: {data.get('error')}")
+    return data.get("mailbox") or {}
+
+
+def mailbox_put(slug, body):
+    """PUT the mailbox (C3). `body` is exactly what goes over the wire."""
+    if DRY:
+        say(f"  would PUT /internal/relay/projects/{slug}/mailbox {json.dumps(body)}")
+        return dict(body)
+    try:
+        code, data = app_call("PUT", f"/internal/relay/projects/{slug}/mailbox", body)
+    except AppMissing:
+        die(MAIL_NOT_YET)
+    if code not in (200, 201):
+        die(f"patchlamp.com refused the mailbox ({code}): {data.get('error')}")
+    return data.get("mailbox") or dict(body)
+
+
+def mail_for_new_site(slug):
+    """What {{MAIL}} is filled with by `site new`: the app's mailbox if it has one, else
+    the default the app gives every client project on its next sync. '' for a mailbox
+    that's off (the Contact line is then left out). Never dies: a site is made either way."""
+    try:
+        code, data = app_call("GET", f"/internal/relay/projects/{slug}/mailbox")
+        box = (data.get("mailbox") or {}) if code == 200 else {}
+    except (AppMissing, SystemExit, Exception):             # noqa: BLE001 - a new site never waits on mail
+        box = {}
+    if box.get("status") == "off":
+        return ""
+    return box.get("address") or mail_default(slug)
+
+
+def fill_mail(text, address):
+    """{{MAIL}} filled; with no address, the Contact line that holds it is dropped so the
+    page still reads cleanly."""
+    if not address:
+        text = MAIL_LINE.sub("", text)
+        text = MAIL_LINK.sub("", text)
+    return text.replace("{{MAIL}}", address)
+
+
+def mail_links(d):
+    """{relpath: [the data-mail links]} for every page of a repo."""
+    out = {}
+    for p in sorted(d.rglob("*.html")):
+        rel = p.relative_to(d)
+        if rel.parts[0] in (".git", "functions", "node_modules", "shots"):
+            continue
+        try:
+            found = MAIL_LINK.findall(p.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            continue
+        if found:
+            out[str(rel)] = found
+    return out
+
+
+def mail_link_address(link):
+    m = re.search(r'href="mailto:([^"?]*)', link)
+    return m.group(1) if m else ""
+
+
+def rewrite_mail(d, address):
+    """Point every data-mail link in the repo at `address`; the pages changed."""
+    changed = []
+    for rel in mail_links(d):
+        p = d / rel
+        text = p.read_text(encoding="utf-8")
+
+        def one(m):
+            link = m.group(0)
+            link = re.sub(r'href="mailto:[^"]*"', f'href="mailto:{address}"', link, count=1)
+            return re.sub(r'>[^<]*</a>$', f'>{address}</a>', link)
+        out = MAIL_LINK.sub(one, text)
+        if out != text:
+            if not DRY:
+                p.write_text(out, encoding="utf-8")
+            changed.append(rel)
+    return changed
+
+
+def resend_key():
+    key = os.environ.get("RESEND_API_KEY") or read_env().get("RESEND_API_KEY")
+    if not key:
+        die("RESEND_API_KEY is not in the toolbelt (~/.config/claude-tools/setenv.sh RESEND_API_KEY)")
+    return key
+
+
+def resend(method, path, body=None, ok=(200, 201)):
+    """One Resend API call with the toolbelt key (never printed). (status, json)."""
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(f"{RESEND_API}{path}", data=data, method=method,
+                                 headers={"Authorization": f"Bearer {resend_key()}", "Content-Type": "application/json",
+                                          "User-Agent": "claude-tools site"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return r.status, json.loads(r.read().decode() or "{}")
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode(errors="replace")
+        try:
+            payload = json.loads(raw)
+        except ValueError:
+            payload = {"message": raw[:200]}
+        if exc.code in ok:
+            return exc.code, payload
+        die(f"Resend {method} {path}: HTTP {exc.code}: {payload.get('message') or payload.get('name') or raw[:200]}")
+    except (urllib.error.URLError, OSError) as exc:
+        die(f"Resend unreachable: {exc}")
+
+
+def resend_domain(name):
+    """The Resend domain object (with its records) for `name`, or None."""
+    _, data = resend("GET", "/domains")
+    for dom in data.get("data") or []:
+        if dom.get("name") == name:
+            _, full = resend("GET", f"/domains/{dom['id']}")
+            return full
+    return None
+
+
+def resend_ensure_domain(name):
+    """The Resend domain for `name` with sending and receiving on: made if absent, receiving
+    switched on if it was off. Returns the domain with its records."""
+    dom = resend_domain(name)
+    if dom is None:
+        if DRY:
+            say(f"  would create the Resend domain {name} (sending + receiving)")
+            return None
+        code, dom = resend("POST", "/domains", {"name": name, "capabilities": {"sending": "enabled", "receiving": "enabled"}},
+                           ok=(200, 201, 403, 422))
+        if code not in (200, 201):
+            die(f"Resend won't add {name} ({code}): {dom.get('message') or dom.get('name')}. The free plan holds 3 domains: "
+                f"delete the retired plateful.fyi / platefuloffers.fyi in Resend, or move to Pro (TAYLOR-TODO §1 \"Email for Patch\").")
+        say(f"  created the Resend domain {name} (sending + receiving)")
+        _, dom = resend("GET", f"/domains/{dom['id']}")
+    elif (dom.get("capabilities") or {}).get("receiving") != "enabled":
+        if DRY:
+            say(f"  would switch receiving on for the Resend domain {name}")
+        else:
+            resend("PATCH", f"/domains/{dom['id']}", {"capabilities": {"receiving": "enabled"}})
+            say(f"  switched receiving on for the Resend domain {name}")
+            _, dom = resend("GET", f"/domains/{dom['id']}")
+    else:
+        say(f"  Resend domain {name}: already there ({dom.get('status')}), receiving on")
+    return dom
+
+
+def record_fqdn(name, zone):
+    """A Resend record name (relative to the zone, '@' or '' for the apex) as a full name."""
+    name = (name or "").strip().rstrip(".").lower()
+    if name in ("", "@", zone):
+        return zone
+    return name if name.endswith("." + zone) else f"{name}.{zone}"
+
+
+def record_relative(fqdn, zone):
+    return "@" if fqdn == zone else fqdn[: -(len(zone) + 1)]
+
+
+def dig(rtype, name):
+    """What public DNS answers (IPv4 transport: DNS is slow over v6 here), as a list."""
+    try:
+        r = subprocess.run(["dig", "-4", "+short", rtype, name], capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    return [l.strip() for l in r.stdout.splitlines() if l.strip()]
+
+
+def dns_matches(rec, zone):
+    """True when public DNS already answers what the Resend record asks for."""
+    got = [g.lower().rstrip(".").strip('"') for g in dig(rec["type"], record_fqdn(rec.get("name"), zone))]
+    want = str(rec.get("value") or "").lower().rstrip(".").strip('"')
+    if rec["type"] == "MX":
+        return any(g.split()[-1] == want for g in got if g.split())
+    if rec["type"] == "TXT":
+        return any(want.replace(" ", "") in g.replace('" "', "").replace(" ", "") for g in got)
+    return want in got
+
+
+def print_records(records, zone, where):
+    say(f"\nDNS records for {where} (zone {zone}; the name is what goes in the Host box):")
+    for r in records:
+        prio = f"  priority {r['priority']}" if r.get("priority") is not None else ""
+        say(f"  {r['type']:<6} {record_relative(record_fqdn(r.get('name'), zone), zone):<30} {r.get('value')}{prio}")
+
+
+def resend_verify(dom, seconds=None):
+    """Ask Resend to verify, then poll. True once the domain is verified."""
+    seconds = int(os.environ.get("SITE_MAIL_VERIFY_SECONDS", "180")) if seconds is None else seconds
+    resend("POST", f"/domains/{dom['id']}/verify", {}, ok=(200, 201, 202))
+    deadline = time.time() + seconds
+    while True:
+        _, cur = resend("GET", f"/domains/{dom['id']}")
+        if cur.get("status") == "verified":
+            return True
+        if time.time() >= deadline:
+            say(f"  Resend says {dom['name']} is {cur.get('status')}: "
+                + ", ".join(f"{r.get('record')} {r.get('status')}" for r in cur.get("records") or []))
+            return False
+        time.sleep(min(10, max(1, seconds // 6)))
+
+
+def cf_zone_call(method, path, body=None):
+    """One Cloudflare call outside /accounts (zones, DNS). (success, result, errors)."""
+    tok, _ = cf_creds()
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(f"{CF_API}{path}", data=data, method=method,
+                                 headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json",
+                                          "User-Agent": "claude-tools site"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            payload = json.loads(r.read().decode())
+    except urllib.error.HTTPError as exc:
+        try:
+            payload = json.loads(exc.read().decode())
+        except ValueError:
+            payload = {"success": False, "errors": [{"code": exc.code, "message": f"HTTP {exc.code}"}]}
+    except (urllib.error.URLError, OSError) as exc:
+        die(f"Cloudflare {method} {path}: {exc}")
+    return bool(payload.get("success")), payload.get("result"), payload.get("errors") or []
+
+
+def cf_zone(domain):
+    """Our Cloudflare zone for `domain`, or die with a plain sentence when the token can't see one."""
+    _, acct = cf_creds()
+    ok, zones, errs = cf_zone_call("GET", f"/zones?name={domain}&account.id={acct}")
+    if ok and zones:
+        return zones[0]
+    ok_all, seen, _ = cf_zone_call("GET", f"/zones?account.id={acct}&per_page=50")
+    names = ", ".join(z["name"] for z in (seen or [])) if ok_all else "none it will list"
+    die(f"{domain} isn't a zone our Cloudflare token can see (it sees: {names or 'none'}), so its records can't be "
+        f"written from here. A domain whose DNS is elsewhere keeps its own mail: the owner uses the forward "
+        f"(PLAYBOOK § Email). Nothing was changed.")
+
+
+def cf_dns_records(zone_id, name, rtype=None):
+    q = f"/zones/{zone_id}/dns_records?name={name}" + (f"&type={rtype}" if rtype else "")
+    ok, rows, errs = cf_zone_call("GET", q)
+    if not ok:
+        die(f"Cloudflare won't list {name}'s records: " + "; ".join(f"{e.get('code')}: {e.get('message')}" for e in errs))
+    return rows or []
+
+
+def cf_write_record(zone, rec):
+    """Write one Resend record into our zone unless it's already there. Returns what it did."""
+    fqdn = record_fqdn(rec.get("name"), zone["name"])
+    rtype = rec["type"]
+    value = str(rec.get("value") or "")
+    have = cf_dns_records(zone["id"], fqdn, rtype)
+    norm = lambda s: str(s or "").lower().rstrip(".").strip('"')
+    if any(norm(h.get("content")) == norm(value) for h in have):
+        return f"{rtype} {fqdn} already there"
+    if rtype == "CNAME" and have:
+        die(f"{fqdn} already has a CNAME to {have[0].get('content')}; Resend wants {value}. Nothing more was written.")
+    body = {"type": rtype, "name": fqdn, "content": value, "ttl": 1}
+    if rtype == "MX":
+        body["priority"] = int(rec.get("priority") or 10)
+    if rtype == "CNAME":
+        body["proxied"] = False
+    if DRY:
+        say(f"  would write {rtype} {fqdn} -> {value}" + (f" (priority {body['priority']})" if rtype == "MX" else ""))
+        return f"{rtype} {fqdn} (dry run)"
+    ok, _, errs = cf_zone_call("POST", f"/zones/{zone['id']}/dns_records", body)
+    if not ok:
+        die(f"Cloudflare refused {rtype} {fqdn}: " + "; ".join(f"{e.get('code')}: {e.get('message')}" for e in errs)
+            + " (the token needs Zone · DNS · Edit on this zone)")
+    return f"{rtype} {fqdn} written"
+
+
+def mail_domain_setup(slug, domain, check=False):
+    """--domain D: hello@D for a zone on our account whose apex has no mail. Resend domain
+    with receiving on, its records into the zone, verify, then the mailbox PUT. Returns
+    the address once it's live, or None."""
+    require_admin("mail --domain")
+    domain = re.sub(r"^https?://", "", domain.lower().strip().rstrip("/"))
+    if domain.startswith("www."):
+        domain = domain[4:]
+    if not DOMAIN_RE.match(domain) or domain.count(".") != 1:
+        die(f"{domain!r} isn't a bare domain (example.com); the address is hello@ the apex")
+    zone = cf_zone(domain)
+    existing = resend_domain(domain)                 # a re-run: Resend's own receiving MX isn't "their mail"
+    ours = {str(r.get("value") or "").lower().rstrip(".") for r in (existing or {}).get("records") or [] if r.get("type") == "MX"}
+    mx = [str(r.get("content") or "") for r in cf_dns_records(zone["id"], domain, "MX")] or dig("MX", domain)
+    mx = [m for m in mx if m.split() and m.split()[-1].lower().rstrip(".") not in ours]
+    if mx:
+        die(f"{domain} already has mail (MX at the apex): they have mail there — the forward. "
+            f"Their inbox stays where it is; PLAYBOOK § Email has the four Gmail steps. Nothing was changed.")
+    address = f"hello@{domain}"
+    say(f"mail for {slug}: {address} on {domain} (Cloudflare zone {zone['name']}, no mail at the apex)")
+    if check:
+        dom = resend_domain(domain)
+        if not dom:
+            say(f"  Resend has no domain {domain} yet (SITE_ADMIN=1 site mail --domain {domain} makes it)")
+            return None
+        say(f"  Resend: {dom.get('status')}, receiving {(dom.get('capabilities') or {}).get('receiving')}")
+        for r in dom.get("records") or []:
+            say(f"  {r.get('record', r['type']):<10} {r['type']:<6} {record_fqdn(r.get('name'), domain):<40} "
+                f"{'ok' if dns_matches(r, domain) else 'not in DNS yet'} (Resend: {r.get('status')})")
+        return address if dom.get("status") == "verified" else None
+    dom = resend_ensure_domain(domain)
+    if dom is None:                                    # dry run, domain not made
+        say(f"  would write Resend's records into the {domain} zone, verify, then "
+            f"PUT {json.dumps({'address': address, 'kind': 'domain', 'domains': [domain]})}")
+        return address
+    for rec in dom.get("records") or []:
+        say("  " + cf_write_record(zone, rec))
+    if DRY:
+        mailbox_put(slug, {"address": address, "kind": "domain", "domains": [domain]})
+        return address
+    if not resend_verify(dom):
+        say(f"  not verified yet; DNS can take a few minutes. Run this again (nothing is written twice): "
+            f"SITE_ADMIN=1 site mail --domain {domain}")
+        return None
+    say(f"  Resend verified {domain}")
+    mailbox_put(slug, {"address": address, "kind": "domain", "domains": [domain]})
+    say(f"  patchlamp.com: {slug}'s mailbox is {address}")
+    return address
+
+
+def cmd_mail(a):
+    """The site's address (plan 34): the mailbox on patchlamp.com and the Contact links
+    that show it."""
+    global DRY
+    DRY = a.dry_run
+    if a.name == "platform":
+        return mail_platform(a)
+    if a.name == "doctor":
+        sys.exit(0 if mail_doctor(say, lambda m: say(f"  FAIL {m}"), strict=True) else 1)
+    ws, meta = workspace()
+    slug = meta["slug"]
+    reg = registry_load().get(slug, {})
+    names = [a.name] if a.name else [n for n in repos_of(ws) if (reg.get(n) or {}).get("host") == "cloudflare"]
+    for n in names:
+        repo_dir(ws, n)
+    if a.domain:
+        address = mail_domain_setup(slug, a.domain, check=a.check)
+        if a.check:
+            say(f"  {address} is verified; the same command without --check sets the mailbox and the Contact links"
+                if address else "  not live yet")
+            sys.exit(0 if address else 1)
+        if not address:
+            sys.exit(1)
+    else:
+        box = mailbox_get(slug)
+        address = box.get("address")
+        if not address:
+            address = mail_default(slug)
+            say(f"  patchlamp.com has no mailbox for {slug}; {'would give' if DRY or a.check else 'giving'} it {address}")
+            if not a.check:
+                mailbox_put(slug, {"address": address, "kind": "platform"})
+        else:
+            say(f"mail for {slug}: {address} ({box.get('kind') or '?'}, {box.get('status') or '?'}, "
+                f"replies go by {box.get('send_via') or 'resend'}{', answers by itself' if box.get('auto_reply') else ''})")
+    behind = False
+    if not names:
+        say("  no Cloudflare site here to show it on (site new makes one; its Contact block carries the address)")
+    for n in names:
+        d = ws / "repos" / n
+        links = mail_links(d)
+        if not links:
+            say(f"  repos/{n}: no data-mail link in its pages (a site made before B75). Add "
+                f"<a data-mail href=\"mailto:{address}\">{address}</a> to its Contact block, commit, push, then site mail {n}")
+            continue
+        wrong = {rel: [mail_link_address(l) for l in ls] for rel, ls in links.items()
+                 if any(mail_link_address(l) != address for l in ls)}
+        if not wrong:
+            say(f"  repos/{n}: the Contact links already say {address}")
+            continue
+        behind = True
+        say(f"  repos/{n}: {', '.join(f'{rel} says {sorted(set(x))[0] or (chr(34) * 2)}' for rel, x in wrong.items())}")
+        if a.check:
+            continue
+        _, dirty = git(d, "status", "--porcelain", "--untracked-files=no", check=False)
+        if dirty.strip():
+            die(f"repos/{n} has uncommitted changes; commit them first, then site mail {n}")
+        changed = rewrite_mail(d, address)
+        say(f"  repos/{n}: {'would point' if DRY else 'pointed'} {len(changed)} page(s) at {address}: {', '.join(changed)}")
+        git(d, "add", "--", *changed)
+        git(d, "-c", "user.name=Patch (claude-tools site)", "-c", "user.email=noreply@anthropic.com",
+            "commit", "-q", "-m", f"Contact: {address}")
+        git(d, "push", "-q")
+        cmd_publish(argparse.Namespace(name=n, dry_run=DRY))
+    if DRY:
+        say("dry run: nothing changed")
+    if a.check and behind:
+        sys.exit(1)
+
+
+def mail_platform(a):
+    """SITE_ADMIN: the Resend domain mail.patchlamp.com (sending + receiving) and the
+    exact records for Porkbun, where patchlamp.com's DNS is (we have no Porkbun key).
+    --check: public DNS (dig -4) against each record, then Resend's verify."""
+    require_admin("mail platform")
+    if a.check:
+        dom = resend_domain(MAIL_DOMAIN)
+        if not dom:
+            say(f"{MAIL_DOMAIN}: not in Resend yet (SITE_ADMIN=1 site mail platform makes it)")
+            sys.exit(1)
+        missing = 0
+        say(f"{MAIL_DOMAIN}: Resend {dom.get('status')}, receiving {(dom.get('capabilities') or {}).get('receiving')}")
+        for r in dom.get("records") or []:
+            ok_ = dns_matches(r, MAIL_ZONE)
+            missing += not ok_
+            say(f"  {r.get('record', r['type']):<10} {r['type']:<6} {record_fqdn(r.get('name'), MAIL_ZONE):<40} "
+                f"{'in DNS' if ok_ else 'NOT in DNS yet'} (Resend: {r.get('status')})")
+        if missing:
+            say(f"{missing} record(s) not answering yet: paste them at Porkbun (site mail platform prints them); "
+                f"DNS can take minutes")
+            sys.exit(1)
+        verified = dom.get("status") == "verified" or (not DRY and resend_verify(dom, seconds=30))
+        say(f"{MAIL_DOMAIN}: {'verified: mail to <slug>@' + MAIL_DOMAIN + ' reaches Resend' if verified else 'records answer, Resend has not verified yet (again in a few minutes)'}")
+        sys.exit(0 if verified else 1)
+    dom = resend_ensure_domain(MAIL_DOMAIN)
+    if dom is None:
+        say(f"dry run: nothing created. Without --dry-run this makes the Resend domain {MAIL_DOMAIN} "
+            f"and prints the records to paste at Porkbun.")
+        return
+    print_records(dom.get("records") or [], MAIL_ZONE, f"{MAIL_DOMAIN}, to paste at Porkbun → patchlamp.com → DNS")
+    say("\nLeave the apex MX (Zoho, patchlamp.com's own inbox) as it is: these are all under mail. "
+        "Then: SITE_ADMIN=1 site mail platform --check")
+
+
+def mail_doctor(say_, fail_, strict=False):
+    """The mail lines: the app's /internal/relay/mail/status, the platform domain's DNS,
+    and, inside a workspace, the mailbox against the Contact links. `strict` (site mail
+    doctor): not-ready is a failure; in `site doctor` it is a note until the app ships."""
+    ok = True
+
+    def bad(msg):
+        nonlocal ok
+        ok = False
+        fail_(msg.strip())
+
+    note = bad if strict else (lambda m: say_(f"  note: {m.strip()}"))
+    say_("== mail (B75)")
+    status = None
+    try:
+        code, status = app_call("GET", "/internal/relay/mail/status")
+        if code != 200:
+            bad(f"patchlamp.com mail status: HTTP {code}: {status.get('error')}")
+            status = None
+    except AppMissing:
+        note(MAIL_NOT_YET)
+    except SystemExit:
+        bad("patchlamp.com's mail status couldn't be read (the line above says why)")
+    if status:
+        rk = str(status.get("resend_key") or "?")
+        (say_ if rk == "ok" else bad)(f"  app: resend key {rk}")
+        (say_ if status.get("webhook_secret") else note)("  app: webhook secret " + ("set" if status.get("webhook_secret")
+                                                         else "MISSING (RESEND_WEBHOOK_SECRET in Laravel Cloud)"))
+        (say_ if status.get("receiving") else note)(f"  app: receiving on {status.get('mail_domain') or MAIL_DOMAIN}: "
+                                                    + ("yes" if status.get("receiving") else "not yet (site mail platform)"))
+        say_(f"  app: gmail.send scope {'configured' if status.get('gmail_send_scope') else 'not configured'}; "
+             f"{status.get('mailboxes', 0)} mailbox(es), {status.get('pending', 0)} mail(s) pending")
+    mx = dig("MX", MAIL_DOMAIN)
+    (say_ if mx else note)(f"  DNS: MX {MAIL_DOMAIN} " + (", ".join(mx) if mx else "none yet (SITE_ADMIN=1 site mail platform)"))
+    if (Path.cwd() / ".client.json").exists() and status is not None:
+        ws, meta = workspace()
+        try:
+            code, data = app_call("GET", f"/internal/relay/projects/{meta['slug']}/mailbox")
+            box = (data.get("mailbox") or {}) if code == 200 else {}
+        except AppMissing:
+            box = None
+        if box is None:
+            note(MAIL_NOT_YET)
+        elif not box.get("address"):
+            note(f"{meta['slug']} has no mailbox on patchlamp.com (site mail gives it {mail_default(meta['slug'])})")
+        else:
+            say_(f"  mailbox: {box['address']} ({box.get('status')}, replies by {box.get('send_via') or 'resend'})")
+            for n in repos_of(ws):
+                links = mail_links(ws / "repos" / n)
+                addrs = sorted({mail_link_address(l) for ls in links.values() for l in ls})
+                if not links:
+                    say_(f"  repos/{n}: no data-mail link (site mail {n} says how to add one)")
+                elif addrs != [box["address"]]:
+                    bad(f"repos/{n}: the Contact links say {', '.join(addrs)}, the mailbox is {box['address']} (site mail {n})")
+                else:
+                    say_(f"  repos/{n}: the Contact links say {box['address']}")
+    return ok
+
+
 def cmd_adopt(a):
     """Register an existing repo (made for GitHub Pages) as a Cloudflare site
     and create its project. Doesn't touch DNS or GitHub Pages: publish, look,
@@ -2737,7 +3300,7 @@ def cmd_doctor(a):
                 except UnicodeDecodeError:
                     pass
         say(f"  {kind}: placeholders {', '.join(sorted(found))}")
-        unknown = found - {"NAME", "REPO", "URL", "OWNER", "YEAR", "TAGLINE"}
+        unknown = found - {"NAME", "REPO", "URL", "OWNER", "YEAR", "TAGLINE", "MAIL"}
         if unknown:
             fail(f"{kind}: placeholders `site new` doesn't fill: {', '.join(sorted(unknown))}")
         for c in kinds[kind].get("collections") or []:
@@ -2829,6 +3392,7 @@ def cmd_doctor(a):
     else:
         say("== not in a client workspace (cd ~/projects/clients/<slug> for per-repo checks)")
     watch_doctor(fail)
+    mail_doctor(say, fail)
     if (Path.cwd() / ".client.json").exists():
         handover_doctor(say, fail)
     sys.exit(0 if ok else 1)
@@ -2898,6 +3462,15 @@ def main():
     ad.add_argument("name"); ad.add_argument("--project", help="Pages project name (default: the repo name)")
     ad.add_argument("--dry-run", action="store_true")
     ad.set_defaults(fn=cmd_adopt)
+    ml = sub.add_parser("mail", help="the site's address (B75): the mailbox on patchlamp.com + the Contact links; "
+                        "`mail platform` / `mail doctor`")
+    ml.add_argument("name", nargs="?", help="repo name under ./repos (default: every site here); or `platform` "
+                    "(SITE_ADMIN=1: the Resend domain + Porkbun records) or `doctor`")
+    ml.add_argument("--domain", metavar="D", help="(SITE_ADMIN=1) hello@D instead, for a zone on our Cloudflare account "
+                    "whose apex has no MX")
+    ml.add_argument("--check", action="store_true", help="say what's off, change nothing (exit 1 when it is)")
+    ml.add_argument("--dry-run", action="store_true", help="print every write (Resend, DNS, the PUT, the commit); make none")
+    ml.set_defaults(fn=cmd_mail)
     sub.add_parser("ls", help="repos in ./repos with their Pages URLs").set_defaults(fn=cmd_ls)
     st = sub.add_parser("stamp", help="(GitHub Pages sites only) new build id into version.json + every page's cache-buster")
     st.add_argument("name", help="repo name under ./repos")

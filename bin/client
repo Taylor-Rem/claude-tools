@@ -241,6 +241,7 @@ def stamp(ws, meta):
     (ws / "repos").mkdir(exist_ok=True)
     (ws / "incoming").mkdir(exist_ok=True)
     (ws / "incoming" / ".keep").touch()
+    (ws / "mail" / "drafts").mkdir(parents=True, exist_ok=True)   # B75: Patch's reply drafts, EMAIL-DRAFT: <id>
     (ws / ".claude").mkdir(exist_ok=True)
     notes_file = ws / "NOTES.md"
     notes = notes_file.read_text() if notes_file.exists() else ""

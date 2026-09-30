@@ -300,11 +300,14 @@ class PreviewTest(unittest.TestCase):
         self.assertTrue(all(p["preview_url"] for p in picks), [p["preview_url"] for p in picks])
         for p in picks:
             self.assertTrue(p["preview_url"].endswith("/"), p["preview_url"])
-            self.assertIn(p["preview_url"], p["message"], "the message carries the link")
+            # 2026-09-30, the register: message one says it is built and carries no link (the link is message two)
+            self.assertNotIn(p["preview_url"], p["message"], "no link in message one")
+            self.assertIn("So I went ahead and built you one", p["message"])
+            self.assertTrue(p["message"].endswith("Want to see it?"), p["message"])
         page = self.run_leads("kit", "--remote", "--segment", "services", "--fixture", str(DETAILS),
                               "--no-save").stdout
         self.assertIn("Their preview site: https://", page)
-        self.assertIn("nothing to sign, and I'll take it down the moment you say so.", page)
+        self.assertNotIn("I also built you a page", page)
         self.assertNotIn("$", page)
 
     # -- claiming one --------------------------------------------------------------------

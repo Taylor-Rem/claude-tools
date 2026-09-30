@@ -101,19 +101,21 @@ class MorningTest(Base):
         for i in six:
             self.assertGreaterEqual(len(lines[i].split(" · ")), 4, lines[i])   # name · category · city · how
             under = lines[i + 1]
-            self.assertTrue(under.startswith("Hi ") or under.startswith('Say: "Hi, this is Taylor'), under)
+            self.assertTrue(under.startswith("Hi, this is Taylor in American Fork.") or
+                            under.startswith('Say: "Hi, this is Taylor'), under)
         at = next(i for i in six if "Mike's Pool Care" in lines[i])       # B73: strong first, so not by position
         mike = lines[at]
         self.assertIn("Facebook: facebook.com/mikespoolcare", mike)
         self.assertTrue(mike.endswith("· good · 14 reviews at 4.9 · 0.4 mi"), mike)   # B73: the level and why, last
         dm = lines[at + 1]
-        # B62: the kit's own second-person DM, pasteable as it stands
-        self.assertEqual(dm, "Hi Mike — I'm Taylor, a small-business owner in American Fork; I fix websites and Google "
-                             "listings for businesses around here. I looked up Mike's Pool Care on Google: your listing's "
-                             "website link is a Facebook page, not a site of your own. It's easy to fix. Want me to send "
-                             "you exactly what to change? Free, no strings.")
+        # 2026-09-29, the register: one fault, a question last; no preview yet, so the offer to build one
+        self.assertEqual(dm, "Hi, this is Taylor in American Fork. Looked Mike's Pool Care up on Google. 14 reviews "
+                             "at 4.9, but the website link on your listing goes to Facebook, not a site of your own. "
+                             "I can build you one in an afternoon — want to see what it'd look like?")
+        self.assertEqual(lines[at + 2], '(no preview built — leads preview "Mike\'s Pool Care")')
         for i in six:
-            self.assertNotRegex(lines[i + 1], r"\btheir\b|\bthey\b|\[|preview", lines[i + 1])   # no placeholder
+            if lines[i + 1].startswith("Hi, this is Taylor in American Fork."):
+                self.assertNotRegex(lines[i + 1], r"\btheir\b|\bthey\b|\[|preview|http", lines[i + 1])
         self.assertNotIn("$", r.stdout)                      # no price in the morning message
         self.assertFalse((self.t / "ledger.jsonl").exists(), "census-only costs nothing")
 
@@ -314,9 +316,13 @@ class MorningEmailTest(Base):
     def test_a_preview_goes_into_the_dm_and_an_address_without_a_page_waits(self):
         out = self.today(OUTREACH_PER_DAY="0").splitlines()
         cy = out.index(next(l for l in out if l.startswith("3. Cy Pools")))
-        self.assertTrue(out[cy + 1].startswith("Hi Cy Pools — I'm Taylor"), out[cy + 1])
-        self.assertIn("I also built you a page to see what one could look like: "
-                      "https://previews.patchlamp.com/cy-pools/", out[cy + 1])
+        self.assertTrue(out[cy + 1].startswith("Hi, this is Taylor in American Fork."), out[cy + 1])
+        self.assertTrue(out[cy + 1].endswith("So I went ahead and built you one. Want to see it?"), out[cy + 1])
+        self.assertNotIn("http", out[cy + 1])                            # the link is message two, under it
+        self.assertEqual(out[cy + 2], "When they say yes: https://previews.patchlamp.com/cy-pools/ — nothing to sign, "
+                                      "and I'll take it down the moment you say so. Patch, my AI, does the work and "
+                                      "I'm on the hook for it; if you want it kept right after the free fix it's $99 "
+                                      "a month.")
         bo = next(l for l in out if l.startswith("2. Bo Pools"))
         self.assertIn("call: (801) 555-0199 (the email to bo@example.test waits for the email lane)", bo)
 
@@ -454,8 +460,8 @@ class ReachTest(Base):
         by = {p["name"]: p for p in env["picks"]}
         self.assertEqual(sorted(by["Mike's Pool Care"]),
                          ["category", "city", "email", "facebook", "faults", "first", "host", "instagram", "language",
-                          "maps_url", "message", "name", "paying", "phone", "place_id", "preview_url", "segment",
-                          "summary"])
+                          "maps_url", "message", "name", "paying", "phone", "place_id", "preview_url", "rating",
+                          "reach_skipped", "reviews", "segment", "summary", "variant"])
         blue = by["Blue Canyon Landscaping"]
         self.assertEqual(blue["instagram"], "bluecanyonlandscaping")
         self.assertEqual(blue["facebook"], "https://facebook.com/bluecanyonut")
@@ -628,3 +634,195 @@ class HostsTest(Base):
         m_out = self.run_leads("brief", "Wasatch Pest Pros", now=ANCHOR).stdout
         self.assertIn("Hosting: Thryv's plans start at $99 a month (its own pricing page); their domain shows a "
                       "parked page.", m_out)
+
+
+class RegisterTest(unittest.TestCase):
+    """2026-09-29, Taylor's register: one fault, a thing already built, a question last; message two holds the
+    link, the AI line and the price. Pure functions, so the module is loaded and called directly."""
+
+    HELLO = "Hi, this is Taylor in American Fork. "
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.saved_previews = os.environ.get("LEADS_PREVIEWS")
+        os.environ["LEADS_PREVIEWS"] = str(Path(cls.tmp.name) / "previews")
+        cls.m = leads_module()
+        cls.m.PREVIEWS = Path(cls.tmp.name) / "previews"
+        cls.m.host_info = lambda pid: None               # no hosts table unless a test hangs one on
+        cls.m._REACH = {}
+
+    @classmethod
+    def tearDownClass(cls):
+        os.environ.pop("LEADS_PREVIEWS", None)
+        if cls.saved_previews is not None:
+            os.environ["LEADS_PREVIEWS"] = cls.saved_previews
+        cls.tmp.cleanup()
+
+    def pick(self, **kw):
+        c = {"name": "Summit Roofing", "place_id": None, "reviews": 92, "rating": 4.9, "preview_url": "https://p.example/x/"}
+        c.update(kw)
+        return c
+
+    def test_the_example_taylor_wrote_word_for_word(self):
+        self.m.host_info = lambda pid: {"vendor": "hibu", "kind": "agency", "says": "Hibu", "status": "404"}
+        try:
+            dm = self.m.segment_dm_text(self.pick(place_id="X"), ["the website link (summitroofing.com) doesn't load",
+                                                                  "no photos"])
+        finally:
+            self.m.host_info = lambda pid: None
+        self.assertEqual(dm, self.HELLO + "Looked you up on Google. 92 reviews at 4.9, but the website link on your "
+                             "listing goes to a Hibu page that doesn't load anymore. So I went ahead and built you one. "
+                             "Want to see it?")
+
+    def test_each_site_fault_said_once_to_the_owner(self):
+        cases = {
+            "no website on Google": ("there's no website on your listing", "one"),
+            "no website — Google sends people to DoorDash": ("there's no website on your listing", "one"),
+            "the website link (x.com) doesn't load": ("the website link on your listing (x.com) doesn't load anymore", "one"),
+            "the website link is a business.site page, and Google shut those down in 2024: it's a dead link":
+                ("the website link on your listing is a business.site page, which Google shut down in 2024, so it "
+                 "goes nowhere", "one"),
+            "the website is a free Wix address (dave.wixsite.com)":
+                ("the website on your listing is a free Wix address (dave.wixsite.com)", "one of your own"),
+            "the website link is a Facebook page, not a site of their own":
+                ("the website link on your listing goes to Facebook, not a site of your own", "one"),
+            "the website link is a DoorDash Storefront page, not their own":
+                ("the website link on your listing goes to DoorDash Storefront, not a site of your own", "one"),
+            "the website link is their Thumbtack profile, not a site of their own":
+                ("the website link on your listing is your Thumbtack page, not a site of your own", "one"),
+        }
+        for fault, (said, one) in cases.items():
+            dm = self.m.segment_dm_text(self.pick(), ["no photos", fault])     # the site fault, wherever it sits
+            self.assertEqual(dm, self.HELLO + f"Looked you up on Google. 92 reviews at 4.9, but {said}. So I went "
+                                              f"ahead and built you {one}. Want to see it?", fault)
+            self.assertNotIn("photos", dm)                                      # one fault, not two
+
+    def test_the_reviews_clause_only_when_it_is_worth_saying(self):
+        for reviews, rating in ((9, 5.0), (40, 4.4), (None, None)):
+            dm = self.m.segment_dm_text(self.pick(reviews=reviews, rating=rating), ["no website on Google"])
+            self.assertEqual(dm, self.HELLO + "Looked you up on Google, and there's no website on your listing. "
+                                              "So I went ahead and built you one. Want to see it?", (reviews, rating))
+        dm = self.m.segment_dm_text(self.pick(reviews=10, rating=4.5), ["no website on Google"])
+        self.assertIn("10 reviews at 4.5, but there's no website", dm)
+
+    def test_looked_up_by_name_when_the_greeting_is_a_person(self):
+        dm = self.m.segment_dm_text(self.pick(name="Mike's Pool Care LLC"), ["no website on Google"])
+        self.assertIn("Looked Mike's Pool Care up on Google.", dm)
+
+    def test_without_a_preview_the_offer_not_the_claim(self):
+        dm = self.m.segment_dm_text(self.pick(preview_url=None), ["the website is a free Wix address (d.wixsite.com)"])
+        self.assertTrue(dm.endswith("(d.wixsite.com). I can build you one of your own in an afternoon — want to see "
+                                    "what it'd look like?"), dm)
+        self.assertNotIn("built you", dm)
+
+    def test_no_site_fault_names_the_first_fault(self):
+        dm = self.m.segment_dm_text(self.pick(), ["no photos", "no hours on Google"])
+        self.assertIn("but there are no photos on it. I went ahead and built you a website too. Want to see it?", dm)
+
+    def test_restaurants_get_the_identical_register(self):
+        for fs in (["no website — Google sends people to DoorDash"], ["the website link (a.com) doesn't load"]):
+            self.assertEqual(self.m.dm_text(self.pick(), fs), self.m.segment_dm_text(self.pick(), fs))
+
+    def test_message_one_has_no_price_no_link_no_intro(self):
+        dm = self.m.segment_dm_text(self.pick(), ["no website on Google"])
+        for word in ("$", "http", "I fix", "Free, no strings", "AI", "Patch"):
+            self.assertNotIn(word, dm)
+
+    def test_message_two_is_the_link_the_ai_line_and_starter(self):
+        self.assertEqual(self.m.then_text("https://p.example/x/"),
+                         "https://p.example/x/ — nothing to sign, and I'll take it down the moment you say so. Patch, "
+                         "my AI, does the work and I'm on the hook for it; if you want it kept right after the free "
+                         "fix it's $99 a month.")
+        mp = self.m.morning_pick({"name": "Summit Roofing", "segment": "services", "faults": ["no website on Google"],
+                                  "reviews": 92, "rating": 4.9, "preview_url": "https://p.example/x/",
+                                  "facebook": "https://facebook.com/summitroofing"}, email_on=False)
+        self.assertEqual(mp["then"], self.m.then_text("https://p.example/x/"))
+        self.assertTrue(mp["dm"].endswith("built you one. Want to see it?"))
+        mp = self.m.morning_pick({"name": "Summit Roofing", "segment": "services", "faults": ["no website on Google"],
+                                  "facebook": "https://facebook.com/summitroofing"}, email_on=False)
+        self.assertIsNone(mp["then"])
+
+    def test_the_email_carries_the_link_and_message_two(self):
+        subject, body = self.m.segment_email(self.pick(), ["no website on Google"])
+        self.assertEqual(subject, "A website for Summit Roofing")
+        self.assertTrue(body.startswith("Hi Summit Roofing,\n\nThis is Taylor Remund in American Fork. Looked you up"))
+        self.assertTrue(body.endswith("So I went ahead and built you one. Here it is: " + self.m.then_text(
+            "https://p.example/x/")), body)
+        subject, body = self.m.segment_email(self.pick(preview_url=None), ["no website on Google"])
+        self.assertEqual(subject, "Summit Roofing on Google")
+        self.assertNotIn("http", body)
+
+    def test_a_facebook_p_page_keeps_its_whole_path(self):
+        fb = self.m.fb_page
+        self.assertEqual(fb("https://www.facebook.com/p/PyneCo-Services-100090734772685"),
+                         "facebook.com/p/PyneCo-Services-100090734772685")
+        self.assertEqual(fb("https://www.facebook.com/pages/Foo-Bar/1234"), "facebook.com/pages/Foo-Bar/1234")
+        self.assertIsNone(fb("https://facebook.com/p"))
+        self.assertEqual(fb("https://facebook.com/SBPCU/"), "facebook.com/SBPCU")
+        self.assertIsNone(self.m.fb_from_url("pynecoservices.com"))
+        # a kit saved before the fix: the reach table's full page replaces the cut one
+        self.m._REACH = {"PY": {"facebook": "facebook.com/p/PyneCo-Services-100090734772685", "instagram": None,
+                                "evidence": "{}"}}
+        try:
+            ig, page, skipped = self.m.pick_handles({"place_id": "PY", "name": "PyneCo Services",
+                                                     "facebook": "https://facebook.com/p"})
+        finally:
+            self.m._REACH = {}
+        self.assertEqual(page, "facebook.com/p/PyneCo-Services-100090734772685")
+
+    def test_another_citys_instagram_is_refused_and_falls_through(self):
+        # ProSlat Garage Store (American Fork), 2026-09-30: B61 found the Dallas franchise's account
+        self.m._REACH = {"PS": {"instagram": "proslatgaragestore.dallas", "facebook": None,
+                                "email": "info@lifetime-coatings.com", "evidence": json.dumps({
+                                    "query": "\"ProSlat Garage Store\" American Fork Utah",
+                                    "instagram": {"url": "https://www.instagram.com/proslatgaragestore.dallas/",
+                                                  "title": "Proslat Garage Store Dallas (@proslatgaragestore.dallas)"}})}}
+        try:
+            p = {"place_id": "PS", "name": "ProSlat Garage Store", "city": "American Fork", "segment": "services",
+                 "instagram": "proslatgaragestore.dallas", "email": "info@lifetime-coatings.com",
+                 "phone": "(801) 203-4466", "faults": ["the website link (lifetime-coatings.com) doesn't load"]}
+            mp = self.m.morning_pick(p, email_on=False)
+            out = self.m.reach_guard({"instagram": "proslatgaragestore.dallas", "facebook": None}, p)
+        finally:
+            self.m._REACH = {}
+        self.assertTrue(mp["how"].startswith("call: (801) 203-4466"), mp["how"])
+        self.assertEqual(mp["skipped"], ["Instagram skipped: another city's account (Dallas)"])
+        self.assertIsNone(out["instagram"])
+        # a Utah business named for the place keeps its own handle; a word inside another word is not a place
+        self.assertIsNone(self.m.foreign_place("phoenixplumbingutah", {"name": "Phoenix Plumbing"}))
+        self.assertIsNone(self.m.foreign_place("mesamovers", {"name": "Big Movers"}))
+        self.assertEqual(self.m.foreign_place("sbpcdenver"), "Denver")
+
+    def test_today_builds_previews_once_the_project_is_published(self):
+        root = self.m.PREVIEWS
+        root.mkdir(parents=True, exist_ok=True)
+        saved = os.environ.pop("LEADS_KIT_PREVIEWS", None)
+        env_file, self.m.ENV_FILE = self.m.ENV_FILE, root / "no-env"
+        try:
+            self.assertFalse(self.m.previews_on(), "no project.json yet")
+            (root / "project.json").write_text(json.dumps({"pages_host": "patchlamp-previews.pages.dev"}))
+            self.assertTrue(self.m.previews_on())
+            os.environ["LEADS_KIT_PREVIEWS"] = "0"
+            self.assertFalse(self.m.previews_on())
+            os.environ["LEADS_KIT_PREVIEWS"] = "1"
+            (root / "project.json").unlink()
+            self.assertTrue(self.m.previews_on())
+        finally:
+            os.environ.pop("LEADS_KIT_PREVIEWS", None)
+            if saved is not None:
+                os.environ["LEADS_KIT_PREVIEWS"] = saved
+            self.m.ENV_FILE = env_file
+
+    def test_a_preview_build_that_breaks_is_the_offer_not_a_crash(self):
+        def boom(*a, **k):
+            raise RuntimeError("site previews fell over")
+        real, self.m.make_previews = self.m.make_previews, boom
+        try:
+            c = dict(self.pick(preview_url=None), place_id="B1", faults=["no website on Google"], variant="listing",
+                     message="old")
+            self.m.kit_previews([c], build=True)
+        finally:
+            self.m.make_previews = real
+        self.assertIsNone(c["preview_url"])
+        self.assertTrue(c["message"].endswith("want to see what it'd look like?"), c["message"])

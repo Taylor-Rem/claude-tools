@@ -99,7 +99,7 @@ class KitTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertLess(len(r.stdout), 3901, "one Telegram message")
         self.assertIn("Remote kit —", r.stdout)
-        self.assertIn("Free, no strings.", r.stdout)
+        self.assertIn("Hi, this is Taylor in American Fork. Looked you up on Google", r.stdout)   # the register
         self.assertIn("don't send yet", r.stdout)                 # no postal address, no ready email
         self.assertNotIn("not their own", r.stdout.split("Email footer")[0].split('"Hi')[1])
         self.assertNotIn("$", r.stdout)                            # no price in a cold message
@@ -356,16 +356,18 @@ class SegmentTest(unittest.TestCase):
         rows = picks(r)
         self.assertEqual(len(rows), 6)
         msgs = {x["name"]: x["message"] for x in rows}
-        self.assertTrue(msgs["Photography by Jenna"].startswith("Hi Jenna — "))
-        self.assertTrue(msgs["Rosie's Florals"].startswith("Hi Rosie — "))
-        self.assertIn("I looked up Rosie's Florals on Google", msgs["Rosie's Florals"])
-        self.assertTrue(msgs["Beat Drop DJs"].startswith("Hi Beat Drop DJs — "))
-        self.assertIn("I looked yours up on Google: there's no website on your listing.", msgs["Beat Drop DJs"])
+        # 2026-09-30, the register: no greeting by name any more; "Looked you up" when the business is the greeting
+        self.assertIn("Looked Photography by Jenna up on Google", msgs["Photography by Jenna"])
+        self.assertIn("Looked Rosie's Florals up on Google", msgs["Rosie's Florals"])
+        self.assertIn("Looked you up on Google", msgs["Beat Drop DJs"])
+        self.assertIn("there's no website on your listing.", msgs["Beat Drop DJs"])
         for m in msgs.values():
+            self.assertTrue(m.startswith("Hi, this is Taylor in American Fork. Looked "), m)
             self.assertNotIn("team", m)
             self.assertNotIn("$", m)
             self.assertNotIn("their", m)
-            self.assertTrue(m.endswith("Free, no strings."))
+            self.assertNotIn("http", m)                                  # the link is message two
+            self.assertTrue(m.endswith("want to see what it'd look like?"), m)   # no preview built: the offer
         self.assertNotIn("Lens & Light Studio", msgs)                 # an own site isn't a lead
         page = run("kit", "--remote", "--segment", "creatives", "--census-only", env=self.env)
         self.assertEqual(page.returncode, 0, page.stderr)

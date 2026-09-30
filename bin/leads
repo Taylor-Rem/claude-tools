@@ -126,7 +126,9 @@ Config, by name, never printed:
   LEADS_NOW             an ISO date standing in for today: the previews' expiry, and the
                         clock `today`, `cadence`, `brief` and `week` read (so a day-10
                         touch is provable without waiting ten days). Unset in normal use.
-  LEADS_KIT_PREVIEWS    =1 and `leads today` builds a preview for every pick it makes (B45)
+  LEADS_KIT_PREVIEWS    `leads today` builds a preview for every pick it makes (B45) by default once the
+                        previews project is published (project.json has a pages_host); =0 turns it
+                        off, =1 forces it on. Never with --no-save.
   LEADS_BOOKING_URL     the booking link `leads brief` ends on (Cal.com); shared with `outreach`
   OUTREACH_STATE        read-only here: `leads today` reads the email lane's replies.jsonl for
                         "yesterday's replies", and never writes anything under it
@@ -200,6 +202,7 @@ in STRENGTH_REASONS). Candidates, the kits and `leads today` put strong first an
 """
 
 import argparse
+import contextlib
 import datetime as dt
 import hashlib
 import html
@@ -460,15 +463,84 @@ def ig_handle(value):
 
 
 def fb_page(value):
-    """'facebook.com/x' from a page URL or a bare page name; None for a group, an event or nothing."""
+    """'facebook.com/x' from a page URL or a bare page name; None for a group, an event or nothing.
+    A `facebook.com/p/<Name>-<id>` page keeps its whole path (it was cut to 'facebook.com/p' until 2026-09-30),
+    and so does an old-style `facebook.com/pages/<Name>/<id>`."""
     v = (value or "").strip()
     if not v:
         return None
-    m = re.match(r"^(?:https?://)?(?:www\.|m\.|web\.)?facebook\.com/([^/?#]+)", v)
-    name = m.group(1) if m else (v.strip("/") if "/" not in v.strip("/") else None)
+    m = re.match(r"^(?:https?://)?(?:www\.|m\.|web\.)?facebook\.com/([^?#]*)", v)
+    if m:
+        seg = [x for x in m.group(1).split("/") if x]
+        if seg and seg[0].lower() == "p":
+            return f"facebook.com/p/{seg[1]}" if len(seg) >= 2 else None
+        if seg and seg[0].lower() == "pages":
+            return "facebook.com/pages/" + "/".join(seg[1:3]) if len(seg) >= 3 else None
+        name = seg[0] if seg else None
+    else:
+        name = v.strip("/") if "/" not in v.strip("/") else None
     if not name or name.lower() in FB_SKIP:
         return None
     return f"facebook.com/{name}"
+
+
+def fb_from_url(url):
+    """fb_page for a link that may be anything: None unless it is on facebook.com."""
+    return fb_page(url) if re.match(r"^(?:https?://)?(?:www\.|m\.|web\.)?facebook\.com/", url or "") else None
+
+
+# A handle or a search result's title naming one of these is another place's account (a franchise in Dallas,
+# a namesake in Boise): the kit and `today` refuse it and fall through to the next channel. One list, here.
+FOREIGN_PLACES = ("Dallas", "Fort Worth", "Houston", "San Antonio", "Phoenix", "Scottsdale", "Tucson", "Mesa",
+                  "Las Vegas", "Vegas", "Boise", "Denver", "Colorado Springs", "Seattle", "Portland", "Sacramento",
+                  "San Diego", "Los Angeles", "San Francisco", "Chicago", "Atlanta", "Nashville", "Miami", "Orlando",
+                  "Tampa", "California", "Texas", "Arizona", "Idaho", "Nevada", "Colorado", "Oregon", "Wyoming",
+                  "Montana", "Florida", "New Mexico", "Albuquerque")
+FOREIGN_SHORT = ("mesa",)           # too short to look for inside a run-together handle: only as a word of its own
+
+
+def foreign_place(text, c=None):
+    """'Dallas' when the text names a place that is neither Utah nor in the business's own name or city, else None.
+    Handles run words together (proslatgaragestore.dallas, sbpcdenver), so the long names match inside a word."""
+    t = (text or "").lower()
+    if not t:
+        return None
+    flat = re.sub(r"[^a-z]", "", t)
+    own = re.sub(r"[^a-z]", "", " ".join(str((c or {}).get(k) or "") for k in ("name", "city", "locality")).lower())
+    for place in FOREIGN_PLACES:
+        w = re.sub(r"[^a-z]", "", place.lower())
+        if w in own:
+            continue
+        if re.search(rf"(?<![a-z]){w}(?![a-z])", t) if w in FOREIGN_SHORT else w in flat:
+            return place
+    return None
+
+
+def reach_guard(out, c):
+    """Refuse an Instagram or Facebook handle that is another city's account (the handle itself, or the title of
+    the search result B61 found it by). A refused handle is dropped, so the pick falls through to the next
+    channel, and `out['skipped']` says why ("Instagram skipped: another city's account (Dallas)")."""
+    row = (reach_table() or {}).get((c or {}).get("place_id") or "") or {}
+    try:
+        ev = json.loads(row.get("evidence") or "{}") if isinstance(row.get("evidence"), str) else (row.get("evidence") or {})
+    except ValueError:
+        ev = {}
+    skipped = list(out.get("skipped") or [])
+    for field, label in (("instagram", "Instagram"), ("facebook", "Facebook")):
+        v = out.get(field)
+        if not v:
+            continue
+        title = ""
+        if row.get(field) and (row[field] == v or str(v).endswith(str(row[field]))):
+            title = ((ev.get(field) or {}).get("title") or "") if isinstance(ev.get(field), dict) else ""
+        handle = re.sub(r"^(?:https?://)?(?:www\.)?(?:facebook|instagram)\.com/", "", str(v))
+        where = foreign_place(f"{handle} {title}", c)
+        if where:
+            out[field] = None
+            skipped.append(f"{label} skipped: another city's account ({where})")
+    if skipped:
+        out["skipped"] = skipped
+    return out
 
 
 # ---- the hosts table (B71's `hosts`; read here, written by client-leads/scripts/hosts.py) ----
@@ -1467,10 +1539,10 @@ def reach(c):
         m = re.match(r"^https?://(?:www\.|m\.)?instagram\.com/([A-Za-z0-9_.]+)", url)
         if m and not out["instagram"] and m.group(1).lower() not in IG_SKIP:
             out["instagram"] = m.group(1)
-        m = re.match(r"^https?://(?:www\.|m\.|web\.)?facebook\.com/([^/?#]+)", url)
-        if m and not out["facebook"] and m.group(1).lower() not in FB_SKIP:
-            out["facebook"] = f"facebook.com/{m.group(1)}"
-    return reach_fill(out, c.get("place_id"))
+        fb = fb_from_url(url) if url.startswith("http") else None
+        if fb and not out["facebook"]:
+            out["facebook"] = fb
+    return reach_guard(reach_fill(out, c.get("place_id")), c)
 
 
 def clean_name(name):
@@ -1500,14 +1572,8 @@ def lead_faults(c, details, today):
 
 
 def dm_text(c, fs):
-    """The Instagram / Facebook message, from Taylor's phone. Two faults at most; no price, no pitch."""
-    name = clean_name(c["name"])
-    shown = [to_them(f) for f in fs[:2]]
-    what = " — and ".join(shown)
-    fix = "Both are easy to fix." if len(shown) > 1 else "It's easy to fix."
-    return (f"Hi {name} team — I'm Taylor, a small-business owner in American Fork; I fix Google listings for "
-            f"local restaurants. I looked yours up: {what}. {fix} Want me to send you exactly what to change? "
-            f"Free, no strings.")
+    """The restaurant DM: the same register as every other segment since 2026-09-29 (`register_dm`)."""
+    return register_dm(c, fs)
 
 
 def tool_dm_text(c, fs):
@@ -1533,8 +1599,7 @@ def email_draft(c, fs):
     if c.get("variant") == "tool":
         subject = f"{name}: booking online"
         return subject, tool_dm_text(c, fs).replace(f"Hi {name} team — I'm Taylor,", f"Hi {name} team,\n\nI'm Taylor Remund —", 1)
-    subject = f"{name} on Google — {'two quick fixes' if len(fs) > 1 else 'a quick fix'}"
-    return subject, dm_text(c, fs).replace(f"Hi {name} team — I'm Taylor,", f"Hi {name} team,\n\nI'm Taylor Remund —", 1)
+    return register_email(c, fs)
 
 
 def email_footer():
@@ -1698,7 +1763,8 @@ def _render_remote(picks, today, mode, note, census_date, emails):
             lines.append(f"   {p['maps']}")
         lines.append("")
     lines += ["Email footer (every cold email, from founder@):", email_footer(), "",
-              "No owner names in the census; greet the team. After sending, text \"sent 1 3 4\" (or \"sent all\")."]
+              "One fault, a question last; the link and the price are message two, when they answer (`leads today` "
+              "prints it). After sending, text \"sent 1 3 4\" (or \"sent all\")."]
     return "\n".join(lines) + "\n"
 
 
@@ -1751,12 +1817,10 @@ def business_reach(c):
     m = re.match(r"^(?:https?://)?(?:www\.|m\.)?instagram\.com/([A-Za-z0-9_.]+)", url)
     if m and m.group(1).lower() not in IG_SKIP:
         out["instagram"] = m.group(1)
-    m = re.match(r"^(?:https?://)?(?:www\.|m\.|web\.)?facebook\.com/([^/?#]+)", url)
-    if m and m.group(1).lower() not in FB_SKIP:
-        out["facebook"] = f"facebook.com/{m.group(1)}"
+    out["facebook"] = fb_from_url(url)
     if c.get("presence") == "directory" and url:
         out["directory"] = (c.get("presence_label") or host_of(url), url)
-    return reach_fill(out, c.get("place_id"))
+    return reach_guard(reach_fill(out, c.get("place_id")), c)
 
 
 def business_reach_line(rc):
@@ -1792,26 +1856,119 @@ def to_you(fault):
             .replace("their ", "your ").replace("the area they serve", "the area you serve"))
 
 
-DM_NOUN = {"nonprofit": "nonprofits and churches around here"}
-
-
 def segment_dm_text(c, fs):
-    """The DM for a trade, a creative, a shop or a nonprofit: greeted by name, the business named, two faults at
-    most, the offer is the free diagnostic. No price, no pitch (the close is for when they answer)."""
-    hi, biz = greeting(c), plain_name(c["name"])
-    shown = [to_you(f) for f in fs[:2]]
-    what = " — and ".join(shown)
-    fix = "Both are easy to fix." if len(shown) > 1 else "It's easy to fix."
-    looked = "I looked yours up on Google" if hi == biz else f"I looked up {biz} on Google"
-    return (f"Hi {hi} — I'm Taylor, a small-business owner in American Fork; I fix websites and Google listings for "
-            f"{DM_NOUN.get(c.get('segment'), 'businesses around here')}. {looked}: {what}. {fix} Want me to send you exactly "
-            f"what to change? Free, no strings.")
+    """The DM for a trade, a creative, a shop or a nonprofit: `register_dm`, the same as a restaurant's."""
+    return register_dm(c, fs)
 
 
 def segment_email(c, fs):
+    return register_email(c, fs)
+
+
+# ---- the register (Taylor, 2026-09-29) --------------------------------------------------------
+# "Hi, this is Taylor in American Fork. Looked you up on Google. 92 reviews at 4.9, but the website link on your
+#  listing goes to a Hibu page that doesn't load anymore. So I went ahead and built you one. Want to see it?"
+# One fault, stated once; a thing already built; a question last. The AI line, the price and the link are message
+# two (`then_text`), after they answer. VISION § Decided 2026-09-29; memory "outreach message register".
+
+DM_HELLO = "Hi, this is Taylor in American Fork."
+REVIEWS_MIN, RATING_MIN = 10, 4.5
+STARTER_PRICE = "$99"          # Starter on patchlamp.com/pricing (patchlamp/CLAIMS.md, Prices::TIERS)
+
+
+def pick_reviews(c):
+    """(count, rating) from the listing read today, else the pick, else the census row; (None, None) if unknown."""
+    d = c.get("details") or {}
+    n, r = d.get("userRatingCount"), d.get("rating")
+    if n is None:
+        n, r = c.get("reviews"), c.get("rating")
+    if n is None and c.get("place_id"):
+        row = (_census_by_id(c["place_id"]) or [{}])[0]
+        n, r = row.get("reviews"), row.get("rating")
+    try:
+        return (int(n) if n is not None else None), (float(r) if r is not None else None)
+    except (TypeError, ValueError):
+        return None, None
+
+
+def reviews_clause(c):
+    """'92 reviews at 4.9' when it is worth saying (10+ reviews at 4.5 or better), else None."""
+    n, r = pick_reviews(c)
+    if n is None or r is None or n < REVIEWS_MIN or r < RATING_MIN:
+        return None
+    return f"{n} reviews at {r:.1f}"
+
+
+def site_fault(fs):
+    """The one fault a DM names: the first that is about the website (the pool is no-site-of-their-own)."""
+    return next((f for f in fs or [] if f == "no website on Google" or f.startswith(("no website", "the website"))), None)
+
+
+def site_fault_words(c, fault):
+    """(the 'but …' clause, said to the owner; what was built: 'one' or 'one of your own')."""
+    if fault.startswith("no website"):
+        return "there's no website on your listing", "one"
+    if "business.site" in fault:
+        return ("the website link on your listing is a business.site page, which Google shut down in 2024, "
+                "so it goes nowhere"), "one"
+    m = re.match(r"^the website link \((.+)\) doesn't load$", fault)
+    if m:
+        hi = host_info(c.get("place_id"))
+        if hi and hi["kind"] in ("agency", "builder") and hi.get("says"):     # a platform with pages (not WordPress)
+            art = "an" if hi["says"][:1].upper() in "AEIOU" else "a"
+            return f"the website link on your listing goes to {art} {hi['says']} page that doesn't load anymore", "one"
+        return f"the website link on your listing ({m.group(1)}) doesn't load anymore", "one"
+    m = re.match(r"^the website is a free (.+) address \((.+)\)$", fault)
+    if m:
+        return f"the website on your listing is a free {m.group(1)} address ({m.group(2)})", "one of your own"
+    m = re.match(r"^the website link is an? (.+) page, not (?:a site of )?their own$", fault)
+    if m:
+        return f"the website link on your listing goes to {m.group(1)}, not a site of your own", "one"
+    m = re.match(r"^the website link is their (.+) profile, not a site of their own$", fault)
+    if m:
+        return f"the website link on your listing is your {m.group(1)} page, not a site of your own", "one"
+    return to_you(fault), "one"
+
+
+def register_dm(c, fs):
+    """Message one, for every segment. "Built you one" only when the pick has a preview_url (it is true then);
+    without one the offer is to build it."""
+    biz = plain_name(c["name"])
+    who = "you" if greeting(c) == biz else biz
+    fault = site_fault(fs)
+    if fault:
+        said, one = site_fault_words(c, fault)
+        built, offer = f"So I went ahead and built you {one}.", f"I can build you {one} in an afternoon"
+    elif fs:
+        said, built, offer = to_you(fs[0]), "I went ahead and built you a website too.", "I can build you a website in an afternoon"
+    else:
+        said, built, offer = None, "I went ahead and built you a website.", "I can build you a website in an afternoon"
+    rv = reviews_clause(c)
+    if rv and said:
+        looked = f"Looked {who} up on Google. {rv}, but {said}."
+    elif said:
+        looked = f"Looked {who} up on Google, and {said}."
+    else:
+        looked = f"Looked {who} up on Google." + (f" {rv}." if rv else "")
+    close = f"{built} Want to see it?" if c.get("preview_url") else f"{offer} — want to see what it'd look like?"
+    return f"{DM_HELLO} {looked} {close}"
+
+
+def then_text(url):
+    """Message two, for when they answer yes: the link, the AI line, the price. Never in message one."""
+    return (f"{url} — nothing to sign, and I'll take it down the moment you say so. Patch, my AI, does the work and "
+            f"I'm on the hook for it; if you want it kept right after the free fix it's {STARTER_PRICE} a month.")
+
+
+def register_email(c, fs):
+    """The one-shot email (nobody to wait on for a yes): message one as a letter, and with a preview the link and
+    message two in place of the question."""
     hi, biz = greeting(c), plain_name(c["name"])
-    subject = f"{biz} on Google — {'two quick fixes' if len(fs) > 1 else 'a quick fix'}"
-    return subject, segment_dm_text(c, fs).replace(f"Hi {hi} — I'm Taylor,", f"Hi {hi},\n\nI'm Taylor Remund —", 1)
+    url = c.get("preview_url")
+    body = register_dm(c, fs).replace(DM_HELLO, f"Hi {hi},\n\nThis is Taylor Remund in American Fork.", 1)
+    if url:
+        body = body.replace(" Want to see it?", " Here it is: " + then_text(url), 1)
+    return (f"A website for {biz}" if url else f"{biz} on Google"), body
 
 
 def build_segment_remote(args, segment):
@@ -1917,7 +2074,7 @@ def render_segment_remote(picks, segment, today, mode, note, census_date, emails
             lines.append(f"   {p['maps']}")
         lines.append("")
     lines += ["Email footer (every cold email, from founder@):", email_footer(), "",
-              "Greet by the business, or by the first name when the name carries one (Mike's Pool Care → Mike). "
+              "One fault, a question last; the link and the price are message two, when they answer (`leads today` prints it). "
               "When they answer, the close and the ladder are on `leads kit --segment " + segment + "`. "
               "After sending, text \"sent 1 3 4\" (or \"sent all\")."]
     page = "\n".join(lines) + "\n"
@@ -3196,7 +3353,13 @@ def kit_previews(picks, build=False, publish=True):
         missing = [(c, c.get("details")) for c in picks
                    if c["place_id"] not in have and c["place_id"] not in claimed]
         if missing:
-            made, ok = make_previews(missing, publish=publish)
+            try:
+                with contextlib.redirect_stdout(sys.stderr):      # `site previews` talks; --json stays clean
+                    made, ok = make_previews(missing, publish=publish)
+            except Exception as e:                                 # a failed build is a DM without "built you one"
+                print(f"leads: the previews didn't build ({type(e).__name__}: {e}) — the messages offer to build one",
+                      file=sys.stderr)
+                made, ok = [], True
             if not ok:
                 print("leads: the previews didn't publish — the messages go out without the link",
                       file=sys.stderr)
@@ -3206,8 +3369,8 @@ def kit_previews(picks, build=False, publish=True):
     for c in picks:
         m = have.get(c["place_id"])
         c["preview_url"] = m["url"] if m else None
-        if m and c.get("message"):
-            c["message"] += preview_sentence(m["url"])
+        if c.get("message") and c.get("variant", "listing") == "listing":
+            c["message"] = register_dm(c, c.get("faults") or [])   # "built you one" is true only now; no link in it
     return picks
 
 
@@ -3236,6 +3399,9 @@ def kit_json(picks, segment, today):
             "maps_url": c.get("maps") or clean_maps(c.get("google_maps_uri")),
             # beyond the agreed shape, and additive: the draft itself, so a caller doesn't rebuild it
             "message": c.get("message"), "summary": c.get("summary"),
+            # 2026-09-30: what the register reads (the reviews clause) and why a handle was refused
+            "reviews": pick_reviews(c)[0], "rating": pick_reviews(c)[1], "variant": c.get("variant") or "listing",
+            "reach_skipped": list(rc.get("skipped") or []),
             # B71: the letter's `{paying}` line (null drops it whole) and the fingerprint behind it
             "paying": paying_sentence(c.get("place_id"), "letter"),
             "host": host_json(c.get("place_id")),
@@ -4026,7 +4192,18 @@ def env_value(name):
 
 
 def previews_on():
-    return (env_value("LEADS_KIT_PREVIEWS") or "").lower() in ("1", "true", "yes", "on")
+    """`leads today` builds previews by default once the previews project is published (project.json has a
+    pages_host or a domain); LEADS_KIT_PREVIEWS=0/false/off turns it off, =1 forces it on."""
+    v = (env_value("LEADS_KIT_PREVIEWS") or "").lower()
+    if v in ("1", "true", "yes", "on"):
+        return True
+    if v in ("0", "false", "no", "off"):
+        return False
+    try:
+        row = json.loads((PREVIEWS / "project.json").read_text())
+    except (OSError, ValueError):
+        return False
+    return bool(row.get("pages_host") or row.get("domain"))
 
 
 def lead_email(lead):
@@ -4247,8 +4424,8 @@ def warmest(today, state=None):
 
 
 def todays_kit(args, today):
-    """Today's six: the remote run already saved today, else one run now (about $0.15 of Places;
-    previews too when LEADS_KIT_PREVIEWS is set)."""
+    """Today's six: the remote run already saved today, else one run now (about $0.15 of Places; a preview
+    for each pick too, built and published, once the previews project is up — `previews_on`; never with --no-save)."""
     folder = STATE / "remote"
     saved = sorted(folder.glob(f"{today.isoformat()}*.json"), key=lambda p: p.stat().st_mtime) if folder.exists() else []
     if saved and not args.fresh:
@@ -4259,7 +4436,7 @@ def todays_kit(args, today):
     segment = resolve_segment(args.segment)
     ns = argparse.Namespace(census_only=args.census_only, fixture=args.fixture, refresh=False, radius=30.0,
                             min_reviews=25 if segment == "restaurant" else None, allow_repeat=False,
-                            n=args.n, previews=previews_on(), no_save=args.no_save)
+                            n=args.n, previews=previews_on() and not args.no_save, no_save=args.no_save)
     try:
         _, picks = (build_remote if segment == "restaurant" else lambda a: build_segment_remote(a, segment))(ns)
     except SystemExit:
@@ -4336,29 +4513,50 @@ def call_opener(p):
 
 
 def morning_pick(p, email_on):
-    """B62: what Taylor does with one of the six — {"how": where it goes, "dm": the message to paste (the
-    kit's own wording, the preview sentence when there's a page), "say": the call opener}. Added to each
-    pick in `--json`; nothing there is renamed."""
-    c = {"name": p["name"], "segment": p.get("segment")}
-    faults = p.get("faults") or []
-    if (p.get("segment") or "restaurant") == "restaurant":
-        dm = p.get("message") or (dm_text(c, faults) if faults else None)   # the restaurant tool variant is saved
-    else:
-        dm = segment_dm_text(c, faults) if faults else p.get("message")    # today's wording, from the saved faults
+    """B62: what Taylor does with one of the six — {"how": where it goes, "dm": message one to paste (the register,
+    `register_dm`), "then": message two for when they say yes (the link, the AI line, the price; None without a
+    preview), "say": the call opener, "skipped": the handles refused as another city's}. Added to each pick in
+    `--json`; nothing there is renamed."""
     url = p.get("preview_url")
-    if dm and url and url not in dm:
-        dm += preview_sentence(url)
+    if not url and p.get("place_id"):              # a saved kit, and a preview built since (`leads preview`)
+        m = next((m for m in previews_all() if m.get("place_id") == p["place_id"] and not m.get("claimed")), None)
+        url = m["url"] if m else None
+    c = {"name": p["name"], "segment": p.get("segment"), "place_id": p.get("place_id"), "preview_url": url,
+         "reviews": p.get("reviews"), "rating": p.get("rating"), "city": p.get("city")}
+    faults = p.get("faults") or []
+    if p.get("variant") == "tool" or (not faults and p.get("message")):
+        dm = p.get("message")                      # the B40 booking message is its own; it is kept as saved
+    else:
+        dm = register_dm(c, faults) if faults else p.get("message")
+    then = then_text(url) if (dm and url) else None
+    ig, fb, skipped = pick_handles(p)
     phone = p.get("phone")
-    if p.get("instagram"):
-        return {"how": f"Instagram: instagram.com/{p['instagram']}", "dm": dm, "say": None}
-    if p.get("facebook"):
-        return {"how": "Facebook: " + re.sub(r"^https?://(www\.)?", "", p["facebook"]), "dm": dm, "say": None}
+    out = {"dm": dm, "then": then, "say": None, "skipped": skipped, "preview_url": url}
+    if ig:
+        return dict(out, how=f"Instagram: instagram.com/{ig}")
+    if fb:
+        return dict(out, how="Facebook: " + fb)
+    out.update(dm=None, then=None)
     if p.get("email") and email_on:
-        return {"how": f"email: {p['email']} — the letter goes on `go`", "dm": None, "say": None}
+        return dict(out, how=f"email: {p['email']} — the letter goes on `go`")
     if phone:
         also = f" (the email to {p['email']} waits for the email lane)" if p.get("email") else ""
-        return {"how": f"call: {phone}{also}", "dm": None, "say": call_opener(p)}
-    return {"how": f"no way in yet — leads brief \"{p['name']}\"", "dm": None, "say": None}
+        return dict(out, how=f"call: {phone}{also}", say=call_opener(p))
+    return dict(out, how=f"no way in yet — leads brief \"{p['name']}\"")
+
+
+def pick_handles(p):
+    """(instagram handle, 'facebook.com/…', skipped) for a saved pick, read again: the Facebook page from the
+    `reach` table when the saved one was cut short (facebook.com/p before 2026-09-30), and `reach_guard` over both."""
+    raw = p.get("facebook") or ""
+    fb = fb_page(raw) if raw else None
+    row_fb = ((reach_table() or {}).get(p.get("place_id") or "") or {}).get("facebook")
+    if raw and row_fb and (fb is None or row_fb.startswith(fb + "/")):
+        fb = row_fb
+    out = reach_guard({"instagram": p.get("instagram"), "facebook": fb,
+                       "skipped": list(p.get("reach_skipped") or [])},
+                      {"place_id": p.get("place_id"), "name": p.get("name"), "city": p.get("city")})
+    return out["instagram"], out["facebook"], out.get("skipped") or []
 
 
 def today_message(d, n_due=6):
@@ -4372,11 +4570,15 @@ def today_message(d, n_due=6):
     for i, p in enumerate(six, 1):
         m = p if "how" in p else dict(p, **morning_pick(p, email_on=not d.get("email_off")))
         bits = [f"{i}. {p['name']}", p.get("category") or p.get("segment") or "", p.get("city") or "", m["how"],
-                language_tag(p) or ""]
+                "; ".join(m.get("skipped") or []), language_tag(p) or ""]
         bits.append(strength_tag(p, n=2))                                 # B73: the level and why, last
         lines.append(" · ".join(b for b in bits if b))
         if m.get("dm"):
             lines.append(m["dm"])          # its own line, no quotes or indent: a long-press copies it as it goes
+            if m.get("then"):
+                lines.append(f"When they say yes: {m['then']}")
+            else:
+                lines.append(f"(no preview built — leads preview \"{p['name']}\")")
         elif m.get("say"):
             lines.append(m["say"])
         lines.append("")

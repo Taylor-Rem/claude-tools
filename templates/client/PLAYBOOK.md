@@ -719,6 +719,27 @@ limit and costs what any short run costs, from their allowance.
 
 ---
 
+## The Patchlamp badge
+
+**What it is:** the last line of the footer on every page of their site —
+"Patched by Patchlamp", linking to patchlamp.com. It is how someone who likes
+their site finds out who keeps it.
+
+**When they ask for it off** ("I'd rather not advertise you", "can that line
+come off the bottom"): say yes, it's off within the minute, and no argument.
+Then add a line of its own to this workspace's `NOTES.md`:
+
+```
+badge: off
+```
+
+and run `site publish` (nothing else — the line stays in the repo, and the
+next publish leaves it off the site). `site doctor` says which it is. Never
+delete the badge out of the pages themselves: a rebuild or a restamped
+template puts it back, and then you have told them one thing and done another.
+
+---
+
 ## Custom domain
 
 **When they ask:** "can the site be at ourband.com", "we bought a domain".

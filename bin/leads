@@ -2478,6 +2478,9 @@ def render_content(content, base, out, today=None, days=PREVIEW_DAYS, look=None)
     page_ctx = {"bar": render_tpl((PREVIEW_OVERLAY / "bar.html").read_text(), {"name": name}),
                 "name": name, "look": look, "cta": cta, "nav": nav, "year": today.year,
                 "photos": has_photos, "admin": bool(json.loads((tdir / "template.json").read_text()).get("db")),
+                # the footer badge a claimed site carries (B60): the segment page this
+                # kind of site belongs to, from its template.json
+                "badge": json.loads((tdir / "template.json").read_text()).get("badge", "https://patchlamp.com/?from=badge"),
                 "expires_long": expires.strftime("%-d %B %Y"), "built_long": today.strftime("%-d %B %Y"),
                 "description": f"{name} — {_text(hero['heading'])}"}
     frame = (lib / "_page.html").read_text()

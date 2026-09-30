@@ -338,6 +338,9 @@ class PreviewTest(unittest.TestCase):
         self.assertIn("<title>Mike's Pool Care</title>", built)
         self.assertIn('<a href="photos.html">Photos</a>', built)  # the template's other page is linked
         self.assertIn("&copy; ", built)
+        self.assertIn('<p class="patchlamp-badge"><a href="https://patchlamp.com/for/home-services?from=badge"'
+                      ' rel="noopener">Patched by Patchlamp</a></p>', built,
+                      "B60: a claimed site carries the badge, with its segment's page")
         # the whole rendered site came over, the overlay cut, the forms switched on (B64)
         self.assertIn('action="/api/submissions"', built)
         self.assertIn('action="/api/bookings"', built, "the template's calendar is kept")

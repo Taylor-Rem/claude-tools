@@ -1,6 +1,7 @@
 {
   "title": "Portfolio",
   "summary": "one page of someone's work: pictures, a line each, who they are, how to reach them",
+  "badge": "https://patchlamp.com/for/creatives?from=badge",
   "pages": "index.html (hero, work, about, contact)",
   "db": false,
   "collections": [],

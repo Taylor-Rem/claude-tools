@@ -1,6 +1,7 @@
 {
   "title": "Restaurant",
   "summary": "a menu with prices and hours from the site's own database, ordering for pickup through Stripe Checkout (the store layer)",
+  "badge": "https://patchlamp.com/restaurants?from=badge",
   "pages": "index.html (hero, about, menu, hours and where)",
   "db": true,
   "collections": [

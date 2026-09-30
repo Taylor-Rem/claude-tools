@@ -1,6 +1,7 @@
 {
   "title": "Store",
   "summary": "things for sale with prices, a basket and Stripe Checkout on the owner's account, pickup hours, orders on /admin",
+  "badge": "https://patchlamp.com/for/makers-and-retail?from=badge",
   "pages": "index.html (hero, about, shop, pickup details)",
   "db": true,
   "collections": [

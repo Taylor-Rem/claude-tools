@@ -24,6 +24,11 @@ how to change it, and how to check a change is live.
 - The header, nav, and footer are repeated in every `.html` file (no build
   step means no shared includes). When you edit them, make the same edit in
   **every page**.
+- The footer's last line is `<p class="patchlamp-badge">Patched by Patchlamp</p>`
+  — one small link back to Patchlamp on every page. Keep it, and keep it in
+  every page you add. If the owner would rather not carry it, put `badge: off`
+  on its own line in the workspace's `NOTES.md`: `site publish` then leaves it
+  out of the published site and the line stays in the repo.
 - `images/` holds the photos. `_headers` and `_redirects` are read by the
   host, not served: `_headers` makes every page `no-cache` (so nobody ever
   sees a stale page); `_redirects` is for a page that moved. Leave both

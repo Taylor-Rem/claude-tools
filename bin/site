@@ -16,7 +16,7 @@ before 2026-09-16 and goes away once Bleu Grave has moved.
                                        # Stripe Checkout on a catalog site (SITE_ADMIN=1): --connected = the owner's
                                        # connected account on our platform key (the path, B22); --key-from = their key (fallback)
   site data <name> [--owner EMAIL] [--dry-run]   # give a site its own database + /admin (PLAYBOOK § Data)
-  site publish [<name>] [--dry-run]    # HEAD of ./repos/<name> -> its Pages project (must be committed + pushed)
+  site publish [<name>] [--no-ping] [--dry-run]  # HEAD of ./repos/<name> -> its Pages project (must be committed + pushed)
   site shell [<name>] [--check]        # the /admin shell up to the toolbelt's (B41), commit, push, publish
   site ls                              # repos in ./repos with where they're served
   site domain <name> [example.com]     # custom domain on the project + the DNS lines   (SITE_ADMIN=1)
@@ -59,6 +59,18 @@ the restaurant): the demo is that template with demo content, so a demo
 that works is a template that works. templates/sites/_shell/ is the data
 layer's shared shell (functions/, migrations/), the same for every type.
 
+The badge and the search ping (B60, B49): every template's footer ends with
+"Patched by Patchlamp", linking to that segment's page on patchlamp.com with
+`?from=badge` so `front` counts what it brings in. A client who would rather
+not carry it gets `badge: off` on a line of its own in the workspace's
+NOTES.md: the line stays in the repo (the repo is theirs) and `site publish`
+leaves it out of the upload. After every publish, `site publish` submits the
+site's URLs to IndexNow (Bing, Naver, Seznam, Yandex, Yep — not Google, which
+has no such endpoint) on a key of that site's own, kept in the registry and
+served from the site as /<key>.txt; `--no-ping` skips it, a ping that fails
+never fails the publish, and a site that asks not to be indexed is never
+submitted.
+
 Config, by name, never printed:
   CLOUDFLARE_API_TOKEN   ~/.config/claude-tools/env — Account: Cloudflare Pages Edit (+ D1 Edit for the data layer)
   CLOUDFLARE_ACCOUNT_ID  same file. Both required for new/publish/domain.
@@ -72,6 +84,7 @@ import datetime
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -548,6 +561,179 @@ def curl_header(url, name):
         return None
 
 
+# ---------------------------------------------------------------- the badge (B60)
+#
+# Every template's footer ends with one line: "Patched by Patchlamp", linking to
+# that segment's page on patchlamp.com with ?from=badge so `front` counts it
+# (GROWTH § 15.2, § 18; BRAND.md promises it). A client who would rather not
+# carry it writes `badge: off` on a line of its own in the workspace's NOTES.md:
+# the line stays in the repo — the repo is the client's record and a restamp
+# never rewrites a page — and `site publish` leaves it out of what it uploads.
+
+BADGE_LINE = re.compile(r'(?m)^[ \t]*<p class="patchlamp-badge">.*?</p>[ \t]*\r?\n')
+BADGE_OFF = re.compile(r"(?mi)^\s*(?:[-*]\s+)?(?:\*\*)?badge(?:\*\*)?:\s*off\b")
+
+
+def badge_off(ws):
+    """True when this workspace's NOTES.md says `badge: off` (PLAYBOOK § The badge)."""
+    try:
+        return bool(BADGE_OFF.search((ws / "NOTES.md").read_text(encoding="utf-8")))
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+def strip_badge(dest):
+    """Take the badge out of every page of an export tree; how many pages changed."""
+    n = 0
+    for p in sorted(dest.rglob("*.html")):
+        try:
+            text = p.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        out = BADGE_LINE.sub("", text)
+        if out != text:
+            p.write_text(out, encoding="utf-8")
+            n += 1
+    return n
+
+
+def has_badge(d):
+    """True when the repo's home page carries the badge."""
+    p = d / "index.html"
+    try:
+        return bool(BADGE_LINE.search(p.read_text(encoding="utf-8")))
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+# ---------------------------------------------------------------- IndexNow (B49)
+#
+# A publish tells IndexNow what changed, so Bing, Naver, Seznam, Yandex and Yep
+# re-crawl in minutes instead of weeks. Google has no such endpoint: it finds
+# the pages through Search Console (TODO §1), which is why this is only half of
+# B49. patchlamp.com does the same from its own deploy (`indexnow:ping`), on one
+# key in its config; a client site is not ours, so each gets a key of its own,
+# kept in the registry and served from the site as /<key>.txt — that file is how
+# IndexNow checks the host belongs to whoever submitted it. A ping never fails a
+# publish: the site is already live by the time it runs.
+
+INDEXNOW_ENDPOINT = os.environ.get("INDEXNOW_ENDPOINT") or "https://api.indexnow.org/indexnow"
+INDEXNOW_KEY_RE = re.compile(r"^[A-Za-z0-9-]{8,128}$")
+
+
+def registry_set(meta, name, **fields):
+    """Add or update fields on this workspace's registry row (never renames one)."""
+    reg = registry_load()
+    row = reg.setdefault(meta["slug"], {}).setdefault(name, {})
+    row.update(fields)
+    if not DRY:
+        registry_save(reg)
+    return row
+
+
+def site_host(entry, project):
+    """The host to submit: the custom domain if there is one, else the Pages host."""
+    for dom in entry.get("domains") or []:
+        if not dom.startswith("www."):
+            return dom
+    return entry.get("pages_host") or pages_host(project)
+
+
+def site_urls(d, base):
+    """What to submit: the sitemap's URLs if the repo has one, else the home page
+    and every other top-level page in it. IndexNow takes 10,000 at most."""
+    sm = d / "sitemap.xml"
+    if sm.exists():
+        try:
+            locs = [u.strip() for u in re.findall(r"<loc>([^<]+)</loc>", sm.read_text(encoding="utf-8"))]
+        except (OSError, UnicodeDecodeError):
+            locs = []
+        if locs:
+            return locs[:10000]
+    urls = [base]
+    for p in sorted(d.glob("*.html")):
+        if p.name in ("index.html", "404.html") or p.name in NON_SITE:
+            continue
+        urls.append(base + p.name)
+    return urls[:10000]
+
+
+def indexnow_key(d, meta, name, entry):
+    """This site's key, made once, in the registry and served from the repo as
+    /<key>.txt. Returns the key, or None when the file can't be committed and
+    pushed — an unreachable key file is a 403 from IndexNow, so we don't ping."""
+    key = entry.get("indexnow_key")
+    if not (key and INDEXNOW_KEY_RE.match(key)):
+        key = secrets.token_hex(16)
+        registry_set(meta, name, indexnow_key=key)
+        say(f"  IndexNow: new key for this site, in {REGISTRY.name} (never printed)")
+    f = d / f"{key}.txt"
+    if f.exists() and f.read_text(encoding="utf-8").strip() == key:
+        return key
+    f.write_text(key + "\n", encoding="utf-8")
+    git(d, "add", "--", f.name, check=False)
+    code, out = git(d, "-c", "user.name=Patch (claude-tools site)", "-c", "user.email=noreply@anthropic.com",
+                    "commit", "-q", "-m", "IndexNow key file (site publish submits this site's URLs)",
+                    "--", f.name, check=False)
+    if code != 0:
+        say(f"  note: IndexNow key file not committed ({out.splitlines()[-1] if out else 'git commit failed'}); no ping")
+        return None
+    code, out = git(d, "push", "-q", check=False)
+    if code != 0:
+        say(f"  note: IndexNow key file committed but not pushed ({out.splitlines()[-1] if out else 'git push failed'})")
+    say(f"  IndexNow: key file added to the repo (one text file at the site root)")
+    return key
+
+
+def indexnow_post(host, key, urls):
+    """(status, note): the POST IndexNow wants. 200/202 is accepted."""
+    body = json.dumps({"host": host, "key": key, "keyLocation": f"https://{host}/{key}.txt",
+                       "urlList": urls}).encode()
+    req = urllib.request.Request(INDEXNOW_ENDPOINT, data=body, method="POST",
+                                 headers={"Content-Type": "application/json; charset=utf-8",
+                                          "User-Agent": "claude-tools site"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return r.status, ""
+    except urllib.error.HTTPError as exc:
+        return exc.code, {403: f"the key file at /{key}.txt was not reachable",
+                          422: "IndexNow says the host and the URLs disagree"}.get(exc.code, "")
+    except (urllib.error.URLError, OSError) as exc:
+        return 0, str(exc)
+
+
+def indexnow_key_for(ws, meta, name, d, entry, project):
+    """Before the upload: this site's key in the registry and its key file in the
+    repo, or None when there is nothing to submit. Never raises."""
+    try:
+        robots = (d / "robots.txt")
+        noindex = robots.exists() and "noindex" in robots.read_text(encoding="utf-8").lower()
+        if project == PREVIEWS_PROJECT or noindex:
+            say("  IndexNow: skipped (this site asks not to be indexed)")
+            return None
+        return indexnow_key(d, meta, name, entry)
+    except Exception as exc:                                  # noqa: BLE001 - a search ping never breaks a deploy
+        say(f"  IndexNow: skipped ({type(exc).__name__}: {exc})")
+        return None
+
+
+def indexnow_submit(meta, name, d, entry, project, key):
+    """After the upload: submit this site's URLs. Says one line and returns; never
+    raises, never fails the publish."""
+    try:
+        host = site_host(entry, project)
+        urls = site_urls(d, f"https://{host}/")
+        status, note = indexnow_post(host, key, urls)
+        ok = status in (200, 202)
+        registry_set(meta, name, indexnow={"at": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+                                           "host": host, "urls": len(urls), "status": status, "ok": ok})
+        say(f"  IndexNow: {len(urls)} URL(s) -> {host} "
+            + (f"accepted ({status})" if ok else f"not accepted ({status or 'no answer'})"
+               + (f": {note}" if note else "") + " — the publish stands"))
+    except Exception as exc:                                  # noqa: BLE001 - a search ping never breaks a deploy
+        say(f"  IndexNow: skipped ({type(exc).__name__}: {exc})")
+
+
 # ---------------------------------------------------------------- commands
 
 def cmd_new(a):
@@ -732,11 +918,13 @@ def cmd_publish(a):
     if dirty.strip():
         die(f"repos/{name} has uncommitted changes; commit (and push) first — what's published is HEAD")
     _, branch = git(d, "rev-parse", "--abbrev-ref", "HEAD", check=False)
-    if branch != "main":
+    if branch != "main" and not DRY:                 # a dry run reads nothing from git, so it has no branch
         die(f"repos/{name} is on {branch!r}; publish from main")
     _, unpushed = git(d, "log", "--oneline", "@{u}..", check=False)
     if unpushed.strip():
         die(f"repos/{name} has unpushed commits; git -C repos/{name} push first, then publish")
+    no_ping = getattr(a, "no_ping", False)
+    key = None if (no_ping or DRY) else indexnow_key_for(ws, meta, name, d, entry, project)
     _, sha = git(d, "rev-parse", "--short", "HEAD", check=False)
     _, subject = git(d, "log", "-1", "--format=%s", check=False)
     server = (d / "functions").is_dir()
@@ -752,12 +940,18 @@ def cmd_publish(a):
         out = root / "public"
         out.mkdir()
         n = export_tree(d, out, server=root if server else None)
+        if badge_off(ws):
+            cut = strip_badge(out)
+            say(f"  badge: off in NOTES.md — \"Patched by Patchlamp\" left out of {cut} page(s) "
+                f"(the line stays in the repo)")
         say(f"publishing repos/{name} @ {sha} ({n} files{', with its Functions and database binding' if server else ''}) -> {project}")
         code, log = wrangler("pages", "deploy", str(out), "--project-name", project, "--branch", "main",
                              "--commit-hash", sha, "--commit-message", subject[:200], "--commit-dirty=false",
                              cwd=root)
     if DRY:
         say("dry run: nothing published")
+        if not no_ping:
+            say(f"  would submit this site's URLs to IndexNow ({INDEXNOW_ENDPOINT}); --no-ping skips it")
         return
     if code != 0:
         tail = "\n".join(log.splitlines()[-8:])
@@ -780,6 +974,8 @@ def cmd_publish(a):
         say("  WARN HTML is cacheable: copy templates/sites/business/_headers into the repo root")
     if live:
         say(f"  live:       {live}  (custom domain; the same deployment)")
+    if key:
+        indexnow_submit(meta, name, d, entry, project, key)
     say(f"published {name} @ {sha}: {subject}")
 
 
@@ -1766,6 +1962,18 @@ def cmd_doctor(a):
                 cc = curl_header(url, "Cache-Control")
                 say(f"  repos/{n}: {slug} -> {url} last publish {(dep.get('created_on') or '-')[:19]} "
                     f"Cache-Control: {cc or '-'}")
+                off = badge_off(ws)
+                (say if (has_badge(d) or off) else fail)(
+                    f"  repos/{n}: badge " + ("in the repo, off on the site (badge: off in NOTES.md)" if off and has_badge(d)
+                                              else "off (badge: off in NOTES.md)" if off
+                                              else "\"Patched by Patchlamp\" in the footer"
+                                              if has_badge(d) else
+                                              "MISSING from index.html and NOTES.md has no `badge: off` (B60)"))
+                ping = entry.get("indexnow") or {}
+                say(f"  repos/{n}: IndexNow " + (f"{'accepted' if ping.get('ok') else 'refused'} "
+                                                 f"{ping.get('urls')} URL(s) at {(ping.get('at') or '')[:19]}"
+                                                 f" (status {ping.get('status')})" if ping else
+                                                 "no ping recorded yet (the next site publish sends one)"))
                 if entry.get("d1") or (d / "functions").is_dir():
                     problem = binding_problem(d, entry)
                     (fail if problem else say)(f"  repos/{n}: database " + (problem or f"{entry['d1']['name']} bound as DB (db doctor for the rest)"))
@@ -1842,6 +2050,8 @@ def main():
     sh.set_defaults(fn=cmd_shell)
     pb = sub.add_parser("publish", help="HEAD of ./repos/<name> -> its Cloudflare Pages project (commit + push first)")
     pb.add_argument("name", nargs="?", help="repo name under ./repos (optional when there is one)")
+    pb.add_argument("--no-ping", action="store_true",
+                    help="don't tell IndexNow what changed (B49; a ping never fails a publish anyway)")
     pb.add_argument("--dry-run", action="store_true")
     pb.set_defaults(fn=cmd_publish)
     pv = sub.add_parser("previews", help=f"(SITE_ADMIN=1) publish a preview tree to the one {PREVIEWS_PROJECT} project (B45; `leads preview` drives it)")

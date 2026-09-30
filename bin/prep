@@ -1868,7 +1868,8 @@ def pick(n, segment=None, allow_calls=False, reserve=None, exclude_run=None):
                 skip("no reach (Instagram, Facebook or email)")
             else:
                 rows.append(r)
-    rows.sort(key=lambda r: (not r["fit"], not r["evidence"], r["miles"] if r["miles"] is not None else 999))
+    rows.sort(key=lambda r: (L.STRENGTH_RANK.get(r.get("strength"), 1), not r["fit"], not r["evidence"],
+                             r["miles"] if r["miles"] is not None else 999))      # B73: strong first
     out, per_cat = [], {}
     for r in rows:
         k = (r["category"] or "").lower()

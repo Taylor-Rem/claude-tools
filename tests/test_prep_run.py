@@ -271,14 +271,32 @@ class Base(unittest.TestCase):
 
 class PickTest(Base):
     def test_fit_first_then_a_reach_with_evidence_then_miles(self):
-        r = self.run_prep("pick", "--n", "3")
+        """B73: strength first (strong, good, weak), then the fit, a reach with evidence and miles as the tie-break."""
+        env = {"LEADS_STRENGTH": str(self.t / "no-strength.md")}           # bin/leads' default weights
+        r = self.run_prep("pick", "--n", "3", env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
-        names = [re.sub(r"^\s*\d+\.\s*", "", l).split(" · ")[0] for l in r.stdout.splitlines()
-                 if re.match(r"^\s*\d+\.", l)]
-        # 10-300 reviews and 4.3★ or better first (Glacier has 6 reviews, so it is last), nearest first
+        lines = [l for l in r.stdout.splitlines() if re.match(r"^\s*\d+\.", l)]
+        names = [re.sub(r"^\s*\d+\.\s*", "", l).split(" · ")[0] for l in lines]
+        # Jenna is strong; Mike and Rosie good (the fit, then nearest); Glacier weak (6 reviews), so it is last
         self.assertEqual(names[:3], ["Photography by Jenna", "Mike's Pool Care", "Rosie's Florals"])
         self.assertEqual(names[3], "Glacier Snow Removal")
+        self.assertIn(" — strong · ", lines[0])
+        self.assertIn(" — weak · ", lines[3])
         self.assertIn("no reach (Instagram, Facebook or email)", r.stdout)
+        j = json.loads(self.run_prep("pick", "--n", "3", "--json", env=env).stdout)
+        self.assertEqual([p["strength"] for p in j["picks"]], ["strong", "good", "good", "weak"])
+        self.assertTrue(j["picks"][0]["reasons"])
+
+    def test_a_strong_lead_outranks_a_weak_one_that_is_nearer(self):
+        env = {"LEADS_STRENGTH": str(self.t / "no-strength.md")}
+        j = json.loads(self.run_prep("pick", "--n", "20", "--allow-calls", "--json", env=env).stdout)
+        by = {p["name"]: (i, p) for i, p in enumerate(j["picks"])}
+        wasatch, glacier = by["Wasatch Pest Pros"], by["Glacier Snow Removal"]
+        self.assertEqual((wasatch[1]["strength"], glacier[1]["strength"]), ("strong", "weak"))
+        self.assertLess(glacier[1]["miles"], wasatch[1]["miles"])                # the weak one is nearer…
+        self.assertLess(wasatch[0], glacier[0])                                   # …and still comes after
+        ranks = [{"strong": 0, "good": 1, "weak": 2}[p["strength"]] for p in j["picks"]]
+        self.assertEqual(ranks, sorted(ranks))
 
     def test_only_segments_whose_template_has_looks_and_three_of_a_category_at_most(self):
         j = json.loads(self.run_prep("pick", "--n", "10", "--json").stdout)

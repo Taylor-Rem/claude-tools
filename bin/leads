@@ -166,6 +166,13 @@ letter's `{paying}` line, null when the vendor is unknown, free or unpriced) and
 guess at the business's own bill: every sentence is about the vendor. A missing table means no
 fingerprint yet, and nothing changes. Nothing here writes to it.
 
+Language (B74, `client-leads/scripts/language.py`): when the census has a `language` table
+(place_id, language, evidence, checked, basis) a row that speaks Spanish to its customers carries a tag
+on its kit, `today` and `candidates` line — `lang: es`, `lang: es (name only)` when the name is all
+there was to read, `lang: es+en` for both; English and unknown rows carry nothing. `brief` prints the
+evidence in one line and the remote kit's JSON gains `language` ({language, basis, why, checked} or
+null) — the seam the Spanish pitch will read. A missing table means no pass yet, and nothing changes.
+
 Reach (B61, `client-leads/scripts/reach.py`): when the census has a `reach` table
 (place_id, instagram, facebook, email, source, checked, evidence) the kit's picks take
 a handle or an address from it *after* the census's own columns — the listing's own
@@ -619,6 +626,61 @@ def paying_sentence(c_or_pid, audience="brief"):
     else:
         head = f"{says}'s plans start at {money(n)} a month (its own pricing page)"
     return f"{head}; {host_status_words(hi)}."
+
+
+# ---- the language table (B74's `language`; read here, written by client-leads/scripts/language.py) ----
+
+_LANGUAGE = None
+
+
+def language_table():
+    """place_id -> {'language','basis','checked','evidence' (dict)}, or None when the census has no `language`
+    table yet (B74 hasn't run). Read once, never written."""
+    global _LANGUAGE
+    if _LANGUAGE is not None:
+        return _LANGUAGE or None
+    if not CENSUS.exists():
+        return None
+    conn = sqlite3.connect(f"file:{CENSUS}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='language'").fetchone():
+            _LANGUAGE = {}
+            return None
+        rows = conn.execute("SELECT * FROM language").fetchall()
+    finally:
+        conn.close()
+    out = {}
+    for r in rows:
+        d = dict(r)
+        try:
+            d["evidence"] = json.loads(d.get("evidence") or "{}")
+        except json.JSONDecodeError:
+            d["evidence"] = {}
+        if d.get("place_id"):
+            out[d["place_id"]] = d
+    _LANGUAGE = out
+    return out
+
+
+def language_info(c_or_pid):
+    """{'language','basis','why','checked'} for a row, or None (no table, no row)."""
+    pid = c_or_pid if isinstance(c_or_pid, str) else (c_or_pid or {}).get("place_id")
+    row = (language_table() or {}).get(pid) if pid else None
+    if not row or not row.get("language"):
+        return None
+    return {"language": row["language"], "basis": row.get("basis") or None,
+            "why": (row.get("evidence") or {}).get("why"), "checked": row.get("checked")}
+
+
+def language_tag(c_or_pid):
+    """'lang: es' · 'lang: es (name only)' · 'lang: es+en' — only for a row that speaks Spanish; None otherwise."""
+    li = language_info(c_or_pid)
+    if not li or li["language"] not in ("es", "both"):
+        return None
+    if li["language"] == "both":
+        return "lang: es+en"
+    return "lang: es (name only)" if li["basis"] == "name" else "lang: es"
 
 
 def reach_fill(out, place_id):
@@ -1354,7 +1416,9 @@ def render_segment(order, segment, for_date, today, mode, note, skipped, census_
     for i, p in enumerate(order, 1):
         where = p.get("locality") or (p.get("city") or "").replace(", Utah", "")
         what = p.get("category") or p.get("segment") or ""
-        lines.append(f"{i}. {p['name']} — {p['miles']} mi · {what} · {where} · {p.get('phone') or 'no phone'}")
+        lt = language_tag(p)
+        lines.append(f"{i}. {p['name']} — {p['miles']} mi · {what} · {where} · {p.get('phone') or 'no phone'}"
+                     + (f" · {lt}" if lt else ""))
         if is_business(p):
             link = f" — {re.sub(r'^https?://(www[.])?', '', p['presence_link']).rstrip('/')}" if p.get("presence_link") else ""
             ht = host_tag(p)
@@ -1825,8 +1889,9 @@ def render_segment_remote(picks, segment, today, mode, note, census_date, emails
         rc = p["reach"]
         where = p.get("locality") or (p.get("city") or "").replace(", Utah", "")
         ht = host_tag(p)
+        lt = language_tag(p)
         lines.append(f"{i}. {clean_name(p['name'])} — {p.get('category') or ''} · {where} · {p['summary']}"
-                     + (f" · {ht}" if ht else ""))
+                     + (f" · {ht}" if ht else "") + (f" · {lt}" if lt else ""))
         if emails:                                                        # B73: the level and why; the short
             lines.append(f"   {strength_tag(p, n=2)}")                    # page (SMS-sized) keeps the level alone
         else:
@@ -3174,6 +3239,8 @@ def kit_json(picks, segment, today):
             # B71: the letter's `{paying}` line (null drops it whole) and the fingerprint behind it
             "paying": paying_sentence(c.get("place_id"), "letter"),
             "host": host_json(c.get("place_id")),
+            # B74: what language the business speaks to its customers (null: no pass yet, or no row)
+            "language": language_info(c.get("place_id")),
         })
     return {"date": today.isoformat(), "segment": segment, "picks": out}
 
@@ -4304,7 +4371,8 @@ def today_message(d, n_due=6):
     lines = [head, ""]
     for i, p in enumerate(six, 1):
         m = p if "how" in p else dict(p, **morning_pick(p, email_on=not d.get("email_off")))
-        bits = [f"{i}. {p['name']}", p.get("category") or p.get("segment") or "", p.get("city") or "", m["how"]]
+        bits = [f"{i}. {p['name']}", p.get("category") or p.get("segment") or "", p.get("city") or "", m["how"],
+                language_tag(p) or ""]
         bits.append(strength_tag(p, n=2))                                 # B73: the level and why, last
         lines.append(" · ".join(b for b in bits if b))
         if m.get("dm"):
@@ -4415,6 +4483,9 @@ def cmd_brief(args):
     hosting = paying_sentence(pid) if pid else None
     if hosting:
         print(f"  Hosting: {hosting}")
+    li = language_info(pid) if pid else None
+    if li and li["language"] != "unknown":
+        print(f"  Language: {li['language']} — {li['why']}")
     print(f"  Preview: {pv['url']} (down {dt.date.fromisoformat(pv['expires']).strftime('%-d %b')})" if pv
           else "  Preview: none yet — `leads preview \"" + name + "\"`")
     if lead:
@@ -4934,9 +5005,10 @@ def cmd_candidates(args):
         else:
             what = f"restaurant · on {platforms(c)}"
         ht = host_tag(c)
+        lt = language_tag(c)
         print(f"  {strength_tag(c, skip=('near',))} │", end="")              # B73: the level and why, first
         print(f"  {c['miles']:>4} mi  {c['name']} · {c.get('locality') or ''} · {c['rating']}★ ({c['reviews']}) · {what}"
-              f"{' · ' + ht if ht else ''}{tag}")
+              f"{' · ' + ht if ht else ''}{' · ' + lt if lt else ''}{tag}")
         shown += 1
 
 
@@ -4968,7 +5040,9 @@ def restaurant_candidates(args):
             break
         tag = f"  (kitted {skip[c['place_id']]})" if c["place_id"] in skip else ""
         web = "no site" if (c.get("has_website") or "").lower() != "yes" else (marketplace_link(c["website"]) or host_of(c["website"]))
-        print(f"  {c['miles']:>4} mi  {c['name']} · {c['locality']} · {c['rating']}★ ({c['reviews']}) · {web} · on {platforms(c)}{tag}")
+        lt = language_tag(c)
+        print(f"  {c['miles']:>4} mi  {c['name']} · {c['locality']} · {c['rating']}★ ({c['reviews']}) · {web} · on {platforms(c)}"
+              f"{' · ' + lt if lt else ''}{tag}")
         shown += 1
 
 
@@ -5027,6 +5101,15 @@ def cmd_doctor(args):
                 lv[s] = lv.get(s, 0) + 1
             print(f"strength (services pool): " + ", ".join(f"{lv.get(s, 0)} {s}" for s in STRENGTHS)
                   + f"; weights from {STRENGTH_DOC}" + ("" if STRENGTH_DOC.exists() else " — missing, so the defaults"))
+        lt = language_table()
+        if lt is None:
+            print("language: no language table yet — B74 (client-leads/scripts/language.py) hasn't run; no tag on the lines")
+        else:
+            by = {}
+            for r in lt.values():
+                by[r.get("language") or "?"] = by.get(r.get("language") or "?", 0) + 1
+            print(f"language: {len(lt)} rows judged — " + ", ".join(f"{k} {by.get(k, 0)}" for k in ("es", "both", "en", "unknown"))
+                  + f"; newest check {max((r.get('checked') or '')[:10] for r in lt.values()) if lt else '-'}")
         print(f"default segment: {default_segment()}" + (" (LEADS_SEGMENT)" if os.environ.get("LEADS_SEGMENT") else
                                                        f" (services once the services census has {DEFAULT_POOL_MIN} in the kit's pool, else restaurant)"))
     key, where = places_key()

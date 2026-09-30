@@ -453,8 +453,9 @@ class ReachTest(Base):
         self.assertEqual(sorted(env), ["date", "picks", "segment"])
         by = {p["name"]: p for p in env["picks"]}
         self.assertEqual(sorted(by["Mike's Pool Care"]),
-                         ["category", "city", "email", "facebook", "faults", "first", "host", "instagram", "maps_url",
-                          "message", "name", "paying", "phone", "place_id", "preview_url", "segment", "summary"])
+                         ["category", "city", "email", "facebook", "faults", "first", "host", "instagram", "language",
+                          "maps_url", "message", "name", "paying", "phone", "place_id", "preview_url", "segment",
+                          "summary"])
         blue = by["Blue Canyon Landscaping"]
         self.assertEqual(blue["instagram"], "bluecanyonlandscaping")
         self.assertEqual(blue["facebook"], "https://facebook.com/bluecanyonut")

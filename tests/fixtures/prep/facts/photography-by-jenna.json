@@ -1,0 +1,148 @@
+{
+ "schema": 1,
+ "place_id": "FX_C01",
+ "slug": "photography-by-jenna",
+ "name": "Photography by Jenna",
+ "category": "photographer",
+ "segment": "creatives",
+ "city": "American Fork",
+ "researched": "2026-09-29",
+ "facts": [
+  {
+   "id": "f1",
+   "kind": "contact",
+   "text": "Call or text (801) 555-0121.",
+   "confidence": "high",
+   "source": {
+    "kind": "listing",
+    "url": "https://maps.google.com/?cid=FX_C01",
+    "words": "(801) 555-0121"
+   }
+  },
+  {
+   "id": "f2",
+   "kind": "service",
+   "text": "Wedding photography.",
+   "confidence": "high",
+   "source": {
+    "kind": "review",
+    "ref": 0,
+    "url": "https://maps.google.com/?cid=FX_C01",
+    "words": "booked a wedding session"
+   },
+   "also": [
+    {
+     "kind": "review",
+     "ref": 2,
+     "url": "https://maps.google.com/?cid=FX_C01",
+     "words": "photographed our wedding"
+    }
+   ]
+  },
+  {
+   "id": "f3",
+   "kind": "service",
+   "text": "Family portrait sessions.",
+   "confidence": "high",
+   "source": {
+    "kind": "review",
+    "ref": 1,
+    "url": "https://maps.google.com/?cid=FX_C01",
+    "words": "family photos at the park"
+   },
+   "also": [
+    {
+     "kind": "search",
+     "url": "https://www.instagram.com/photosbyjenna.ut/",
+     "words": "Photography by Jenna - weddings and family portraits, American Fork"
+    }
+   ]
+  },
+  {
+   "id": "f4",
+   "kind": "hours",
+   "text": "Open Tuesday to Saturday, ten to six.",
+   "confidence": "high",
+   "source": {
+    "kind": "listing",
+    "url": "https://maps.google.com/?cid=FX_C01",
+    "words": "Tuesday: 10:00 AM – 6:00 PM"
+   }
+  },
+  {
+   "id": "f5",
+   "kind": "specialty",
+   "text": "Newborn sessions.",
+   "confidence": "medium",
+   "source": {
+    "kind": "review",
+    "ref": 2,
+    "url": "https://maps.google.com/?cid=FX_C01",
+    "words": "a newborn session"
+   }
+  },
+  {
+   "id": "f6",
+   "kind": "area",
+   "text": "Works around American Fork.",
+   "confidence": "medium",
+   "source": {
+    "kind": "search",
+    "url": "https://www.instagram.com/photosbyjenna.ut/",
+    "words": "American Fork, Utah photographer"
+   }
+  }
+ ],
+ "services": [
+  {
+   "name": "Weddings",
+   "facts": [
+    "f2"
+   ]
+  },
+  {
+   "name": "Family portraits",
+   "facts": [
+    "f3"
+   ]
+  },
+  {
+   "name": "Newborn sessions",
+   "facts": [
+    "f5"
+   ]
+  }
+ ],
+ "area": {
+  "text": "American Fork and nearby.",
+  "facts": [
+   "f6"
+  ]
+ },
+ "hours": {
+  "as_listed": [],
+  "say": {
+   "text": "Tuesday to Saturday, ten to six.",
+   "facts": [
+    "f4"
+   ]
+  }
+ },
+ "about": [
+  {
+   "text": "A photographer in American Fork.",
+   "facts": [
+    "f1"
+   ]
+  }
+ ],
+ "faults": [],
+ "unknown": [
+  "Whether they travel out of the county"
+ ],
+ "owner_asks": [
+  "A handful of galleries they are proud of"
+ ],
+ "verdict": "build",
+ "skip_reason": null
+}

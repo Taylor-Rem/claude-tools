@@ -1,0 +1,148 @@
+{
+ "schema": 1,
+ "place_id": "FX_C03",
+ "slug": "rosies-florals",
+ "name": "Rosie's Florals",
+ "category": "florist",
+ "segment": "creatives",
+ "city": "Pleasant Grove",
+ "researched": "2026-09-29",
+ "facts": [
+  {
+   "id": "f1",
+   "kind": "contact",
+   "text": "Call or text (801) 555-0123.",
+   "confidence": "high",
+   "source": {
+    "kind": "listing",
+    "url": "https://maps.google.com/?cid=FX_C03",
+    "words": "(801) 555-0123"
+   }
+  },
+  {
+   "id": "f2",
+   "kind": "service",
+   "text": "Bouquets for weddings and anniversaries.",
+   "confidence": "high",
+   "source": {
+    "kind": "review",
+    "ref": 0,
+    "url": "https://maps.google.com/?cid=FX_C03",
+    "words": "wedding bouquets arrived on time"
+   },
+   "also": [
+    {
+     "kind": "review",
+     "ref": 2,
+     "url": "https://maps.google.com/?cid=FX_C03",
+     "words": "bouquets for our anniversary"
+    }
+   ]
+  },
+  {
+   "id": "f3",
+   "kind": "service",
+   "text": "Standing arrangements for shops.",
+   "confidence": "high",
+   "source": {
+    "kind": "review",
+    "ref": 1,
+    "url": "https://maps.google.com/?cid=FX_C03",
+    "words": "order arrangements for the shop every month"
+   },
+   "also": [
+    {
+     "kind": "search",
+     "url": "https://www.facebook.com/rosiesfloralsutah",
+     "words": "Rosie's Florals - weekly arrangements for local shops | Facebook"
+    }
+   ]
+  },
+  {
+   "id": "f4",
+   "kind": "hours",
+   "text": "Open Monday to Saturday, nine to six.",
+   "confidence": "high",
+   "source": {
+    "kind": "listing",
+    "url": "https://maps.google.com/?cid=FX_C03",
+    "words": "Monday: 9:00 AM – 6:00 PM"
+   }
+  },
+  {
+   "id": "f5",
+   "kind": "specialty",
+   "text": "Deliveries the same day.",
+   "confidence": "medium",
+   "source": {
+    "kind": "review",
+    "ref": 2,
+    "url": "https://maps.google.com/?cid=FX_C03",
+    "words": "delivered the same day"
+   }
+  },
+  {
+   "id": "f6",
+   "kind": "area",
+   "text": "Works around Pleasant Grove.",
+   "confidence": "medium",
+   "source": {
+    "kind": "search",
+    "url": "https://www.facebook.com/rosiesfloralsutah",
+    "words": "Pleasant Grove, Utah florist | Facebook"
+   }
+  }
+ ],
+ "services": [
+  {
+   "name": "Bouquets",
+   "facts": [
+    "f2"
+   ]
+  },
+  {
+   "name": "Shop arrangements",
+   "facts": [
+    "f3"
+   ]
+  },
+  {
+   "name": "Same-day delivery",
+   "facts": [
+    "f5"
+   ]
+  }
+ ],
+ "area": {
+  "text": "Pleasant Grove and nearby.",
+  "facts": [
+   "f6"
+  ]
+ },
+ "hours": {
+  "as_listed": [],
+  "say": {
+   "text": "Monday to Saturday, nine to six.",
+   "facts": [
+    "f4"
+   ]
+  }
+ },
+ "about": [
+  {
+   "text": "A florist in Pleasant Grove.",
+   "facts": [
+    "f1"
+   ]
+  }
+ ],
+ "faults": [],
+ "unknown": [
+  "Whether they do funerals"
+ ],
+ "owner_asks": [
+  "Photos of arrangements they have made"
+ ],
+ "verdict": "build",
+ "skip_reason": null
+}

@@ -438,7 +438,11 @@ def start_requests(quiet=False):
     try:
         jobs = [("request", request_state(*r), r) for r in request_files()] + \
                [("inbox", inbox_state(*r), r) for r in inbox_files()]
-        if any(state == "running" for _, state, _ in jobs):
+        # Any marker in requests/ holds the queue, not only a request's own: a prep run files
+        # requests/prep-<id>.running with its pid (plan 28 § B67.2), and `build-night` reads the
+        # same glob. One long job at a time, whoever filed it.
+        if any(state == "running" for _, state, _ in jobs) or \
+                (REQUESTS.exists() and any(REQUESTS.glob("*.running"))):
             return
         for kind, state, (name, prompt, reply, running) in jobs:
             if state != "waiting":

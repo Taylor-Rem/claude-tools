@@ -3,7 +3,10 @@
 
 Every relay conversation is a resumed Claude Code session. Claude Code keeps a
 transcript per session at ~/.claude/projects/<slugged-cwd>/<session-id>.jsonl,
-and every assistant record in it carries the usage of that API call. The size
+and every assistant record in it carries the usage of that API call. A relay run
+on a client's own API key gets its own config dir, so its transcripts live under
+~/.claude-relay/<key name>/projects/ instead; this reads both, or every client
+session would be invisible to the gauge (ROADMAP B68). The size
 of the prompt on the last call is:
 
     input_tokens + cache_creation_input_tokens + cache_read_input_tokens
@@ -39,6 +42,19 @@ from pathlib import Path
 
 PROJECTS = Path(os.environ.get("CLAUDE_PROJECTS_DIR", "~/.claude/projects")).expanduser()
 RELAY = Path(os.environ.get("SMS_RELAY_DIR", "~/projects/sms-relay")).expanduser()
+# B68: one config dir per relay API key (relay/agents.py key_config_dir), each
+# with its own projects/ of transcripts. A client's session lives in one of these.
+RELAY_CONFIG_ROOT = Path(os.environ.get("CLAUDE_RELAY_DIR", "~/.claude-relay")).expanduser()
+
+
+def project_dirs():
+    """Every directory Claude Code keeps transcripts in: Taylor's own, then one
+    per relay key. Missing ones are simply absent."""
+    roots = [PROJECTS] if PROJECTS.is_dir() else []
+    if RELAY_CONFIG_ROOT.is_dir():
+        roots += sorted(d / "projects" for d in RELAY_CONFIG_ROOT.iterdir()
+                        if (d / "projects").is_dir())
+    return roots
 
 # Context windows, tokens. Source: the claude-api skill's model table
 # (cached 2026-06-24; 5.5 rows added 2026-09-28 from the pricing page). A model that isn't listed falls back to DEFAULT_WINDOW
@@ -149,10 +165,12 @@ def relay_sessions():
 # ---- the transcript's view: how much context is in it ----------------------
 
 def transcript_path(session_id):
-    """The newest transcript for a session id, across every project dir."""
-    if not PROJECTS.is_dir():
-        return None
-    hits = sorted(PROJECTS.glob(f"*/{session_id}.jsonl"), key=lambda p: p.stat().st_mtime)
+    """The newest transcript for a session id, across every project dir — Taylor's
+    own and every relay key's (B68), so a client session shows on the gauge."""
+    hits = []
+    for root in project_dirs():
+        hits += list(root.glob(f"*/{session_id}.jsonl"))
+    hits.sort(key=lambda p: p.stat().st_mtime)
     return hits[-1] if hits else None
 
 
@@ -348,8 +366,12 @@ def cmd_doctor(args):
 
     line(PROJECTS.is_dir(), f"transcripts at {PROJECTS}",
          "" if PROJECTS.is_dir() else "set CLAUDE_PROJECTS_DIR if Claude Code stores them elsewhere")
-    n = len(list(PROJECTS.glob("*/*.jsonl"))) if PROJECTS.is_dir() else 0
-    line(n > 0, f"{n} transcript files")
+    relay_roots = [r for r in project_dirs() if r != PROJECTS]
+    line(True, f"{len(relay_roots)} relay key transcript dir(s) under {RELAY_CONFIG_ROOT}",
+         "" if relay_roots else "none yet — a client session on its own API key will appear here "
+                                "(set CLAUDE_RELAY_DIR if they live elsewhere)")
+    n = sum(len(list(root.glob("*/*.jsonl"))) for root in project_dirs())
+    line(n > 0, f"{n} transcript files across {len(project_dirs())} dir(s)")
     state = RELAY / "state" / "state.json"
     line(state.exists(), f"relay state at {state}",
          "" if state.exists() else "set SMS_RELAY_DIR if the relay lives elsewhere; `ctx here` works without it")

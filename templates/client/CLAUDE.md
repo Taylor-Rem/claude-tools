@@ -10,6 +10,10 @@ here and nothing of anyone else's does:
   they sent (a PDF, a spreadsheet, a CSV, a Word file) under their own names.
   Move photos where they belong; read files with `doc text`; delete both from
   here once you're done with them.
+- `memory.md` — what you know about this business from earlier conversations
+  (the business, who decides, what they want, what they said no to). It is in
+  your prompt already; the relay writes it, you never do. `PLAYBOOK.md`
+  § Patch knows the business is what it's for.
 
 You never leave this directory, never read another client's workspace, and
 never look at keys or config under `~`. The commands you have ({{TOOLS}}) are

@@ -102,10 +102,11 @@ class MorningTest(Base):
             self.assertGreaterEqual(len(lines[i].split(" · ")), 4, lines[i])   # name · category · city · how
             under = lines[i + 1]
             self.assertTrue(under.startswith("Hi ") or under.startswith('Say: "Hi, this is Taylor'), under)
-        mike = lines[six[1]]
-        self.assertIn("Mike's Pool Care", mike)
+        at = next(i for i in six if "Mike's Pool Care" in lines[i])       # B73: strong first, so not by position
+        mike = lines[at]
         self.assertIn("Facebook: facebook.com/mikespoolcare", mike)
-        dm = lines[six[1] + 1]
+        self.assertTrue(mike.endswith("· good · 14 reviews at 4.9 · 0.4 mi"), mike)   # B73: the level and why, last
+        dm = lines[at + 1]
         # B62: the kit's own second-person DM, pasteable as it stands
         self.assertEqual(dm, "Hi Mike — I'm Taylor, a small-business owner in American Fork; I fix websites and Google "
                              "listings for businesses around here. I looked up Mike's Pool Care on Google: your listing's "
@@ -120,7 +121,7 @@ class MorningTest(Base):
         r = self.run_leads("today", "--census-only", now=ANCHOR)
         lines = r.stdout.splitlines()
         i = next(i for i, l in enumerate(lines) if "Timp Pressure Washing" in l)
-        self.assertTrue(lines[i].endswith("call: (801) 555-0104"), lines[i])
+        self.assertIn("call: (801) 555-0104 · weak", lines[i])           # B73: the strength follows the how
         self.assertEqual(lines[i + 1], 'Say: "Hi, this is Taylor — I run a small business in American Fork. I looked '
                                        'Timp Pressure Washing up on Google: your listing\'s website link is your Thumbtack '
                                        'profile, not a site of your own. Here\'s exactly what to change; it\'s free, '

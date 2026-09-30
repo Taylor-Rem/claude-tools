@@ -300,15 +300,18 @@ class SegmentTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         rows = json.loads(r.stdout)
         names = [x["name"] for x in rows]
-        self.assertEqual(names, ["Glacier Snow Removal", "Mike's Pool Care", "Timp Pressure Washing",
-                                 "Blue Canyon Landscaping", "Dave's Handyman Services", "Wasatch Pest Pros"])
+        # B73: strong first (a dead business.site of their own), then good by score, then weak; nearest within
+        self.assertEqual(names, ["Wasatch Pest Pros", "Mike's Pool Care", "Blue Canyon Landscaping",
+                                 "Canyon Air HVAC", "Dave's Handyman Services", "Glacier Snow Removal"])
         for gone in ("Summit Plumbing & Drain", "Sparkle Home Cleaning", "ProCoat Painters", "Elite Garage Doors"):
             self.assertNotIn(gone, names)            # own site, no phone, a chain, closed
         by = {x["name"]: x for x in rows}
         self.assertEqual(by["Glacier Snow Removal"]["presence"], "page")        # unknown in the census, read from the link
         self.assertEqual(by["Wasatch Pest Pros"]["presence"], "dead")
         self.assertIn("business.site", by["Wasatch Pest Pros"]["faults"][0])
-        self.assertIn("Thumbtack profile", by["Timp Pressure Washing"]["faults"][0])
+        whole = {x["name"]: x for x in json.loads(run("kit", "--segment", "services", "--census-only", "--json",
+                                                      "--no-save", "--n", "20", env=self.env).stdout)}
+        self.assertIn("Thumbtack profile", whole["Timp Pressure Washing"]["faults"][0])
         self.assertIn("free Wix address", by["Dave's Handyman Services"]["faults"][0])
         self.assertEqual(by["Blue Canyon Landscaping"]["faults"], ["no website on Google"])
         page = run("kit", "--segment", "services", "--census-only", "--no-save", env=self.env).stdout
@@ -402,11 +405,12 @@ class SegmentTest(unittest.TestCase):
         self.assertIn("isn't in the census", r.stderr)
 
     def test_all_candidates_doctor_and_next(self):
-        r = run("kit", "--segment", "all", "--census-only", "--no-save", "--json", env=self.env)
+        # B73: the kit is strong first now, so the whole pool (--n 20) to see every segment in it
+        r = run("kit", "--segment", "all", "--census-only", "--no-save", "--json", "--n", "20", env=self.env)
         self.assertEqual(r.returncode, 0, r.stderr)
         segs = {x["segment"] for x in json.loads(r.stdout)}
         self.assertTrue({"services", "creatives", "retail"} <= segs, segs)
-        page = run("kit", "--segment", "all", "--census-only", "--no-save", env=self.env).stdout
+        page = run("kit", "--segment", "all", "--census-only", "--no-save", "--n", "20", env=self.env).stdout
         self.assertIn("Then the shop:", page)
         self.assertIn("Then the site:", page)
         r = run("candidates", "--segment", "nonprofit", env=self.env)

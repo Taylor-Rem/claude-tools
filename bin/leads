@@ -14,15 +14,22 @@ B25 (the remote lane), B7 (the pipeline: log, follow-ups, the week).
   leads week [--ago 1]         # this week's numbers
   leads week --by channel      # the Sunday review (B52): the funnel per channel + GROWTH § 2.4's rows
   leads pipeline [--all]       # every lead by stage
+  leads pipeline --strong      # only the strong ones, each with why (B73)
+  leads strength "Name"        # strong / good / weak and the reasons, in words (B73)
+  leads strength "Name" strong "owner asked for a call in November"
+                               # Taylor's word: always wins, survives every re-score; `auto` hands it back
+  leads week --by strength     # outcomes by strength and by reason, and the strong, silent (B73)
 
   leads today                  # the 07:30 message (B48): today's six, each with the DM to paste (or
                                # the call and what to say, B62), yesterday's replies, the follow-ups due,
                                # the first call, and the `go` words only when the email lane can send
   leads brief "Mike's Pool Care"   # one screen before the call: the fault, the preview, the history,
                                # the segment's objection and its answer, the close, the booking link
-  leads cadence [--dry-run]    # the day 3 / 10 / 30 touches a silent lead is owed (GROWTH § 5.5),
-                               # recorded as pipeline events; the DM ones print, the email ones are
-                               # `outreach send --touch 3|10`
+  leads cadence [--dry-run]    # the touches a silent lead is owed (GROWTH § 5.5), by its strength (B73):
+                               # weak 3/10 then the pool at 30; good 3/10/30, the pool at 90; strong
+                               # 3/10/30/45/60 (a call)/90, never the pool without Taylor's word — it lands
+                               # on "strong, silent" in `leads week`. Recorded as pipeline events; the DM
+                               # ones print, the email ones are `outreach send --touch 3|10`
 
   leads kit                    # Saturday's six counters, faults and the opener (one page)
   leads kit --for 2026-10-04   # a different Saturday
@@ -172,7 +179,17 @@ The pipeline's event shape (one JSON object a line; fields are added, never rena
            channel the lead is already on, or the reach the kit used
   was      the faults named in the first message, so the day-30 read can say what changed
   next_by  "hand" when Taylor named the date (`--next thu`): the cadence never writes over it
-  kind     "touch_due" for a cadence event, with `touch` (3|10|30) and `channel`
+  kind     "touch_due" for a cadence event, with `touch` (3|10|30|45|60|90) and `channel`;
+           "strength" for Taylor's override (`leads strength`): never a lead by itself, and it always wins
+  strength strong | good | weak as scored when the event was written (B73), and `reasons` the keys behind it
+           (client-leads/strength.md's table); `week --by strength` reads the first message's
+
+Strength (B73, plan ~/projects/plans/33-leads-by-strength.md): every candidate and lead is strong, good or weak
+from named reasons — an agency-hosted dead site (the strongest), a dead link of their own, no website, a listing
+that embarrasses them, 10–300 reviews at 4.3★+, within 10 miles, a reach with evidence, a named owner, a trade
+that quotes jobs; against: a chain, a franchise, a live builder site under $50, a rating under 4.0. The weights
+and the thresholds are client-leads/strength.md's tables (LEADS_STRENGTH overrides the path; the defaults are
+in STRENGTH_REASONS). Candidates, the kits and `leads today` put strong first and say why on every line.
 """
 
 import argparse
@@ -1270,6 +1287,7 @@ def build_segment_kit(args, segment):
     key, where = (None, None) if args.census_only else places_key()
     places = Places(key, where, fixture=args.fixture, refresh=args.refresh)
     cands = candidates_for(segment, args.min_reviews)
+    cands.sort(key=strength_order)                                       # B73: strong first, nearest within
     skip = {} if args.allow_repeat else recently_kitted(for_date)
     skip.update({pid: "pipeline" for pid in pipeline_skip()})
     skip.update({pid: "claimed" for pid in claimed_places()})   # B45: they took the preview; they're a client
@@ -1341,6 +1359,7 @@ def render_segment(order, segment, for_date, today, mode, note, skipped, census_
             link = f" — {re.sub(r'^https?://(www[.])?', '', p['presence_link']).rstrip('/')}" if p.get("presence_link") else ""
             ht = host_tag(p)
             lines.append(f"   Presence: {p['presence']}{link}{' · ' + ht if ht else ''}")
+            lines.append(f"   Strength: {strength_tag(p)}")              # B73
         lines.append(f"   Google: {p['summary']}")
         lines.append(f"   Wrong: {' · '.join(p['faults']) if p['faults'] else 'nothing obvious — lead with the text-Patch line'}")
         if p.get("maps"):
@@ -1747,6 +1766,7 @@ def build_segment_remote(args, segment):
     for c in pool:
         c["reach"] = business_reach(c)
     pool.sort(key=lambda c: (not business_reach_line(c["reach"]), c["miles"]))    # messageable first, then nearest
+    pool.sort(key=lambda c: (not business_reach_line(c["reach"]), strength_order(c)))   # B73: strong first within
     picks = []
     for c in pool:
         if len(picks) >= args.n:
@@ -1807,6 +1827,10 @@ def render_segment_remote(picks, segment, today, mode, note, census_date, emails
         ht = host_tag(p)
         lines.append(f"{i}. {clean_name(p['name'])} — {p.get('category') or ''} · {where} · {p['summary']}"
                      + (f" · {ht}" if ht else ""))
+        if emails:                                                        # B73: the level and why; the short
+            lines.append(f"   {strength_tag(p, n=2)}")                    # page (SMS-sized) keeps the level alone
+        else:
+            lines[-1] += f" · {strength(p)[0]}"
         if rc["instagram"]:
             lines.append(f"   DM on Instagram: instagram.com/{rc['instagram']}")
         elif rc["facebook"]:
@@ -3404,7 +3428,7 @@ VIA_SOURCE = {"email": "email", "dm": "dm", "instagram": "dm", "facebook": "dm",
               "inbound": "inbound", "form": "inbound", "text": "inbound", "web": "inbound"}
 # A conversation is a real exchange: the outcomes that mean somebody talked back (or came to us).
 CONVERSATION = ("visited", "talked", "inbound", "interested", "demo", "later", "trial", "won", "lost")
-# § 5.5: day 0 the fault and the preview, then these, and back in the pool at 90.
+# § 5.5: day 0 the fault and the preview, then these, and back in the pool at 90 — a good lead's (B73: STRENGTH_CADENCE).
 CADENCE = (3, 10, 30)
 
 
@@ -3455,6 +3479,8 @@ def pipeline_state():
     """key -> the lead as of its last event (stage, next, who, notes, the history)."""
     leads = {}
     for e in pipeline_events():
+        if e.get("kind") == "strength":
+            continue                      # Taylor's override (B73): read by strength_overrides(), never a lead by itself
         k = e["key"]
         lead = leads.setdefault(k, {"key": k, "place_id": e.get("place_id"), "name": e["name"], "city": e.get("city"),
                                     "history": [], "who": None, "email": None, "phone": None, "reach": None})
@@ -3513,9 +3539,11 @@ def claimed_places():
 def pipeline_skip():
     """place_ids the kits should leave alone: anyone won or lost, and anyone with a follow-up still ahead."""
     today = dt.datetime.now(TZ).date().isoformat()
-    return {l["place_id"] for l in pipeline_state().values()
+    state = pipeline_state()
+    return {l["place_id"] for l in state.values()
             if l.get("place_id") and (l.get("stage") in ("won", "lost", "trialing", "churned")
-                                      or (l.get("next") or "") > today)}
+                                      or (l.get("next") or "") > today)} | \
+        {l["place_id"] for l in state.values() if l.get("place_id") and strength_hold(l, now_date())}   # B73
 
 
 def resolve_lead(raw, place=None):
@@ -3587,6 +3615,7 @@ def cmd_log(args):
         if outcome == "messaged":
             event["was"] = "; ".join(lead_faults(row, None, today)[0][:2]) or None
     event["source"] = source_for(getattr(args, "source", None), args.via, outcome, lead, row, rc)
+    event.update(strength_fields(row, lead=dict(lead or {"key": key, "place_id": pid}, who=args.who or (lead or {}).get("who"))))
     PIPELINE.parent.mkdir(parents=True, exist_ok=True)
     with open(PIPELINE, "a") as f:
         f.write(json.dumps({k: v for k, v in event.items() if v is not None or k == "next"}) + "\n")
@@ -3636,6 +3665,7 @@ def cmd_sent(args):
                  "email": rc.get("email"), "source": source_for(args.source, args.via, "messaged", None, row, rc),
                  "was": ("; ".join(lead_faults(row, None, today)[0][:2]) or None) if row else None,
                  "note": f"remote kit {last['for']} #{i}"}
+        event.update(strength_fields(row or None, lead={"key": event["key"], "place_id": ids[i - 1]}))
         PIPELINE.parent.mkdir(parents=True, exist_ok=True)
         with open(PIPELINE, "a") as f:
             f.write(json.dumps({k: v for k, v in event.items() if v is not None}) + "\n")
@@ -3740,7 +3770,7 @@ CHANNEL_COLS = ("sent", "replies", "conversations", "fixes", "trials", "paid", "
 
 
 def week_events(start, end):
-    return [e for e in pipeline_events() if start.isoformat() <= e["date"] <= end.isoformat()]
+    return [e for e in pipeline_events() if start.isoformat() <= e["date"] <= end.isoformat() and e.get("kind") != "strength"]
 
 
 def event_source(e, state):
@@ -3832,11 +3862,20 @@ def week_by_channel(w, start):
 def cmd_week(args):
     today = now_date()
     start, end = week_bounds(today - dt.timedelta(weeks=args.ago))
+    if args.by == "strength":                    # B73: outcomes by strength and by reason, and the strong, silent
+        d = week_by_strength(min(end, today))
+        msg = week_strength_message(d, min(end, today))
+        print(json.dumps(dict(d, message=msg), indent=1, default=str) if args.json else msg, end="\n" if args.json else "")
+        return
     if args.by == "channel" or args.json:
         w = week_numbers(start, end)
         msg = week_by_channel(w, start)
+        silent = strong_silent_lines()           # B73: the strong leads past their last touch, for Taylor's call
+        if silent:
+            msg += "\n".join(silent) + "\n"
         if args.json:
-            print(json.dumps(dict(w, message=msg), indent=1, default=str))
+            print(json.dumps(dict(w, message=msg, strong_silent=[l["name"] for l in strong_silent()]),
+                             indent=1, default=str))
             return
         print(msg, end="")
         return
@@ -3861,6 +3900,8 @@ def cmd_week(args):
     print(f"Kits: {kits} Saturday, {remote} remote this week.")
     won = sum(1 for l in state.values() if l.get("stage") == "won")
     print(f"Target: 3 paying by 31 Oct, 10 by 31 Dec — {won} won so far.")
+    for line in strong_silent_lines(state):      # B73
+        print(line)
 
 
 # ---- the cadence, the 07:30 message and the brief (B48; the week by channel is B52) ------
@@ -3874,8 +3915,13 @@ TOUCH_WHAT = {
     3: "the other channel, one line: the preview's up, text Patch anything on it",
     10: "the preview comes down soon — want it kept? it's free to claim",
     30: "a fresh read of the listing: one new thing wrong, or the offer stands",
+    # B73: a strong lead's three more (GROWTH § 5.5 re-cut) — the other channels, and a call in the list
+    45: "the channel not tried yet, one line: the fault is still there and the preview can come back up",
+    60: "a call — five minutes, `leads brief` first",
+    90: "the last note: the offer stands whenever they want it; then Taylor's call on the Sunday list",
 }
-TOUCH_SHORT = {3: "the other channel", 10: "the preview expiry", 30: "a fresh read of the listing"}
+TOUCH_SHORT = {3: "the other channel", 10: "the preview expiry", 30: "a fresh read of the listing",
+               45: "the channel not tried yet", 60: "a call", 90: "the last note"}
 
 # GROWTH § 6.2, verbatim: the six objections and the answer to each. The brief carries the one
 # that fits the segment, then the one that usually follows it.
@@ -3959,6 +4005,10 @@ def touch_channel(lead, touch):
     """§ 5.5: day 3 is the *other* channel; 10 and 30 are Patch's, so email where there is an address.
     Never SMS — a cold text is the one touch the law forbids (§ 8.1). `call` means Taylor's thumb."""
     has_mail, has_dm = bool(lead_email(lead)), bool(lead_handle(lead))
+    if touch == 60:
+        return "call" if lead.get("phone") else ("dm" if has_dm else "email" if has_mail else "call")
+    if touch == 45:                  # the other channel from the first message, like day 3
+        touch = 3
     want = ("dm" if lead_source(lead) == "email" else "email") if touch == 3 else "email"
     if want == "email" and has_mail:
         return "email"
@@ -3980,7 +4030,7 @@ def cadence_rows(today, state=None):
             continue                                  # a date Taylor named wins over the cadence
         done, d0 = touches_done(lead), dt.date.fromisoformat(first_message(lead)["date"])
         floor = max(done) if done else 0
-        ready = [t for t in CADENCE if t > floor and d0 + dt.timedelta(days=t) <= today]
+        ready = [t for t in lead_cadence(lead) if t > floor and d0 + dt.timedelta(days=t) <= today]
         if ready:
             # the latest touch that has come due, never a catch-up queue: a day-3 line missed while
             # the timer was off is not worth sending on day 12 — the day-10 one is.
@@ -3997,6 +4047,7 @@ def record_touch(lead, touch, channel, due, today):
              "outcome": "touch_due", "kind": "touch_due", "stage": lead.get("stage") or "contacted",
              "touch": touch, "channel": channel, "next": due.isoformat(), "source": lead_source(lead),
              "note": TOUCH_WHAT[touch]}
+    event.update(strength_fields(lead=lead))
     PIPELINE.parent.mkdir(parents=True, exist_ok=True)
     with open(PIPELINE, "a") as f:
         f.write(json.dumps({k: v for k, v in event.items() if v is not None}) + "\n")
@@ -4011,6 +4062,8 @@ def touch_do(lead, touch, channel):
         return f"one line to {lead_email(lead)} off the read below"
     if channel == "dm":
         return f"DM {lead_handle(lead)}"
+    if touch == 60:
+        return f"call {lead.get('phone') or 'them'} — `leads brief \"{lead['name']}\"` first"
     return f"call {lead.get('phone') or 'them'} — no page and no address (B61 hasn't found one)"
 
 
@@ -4252,6 +4305,7 @@ def today_message(d, n_due=6):
     for i, p in enumerate(six, 1):
         m = p if "how" in p else dict(p, **morning_pick(p, email_on=not d.get("email_off")))
         bits = [f"{i}. {p['name']}", p.get("category") or p.get("segment") or "", p.get("city") or "", m["how"]]
+        bits.append(strength_tag(p, n=2))                                 # B73: the level and why, last
         lines.append(" · ".join(b for b in bits if b))
         if m.get("dm"):
             lines.append(m["dm"])          # its own line, no quotes or indent: a long-press copies it as it goes
@@ -4357,6 +4411,7 @@ def cmd_brief(args):
     if contact:
         print(f"  {contact}")
     print("  Wrong: " + ("; ".join(fs[:3]) if fs else "nothing obvious — lead with what a site would add"))
+    print("  Strength: " + strength_tag(row, n=9, lead=lead or {"key": key, "place_id": pid}))   # B73
     hosting = paying_sentence(pid) if pid else None
     if hosting:
         print(f"  Hosting: {hosting}")
@@ -4386,6 +4441,8 @@ def cmd_brief(args):
 
 def cmd_pipeline(args):
     state = pipeline_state()
+    if getattr(args, "strong", False):
+        return cmd_pipeline_strong(state)
     if not state:
         print("The pipeline is empty. `leads log \"Name\" visited|talked|interested|demo|won|lost|messaged|later [note]`")
         return
@@ -4399,6 +4456,403 @@ def cmd_pipeline(args):
         for l in rows:
             print(f"  {l['name']}{' (' + l['city'] + ')' if l.get('city') else ''}"
                   + (f" · next {l['next']}" if l.get("next") else "") + f" · last {l['last']}")
+
+
+# ---- strength (B73, plan ~/projects/plans/33-leads-by-strength.md; the weights: client-leads/strength.md) ----
+#
+# Every lead is strong, good or weak, from named reasons, so a line can say *why* in words. The weights and the
+# two thresholds are read from client-leads/strength.md's tables (LEADS_STRENGTH overrides the path) and fall back
+# to the ones below; re-weighting after a month is an edit to that file, not to this one. Taylor's
+# `leads strength NAME strong|good|weak "why"` is a pipeline event (kind "strength") and always wins.
+
+STRENGTH_DOC = Path(os.environ.get("LEADS_STRENGTH", PROJECTS / "client-leads/strength.md"))
+STRENGTHS = ("strong", "good", "weak")
+STRENGTH_RANK = {"strong": 0, "good": 1, "weak": 2}
+# key -> (weight, the short label the week's by-reason table prints). Positive for, negative against.
+STRENGTH_REASONS = {
+    "paying_dead": (6, "agency site dead or parked"),
+    "dead_link": (3, "a dead link of their own"),
+    "no_site": (2, "no website"),
+    "embarrassing": (1, "the listing embarrasses them"),
+    "fit": (1, "10–300 reviews at 4.3★+"),
+    "near": (1, "within 10 miles"),
+    "reach": (1, "a reach with evidence"),
+    "owner": (1, "a named owner"),
+    "ladder": (1, "quotes jobs (the form)"),
+    "chain": (-10, "a chain"),
+    "franchise": (-4, "a franchise"),
+    "cheap_builder": (-3, "a live builder site under $50"),
+    "low_rating": (-2, "rated under 4.0"),
+}
+STRENGTH_AT = {"strong": 6, "good": 4}
+FIT_BAND = ((10, 300), 4.3)               # prep's fit (plan 28 § B67.1), one of the reasons now
+NEAR_MILES = 10.0
+# The cadence by strength (GROWTH § 5.5, re-cut 2026-09-29): the touch days, and the day a silent lead is back
+# in the pool (None: never without Taylor's word — it lands on "strong, silent" in `leads week`).
+STRENGTH_CADENCE = {"weak": (3, 10), "good": (3, 10, 30), "strong": (3, 10, 30, 45, 60, 90)}
+STRENGTH_POOL_DAY = {"weak": 30, "good": 90, "strong": None}
+QUOTE_WORDS = ("roof", "plumb", "hvac", "heating", "air condition", "handyman", "paint", "landscap", "electric", "pest",
+               "pressure wash", "power wash", "garage door", "pool", "snow", "concrete", "fenc", "remodel", "contractor",
+               "floor", "tree", "gutter", "window", "sprinkler", "irrigation", "lawn", "junk", "mover", "moving", "carpet",
+               "tile", "cabinet", "deck", "siding", "insulation", "solar", "mason", "excavat", "asphalt", "paving",
+               "appliance", "photograph", "videograph", "dj", "cater")
+FRANCHISE_BRANDS = ("mr. rooter", "mr rooter", "mr. handyman", "mr handyman", "mr. electric", "mr. appliance",
+                    "roto-rooter", "molly maid", "merry maids", "the maids", "maid brigade", "servicemaster", "servpro",
+                    "chem-dry", "chemdry", "window genie", "fish window", "one hour heating", "benjamin franklin plumbing",
+                    "aire serv", "mosquito joe", "mosquito authority", "two men and a truck", "grounds guys", "weed man",
+                    "lawn doctor", "terminix", "orkin", "truly nolen", "aptive", "glass doctor", "sir grout",
+                    "dryer vent wizard", "bath fitter", "re-bath", "five star painting", "certapro", "college pro",
+                    "men in kilts", "junk king", "1-800-got-junk", "college hunks", "window world", "renewal by andersen",
+                    "leaffilter", "precision garage door", "a1 garage door", "overhead door", "puroclean",
+                    "paul davis", "rainbow restoration", "budget blinds", "handyman connection", "neighborly")
+_STRENGTH_W = None
+_OVERRIDES = None
+_CHAIN_IDS = None
+_CHAIN_NAMES = None
+
+
+def strength_weights():
+    """(reason -> weight, level -> threshold): client-leads/strength.md's tables where they parse, else the defaults.
+    A table row counts when its first cell is a known reason key (or `strong` / `good`) and its second a number."""
+    global _STRENGTH_W
+    if _STRENGTH_W is not None:
+        return _STRENGTH_W
+    w = {k: v[0] for k, v in STRENGTH_REASONS.items()}
+    at = dict(STRENGTH_AT)
+    try:
+        text = STRENGTH_DOC.read_text()
+    except OSError:
+        text = ""
+    for line in text.splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [x.strip().strip("`*") for x in line.strip().strip("|").split("|")]
+        if len(cells) < 2:
+            continue
+        try:
+            n = int(cells[1].replace("−", "-").replace("+", ""))
+        except ValueError:
+            continue
+        if cells[0] in w:
+            w[cells[0]] = n
+        elif cells[0] in at:
+            at[cells[0]] = n
+    _STRENGTH_W = (w, at)
+    return _STRENGTH_W
+
+
+def strength_overrides():
+    """key -> Taylor's last `leads strength` event (its `strength` None when he cleared it with `auto`)."""
+    global _OVERRIDES
+    if _OVERRIDES is None:
+        _OVERRIDES = {}
+        for e in pipeline_events():
+            if e.get("kind") == "strength":
+                _OVERRIDES[e["key"]] = e
+                if e.get("place_id"):
+                    _OVERRIDES[f"place:{e['place_id']}"] = e
+    return _OVERRIDES
+
+
+def _chains():
+    """(place ids the census flags as chains, names at three or more places) — read once."""
+    global _CHAIN_IDS, _CHAIN_NAMES
+    if _CHAIN_IDS is None:
+        _CHAIN_IDS, _CHAIN_NAMES = set(), set()
+        if CENSUS.exists():
+            conn = sqlite3.connect(f"file:{CENSUS}?mode=ro", uri=True)
+            try:
+                tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                if "businesses" in tables:
+                    _CHAIN_IDS |= {r[0] for r in conn.execute(
+                        "SELECT place_id FROM businesses WHERE (CASE WHEN chain_override = 'yes' THEN 1 "
+                        "WHEN chain_override = 'no' THEN 0 ELSE COALESCE(is_chain, 0) END) = 1")}
+                if "restaurants" in tables:
+                    _CHAIN_IDS |= {r[0] for r in conn.execute("SELECT place_id FROM restaurants WHERE is_chain = 1")}
+            finally:
+                conn.close()
+            _CHAIN_NAMES = chain_names()
+    return _CHAIN_IDS, _CHAIN_NAMES
+
+
+def cached_details(place_id):
+    """The last listing read for this place, from the kit's cache, whatever its age — never a Places call."""
+    p = STATE / "details" / f"{place_id}.json"
+    try:
+        return json.loads(p.read_text()) if place_id and p.exists() else None
+    except (OSError, ValueError):
+        return None
+
+
+def _strength_row(obj):
+    """A census row with the fields the score reads, from a candidate, a kit pick or a pipeline lead (by place id)."""
+    pid = (obj or {}).get("place_id")
+    if obj and "reviews" in obj and ("presence" in obj or "presence_class" in obj or "has_website" in obj):
+        row = obj
+    else:
+        found = _census_by_id(pid) if pid else []
+        if not found:
+            return None
+        row = dict(found[0])
+    if not row.get("presence"):
+        row = dict(row)
+        row["presence"], row["presence_label"], row["presence_link"] = presence(row)
+    if row.get("miles") is None and row.get("lat") is not None and row.get("lng") is not None:
+        row = dict(row, miles=round(miles(home(), (row["lat"], row["lng"])), 1))
+    return row
+
+
+def strength_reasons(row, details=None, who=None):
+    """[{key, says, weight}] for a census row, strongest first, the reasons against last."""
+    w, _ = strength_weights()
+    pid = row.get("place_id")
+    out = []
+
+    def add(key, says):
+        out.append({"key": key, "says": says, "weight": w[key]})
+    hi = host_info(pid)
+    dead = host_dead(hi) if hi else False
+    pcls = row.get("presence")
+    if hi and hi["kind"] == "agency" and dead:
+        add("paying_dead", f"{hi['says']} site {'parked' if hi.get('status') == 'parked' else 'dead'}")
+    elif pcls == "dead" or (dead and hi["kind"] not in HOST_FREE_KINDS):
+        link = host_of(row.get("presence_link") or row.get("website") or "") or row.get("presence_label")
+        add("dead_link", f"dead link ({link})" if link else "dead link")
+    if pcls == "none":
+        add("no_site", "no website")
+    d = details or cached_details(pid)
+    if d:
+        if d.get("businessStatus") == "CLOSED_TEMPORARILY" and any(
+                (review_age_days(r, now_date()) or 999) <= 60 for r in d.get("reviews") or []):
+            add("embarrassing", "Google says closed, reviews say open")
+        elif d.get("businessStatus") in (None, "OPERATIONAL") and not (d.get("regularOpeningHours") or {}).get("periods"):
+            add("embarrassing", "no hours on Google")
+    (lo, hi_n), stars = FIT_BAND
+    reviews, rating = int(row.get("reviews") or 0), float(row.get("rating") or 0)
+    if lo <= reviews <= hi_n and rating >= stars:
+        add("fit", f"{reviews} reviews at {rating:g}")
+    if row.get("miles") is not None and row["miles"] <= NEAR_MILES:
+        add("near", f"{row['miles']} mi")
+    if is_business(row):
+        rc = business_reach(dict(row))
+        link = row.get("presence_link") or row.get("website") or ""
+        own = bool(re.match(r"^(?:https?://)?(?:www\.|m\.|web\.)?(?:instagram|facebook)\.com/", link))
+        ev = own or bool(((reach_table() or {}).get(pid) or {}).get("evidence"))
+        has = [k for k in ("instagram", "facebook", "email") if rc.get(k)]
+        if has and ev:
+            add("reach", {"instagram": "Instagram", "facebook": "Facebook", "email": "an email"}[has[0]]
+                + " with evidence")
+    owner = who or row.get("contact_name") or first_name(row.get("name") or "")
+    if owner:
+        add("owner", f"owner {owner}")
+    cat = f"{row.get('category') or ''} {row.get('primary_type') or ''}".lower().replace("_", " ")
+    if any(x in cat for x in QUOTE_WORDS if x != "dj") or re.search(r"\bdj\b", cat):
+        add("ladder", "quotes jobs")
+    ids, names = _chains()
+    name = (row.get("name") or "").lower()
+    if pid in ids or name in names:
+        add("chain", "a chain")
+    else:
+        brand = next((b for b in FRANCHISE_BRANDS if b in name), None)
+        if brand:
+            add("franchise", f"a franchise ({brand.title()})")
+    if hi and hi["kind"] == "builder" and not dead and (
+            (hi.get("evidence") or {}).get("url_host") or (hi.get("from") is not None and hi["from"] < 50)):
+        add("cheap_builder", f"a live {hi['says']} site under $50")
+    if row.get("rating") is not None and rating < 4.0:
+        add("low_rating", f"rated {rating:g}")
+    order = list(STRENGTH_REASONS)
+    out.sort(key=lambda r: (r["weight"] < 0, -abs(r["weight"]) if r["weight"] < 0 else 0, order.index(r["key"])))
+    return out
+
+
+def strength(row, details=None, lead=None):
+    """(level, reasons) — the one function candidates, the kits, today, brief, cadence, log, week and `prep pick` read.
+    Taylor's override wins; a lead with no census row is `good` (today's cadence) until he says otherwise."""
+    lead = lead or {}
+    key = lead.get("key") or (f"place:{row['place_id']}" if row and row.get("place_id") else None)
+    ov = strength_overrides().get(key) if key else None
+    r = _strength_row(row) if row else None
+    if r is None and lead.get("place_id"):
+        r = _strength_row({"place_id": lead["place_id"]})
+    if r is not None:
+        reasons = strength_reasons(r, details, lead.get("who"))
+        score = sum(x["weight"] for x in reasons)
+        _, at = strength_weights()
+        level = ("weak" if any(x["key"] == "chain" for x in reasons) else
+                 "strong" if score >= at["strong"] else "good" if score >= at["good"] else "weak")
+    else:
+        level, reasons = "good", [{"key": "unscored", "says": "not in the census, scored good", "weight": 0}]
+        for e in reversed(lead.get("history") or []):         # what was recorded when it was logged
+            if e.get("strength") in STRENGTHS and e.get("kind") != "strength":
+                level = e["strength"]
+                break
+    if ov and ov.get("strength") in STRENGTHS:
+        says = f"Taylor: \"{ov['note']}\"" if ov.get("note") else "Taylor's word"
+        return ov["strength"], [{"key": "taylor", "says": says, "weight": None}] + reasons
+    return level, reasons
+
+
+def strength_rank(row):
+    return STRENGTH_RANK[strength(row)[0]]
+
+
+def strength_order(row):
+    """The sort key a list of leads takes to put strong first: the level, then the score within it (a stable sort
+    keeps the list's own order — nearest, messageable — among equals)."""
+    level, reasons = strength(row)
+    return STRENGTH_RANK[level], -sum(r["weight"] or 0 for r in reasons)
+
+
+
+
+def strength_tag(row, skip=(), n=3, lead=None):
+    """'strong · Hibu site dead · 92 reviews at 4.9 · 1.1 mi' — the level and why, in words, for one line."""
+    level, reasons = strength(row, lead=lead)
+    pos = [r["says"] for r in reasons if (r["weight"] is None or r["weight"] > 0) and r["key"] not in skip]
+    neg = [r["says"] for r in reasons if r["weight"] is not None and r["weight"] < 0]
+    return " · ".join([level] + pos[:n] + neg[:1])
+
+
+def strength_fields(row=None, lead=None):
+    """The pipeline row's `strength` and `reasons` (the keys), as scored when the event is written."""
+    level, reasons = strength(row, lead=lead)
+    return {"strength": level, "reasons": [r["key"] for r in reasons]}
+
+
+def lead_strength(lead):
+    return strength(None, lead=lead)[0]
+
+
+def lead_cadence(lead):
+    return STRENGTH_CADENCE[lead_strength(lead)]
+
+
+def strength_hold(lead, today):
+    """True while the pipeline holds a silent messaged lead out of the kits: weak to day 30, good to day 90,
+    strong until Taylor's word (`later`, `lost`, or `leads strength NAME good`)."""
+    m = first_message(lead)
+    if not m or lead.get("stage") in ("won", "lost", "churned") or answered_since(lead):
+        return False
+    day = STRENGTH_POOL_DAY[lead_strength(lead)]
+    return day is None or today < dt.date.fromisoformat(m["date"]) + dt.timedelta(days=day)
+
+
+def strong_silent(state=None):
+    """Strong leads past their last touch with no answer: the Sunday review's list for Taylor's call."""
+    last = STRENGTH_CADENCE["strong"][-1]
+    out = []
+    for lead in (state or pipeline_state()).values():
+        if lead.get("stage") in ("won", "lost", "trialing", "churned") or answered_since(lead):
+            continue
+        if last in touches_done(lead) and lead_strength(lead) == "strong":
+            out.append(lead)
+    return sorted(out, key=lambda l: l["name"])
+
+
+def strong_silent_lines(state=None):
+    rows = strong_silent(state)
+    if not rows:
+        return []
+    lines = [f"Strong, silent ({len(rows)}) — your call: `leads log NAME later` keeps it, "
+             "`leads strength NAME good` lets it back into the pool, `lost` closes it"]
+    for l in rows[:8]:
+        m = first_message(l) or {}
+        lines.append(f"  {l['name']}{' (' + l['city'] + ')' if l.get('city') else ''} — messaged {m.get('date', '?')}, "
+                     f"six touches, no answer · {strength_tag(None, lead=l)}")
+    if len(rows) > 8:
+        lines.append(f"  +{len(rows) - 8} more — `leads pipeline --strong`")
+    return lines
+
+
+def week_by_strength(today):
+    """Every lead messaged so far, by the strength it had when the first message went and by each reason it carried:
+    what came of it. After a month the reasons that convert re-weight client-leads/strength.md."""
+    state = pipeline_state()
+    cols = ("messaged", "replied", "conversations", "trials", "won", "lost")
+    by_level = {s: dict.fromkeys(cols, 0) for s in STRENGTHS}
+    by_reason = {}
+    for lead in state.values():
+        m = first_message(lead)
+        if not m or m["date"] > today.isoformat():
+            continue
+        level = m.get("strength") if m.get("strength") in STRENGTHS else lead_strength(lead)
+        keys = m.get("reasons") if isinstance(m.get("reasons"), list) else [r["key"] for r in strength(None, lead=lead)[1]]
+        after = [e for e in lead["history"] if e["date"] >= m["date"] and e.get("date") <= today.isoformat()]
+        outs = {e.get("outcome") for e in after}
+        row = {"messaged": 1, "replied": int(any(o in CONVERSATION for o in outs)),
+               "conversations": sum(1 for e in after if e.get("outcome") in CONVERSATION),
+               "trials": int("trial" in outs), "won": int("won" in outs), "lost": int("lost" in outs)}
+        for c in cols:
+            by_level[level][c] += row[c]
+            for k in keys:
+                by_reason.setdefault(k, dict.fromkeys(cols, 0))[c] += row[c]
+    return {"by_strength": by_level, "by_reason": by_reason, "strong_silent": [l["name"] for l in strong_silent(state)]}
+
+
+def week_strength_message(d, today):
+    w, _ = strength_weights()
+    lines = [f"Leads by strength — everyone messaged to {today.strftime('%-d %b')}, by the strength when the first "
+             "message went · messaged · replied · conversations · trials · won · lost"]
+    for s in STRENGTHS:
+        r = d["by_strength"][s]
+        rate = f" · {round(100 * r['replied'] / r['messaged'])}% replied" if r["messaged"] else ""
+        lines.append(f"  {s:<7} " + " · ".join(str(r[c]) for c in ("messaged", "replied", "conversations", "trials",
+                                                                   "won", "lost")) + rate)
+    lines.append("By reason (a lead counts under each reason it carried; the weight is client-leads/strength.md's):")
+    keys = sorted(d["by_reason"], key=lambda k: (-d["by_reason"][k]["messaged"], k))
+    for k in keys:
+        r = d["by_reason"][k]
+        label = STRENGTH_REASONS.get(k, (0, {"taylor": "Taylor's word", "unscored": "not in the census"}.get(k, k)))[1]
+        wt = w.get(k)
+        lines.append(f"  {k:<13} {('%+d' % wt) if wt is not None else '  '}  {r['messaged']} messaged · {r['replied']} "
+                     f"replied · {r['won']} won — {label}")
+    if not keys:
+        lines.append("  (nobody messaged yet — `leads sent`, `leads log NAME messaged`)")
+    lines += strong_silent_lines()
+    return "\n".join(lines) + "\n"
+
+
+def cmd_strength(args):
+    """`leads strength NAME` shows it; `leads strength NAME strong|good|weak "why"` is Taylor's override (it always
+    wins, and a re-score never moves it); `auto` hands the lead back to the score."""
+    key, pid, name, city, row, _ = resolve_lead(" ".join(args.name), args.place)
+    lead = pipeline_state().get(key) or {"key": key, "place_id": pid, "name": name, "history": []}
+    if args.level:
+        lv = args.level.lower()
+        if lv not in STRENGTHS + ("auto",):
+            die("the level is strong, good, weak — or auto, to hand it back to the score")
+        event = {"ts": dt.datetime.now(TZ).isoformat(timespec="seconds"), "date": now_date().isoformat(), "key": key,
+                 "place_id": pid, "name": name, "city": city, "outcome": "strength", "kind": "strength",
+                 "strength": None if lv == "auto" else lv, "reasons": ["taylor"], "by": "hand",
+                 "note": " ".join(args.why).strip() or None}
+        PIPELINE.parent.mkdir(parents=True, exist_ok=True)
+        with open(PIPELINE, "a") as f:
+            f.write(json.dumps({k: v for k, v in event.items() if v is not None or k == "strength"}) + "\n")
+        global _OVERRIDES
+        _OVERRIDES = None
+    level, reasons = strength(row, lead=lead)
+    print(f"{name}{' (' + city + ')' if city else ''}: {level}"
+          + (" — Taylor's word" if reasons and reasons[0]["key"] == "taylor" else ""))
+    for r in reasons:
+        wt = "" if r["weight"] is None else f"{r['weight']:+d}  "
+        print(f"  {wt}{r['says']}")
+    cad = STRENGTH_CADENCE[level]
+    pool = STRENGTH_POOL_DAY[level]
+    print(f"  cadence: day {', '.join(map(str, cad))}" + (f", back in the pool at {pool}" if pool else
+                                                         ", never back in the pool without your word"))
+
+
+def cmd_pipeline_strong(state):
+    rows = [l for l in state.values() if lead_strength(l) == "strong" and l.get("stage") not in ("won", "lost", "churned")]
+    if not rows:
+        print("No strong leads in the pipeline. `leads candidates` puts the strong ones first.")
+        return
+    print(f"strong: {len(rows)}")
+    for l in sorted(rows, key=lambda l: l.get("next") or "9"):
+        print(f"  {l['name']}{' (' + l['city'] + ')' if l.get('city') else ''} · {l.get('stage') or 'noted'}"
+              + (f" · next {l['next']}" if l.get("next") else "") + f" · {strength_tag(None, lead=l)}")
+
 
 
 # ---- commands -------------------------------------------------------------------
@@ -4464,22 +4918,23 @@ def cmd_candidates(args):
               f"agency-hosted and dead or parked first, then the other dead ones, then the live ones; the band is the "
               f"vendor's public price (client-leads/vendor_prices.md), never their bill")
     else:
+        cands.sort(key=strength_order)                                   # B73: strong first, nearest within
         print(f"{len(cands)} {SEGMENT_NOUN[segment]} with a phone, ≥{floor} reviews and no site of their own "
-              f"(none, page, directory, dead, builder); nearest first (census {census_stamp(cands)})")
+              f"(none, page, directory, dead, builder); strong first, then good, then weak, nearest within each "
+              f"(census {census_stamp(cands)})")
     shown = 0
     for c in cands:
         if shown >= args.n:
             break
         if c["miles"] > radius:
-            if args.paying:
-                continue
-            break
+            continue
         tag = f"  (kitted {skip[c['place_id']]})" if c["place_id"] in skip else ""
         if is_business(c):
             what = f"{c.get('category')} · {c.get('presence')}: {presence_short(c['presence'], c['presence_label'], c['presence_link'])}"
         else:
             what = f"restaurant · on {platforms(c)}"
         ht = host_tag(c)
+        print(f"  {strength_tag(c, skip=('near',))} │", end="")              # B73: the level and why, first
         print(f"  {c['miles']:>4} mi  {c['name']} · {c.get('locality') or ''} · {c['rating']}★ ({c['reviews']}) · {what}"
               f"{' · ' + ht if ht else ''}{tag}")
         shown += 1
@@ -4565,6 +5020,13 @@ def cmd_doctor(args):
                   f"{max((r.get('checked') or '')[:10] for r in ht.values()) if ht else '-'}; "
                   f"prices: {len(vendor_prices())} vendors in {VENDOR_PRICES}"
                   + ("" if VENDOR_PRICES.exists() else " — MISSING, so no band is printed"))
+        if exists and counts.get("services"):          # B73
+            lv = {}
+            for c in business_candidates(["services"]):
+                s = strength(c)[0]
+                lv[s] = lv.get(s, 0) + 1
+            print(f"strength (services pool): " + ", ".join(f"{lv.get(s, 0)} {s}" for s in STRENGTHS)
+                  + f"; weights from {STRENGTH_DOC}" + ("" if STRENGTH_DOC.exists() else " — missing, so the defaults"))
         print(f"default segment: {default_segment()}" + (" (LEADS_SEGMENT)" if os.environ.get("LEADS_SEGMENT") else
                                                        f" (services once the services census has {DEFAULT_POOL_MIN} in the kit's pool, else restaurant)"))
     key, where = places_key()
@@ -4746,9 +5208,17 @@ def main():
     br.add_argument("--fixture", help="dir of <place_id>.json Place Details (tests)")
     br.set_defaults(fn=cmd_brief)
 
-    cd = sub.add_parser("cadence", help="the day 3 / 10 / 30 touches a silent lead is owed (§ 5.5)")
+    cd = sub.add_parser("cadence", help="the touches a silent lead is owed by its strength (§ 5.5): weak 3/10, "
+                                        "good 3/10/30, strong 3/10/30/45/60/90")
     cd.add_argument("--dry-run", action="store_true", help="say what is due, write nothing")
     cd.set_defaults(fn=cmd_cadence)
+
+    st = sub.add_parser("strength", help="a lead's strength and why; `strength NAME strong|good|weak \"why\"` is your word")
+    st.add_argument("name", nargs=1, help='"Name" or "Name, City"')
+    st.add_argument("level", nargs="?", help="strong | good | weak (your override, always wins) | auto (back to the score)")
+    st.add_argument("why", nargs="*", help="the reason, in your words")
+    st.add_argument("--place", help="census place id, when the name matched the wrong one")
+    st.set_defaults(fn=cmd_strength)
 
     sh = sub.add_parser("show", help="one lead's history")
     sh.add_argument("name", nargs="+")
@@ -4757,12 +5227,15 @@ def main():
 
     wk = sub.add_parser("week", help="this week's numbers")
     wk.add_argument("--ago", type=int, default=0, help="weeks back")
-    wk.add_argument("--by", choices=["channel"], help="the Sunday review (B52): the funnel per channel and the § 2.4 rows")
+    wk.add_argument("--by", choices=["channel", "strength"],
+                    help="channel: the Sunday review (B52), the funnel per channel and the § 2.4 rows; "
+                         "strength: outcomes by strength and by reason (B73)")
     wk.add_argument("--json", action="store_true", help="the same numbers, for GROWTH § 13's row")
     wk.set_defaults(fn=cmd_week)
 
     pp = sub.add_parser("pipeline", help="every lead by stage")
     pp.add_argument("--all", action="store_true", help="list won and lost too")
+    pp.add_argument("--strong", action="store_true", help="only the strong leads, each with why (B73)")
     pp.set_defaults(fn=cmd_pipeline)
 
     pv = sub.add_parser("preview", help="a lead's own website, built from the census row (B45): NAME | --kit | ls | sweep")

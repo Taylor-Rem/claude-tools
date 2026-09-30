@@ -1815,13 +1815,16 @@ def pick_row(c, L):
     fit = FIT_REVIEWS[0] <= int(c.get("reviews") or 0) <= FIT_REVIEWS[1] and float(c.get("rating") or 0) >= FIT_RATING
     city = c.get("locality") or (c.get("city") or "").split(",")[0].strip()
     has = [k for k in ("instagram", "facebook", "email") if rc.get(k)]
-    why = [f"{c.get('rating')}★ ({c.get('reviews')})" + (" fits" if fit else ""),
+    level, reasons = L.strength(c)                     # B73: the same strength `leads` shows, and why
+    why = [L.strength_tag(c, skip=("fit", "near")),
+           f"{c.get('rating')}★ ({c.get('reviews')})" + (" fits" if fit else ""),
            ("reach: " + ", ".join(has) + (" with evidence" if evidence else "")) if has else "phone only",
            f"{c.get('miles', '?')} mi"]
     return {"place_id": c["place_id"], "name": c["name"], "category": c.get("category"), "segment": c.get("segment"),
             "city": city, "rating": c.get("rating"), "reviews": c.get("reviews"), "miles": c.get("miles"),
             "fit": fit, "evidence": evidence, "reach": {k: rc.get(k) for k in ("instagram", "facebook", "email")},
-            "has_reach": bool(has), "template": template_for(c.get("category")), "why": " · ".join(why)}
+            "has_reach": bool(has), "template": template_for(c.get("category")), "why": " · ".join(why),
+            "strength": level, "reasons": [r["says"] for r in reasons]}
 
 
 def pick(n, segment=None, allow_calls=False, reserve=None, exclude_run=None):

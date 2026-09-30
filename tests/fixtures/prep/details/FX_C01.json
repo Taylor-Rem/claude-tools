@@ -1,0 +1,91 @@
+{
+ "id": "FX_C01",
+ "displayName": {
+  "text": "Photography by Jenna"
+ },
+ "formattedAddress": "101 N Main St, American Fork, UT 84003, USA",
+ "nationalPhoneNumber": "(801) 555-0121",
+ "websiteUri": "https://www.instagram.com/photosbyjenna.ut/",
+ "rating": 5.0,
+ "userRatingCount": 45,
+ "businessStatus": "OPERATIONAL",
+ "googleMapsUri": "https://maps.google.com/?cid=FX_C01",
+ "location": {
+  "latitude": 40.381,
+  "longitude": -111.792
+ },
+ "primaryType": "photographer",
+ "primaryTypeDisplayName": {
+  "text": "Photographer"
+ },
+ "pureServiceAreaBusiness": false,
+ "regularOpeningHours": {
+  "weekdayDescriptions": [
+   "Monday: Closed",
+   "Tuesday: 10:00 AM \u2013 6:00 PM",
+   "Wednesday: 10:00 AM \u2013 6:00 PM",
+   "Thursday: 10:00 AM \u2013 6:00 PM",
+   "Friday: 10:00 AM \u2013 6:00 PM",
+   "Saturday: 10:00 AM \u2013 6:00 PM",
+   "Sunday: Closed"
+  ]
+ },
+ "photos": [
+  {
+   "name": "a"
+  }
+ ],
+ "reviews": [
+  {
+   "rating": 5,
+   "relativePublishTimeDescription": "a month ago",
+   "publishTime": "2026-08-20T12:00:00Z",
+   "text": {
+    "text": "We booked a wedding session last June and the gallery came back in two weeks.",
+    "languageCode": "en"
+   },
+   "originalText": {
+    "text": "We booked a wedding session last June and the gallery came back in two weeks.",
+    "languageCode": "en"
+   },
+   "authorAttribution": {
+    "displayName": "Dana Whitfield",
+    "uri": "https://www.google.com/maps/contrib/0/reviews"
+   }
+  },
+  {
+   "rating": 5,
+   "relativePublishTimeDescription": "3 months ago",
+   "publishTime": "2026-06-18T12:00:00Z",
+   "text": {
+    "text": "Our family photos at the park turned out beautifully and the whole shoot took half an hour.",
+    "languageCode": "en"
+   },
+   "originalText": {
+    "text": "Our family photos at the park turned out beautifully and the whole shoot took half an hour.",
+    "languageCode": "en"
+   },
+   "authorAttribution": {
+    "displayName": "Ruth Garrett",
+    "uri": "https://www.google.com/maps/contrib/0/reviews"
+   }
+  },
+  {
+   "rating": 5,
+   "relativePublishTimeDescription": "5 months ago",
+   "publishTime": "2026-04-11T12:00:00Z",
+   "text": {
+    "text": "She photographed our wedding in the canyon and did a newborn session a year later.",
+    "languageCode": "en"
+   },
+   "originalText": {
+    "text": "She photographed our wedding in the canyon and did a newborn session a year later.",
+    "languageCode": "en"
+   },
+   "authorAttribution": {
+    "displayName": "Mona Petersen",
+    "uri": "https://www.google.com/maps/contrib/0/reviews"
+   }
+  }
+ ]
+}

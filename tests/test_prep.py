@@ -63,6 +63,8 @@ class Base(unittest.TestCase):
             "PREP_STATE": str(t / "prep"), "PREP_LEDGER": str(t / "ledger.jsonl"), "PREP_CLAUDE": str(FAKE),
             "CLAUDE_TOOLS_ENV": str(t / "no-env"), "GOOGLE_MAPS_API_KEY": "", "LEADS_SEGMENT": "",
             "PREP_TODAY": "2026-09-29", "FAKE_CLAUDE_LOG": str(self.log), "FAKE_CLAUDE_FACTS": str(FIX / "facts-good.json"),
+            # B67: the marker directory and the previews tree are the test's own, never the real ones
+            "PREP_REQUESTS": str(t / "requests"), "LEADS_PREVIEWS": str(t / "previews"),
             "ANTHROPIC_API_KEY": "sk-ant-FAKEkeyNEVERreal000",   # set here to prove every session strips it
         })
 
@@ -488,9 +490,21 @@ class BriefDoctorTest(Base):
         r = self.run_prep("doctor", env={"FAKE_CLAUDE_AUTH": "apikey", "PREP_MODEL_JUDGE": "claude-fable-5"})
         self.assertIn("BAD login: not the subscription (api_key)", r.stdout)
         self.assertIn("BAD model judge: claude-fable-5", r.stdout)
+        # B67's three: the previews project and the approved frame are Taylor's, the marker is the run's
+        self.assertIn("BAD previews project: no publish on record", r.stdout)
+        self.assertIn("BAD message frame: not approved", r.stdout)
+        self.assertIn("ok  marker: none in", r.stdout)
+        r = self.run_prep("doctor", env={"GOOGLE_MAPS_API_KEY": "fake-key-by-name"})
+        self.assertEqual(r.returncode, 1, r.stdout)      # still the previews project and the frame
+        self.assertNotIn("fake-key-by-name", r.stdout)
+        (self.t / "previews").mkdir(exist_ok=True)
+        (self.t / "previews" / "project.json").write_text(
+            json.dumps({"project": "patchlamp-previews", "pages_host": "patchlamp-previews.pages.dev"}))
+        self.assertEqual(self.run_prep("approve").returncode, 0)
         r = self.run_prep("doctor", env={"GOOGLE_MAPS_API_KEY": "fake-key-by-name"})
         self.assertEqual(r.returncode, 0, r.stdout)
-        self.assertNotIn("fake-key-by-name", r.stdout)
+        self.assertIn("ok  previews project: patchlamp-previews · patchlamp-previews.pages.dev", r.stdout)
+        self.assertIn("ok  message frame: approved", r.stdout)
 
 
 if __name__ == "__main__":

@@ -10,10 +10,24 @@
       hang    sleep 60s (the time cap's test)
       nothing write nothing
 
-Every call appends {argv, cwd, api_key_seen, path_has_prep} to FAKE_CLAUDE_LOG. Before writing, it
-drives the stamped settings' PreToolUse hook the way Claude Code would (a Meta fetch, an ordinary
-fetch, a search, a read outside the directory) and runs `prep facts lint facts.json` through PATH, so
-the tests see the boundary and the lint wired as a real session sees them.
+B67's stages (the prompt names the manual, so the fake knows which one it is), each with its own
+mode from FAKE_PLAN (a JSON file: {"build": {"default": "good", "<slug>": ["bad", "good"]},
+"judge": "pass", "batch": "good"}; a list is consumed one entry a call, so a round-two session can
+behave differently):
+
+  build   good    write message.json, render with `leads preview --from content.json --out site`,
+                  run `prep check` — and try `site publish`, which the boundary must refuse
+          bad     the same, but a guarded word in the hero heading (gate 4 fails)
+          thin    write nothing at all (the message never lints: two rounds, then dropped)
+          hang / fable / nothing as above
+  judge   pass    review.json, six checks ok         fix  a fix list      drop  the drop verdict
+  batch   good    batch.json, the order as given     drop-last  drops the last slug
+
+Every call appends {argv, cwd, api_key_seen, path_has_prep, stage, slug, mode} to FAKE_CLAUDE_LOG.
+Before writing, it drives the stamped settings' PreToolUse hook the way Claude Code would (research:
+a Meta fetch, an ordinary fetch, a search, a read outside the directory; build: its own commands and
+one publish) and runs the stage's commands through PATH, so the tests see the boundary, the renderer
+and the gates wired as a real session sees them.
 """
 import json
 import os
@@ -55,12 +69,47 @@ if "-p" not in argv:
     sys.exit(2)
 
 prompt = sys.stdin.read()
-mode = os.environ.get("FAKE_CLAUDE_MODE", "good")
 model = opt("--model")
 resume = opt("--resume")
 settings = json.loads(Path(opt("--settings")).read_text()) if opt("--settings") else {}
 sid = resume or str(uuid.uuid4())
 events, denials = [], []
+
+# Which stage this is: the prompt names the manual (prep's BUILD_PROMPT / JUDGE_PROMPT / BATCH_PROMPT).
+stage = ("batch" if "BATCH.md" in prompt else "judge" if "JUDGE.md" in prompt else
+         "build" if "BUILD.md" in prompt else "research")
+slug = Path(os.getcwd()).name
+
+
+def earlier(st):
+    """How many sessions this slug has already had at this stage (a mode list steps through them)."""
+    if not log or not Path(log).exists():
+        return 0
+    n = 0
+    for line in Path(log).read_text().splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if row.get("stage") == st and row.get("slug") == slug:
+            n += 1
+    return n
+
+
+def mode_for(st):
+    if st == "research":
+        return os.environ.get("FAKE_CLAUDE_MODE", "good")
+    plan = {}
+    if os.environ.get("FAKE_PLAN") and Path(os.environ["FAKE_PLAN"]).exists():
+        plan = json.loads(Path(os.environ["FAKE_PLAN"]).read_text())
+    spec = plan.get(st, {})
+    v = spec if isinstance(spec, (str, list)) else spec.get(slug, spec.get("default", "good"))
+    if isinstance(v, list):
+        v = v[min(earlier(st), len(v) - 1)] if v else "good"
+    return v
+
+
+mode = mode_for(stage)
 
 
 def emit(ev):
@@ -72,42 +121,123 @@ emit({"type": "system", "subtype": "init", "session_id": sid, "model": model, "c
 
 hook_cmds = [h["command"] for g in (settings.get("hooks") or {}).get("PreToolUse") or [] for h in g.get("hooks") or []]
 hooks = []
-if not resume:
+
+
+def tool_use(tool, ti):
+    """One tool call the way Claude Code makes it: the event, then every PreToolUse hook. True when
+    the boundary let it through."""
+    emit({"type": "assistant", "session_id": sid, "message": {"role": "assistant", "content": [
+        {"type": "tool_use", "id": f"t{len(hooks)}", "name": tool, "input": ti}]}})
+    codes = []
+    for cmd in hook_cmds:
+        r = subprocess.run(cmd, shell=True, input=json.dumps({"tool_name": tool, "tool_input": ti, "cwd": os.getcwd(),
+                                                              "hook_event_name": "PreToolUse"}),
+                           capture_output=True, text=True)
+        codes.append(r.returncode)
+    refused = any(c == 2 for c in codes)
+    hooks.append({"tool": tool, "input": ti, "codes": codes, "refused": refused})
+    if refused:
+        denials.append({"tool_name": tool, "tool_input": ti})
+    return not refused
+
+
+def run_cmd(cmd):
+    """A Bash tool call: through the boundary first, then really run it (the renderer and the gates
+    are the real ones, so the test sees what a session would)."""
+    if not tool_use("Bash", {"command": cmd}):
+        return None
+    return subprocess.run(cmd, shell=True, capture_output=True, text=True)
+
+
+if stage == "research" and not resume:
     for tool, ti in (("WebFetch", {"url": "https://www.facebook.com/mikespoolcare", "prompt": "t"}),
                      ("WebSearch", {"query": "\"Mike's Pool Care\" American Fork Utah"}),
                      ("WebFetch", {"url": "https://example.com/", "prompt": "t"}),
                      ("Read", {"file_path": "/etc/hostname"})):
-        emit({"type": "assistant", "session_id": sid, "message": {"role": "assistant", "content": [
-            {"type": "tool_use", "id": f"t{len(hooks)}", "name": tool, "input": ti}]}})
-        codes = []
-        for cmd in hook_cmds:
-            r = subprocess.run(cmd, shell=True, input=json.dumps({"tool_name": tool, "tool_input": ti, "cwd": os.getcwd(),
-                                                                   "hook_event_name": "PreToolUse"}),
-                               capture_output=True, text=True)
-            codes.append(r.returncode)
-        refused = any(c == 2 for c in codes)
-        hooks.append({"tool": tool, "input": ti, "codes": codes, "refused": refused})
-        if refused:
-            denials.append({"tool_name": tool, "tool_input": ti})
+        tool_use(tool, ti)
 
 if mode == "hang":
     time.sleep(60)
+if os.environ.get("FAKE_CLAUDE_SLEEP"):      # a run slow enough to be stopped or killed mid-stage
+    time.sleep(float(os.environ["FAKE_CLAUDE_SLEEP"]))
 
-facts_src = os.environ.get("FAKE_CLAUDE_FACTS")
-if mode in ("good", "fable") or (mode == "bad" and resume):
-    shutil.copyfile(facts_src, "facts.json")
-elif mode == "bad":
-    doc = json.loads(Path(facts_src).read_text())
-    doc["facts"][1]["text"] = "Weekly cleaning all season and they fixed our pump."
-    doc["about"][0]["text"] = "Spring openings from $180."
-    Path("facts.json").write_text(json.dumps(doc))
-elif mode == "skip":
-    doc = json.loads(Path("facts.json").read_text())
-    doc.update(verdict="skip", skip_reason="has its own site: https://mikespoolcare.example")
-    Path("facts.json").write_text(json.dumps(doc))
+extra = {}
+if stage == "research":
+    # FAKE_CLAUDE_FACTS_DIR/<slug>.json when it is there (a run of several businesses), else the one file
+    facts_src = os.environ.get("FAKE_CLAUDE_FACTS")
+    d = os.environ.get("FAKE_CLAUDE_FACTS_DIR")
+    if d and (Path(d) / f"{slug}.json").exists():
+        facts_src = str(Path(d) / f"{slug}.json")
+    if mode in ("good", "fable") or (mode == "bad" and resume):
+        shutil.copyfile(facts_src, "facts.json")
+    elif mode == "bad":
+        doc = json.loads(Path(facts_src).read_text())
+        doc["facts"][1]["text"] = "Weekly cleaning all season and they fixed our pump."
+        doc["about"][0]["text"] = "Spring openings from $180."
+        Path("facts.json").write_text(json.dumps(doc))
+    elif mode == "skip":
+        doc = json.loads(Path("facts.json").read_text())
+        doc.update(verdict="skip", skip_reason="has its own site: https://mikespoolcare.example")
+        Path("facts.json").write_text(json.dumps(doc))
+    lint = subprocess.run("prep facts lint facts.json", shell=True, capture_output=True, text=True)
+    extra["lint_exit"] = lint.returncode
 
-lint = subprocess.run("prep facts lint facts.json", shell=True, capture_output=True, text=True)
-note({"mode": mode, "resume": resume, "hooks": hooks, "lint_exit": lint.returncode, "prompt": prompt[:400]})
+elif stage == "build":
+    if mode not in ("thin", "nothing", "fable"):
+        high = []
+        try:
+            facts = json.loads(Path("facts.json").read_text())
+            high = [f for f in facts.get("facts") or [] if f.get("confidence") == "high"
+                    and f.get("kind") in ("service", "specialty", "hours", "about", "credential")]
+        except (OSError, ValueError):
+            pass
+        what = (high[0]["text"].rstrip(".").lower() if high else "the work your reviews keep naming")
+        Path("message.json").write_text(json.dumps({"specific": {
+            "text": f"Your reviews keep pointing at {what}, so the site leads with that."[:140],
+            "facts": [f["id"] for f in high[:2]]}}, indent=1))
+        if mode == "bad":
+            content = json.loads(Path("content.json").read_text())
+            # gate 4: a guarded word with no credential or since fact behind it
+            content["sections"][0]["heading"]["text"] = "The best pool care in town"
+            Path("content.json").write_text(json.dumps(content, indent=1))
+        elif Path("content.draft.json").exists():
+            # a fix round: back to the draft code wrote, which is traced fact by fact
+            shutil.copyfile("content.draft.json", "content.json")
+        r = run_cmd("leads preview --from content.json --out site")
+        extra["render_exit"] = None if r is None else r.returncode
+        tool_use("Read", {"file_path": str(Path.cwd() / "site" / "index.html")})
+        r = run_cmd("prep check --json")
+        extra["check_exit"] = None if r is None else r.returncode
+    # a build session never publishes and never messages: the boundary refuses both
+    extra["publish_refused"] = not tool_use("Bash", {"command": "site previews site --yes"})
+    extra["notify_refused"] = not tool_use("Bash", {"command": "notify \"the site is up\""})
+
+elif stage == "judge":
+    checks = [{"n": n, "ok": True, "line": f"check {n} reads well"} for n in range(1, 7)]
+    review = {"schema": 1, "verdict": "pass", "checks": checks, "glad": "Yes — it reads as their own site."}
+    if mode == "fix":
+        review["checks"][2] = {"n": 3, "ok": False, "line": "The about line says nothing of theirs."}
+        review.update(verdict="fix", fixes=["Cut the about section or give it a high fact."],
+                      glad="No — one empty section away from yes.")
+    elif mode == "drop":
+        review.update(verdict="drop", glad="No — the facts are too thin for a site that reads as theirs.")
+    elif mode == "malformed":
+        review = {"schema": 1, "verdict": "maybe"}
+    if mode not in ("nothing",):
+        Path("review.json").write_text(json.dumps(review, indent=1))
+
+elif stage == "batch":
+    rows = json.loads(Path("messages.json").read_text())
+    slugs = [r["slug"] for r in rows]
+    out = {"schema": 1, "order": list(reversed(slugs)), "drop": {}, "notes": {},
+           "heroes_alike": [], "messages_alike": [],
+           "last_word": "Three distinct sites; send the pool one first."}
+    if mode == "drop-last" and len(slugs) > 1:
+        out["drop"] = {slugs[-1]: "its hero is the painter's photo again"}
+    if mode not in ("nothing",):
+        Path("batch.json").write_text(json.dumps(out, indent=1))
+
+note(dict(extra, mode=mode, stage=stage, slug=slug, resume=resume, hooks=hooks, prompt=prompt[:400]))
 
 ran_on = "claude-fable-5" if mode == "fable" else model
 emit({"type": "result", "subtype": "success", "is_error": False, "session_id": sid, "num_turns": 7,

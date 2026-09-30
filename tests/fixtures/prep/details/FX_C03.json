@@ -1,0 +1,97 @@
+{
+ "id": "FX_C03",
+ "displayName": {
+  "text": "Rosie's Florals"
+ },
+ "formattedAddress": "103 N Main St, Pleasant Grove, UT 84003, USA",
+ "nationalPhoneNumber": "(801) 555-0123",
+ "websiteUri": "https://www.facebook.com/rosiesfloralsutah",
+ "rating": 4.8,
+ "userRatingCount": 60,
+ "businessStatus": "OPERATIONAL",
+ "googleMapsUri": "https://maps.google.com/?cid=FX_C03",
+ "location": {
+  "latitude": 40.364,
+  "longitude": -111.738
+ },
+ "primaryType": "florist",
+ "primaryTypeDisplayName": {
+  "text": "Florist"
+ },
+ "pureServiceAreaBusiness": false,
+ "regularOpeningHours": {
+  "weekdayDescriptions": [
+   "Monday: 9:00 AM \u2013 6:00 PM",
+   "Tuesday: 9:00 AM \u2013 6:00 PM",
+   "Wednesday: 9:00 AM \u2013 6:00 PM",
+   "Thursday: 9:00 AM \u2013 6:00 PM",
+   "Friday: 9:00 AM \u2013 6:00 PM",
+   "Saturday: 9:00 AM \u2013 6:00 PM",
+   "Sunday: Closed"
+  ]
+ },
+ "photos": [
+  {
+   "name": "a"
+  },
+  {
+   "name": "b"
+  },
+  {
+   "name": "c"
+  }
+ ],
+ "reviews": [
+  {
+   "rating": 5,
+   "relativePublishTimeDescription": "2 weeks ago",
+   "publishTime": "2026-09-12T12:00:00Z",
+   "text": {
+    "text": "Our wedding bouquets arrived on time and the arrangements lasted more than a week.",
+    "languageCode": "en"
+   },
+   "originalText": {
+    "text": "Our wedding bouquets arrived on time and the arrangements lasted more than a week.",
+    "languageCode": "en"
+   },
+   "authorAttribution": {
+    "displayName": "Ilene Brooks",
+    "uri": "https://www.google.com/maps/contrib/0/reviews"
+   }
+  },
+  {
+   "rating": 5,
+   "relativePublishTimeDescription": "2 months ago",
+   "publishTime": "2026-07-30T12:00:00Z",
+   "text": {
+    "text": "We order arrangements for the shop every month and they are always fresh.",
+    "languageCode": "en"
+   },
+   "originalText": {
+    "text": "We order arrangements for the shop every month and they are always fresh.",
+    "languageCode": "en"
+   },
+   "authorAttribution": {
+    "displayName": "Tomas Reyes",
+    "uri": "https://www.google.com/maps/contrib/0/reviews"
+   }
+  },
+  {
+   "rating": 5,
+   "relativePublishTimeDescription": "4 months ago",
+   "publishTime": "2026-05-22T12:00:00Z",
+   "text": {
+    "text": "The bouquets for our anniversary were wrapped beautifully and delivered the same day.",
+    "languageCode": "en"
+   },
+   "originalText": {
+    "text": "The bouquets for our anniversary were wrapped beautifully and delivered the same day.",
+    "languageCode": "en"
+   },
+   "authorAttribution": {
+    "displayName": "Priya Nandan",
+    "uri": "https://www.google.com/maps/contrib/0/reviews"
+   }
+  }
+ ]
+}

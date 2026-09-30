@@ -78,7 +78,7 @@ class LanguageTest(Base):
         r = self.run_leads("kit", "--remote", "--segment", "services", "--census-only", "--no-save",
                            "--n", "12", "--radius", "50")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertTrue(self.line(r.stdout, "Mike's Pool Care").endswith("· lang: es"))
+        self.assertIn("· lang: es", self.line(r.stdout, "Mike's Pool Care"))   # B73's strength tag may follow it
         r = self.run_leads("kit", "--remote", "--segment", "services", "--census-only", "--json", "--no-save",
                            "--n", "12", "--radius", "50")
         by = {p["name"]: p for p in json.loads(r.stdout)["picks"]}
@@ -92,7 +92,7 @@ class LanguageTest(Base):
         r = self.run_leads("today", "--census-only", now=ANCHOR)
         self.assertEqual(r.returncode, 0, r.stderr)
         mike = self.line(r.stdout, "Mike's Pool Care")
-        self.assertTrue(mike.endswith(" · lang: es"), mike)
+        self.assertIn(" · lang: es", mike, mike)   # B73's strength tag follows it on the line
         dave = [l for l in r.stdout.splitlines() if "Dave's Handyman" in l and l[:1].isdigit()]
         for l in dave:
             self.assertNotIn("lang:", l)

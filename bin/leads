@@ -1930,19 +1930,24 @@ def site_fault_words(c, fault):
     return to_you(fault), "one"
 
 
+def register_parts(c, fs):
+    """(the one fault said to the owner or None, 'So I went ahead and built you one.', 'I can build you one in an
+    afternoon') — shared by the DM and the call opener so both name the same fault the same way."""
+    fault = site_fault(fs)
+    if fault:
+        said, one = site_fault_words(c, fault)
+        return said, f"So I went ahead and built you {one}.", f"I can build you {one} in an afternoon"
+    if fs:
+        return to_you(fs[0]), "I went ahead and built you a website too.", "I can build you a website in an afternoon"
+    return None, "I went ahead and built you a website.", "I can build you a website in an afternoon"
+
+
 def register_dm(c, fs):
     """Message one, for every segment. "Built you one" only when the pick has a preview_url (it is true then);
     without one the offer is to build it."""
     biz = plain_name(c["name"])
     who = "you" if greeting(c) == biz else biz
-    fault = site_fault(fs)
-    if fault:
-        said, one = site_fault_words(c, fault)
-        built, offer = f"So I went ahead and built you {one}.", f"I can build you {one} in an afternoon"
-    elif fs:
-        said, built, offer = to_you(fs[0]), "I went ahead and built you a website too.", "I can build you a website in an afternoon"
-    else:
-        said, built, offer = None, "I went ahead and built you a website.", "I can build you a website in an afternoon"
+    said, built, offer = register_parts(c, fs)
     rv = reviews_clause(c)
     if rv and said:
         looked = f"Looked {who} up on Google. {rv}, but {said}."
@@ -4505,11 +4510,17 @@ def email_gate(picks):
 
 
 def call_opener(p):
-    """What to say when the only way in is the phone: SEGMENT_OPENER with the pick's own first fault in it."""
-    fs = p.get("faults") or []
-    what = f": {to_you(fs[0])}" if fs else ""
-    return (f"Say: \"Hi, this is Taylor — I run a small business in American Fork. I looked {plain_name(p['name'])} "
-            f"up on Google{what}. Here's exactly what to change; it's free, whether or not we talk again.\"")
+    """What to say when the only way in is the phone: the register in the approved prep call frame
+    (templates/prep/message.md § call) — the same one fault as the DM, then ask to text the link."""
+    biz = plain_name(p["name"])
+    said, built, offer = register_parts(p, p.get("faults") or [])
+    looked = f"Looked you up on Google — {said}" if said else "Looked you up on Google"
+    if p.get("preview_url"):
+        did = built.removeprefix("So ").rstrip(".")          # "I went ahead and built you one"
+        return (f"Say: \"Hi, is this {biz}? This is Taylor in American Fork. {looked}, so {did}. "
+                f"Could I text you the link? Nothing to sign, and I'll take it down the moment you say so.\"")
+    return (f"Say: \"Hi, is this {biz}? This is Taylor in American Fork. {looked}. {offer} — could I text you "
+            f"what it'd look like?\"")
 
 
 def morning_pick(p, email_on):
@@ -4541,7 +4552,7 @@ def morning_pick(p, email_on):
         return dict(out, how=f"email: {p['email']} — the letter goes on `go`")
     if phone:
         also = f" (the email to {p['email']} waits for the email lane)" if p.get("email") else ""
-        return dict(out, how=f"call: {phone}{also}", say=call_opener(p))
+        return dict(out, how=f"call: {phone}{also}", say=call_opener(dict(p, preview_url=url)))
     return dict(out, how=f"no way in yet — leads brief \"{p['name']}\"")
 
 

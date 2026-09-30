@@ -102,7 +102,7 @@ class MorningTest(Base):
             self.assertGreaterEqual(len(lines[i].split(" · ")), 4, lines[i])   # name · category · city · how
             under = lines[i + 1]
             self.assertTrue(under.startswith("Hi, this is Taylor in American Fork.") or
-                            under.startswith('Say: "Hi, this is Taylor'), under)
+                            under.startswith('Say: "Hi, is this '), under)
         at = next(i for i in six if "Mike's Pool Care" in lines[i])       # B73: strong first, so not by position
         mike = lines[at]
         self.assertIn("Facebook: facebook.com/mikespoolcare", mike)
@@ -124,10 +124,11 @@ class MorningTest(Base):
         lines = r.stdout.splitlines()
         i = next(i for i, l in enumerate(lines) if "Timp Pressure Washing" in l)
         self.assertIn("call: (801) 555-0104 · weak", lines[i])           # B73: the strength follows the how
-        self.assertEqual(lines[i + 1], 'Say: "Hi, this is Taylor — I run a small business in American Fork. I looked '
-                                       'Timp Pressure Washing up on Google: your listing\'s website link is your Thumbtack '
-                                       'profile, not a site of your own. Here\'s exactly what to change; it\'s free, '
-                                       'whether or not we talk again."')
+        # 2026-09-30: the register in the prep call frame; no preview yet, so the offer
+        self.assertEqual(lines[i + 1], 'Say: "Hi, is this Timp Pressure Washing? This is Taylor in American Fork. Looked '
+                                       'you up on Google — the website link on your listing is your Thumbtack page, not a '
+                                       'site of your own. I can build you one in an afternoon — could I text you what '
+                                       'it\'d look like?"')
         self.assertEqual(lines[i + 2], "")
 
     def test_no_reply_words_while_email_cannot_send_and_one_reason_why(self):
@@ -813,6 +814,23 @@ class RegisterTest(unittest.TestCase):
             if saved is not None:
                 os.environ["LEADS_KIT_PREVIEWS"] = saved
             self.m.ENV_FILE = env_file
+
+    def test_the_call_opener_names_the_same_fault_and_asks_to_text_the_link(self):
+        p = dict(self.pick(), faults=["no photos", "the website is a free Wix address (d.wixsite.com)"])
+        self.assertEqual(self.m.call_opener(p),
+                         'Say: "Hi, is this Summit Roofing? This is Taylor in American Fork. Looked you up on Google — '
+                         'the website on your listing is a free Wix address (d.wixsite.com), so I went ahead and built '
+                         'you one of your own. Could I text you the link? Nothing to sign, and I\'ll take it down the '
+                         'moment you say so."')
+        said = self.m.site_fault_words(p, p["faults"][1])[0]
+        self.assertIn(said, self.m.segment_dm_text(p, p["faults"]))           # the DM names the same fault
+        self.assertEqual(self.m.call_opener(dict(p, preview_url=None)),
+                         'Say: "Hi, is this Summit Roofing? This is Taylor in American Fork. Looked you up on Google — '
+                         'the website on your listing is a free Wix address (d.wixsite.com). I can build you one of your '
+                         'own in an afternoon — could I text you what it\'d look like?"')
+        for text in (self.m.call_opener(p), self.m.call_opener(dict(p, preview_url=None))):
+            self.assertNotIn("$", text)
+            self.assertNotIn("http", text)
 
     def test_a_preview_build_that_breaks_is_the_offer_not_a_crash(self):
         def boom(*a, **k):

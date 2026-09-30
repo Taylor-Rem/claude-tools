@@ -25,6 +25,7 @@ before 2026-09-16 and goes away once Bleu Grave has moved.
   site retire <name> [--delete-repo] [--keep-local]  # take a site down: Pages project + registry row (+ repo)  (SITE_ADMIN=1)
   site stamp <name>                    # (GitHub Pages only) build id into version.json + every page
   site template push [--template T]    # mirror templates/sites/<T> to <org>/site-template(-<T>)
+  site watch [--once] [--dry-run] [--rdap] [--site KEY] [--json]   # every live site + preview checked (B72)
   site doctor                          # auth, org, template, Cloudflare, and each repo
 
 Everything but `template` and `doctor` runs only inside a client workspace
@@ -70,6 +71,23 @@ has no such endpoint) on a key of that site's own, kept in the registry and
 served from the site as /<key>.txt; `--no-ping` skips it, a ping that fails
 never fails the publish, and a site that asks not to be indexed is never
 submitted.
+
+The watch (B72, plan ~/projects/plans/30-site-watch.md): `site watch --once`, every 15 minutes from
+site-watch.timer, checks every Cloudflare site in the registry and every published preview — DNS (IPv4)
+into Cloudflare's ranges, a certificate the system trusts, the home page 200 with a template marker —
+and keeps the record in ~/projects/sms-relay/state/uptime.json, which this writes and the relay only
+reads (the owner's texts are the relay's `site_down` / `site_back` / `domain_expiry`). Two failed
+checks in a row are an outage: `notify` to Taylor with the evidence and one TAYLOR-TODO § 7 entry. A
+preview is reported, never texted. Custom domains' expiry by RDAP once a week; inside 30 days, § 7.
+uptime.json (version 1; add fields, never rename):
+  {version, updated, interval_minutes, last_run: {at, checked, down, took_s, pretend},
+   sites: {"<slug>/<repo>" | "preview/<slug>": {kind: client|preview, slug, repo, project, url, host,
+     markers, watched_since, first_up, state: up|down|pending|expired|unwatched, fails, fail_since,
+     last_check: {at, ok, status, marker, dns, cert_days, ms, problem},
+     outage: null | {id, since, confirmed_at, problem},          # set only on the second failed check
+     outages: [{id, since, until, minutes, problem}], gaps: [{from, to}],   # 60 days
+     domain: {name, host, expires, registrar, days_left, checked_at, error}, filed: {key: at}}}}
+A registry row may carry `watch_marker` (the string its home page must hold) or `watch: false`.
 
 Config, by name, never printed:
   CLOUDFLARE_API_TOKEN   ~/.config/claude-tools/env — Account: Cloudflare Pages Edit (+ D1 Edit for the data layer)
@@ -1469,6 +1487,512 @@ def cmd_previews(a):
         say(f"  {prod}{s}/")
 
 
+# ---------------------------------------------------------------- the watch (B72)
+#
+# `site watch` fetches every live client site in the registry and every live preview, every 15 minutes
+# (site-watch.timer), and keeps the record in the relay's state/uptime.json — the relay reads it, this
+# writes it (plan ~/projects/plans/30-site-watch.md § Contracts). A check is: DNS (IPv4) resolving into
+# Cloudflare's ranges, a TLS handshake the system trusts (and the days left on the certificate), then
+# the home page answering 200 with one of the template's markers in it. Two failed checks in a row are
+# an outage: `outage` is set, Taylor gets one `notify` with the evidence and one TAYLOR-TODO § 7 entry,
+# and the relay's schedule tick texts the owner once (relay/nudges.py `site_down`). One failed check is
+# a blip: `fails` goes to 1 and nothing is said. The first good check after an outage closes it into
+# `outages` (the weekly report's line) and Taylor hears it once more; the owner's "it's back" is the
+# relay's `site_back`. Once a week a custom domain's expiry is read by RDAP; inside 30 days it is a § 7
+# entry (the relay texts the owner, `domain_expiry`, with the registrar named). A preview has no owner:
+# it is reported to Taylor and never texted, and one past its 30 days that is still up is reported too.
+
+WATCH_FILE = Path(os.environ.get("SITE_WATCH_FILE") or Path.home() / "projects/sms-relay/state/uptime.json")
+WATCH_RELAY_DIR = Path(os.environ.get("RELAY_DIR") or Path.home() / "projects/sms-relay")
+WATCH_TODO = Path(os.environ.get("TAYLOR_TODO") or Path.home() / "projects/TAYLOR-TODO.md")
+WATCH_PREVIEWS = Path(os.environ.get("LEADS_PREVIEWS") or Path.home() / ".local/state/claude-tools/previews")
+WATCH_INTERVAL = 15                         # minutes; site-watch.timer
+WATCH_CONFIRM = 2                           # failed checks in a row before anyone hears of it
+WATCH_KEEP_DAYS = 60                        # outages and gaps kept this long
+WATCH_GAP_MINUTES = 45                      # two checks further apart than this = the watch was off
+WATCH_RDAP_DAYS = 7                         # a domain's expiry is read once a week
+WATCH_DOMAIN_WARN = 30                      # days before expiry that it becomes a § 7 entry and a text
+WATCH_CERT_WARN = 7                         # days left on a certificate that doctor calls out
+WATCH_TIMEOUT = 20
+WATCH_RDAP = (os.environ.get("SITE_WATCH_RDAP") or "https://rdap.org/domain/").rstrip("/") + "/"
+WATCH_MARKERS = ("patchlamp-badge", 'class="site-header"', 'class="wordmark')   # any one: a page of ours
+PREVIEW_MARKERS = ("preview-note", "A preview Patchlamp made for")
+CLOUDFLARE_V4 = ("173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22", "141.101.64.0/18",
+                 "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20", "197.234.240.0/22", "198.41.128.0/17",
+                 "162.158.0.0/15", "104.16.0.0/13", "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22")
+WATCH_PRETEND = set()                       # --pretend-down: a rehearsal, never set by the timer
+
+
+def watch_now():
+    return datetime.datetime.now().astimezone().replace(microsecond=0)
+
+
+def watch_iso(t):
+    return t.isoformat() if t else None
+
+
+def watch_parse(s):
+    try:
+        return datetime.datetime.fromisoformat(s) if s else None
+    except (TypeError, ValueError):
+        return None
+
+
+def watch_targets():
+    """Every site to check: [{key, kind, slug, repo, project, url, host, markers, domain}]. Clients from the
+    registry (Cloudflare rows); previews from leads' manifests, once the previews project has been published."""
+    out = []
+    for slug, rows in sorted(registry_load().items()):
+        for repo, e in sorted(rows.items()):
+            if e.get("host") != "cloudflare" or e.get("watch") is False:
+                continue
+            host = site_host(e, e["project"]) if e.get("domains") else (e.get("pages_host") or f"{e['project']}.pages.dev")
+            custom = host if e.get("domains") else None
+            out.append({"key": f"{slug}/{repo}", "kind": "client", "slug": slug, "repo": repo, "project": e["project"],
+                        "url": f"https://{host}/", "host": host, "domain": custom,
+                        "markers": [e["watch_marker"]] if e.get("watch_marker") else list(WATCH_MARKERS)})
+    try:
+        proj = json.loads((WATCH_PREVIEWS / "project.json").read_text())
+    except (OSError, ValueError):
+        proj = None
+    if proj:                                # no project.json = previews never published: nothing live to watch
+        phost = proj.get("domain") or proj.get("pages_host")
+        for p in sorted((WATCH_PREVIEWS / "meta").glob("*.json")) if (WATCH_PREVIEWS / "meta").is_dir() else []:
+            try:
+                m = json.loads(p.read_text())
+            except ValueError:
+                continue
+            if not m.get("slug") or not phost:
+                continue
+            out.append({"key": f"preview/{m['slug']}", "kind": "preview", "slug": m["slug"], "repo": None,
+                        "project": proj.get("project") or PREVIEWS_PROJECT, "url": f"https://{phost}/{m['slug']}/",
+                        "host": phost, "domain": None, "markers": list(PREVIEW_MARKERS),
+                        "expires": m.get("expires"), "claimed": m.get("claimed"), "name": m.get("name")})
+    return out
+
+
+def watch_resolve(host):
+    """IPv4 addresses for host (the machine's resolver is slow on AAAA; memory: headless-browser-shot)."""
+    import socket
+    try:
+        return sorted({ai[4][0] for ai in socket.getaddrinfo(host, 443, socket.AF_INET, socket.SOCK_STREAM)})
+    except OSError:
+        return []
+
+
+def watch_on_cloudflare(ip):
+    import ipaddress
+    try:
+        a = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return any(a in ipaddress.ip_network(n) for n in CLOUDFLARE_V4)
+
+
+def watch_fetch(host, ip, path="/", hops=3):
+    """GET https://host/path over ip, verifying the certificate for host. -> (status, body, cert_days, error).
+    Follows up to `hops` redirects on the same host."""
+    import http.client
+    import socket
+    import ssl
+    ctx = ssl.create_default_context()
+
+    class Conn(http.client.HTTPSConnection):
+        def connect(self):
+            self.sock = ctx.wrap_socket(socket.create_connection((ip, 443), WATCH_TIMEOUT), server_hostname=host)
+
+    cert_days = None
+    for _ in range(hops + 1):
+        c = Conn(host, 443, timeout=WATCH_TIMEOUT)
+        try:
+            c.request("GET", path, headers={"User-Agent": "claude-tools site watch", "Cache-Control": "no-cache"})
+            if cert_days is None and c.sock:
+                na = (c.sock.getpeercert() or {}).get("notAfter")
+                if na:
+                    cert_days = int((ssl.cert_time_to_seconds(na) - time.time()) // 86400)
+            r = c.getresponse()
+            body = r.read(1_000_000).decode("utf-8", "replace")
+            loc = r.getheader("Location") or ""
+        except ssl.SSLError as exc:
+            return 0, "", cert_days, f"certificate: {getattr(exc, 'verify_message', None) or exc.reason or exc}"
+        except (OSError, http.client.HTTPException) as exc:
+            return 0, "", cert_days, f"no answer: {exc}"
+        finally:
+            c.close()
+        if r.status in (301, 302, 303, 307, 308) and loc:
+            import urllib.parse
+            u = urllib.parse.urlsplit(urllib.parse.urljoin(f"https://{host}{path}", loc))
+            if u.hostname and u.hostname != host:
+                return r.status, "", cert_days, f"redirects away to {u.hostname}"
+            path = (u.path or "/") + (f"?{u.query}" if u.query else "")
+            continue
+        return r.status, body, cert_days, ""
+    return 0, "", cert_days, "too many redirects"
+
+
+def watch_probe(t):
+    """One check of one target -> the last_check dict."""
+    started = time.time()
+    out = {"at": watch_iso(watch_now()), "ok": False, "status": 0, "marker": False, "dns": "", "cert_days": None,
+           "ms": 0, "problem": ""}
+    if t["key"] in WATCH_PRETEND or t["slug"] in WATCH_PRETEND:
+        out.update(dns="skipped", problem="pretend-down: a rehearsal (site watch --pretend-down), not a real fault")
+        return out
+    ips = watch_resolve(t["host"])
+    if not ips:
+        out.update(dns="none", problem=f"{t['host']} does not resolve (no DNS answer)")
+        return out
+    cf = [ip for ip in ips if watch_on_cloudflare(ip)]
+    out["dns"] = "cloudflare" if cf else "elsewhere:" + ",".join(ips[:3])
+    if not cf:
+        out["problem"] = f"{t['host']} points away from Cloudflare ({', '.join(ips[:3])})"
+        return out
+    path = "/" + t["url"].split("/", 3)[3] if t["url"].count("/") > 3 else "/"
+    status, body, cert_days, err = watch_fetch(t["host"], cf[0], path)
+    out.update(status=status, cert_days=cert_days, ms=int((time.time() - started) * 1000))
+    if err:
+        out["problem"] = err
+        return out
+    out["marker"] = any(m in body for m in t["markers"])
+    if status != 200:
+        out["problem"] = f"HTTP {status}"
+    elif not out["marker"]:
+        out["problem"] = "HTTP 200 but not our page (no template marker in it)"
+    else:
+        out["ok"] = True
+    return out
+
+
+def watch_registrable(domain):
+    parts = domain.lower().strip(".").split(".")
+    two = {"co.uk", "org.uk", "com.au", "net.au", "co.nz", "com.mx", "com.br"}
+    n = 3 if len(parts) >= 3 and ".".join(parts[-2:]) in two else 2
+    return ".".join(parts[-n:])
+
+
+def watch_rdap(domain):
+    """-> {name, expires, registrar, error} from RDAP (rdap.org redirects to the registry's server)."""
+    name = watch_registrable(domain)
+    row = {"name": name, "expires": None, "registrar": None, "error": ""}
+    req = urllib.request.Request(WATCH_RDAP + name, headers={"Accept": "application/rdap+json",
+                                                             "User-Agent": "claude-tools site watch"})
+    try:
+        with urllib.request.urlopen(req, timeout=WATCH_TIMEOUT) as r:
+            data = json.loads(r.read(2_000_000).decode("utf-8", "replace"))
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        row["error"] = f"RDAP: {exc}"
+        return row
+    for ev in data.get("events") or []:
+        if ev.get("eventAction") == "expiration":
+            row["expires"] = (ev.get("eventDate") or "")[:10] or None
+    for ent in data.get("entities") or []:
+        if "registrar" in (ent.get("roles") or []):
+            for item in ((ent.get("vcardArray") or [None, []])[1] or []):
+                if item and item[0] == "fn":
+                    row["registrar"] = item[3]
+    if not row["expires"]:
+        row["error"] = "RDAP gave no expiration date"
+    return row
+
+
+def watch_notify(text):
+    """One message to Taylor (the relay's `notify`). Never fails the watch."""
+    exe = shutil.which("notify") or str(HERE / "bin" / "notify")
+    try:
+        subprocess.run([exe, text], capture_output=True, text=True, timeout=60, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        say(f"  notify failed: {exc}")
+
+
+def watch_file_todo(entry):
+    """One entry under TAYLOR-TODO § 7, through the escalation triage's own helper
+    (relay/escalate.py append_todo) so both file the same way. False when it couldn't."""
+    py = WATCH_RELAY_DIR / ".venv" / "bin" / "python"
+    code = ("import sys; from pathlib import Path; from relay.escalate import append_todo; "
+            "sys.exit(0 if append_todo(sys.stdin.read(), Path(sys.argv[1])) else 1)")
+    try:
+        r = subprocess.run([str(py if py.exists() else sys.executable), "-c", code, str(WATCH_TODO)], input=entry,
+                           cwd=str(WATCH_RELAY_DIR), capture_output=True, text=True, timeout=60, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        say(f"  TODO § 7 not filed: {exc}")
+        return False
+    if r.returncode != 0:
+        say(f"  TODO § 7 not filed: {(r.stderr or r.stdout).strip()[-200:] or 'no TAYLOR-TODO.md'}")
+    return r.returncode == 0
+
+
+def watch_load():
+    try:
+        data = json.loads(WATCH_FILE.read_text())
+    except (OSError, ValueError):
+        data = {}
+    data.setdefault("version", 1)
+    data.setdefault("sites", {})
+    return data
+
+
+def watch_save(data):
+    WATCH_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = WATCH_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=1, sort_keys=True) + "\n")
+    tmp.replace(WATCH_FILE)
+
+
+def watch_minutes(a, b):
+    return max(0, int(round((b - a).total_seconds() / 60)))
+
+
+def watch_clock(t):
+    return t.strftime("%a %-d %b %-H:%M")
+
+
+def watch_outage_todo(t, row, now):
+    o = row["outage"]
+    since = watch_parse(o["since"])
+    who = ("Patch texts the owner once on the relay's next schedule tick (or you, where the project has no "
+           "client number)")
+    ws = f"~/projects/clients/{t['slug']}"
+    return (f"- [ ] **{t['slug']}'s site is down: {t['url']} (since {watch_clock(since)}).** Two checks in a row "
+            f"failed: {o['problem']}. {who}; nothing has been changed.\n"
+            f"  - **1.** Look at it: `shot {t['url']}` and `cd {ws} && site doctor`.\n"
+            f"  - **2.** Serving nothing or a 404: `cd {ws} && site publish {t['repo']}` puts HEAD back up. "
+            f"Pointing away from Cloudflare: the domain's DNS records (`SITE_ADMIN=1 site domain {t['repo']}` prints "
+            f"the two lines). A certificate fault: the Pages project's custom domains in the Cloudflare dashboard.\n"
+            f"  - **Then:** the next check (every {WATCH_INTERVAL} minutes) sees it up, Patch texts the owner it's back, "
+            f"and this can be ticked.\n"
+            f"  - **Details:** outage {o['id']}; last check {row['last_check']['at']}: status "
+            f"{row['last_check']['status']}, DNS {row['last_check']['dns'] or '-'}, certificate "
+            f"{row['last_check']['cert_days'] if row['last_check']['cert_days'] is not None else '-'} day(s) left. "
+            f"`site watch --once` re-checks now.\n"
+            f"  _(site watch, {now.date().isoformat()})_\n")
+
+
+def watch_domain_todo(t, d, now):
+    reg = d.get("registrar") or "the registrar (RDAP didn't name one)"
+    return (f"- [ ] **{d['name']} expires {d['expires']} ({d['days_left']} days): {t['slug']}'s site goes dark with "
+            f"it.** Registered with {reg}. Patch texts the owner once, naming the registrar.\n"
+            f"  - **1.** Ask the owner whether they renew it themselves (it's in their name at {reg}), or whether "
+            f"we do.\n"
+            f"  - **2.** Once it's renewed, `site watch --once --rdap` reads the new date.\n"
+            f"  - **Then:** the entry can be ticked; the weekly RDAP read stops warning.\n"
+            f"  - **Details:** read by RDAP {d.get('checked_at')}; site {t['url']}.\n"
+            f"  _(site watch, {now.date().isoformat()})_\n")
+
+
+def watch_run(dry=False, rdap_now=False, only=None):
+    """One pass. Returns (data, events) — events are the lines Taylor is told."""
+    now = watch_now()
+    data = watch_load()
+    sites = data["sites"]
+    events, todos = [], []
+    targets = [t for t in watch_targets() if not only or t["key"] in only or t["slug"] in only]
+    started = time.time()
+    for t in targets:
+        row = sites.setdefault(t["key"], {"watched_since": watch_iso(now), "fails": 0, "outage": None,
+                                          "outages": [], "gaps": [], "filed": {}, "state": "pending"})
+        row.update(kind=t["kind"], slug=t["slug"], repo=t["repo"], project=t["project"], url=t["url"],
+                   host=t["host"], markers=t["markers"])
+        for k, v in (("outages", []), ("gaps", []), ("filed", {}), ("fails", 0), ("outage", None)):
+            row.setdefault(k, v)
+        prev = watch_parse((row.get("last_check") or {}).get("at"))
+        if prev and (now - prev).total_seconds() > WATCH_GAP_MINUTES * 60:
+            row["gaps"].append({"from": watch_iso(prev), "to": watch_iso(now)})
+        chk = watch_probe(t)
+        row["last_check"] = chk
+        preview_note = t["kind"] == "preview"
+        if chk["ok"]:
+            row.setdefault("first_up", chk["at"])
+            if row.get("outage"):
+                o = row["outage"]
+                since = watch_parse(o["since"])
+                closed = dict(o, until=chk["at"], minutes=watch_minutes(since, now))
+                row["outages"].append(closed)
+                events.append(f"BACK {t['key']} {t['url']} after {closed['minutes']} min (down since "
+                              f"{watch_clock(since)})" + ("" if preview_note else "; Patch texts the owner it's back"))
+            row.update(fails=0, fail_since=None, outage=None, state="up")
+        else:
+            row["fails"] = int(row.get("fails") or 0) + 1
+            if row["fails"] == 1:
+                row["fail_since"] = chk["at"]
+            confirmable = t["kind"] == "client" or row.get("first_up")   # a preview never once up isn't an outage
+            if row["fails"] >= WATCH_CONFIRM and not row.get("outage") and confirmable:
+                since = row.get("fail_since") or chk["at"]
+                row["outage"] = {"id": f"{t['key']}@{since}", "since": since, "confirmed_at": chk["at"],
+                                 "problem": chk["problem"]}
+                events.append(f"DOWN {t['key']} {t['url']}: {chk['problem']} (failing since "
+                              f"{watch_clock(watch_parse(since))})" + (" — a preview: reported, not texted"
+                                                                       if preview_note else ""))
+                fkey = "outage:" + row["outage"]["id"]
+                if t["kind"] == "client" and fkey not in row["filed"]:
+                    todos.append((row, fkey, watch_outage_todo(t, row, now)))
+            if row.get("outage"):
+                row["outage"]["problem"] = chk["problem"]
+            row["state"] = "down" if row.get("outage") else ("pending" if not row.get("first_up") else "up")
+        if t["kind"] == "preview" and t.get("expires") and not t.get("claimed"):
+            try:
+                left = (datetime.date.fromisoformat(t["expires"]) - now.date()).days
+            except ValueError:
+                left = None
+            if left is not None and left < 0:
+                row["state"] = "expired" if chk["ok"] else row["state"]
+                fkey = f"expired:{t['expires']}"
+                if chk["ok"] and fkey not in row["filed"]:
+                    events.append(f"EXPIRED {t['key']} ({t.get('name') or t['slug']}) passed its 30 days on "
+                                  f"{t['expires']} and is still up: `leads preview sweep` takes it down — reported, "
+                                  f"not texted (a preview has no owner)")
+                    row["filed"][fkey] = watch_iso(now)
+        if t.get("domain"):
+            d = row.get("domain") or {}
+            last = watch_parse(d.get("checked_at"))
+            if rdap_now or not last or d.get("host") != t["domain"] or (now - last).days >= WATCH_RDAP_DAYS:
+                d = dict(watch_rdap(t["domain"]), host=t["domain"], checked_at=watch_iso(now))
+            if d.get("expires"):
+                d["days_left"] = (datetime.date.fromisoformat(d["expires"]) - now.date()).days
+            row["domain"] = d
+            if d.get("expires") and d["days_left"] <= WATCH_DOMAIN_WARN:
+                fkey = f"domain:{d['name']}:{d['expires']}"
+                if fkey not in row["filed"]:
+                    events.append(f"DOMAIN {d['name']} ({t['key']}) expires {d['expires']}, {d['days_left']} days, "
+                                  f"registered with {d.get('registrar') or 'unknown'}; Patch texts the owner")
+                    todos.append((row, fkey, watch_domain_todo(t, d, now)))
+        cut = now - datetime.timedelta(days=WATCH_KEEP_DAYS)
+        row["outages"] = [o for o in row["outages"] if (watch_parse(o.get("until")) or now) >= cut]
+        row["gaps"] = [g for g in row["gaps"] if (watch_parse(g.get("to")) or now) >= cut]
+    if not only:                             # a full pass: a preview swept away is no longer watched
+        keys = {t["key"] for t in targets}
+        for key in [k for k, r in sites.items() if k not in keys]:
+            if sites[key].get("kind") == "preview":
+                del sites[key]
+            else:
+                sites[key].update(state="unwatched", outage=None)   # retired: the history stays, nobody is texted
+    data.update(updated=watch_iso(now), interval_minutes=WATCH_INTERVAL,
+                last_run={"at": watch_iso(now), "checked": len(targets),
+                          "down": sum(1 for t in targets if sites[t["key"]].get("outage")),
+                          "took_s": round(time.time() - started, 1), "pretend": sorted(WATCH_PRETEND) or None})
+    if dry:
+        return data, events
+    for row, fkey, entry in todos:
+        if watch_file_todo(entry):
+            row["filed"][fkey] = watch_iso(now)
+    watch_save(data)                         # before the notify: the relay's tick may already be reading it
+    if events:
+        watch_notify("Site watch:\n" + "\n".join(events)
+                     + ("\n(TAYLOR-TODO § 7 has the steps.)" if todos else ""))
+    return data, events
+
+
+def watch_scope():
+    """Inside a client workspace, the watch shows that client's own sites and nothing else (VISION rule 4)."""
+    p = Path.cwd() / ".client.json"
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text()).get("slug") or "?"
+    except ValueError:
+        return "?"
+
+
+def cmd_watch(a):
+    """`site watch`: one pass over every live site (the timer's job), or the watch as it stands."""
+    import fcntl
+    scope = watch_scope()
+    if scope:
+        a.site = [scope]
+    if not a.once and not a.dry_run and not a.pretend_down:
+        return watch_show(a)
+    if scope and os.environ.get("SITE_ADMIN") != "1":
+        die("a pass of the watch runs from the timer or Taylor's session, not a client workspace "
+            "(`site watch` alone shows this client's sites)")
+    WATCH_PRETEND.update(a.pretend_down or [])
+    WATCH_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(WATCH_FILE.with_suffix(".lock"), "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            die("another site watch is running")
+        data, events = watch_run(dry=a.dry_run, rdap_now=a.rdap, only=set(a.site or []))
+    if a.json:
+        print(json.dumps(data, indent=1, sort_keys=True))
+        return
+    watch_print(data, only=set(a.site or []))
+    for e in events:
+        say(("  would say: " if a.dry_run else "  told Taylor: ") + e)
+    if a.dry_run:
+        say("dry run: nothing written, nobody told")
+
+
+def watch_print(data, only=None):
+    lr = data.get("last_run") or {}
+    say(f"site watch: {lr.get('checked', 0)} site(s) checked at {(lr.get('at') or '-')[:16]}, "
+        f"{lr.get('down', 0)} down" + (f"  [PRETEND DOWN: {', '.join(lr['pretend'])}]" if lr.get("pretend") else ""))
+    for key, row in sorted((data.get("sites") or {}).items()):
+        if only and key not in only and row.get("slug") not in only:
+            continue
+        c = row.get("last_check") or {}
+        dom = row.get("domain") or {}
+        say(f"  {key:<44} {row.get('state', '?'):<8} {(c.get('at') or '-')[:16]}  "
+            + (f"HTTP {c.get('status')} {c.get('ms')}ms cert {c.get('cert_days')}d" if c.get("ok") else c.get("problem") or "-")
+            + (f"  domain {dom['name']} {dom.get('days_left')}d" if dom.get("expires") else "")
+            + (f"  ({len(row.get('outages') or [])} outage(s) in {WATCH_KEEP_DAYS}d)" if row.get("outages") else ""))
+
+
+def watch_show(a):
+    if not WATCH_FILE.exists():
+        say(f"no watch yet ({WATCH_FILE}); `site watch --once` runs one pass, site-watch.timer every {WATCH_INTERVAL} min")
+        return
+    data = watch_load()
+    if a.json:
+        only = set(a.site or [])
+        if only:
+            data = dict(data, sites={k: r for k, r in data["sites"].items() if k in only or r.get("slug") in only})
+        print(json.dumps(data, indent=1, sort_keys=True))
+        return
+    watch_print(data, only=set(a.site or []))
+
+
+def watch_doctor(fail):
+    """`site doctor`'s lines for the watch: the timer, the last pass, every site's last check."""
+    say("== watch (B72)")
+    try:
+        r = subprocess.run(["systemctl", "--user", "is-active", "site-watch.timer"], capture_output=True,
+                           text=True, timeout=10, check=False)
+        state = r.stdout.strip() or "unknown"
+    except (OSError, subprocess.SubprocessError):
+        state = "unknown (no systemctl)"
+    say(f"  site-watch.timer: {state}" + ("" if state == "active" else
+        " (ln -s ~/projects/claude-tools/systemd/site-watch.{service,timer} ~/.config/systemd/user/ && "
+        "systemctl --user daemon-reload && systemctl --user enable --now site-watch.timer)"))
+    if not WATCH_FILE.exists():
+        say(f"  no checks yet ({WATCH_FILE})")
+        return
+    data = watch_load()
+    scope = watch_scope()
+    lr = watch_parse((data.get("last_run") or {}).get("at"))
+    age = int((watch_now() - lr).total_seconds() // 60) if lr else None
+    fresh = age is not None and age <= 3 * WATCH_INTERVAL
+    text = (f"last pass: {(lr.isoformat()[:16] if lr else 'never')}" + (f" ({age} min ago)" if age is not None else "")
+            + ("" if fresh else " — the watch has stopped"))
+    fail(text) if not fresh else say("  " + text)
+    seen = set(data.get("sites") or {})
+    for t in watch_targets():
+        if scope and t["slug"] != scope:
+            continue
+        if t["key"] not in seen:
+            say(f"  {t['key']}: not checked yet (the next pass picks it up)")
+    for key, row in sorted((data.get("sites") or {}).items()):
+        if scope and (row.get("kind") != "client" or row.get("slug") != scope):
+            continue
+        c = row.get("last_check") or {}
+        text = (f"{key}: {row.get('state')} · last check {(c.get('at') or '-')[:16]} "
+                + ("ok" if c.get("ok") else f"FAILED: {c.get('problem')}"))
+        if c.get("cert_days") is not None and c["cert_days"] <= WATCH_CERT_WARN:
+            text += f" · certificate {c['cert_days']} day(s) left"
+        dom = row.get("domain") or {}
+        if dom.get("expires"):
+            text += f" · {dom['name']} expires {dom['expires']} ({dom.get('registrar') or 'registrar unknown'})"
+        fail(text) if row.get("outage") else say("  " + text)
+
+
 def cmd_adopt(a):
     """Register an existing repo (made for GitHub Pages) as a Cloudflare site
     and create its project. Doesn't touch DNS or GitHub Pages: publish, look,
@@ -2013,6 +2537,7 @@ def cmd_doctor(a):
                     fail(f"repos/{n}: Pages build errored (gh run list -R {slug})")
     else:
         say("== not in a client workspace (cd ~/projects/clients/<slug> for per-repo checks)")
+    watch_doctor(fail)
     sys.exit(0 if ok else 1)
 
 
@@ -2067,6 +2592,15 @@ def main():
                     help="create the project on the first publish — Taylor's word, once (TAYLOR-TODO §1)")
     pv.add_argument("--dry-run", action="store_true")
     pv.set_defaults(fn=cmd_previews)
+    wt = sub.add_parser("watch", help="every live site and preview checked (B72): --once is one pass (site-watch.timer); alone, the last one")
+    wt.add_argument("--once", action="store_true", help="check now, write sms-relay/state/uptime.json, tell Taylor what changed")
+    wt.add_argument("--dry-run", action="store_true", help="check and print; write nothing, tell nobody")
+    wt.add_argument("--rdap", action="store_true", help="read custom domains' expiry now, not only once a week")
+    wt.add_argument("--site", action="append", metavar="KEY", help="only this slug, <slug>/<repo> or preview/<slug> (repeatable)")
+    wt.add_argument("--pretend-down", action="append", metavar="SITE",
+                    help="TEST ONLY: treat this slug or key as failing, for a rehearsal of the down/up texts")
+    wt.add_argument("--json", action="store_true", help="the record as JSON")
+    wt.set_defaults(fn=cmd_watch)
     ad = sub.add_parser("adopt", help="register an existing repo as a Cloudflare site and create its project (SITE_ADMIN=1)")
     ad.add_argument("name"); ad.add_argument("--project", help="Pages project name (default: the repo name)")
     ad.add_argument("--dry-run", action="store_true")

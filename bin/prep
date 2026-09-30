@@ -329,8 +329,26 @@ def packet(place_id, fetch=True, spend=None):
         "presence": {"class": cls, "label": label, "url": link},
         "faults": faults,
         "summary": summary,
+        "hosting": hosting_fact(L, place_id),
         "caps": {k: CAPS[k] for k in ("searches", "fetches", "minutes")},
     }, None
+
+
+def hosting_fact(L, place_id):
+    """B71: whose platform the site is on, that vendor's public band, whether it answers, the one sentence, and
+    the evidence behind it (client-leads/scripts/hosts.py, vendor_prices.md). None when there is no fingerprint.
+    Computed by code for the brief and the outline; never a publishable field — a site never names a price."""
+    hi = L.host_info(place_id)
+    if not hi:
+        return None
+    ev = hi.get("evidence") or {}
+    return {"vendor": hi["vendor"], "kind": hi["kind"], "status": hi["status"], "price": hi["price"],
+            "from": hi["from"], "to": hi["to"], "page": hi["page"], "brief": hi["brief"],
+            "sentence": L.paying_sentence(place_id), "checked": hi["checked"], "url": hi["url"],
+            "evidence": {"why": ev.get("why"), "ns": (ev.get("dns") or {}).get("ns"),
+                         "www_cname": ((ev.get("dns") or {}).get("www") or {}).get("cname"),
+                         "http_status": (ev.get("http") or {}).get("status"),
+                         "title": (ev.get("http") or {}).get("title")}}
 
 
 # ---- the facts file: schema 1 and its lint (plan § Contracts) --------------------------------------
@@ -819,6 +837,8 @@ def computed(doc, pkt):
     hours.setdefault("say", None)
     doc["hours"] = hours
     doc["faults"] = list(pkt.get("faults") or [])
+    if pkt.get("hosting"):                   # B71, computed like the faults; never publishable (no price on a site)
+        doc["hosting"] = pkt["hosting"]
     return doc
 
 
@@ -1423,6 +1443,13 @@ def cmd_brief(args):
     pr = pkt["presence"]
     print(f"  presence: {pr['class']}{' → ' + pr['url'] if pr['url'] else ''}")
     print(f"  faults: {'; '.join(pkt['faults']) or 'none computed'}")
+    ho = pkt.get("hosting")
+    if ho and ho.get("sentence"):
+        print(f"  hosting: {ho['sentence']}")
+        print(f"    {ho['vendor']} · {ho['status']} · {ho['evidence'].get('why') or ''}"
+              + (f" · price from {ho['page']}" if ho.get("page") else ""))
+    elif ho:
+        print(f"  hosting: {ho['vendor']} · {ho['status']} · {ho['evidence'].get('why') or ''}")
     print(f"  hours: {'; '.join(li['hours']) or 'none on the listing'}")
     reach = [x for x in (rc.get("instagram") and f"Instagram @{rc['instagram']}", rc.get("facebook"),
                          rc.get("email"), rc.get("directory") and f"{rc['directory'][0]} {rc['directory'][1]}") if x]

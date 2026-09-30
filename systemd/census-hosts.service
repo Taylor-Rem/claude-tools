@@ -1,0 +1,9 @@
+[Unit]
+Description=Patchlamp: who hosts each census website — the weekly DNS + HTTP fingerprint (client-leads hosts.py, B71)
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/client-leads/scripts
+# Every census row with a URL; rows checked in the last 6 days are skipped, so a missed week resumes. $0: DNS and one GET a site.
+ExecStart=/usr/bin/python3 hosts.py --all
+Nice=10

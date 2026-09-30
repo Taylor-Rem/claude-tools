@@ -452,8 +452,8 @@ class ReachTest(Base):
         self.assertEqual(sorted(env), ["date", "picks", "segment"])
         by = {p["name"]: p for p in env["picks"]}
         self.assertEqual(sorted(by["Mike's Pool Care"]),
-                         ["category", "city", "email", "facebook", "faults", "first", "instagram", "maps_url",
-                          "message", "name", "phone", "place_id", "preview_url", "segment", "summary"])
+                         ["category", "city", "email", "facebook", "faults", "first", "host", "instagram", "maps_url",
+                          "message", "name", "paying", "phone", "place_id", "preview_url", "segment", "summary"])
         blue = by["Blue Canyon Landscaping"]
         self.assertEqual(blue["instagram"], "bluecanyonlandscaping")
         self.assertEqual(blue["facebook"], "https://facebook.com/bluecanyonut")
@@ -518,3 +518,111 @@ class ListingReadTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+PRICES_MD = """# test prices
+
+| vendor | says | kind | price | from | to | page | brief | note |
+|---|---|---|---|---|---|---|---|---|
+| hibu | Hibu | agency | reported | 449 | 1500 | https://www.flashcrafter.ai/blog/hibu-review-2026 | 2026-09-28-growth/competition.md:35 | |
+| wix | Wix | builder | published | 17 | 46 | https://www.wix.com/plans | 2026-09-28-growth/pricing-and-economics.md:15 | |
+| duda | Duda | builder | unpublished | 149 |  | https://www.duda.co/pricing | x | a number typed by mistake is never printed |
+| thryv | Thryv | agency | published | 99 | 399 | https://www.thryv.com/pricing/ | x | |
+| angi | Angi | directory | free |  |  |  |  | |
+"""
+
+
+class HostsTest(Base):
+    """B71's `hosts` table and client-leads/vendor_prices.md, read here: the tag, the sort, the sentence, `{paying}`."""
+
+    def setUp(self):
+        super().setUp()
+        prices = self.t / "vendor_prices.md"
+        prices.write_text(PRICES_MD)
+        self.env["LEADS_VENDOR_PRICES"] = str(prices)
+
+    def add_hosts(self, rows):
+        conn = sqlite3.connect(self.db)
+        conn.execute("""CREATE TABLE IF NOT EXISTS hosts (place_id TEXT PRIMARY KEY, vendor TEXT, evidence TEXT,
+                        status TEXT, checked TEXT, url TEXT, kind TEXT)""")
+        conn.executemany("INSERT OR REPLACE INTO hosts VALUES (?,?,?,?,?,?,?)",
+                         [(pid, v, json.dumps(ev), st, "2026-09-29T20:00:00", url, kind)
+                          for pid, v, kind, st, url, ev in rows])
+        conn.commit()
+        conn.close()
+
+    def seed(self):
+        self.add_hosts([
+            ("FX_S03", "hibu", "agency", "404", "https://wasatch-pest-pros.example/",
+             {"why": "cname live.websites.hibu.com", "dns": {"ns": ["ns29.domaincontrol.com"]}}),
+            ("FX_S05", "wix", "builder", "200", "https://daveshandyman.wixsite.com/home",
+             {"why": "header x-wix-request-id", "url_host": "wixsite.com"}),
+            ("FX_S12", "angi", "directory", "page", "https://www.angi.com/x", {"url_host": "angi.com"}),
+            ("FX_S01", "facebook", "social", "page", "https://www.facebook.com/mikespoolcare", {"url_host": "facebook.com"}),
+            ("FX_S04", "unknown", "unknown", "nodns", "https://timp.example/", {"why": "no platform marker"}),
+            ("FX_S08", "duda", "builder", "404", "https://glacier.example/", {"why": "cname s.multiscreensite.com"}),
+        ])
+
+    def test_candidates_carry_the_vendor_its_band_and_whether_it_answers(self):
+        self.seed()
+        out = self.run_leads("candidates", "--segment", "services", "--n", "20", "--radius", "50").stdout
+        line = next(l for l in out.splitlines() if "Wasatch Pest Pros" in l)
+        self.assertTrue(line.endswith("hibu ($449+/mo, 404)"), line)
+        dave = next(l for l in out.splitlines() if "Dave's Handyman" in l)
+        self.assertTrue(dave.endswith("wix (200)"), dave)           # a free address: no band to compare
+        glacier = next(l for l in out.splitlines() if "Glacier" in l)
+        self.assertTrue(glacier.endswith("duda (price unpublished, 404)"), glacier)
+        self.assertNotIn("149", out)                                 # an unpublished row's typo never prints
+        for name in ("Timp Pressure", "Lehi Lawn Bros", "Mike's Pool Care"):
+            ln = next(l for l in out.splitlines() if name in l)
+            self.assertNotRegex(ln, r"(unknown|angi|facebook) \(", ln)
+
+    def test_paying_puts_the_agency_hosted_dead_site_first(self):
+        self.seed()
+        r = self.run_leads("candidates", "--segment", "services", "--paying")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rows = [l for l in r.stdout.splitlines() if l.startswith("  ")]
+        self.assertIn("Wasatch Pest Pros", rows[0])
+        self.assertIn("hibu ($449+/mo, 404)", rows[0])
+        self.assertIn("Glacier", rows[1])                           # dead, unpriced builder
+        self.assertIn("Dave's Handyman", rows[2])                   # live
+        self.assertEqual(3, len(rows), r.stdout)                    # unknown, free and directory rows are left out
+
+    def test_no_table_means_no_fingerprint_and_nothing_breaks(self):
+        r = self.run_leads("candidates", "--segment", "services", "--paying")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("No host fingerprint yet", r.stdout)
+        r = self.run_leads("candidates", "--segment", "services")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("/mo", r.stdout)
+        self.assertIn("hosts: no hosts table yet — B71", self.run_leads("doctor").stdout)
+
+    def test_brief_prints_the_sentence_in_the_vendors_own_price(self):
+        self.seed()
+        r = self.run_leads("brief", "Wasatch Pest Pros", now=ANCHOR)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("  Hosting: Hibu's plans start at $449 a month (reported — Hibu quotes only; flashcrafter.ai); "
+                      "their site for you returns a 404.", r.stdout)
+        r = self.run_leads("brief", "Timp Pressure Washing", now=ANCHOR)
+        self.assertNotIn("Hosting:", r.stdout)                      # unknown: no sentence at all
+
+    def test_the_kit_json_carries_paying_for_a_hibu_row_and_null_otherwise(self):
+        self.seed()
+        r = self.run_leads("kit", "--remote", "--segment", "services", "--census-only", "--json", "--no-save",
+                           "--n", "12", "--radius", "50")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        by = {p["name"]: p for p in json.loads(r.stdout)["picks"]}
+        self.assertEqual(by["Wasatch Pest Pros"]["paying"],
+                         "Your site's address is set up with Hibu, whose plans are reported to start at $449 a month.")
+        self.assertEqual(by["Wasatch Pest Pros"]["host"]["vendor"], "hibu")
+        self.assertIsNone(by["Dave's Handyman Services"]["paying"])  # a free wixsite address: never "your bill"
+        for name, p in by.items():
+            if name not in ("Wasatch Pest Pros",):
+                self.assertIsNone(p["paying"], name)
+
+    def test_a_published_price_says_so_and_a_reported_one_says_reported(self):
+        self.seed()
+        self.add_hosts([("FX_S03", "thryv", "agency", "parked", "https://wasatch-pest-pros.example/", {})])
+        m_out = self.run_leads("brief", "Wasatch Pest Pros", now=ANCHOR).stdout
+        self.assertIn("Hosting: Thryv's plans start at $99 a month (its own pricing page); their domain shows a "
+                      "parked page.", m_out)

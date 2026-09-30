@@ -5,15 +5,20 @@
 # the subject table: the key is matched against the pick's own fault and the first
 # hit wins, `default` last. Below the `---` is the letter. A line whose {placeholder}
 # has no value is dropped whole, so a missing phone number leaves no empty line.
-# Placeholders: {first} {business} {fault} {preview_url} {price_line} {phone}
+# Placeholders: {first} {business} {fault} {paying} {preview_url} {price_line} {phone}
 # {booking} {address}.
+# {paying} (B71) is one sentence about the platform their site's address is set up
+# with, in that vendor's own published or reported price (client-leads/vendor_prices.md,
+# via `leads`): "Your site's address is set up with Hibu, whose plans are reported to
+# start at <Hibu's number> a month." It is about the vendor, never a guess at their bill, and it is
+# empty — the sentence gone whole — when the vendor is unknown, free or unpriced.
 #
 # The rules this text has to keep (they are checked by `outreach doctor`):
 #   four to six sentences in the letter, and exactly one link in it — the preview.
 #   The booking link, the phone and the address sit in the signature, which is not
 #   the pitch; that is what "one link" means for deliverability.
 #   An ad identification, an opt-out, and the AI disclosure, all in plain words.
-#   No price that isn't on patchlamp.com/pricing.
+#   No price of ours that isn't on patchlamp.com/pricing; no one else's but {paying}.
 
 Subject dead: your Google listing points at a page that doesn't load
 Subject website: {business} has no website on its Google listing
@@ -27,7 +32,7 @@ Subject default: one thing to fix on {business}'s Google listing
 ---
 Hi {first},
 
-I'm Taylor Remund — I build and look after small websites out of American Fork, and I go through local businesses one at a time. I looked {business} up on Google: {fault}. I've made you a page that fixes it, so you can look at it instead of imagining it: {preview_url}. If you want it kept it's {price_line}; if you don't, I take it down and that's the end of it. Either way the page is yours to copy from.
+I'm Taylor Remund — I build and look after small websites out of American Fork, and I go through local businesses one at a time. I looked {business} up on Google: {fault}. {paying} I've made you a page that fixes it, so you can look at it instead of imagining it: {preview_url}. If you want it kept it's {price_line}; if you don't, I take it down and that's the end of it. Either way the page is yours to copy from.
 
 Taylor Remund
 {phone}

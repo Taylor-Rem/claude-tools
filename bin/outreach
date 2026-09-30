@@ -34,7 +34,10 @@ stale, so editing a letter un-approves it. The subjects come from the same file.
 sentences, one link in the letter — the preview; the booking link, the phone and
 the address sit in the signature, which is not the pitch — the ad identification,
 the opt-out, the disclosure, and no money in a cold letter that isn't
-`{price_line}`).
+`{price_line}`). The one exception is `{paying}` (B71): a sentence `leads` builds from
+client-leads/vendor_prices.md in the *vendor's* published or reported price ("Your site's
+address is set up with Hibu, whose plans are reported to start at $449 a month."), never a
+guess at the lead's bill; it is empty — and the sentence gone — when the vendor is unknown.
 
 Two weeks of `go`: `send` does nothing without `--go` unless OUTREACH_AUTO=1 (the
 schedule passes `--go` on the morning Taylor replied `go`). Everything money- or
@@ -355,7 +358,10 @@ class Template:
                 continue                      # a line that is only an empty placeholder
             if any(h in values and not str(values.get(h) or "").strip() for h in holes) and len(holes) == 1:
                 continue                      # "Phone: {phone}" with no phone
-            lines.append(fill(line, values))
+            filled = fill(line, values)
+            if holes:                         # an empty mid-line placeholder ({paying}) leaves no double space
+                filled = re.sub(r"(?<=\S) {2,}(?=\S)", " ", filled).rstrip()
+            lines.append(filled)
         out = "\n".join(lines)
         out = re.sub(r"\n{3,}", "\n\n", out).strip() + "\n"
         return subject, out
@@ -425,6 +431,8 @@ def sample_values(expiry=None):
         "fault": to_you("the website link is a business.site page, and Google shut those down in 2024: it's a dead link"),
         "preview_url": "https://preview-highland-pool.pages.dev/",
         "price_line": PRICE_LINE, "prices_line": PRICES_LINE,
+        # B71: the longest {paying} a letter can carry, so the sentence-count rule is checked at its worst
+        "paying": "Your site's address is set up with Hibu, whose plans are reported to start at $449 a month.",
         "phone": toolbelt("PATCHLAMP_VOICE_NUMBER") or "801-555-0100",
         "booking": toolbelt("LEADS_BOOKING_URL") or "https://cal.com/taylor/15min",
         "address": toolbelt("LEADS_MAIL_ADDRESS") or "PO Box 000, American Fork, UT 84003",
@@ -1219,6 +1227,9 @@ def values_for(pick, touch):
         "first": greeting_name(pick.get("first"), business),
         "business": business, "fault": fault, "preview_url": pick.get("preview_url") or "",
         "price_line": PRICE_LINE, "prices_line": PRICES_LINE,
+        # B71: one sentence in the vendor's own public price, from `leads` (client-leads/vendor_prices.md);
+        # empty when the vendor is unknown, free or unpriced, and then the sentence is gone whole
+        "paying": pick.get("paying") or "",
         "phone": toolbelt("PATCHLAMP_VOICE_NUMBER") or "",
         "booking": toolbelt("LEADS_BOOKING_URL") or "",
         "address": toolbelt("LEADS_MAIL_ADDRESS") or "",

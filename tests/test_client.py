@@ -80,5 +80,35 @@ class ClientTiers(unittest.TestCase):
         self.assertIn("not a kind of site", r.stderr)
 
 
+class ClientAllowlist(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.clients = Path(self.tmp.name) / "clients"
+        self.env = dict(os.environ, CLIENTS_DIR=str(self.clients), RELAY_CONFIG=str(Path(self.tmp.name) / "none.json"),
+                        CLAUDE_TOOLS_ENV=str(Path(self.tmp.name) / "no-env"))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_client(self, *args):
+        return subprocess.run([str(CLIENT), *args], env=self.env, capture_output=True, text=True)
+
+    def test_workspace_allows_the_documented_publish_shape(self):
+        """2026-09-30: Patch's `git -C repos/x push -q` was refused. The rendered
+        allowlist carries every `git -C repos/*` form CLAUDE.md shows, and reset stays denied."""
+        r = self.run_client("new", "permco", "--name", "Perm Co", "--shared-key")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        ws = self.clients / "permco"
+        perms = json.loads((ws / ".claude" / "settings.json").read_text())["permissions"]
+        for verb in ("status*", "log*", "diff*", "show*", "add *", "commit *", "push", "push origin main",
+                     "push -q", "pull", "revert HEAD*", "checkout -- *", "rev-parse*", "fetch*"):
+            self.assertIn(f"Bash(git -C repos/* {verb})", perms["allow"])
+        self.assertIn("Bash(git -C repos/* reset --hard*)", perms["deny"])
+        md = (ws / "CLAUDE.md").read_text()
+        for step in ('`git -C repos/<name> commit -am "', "`git -C repos/<name> push`", "`site publish <name>`",
+                     "`git -C repos/<name> revert HEAD --no-edit`"):
+            self.assertIn(step, md)
+
+
 if __name__ == "__main__":
     unittest.main()

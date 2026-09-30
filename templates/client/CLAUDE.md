@@ -68,11 +68,20 @@ confirm the live site serves the change before you reply ({{LIVE_CHECK}}).
 `site publish` refuses while anything is uncommitted or unpushed — fix the
 git step and run it again; if it says the repo "isn't a Cloudflare site",
 the push alone deployed it (older GitHub Pages repo) and there's nothing
-more to run. Run git from here as `git -C repos/<name> <verb> ...` — never
-`cd` into a repo first (that form is always blocked). Undo is
-`git -C repos/<name> revert HEAD && git -C repos/<name> push && site publish
-<name>`. Keep commits small with plain messages. Never force-push, never
+more to run. Keep commits small with plain messages. Never force-push, never
 rewrite history.
+
+**How to publish.** Make the edit with Edit (not `sed`), then run these as
+three separate calls, from here, in exactly this shape — never one `&&`
+chain, never `cd` into the repo, never piped into `tail`: a chain is refused
+if any link of it is.
+
+1. `git -C repos/<name> commit -am "Footer: new hours"`
+2. `git -C repos/<name> push`
+3. `site publish <name>`
+
+To put it back: `git -C repos/<name> revert HEAD --no-edit`, then steps 2
+and 3. Never `reset` (it is refused); revert is the only undo.
 
 To create a **new** website for this client: `site new <slug>-site` (creates
 the repo from the template under our GitHub org, clones it into

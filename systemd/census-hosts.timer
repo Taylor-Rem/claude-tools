@@ -1,0 +1,9 @@
+[Unit]
+Description=Patchlamp: the census host fingerprint, weekly (Sunday 04:30, before the Sunday review)
+
+[Timer]
+OnCalendar=Sun *-*-* 04:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -432,6 +432,30 @@ class Send(Base):
         for row in self.outbox():
             self.assertIn("https://preview-", row["text"])
 
+    def test_paying_is_filled_for_a_hibu_row_and_gone_whole_for_an_unknown_one(self):
+        """B71: `leads` hands a `paying` sentence in the vendor's own public price; an unknown vendor has none,
+        and then the sentence is gone with no gap left behind."""
+        hibu = "Your site's address is set up with Hibu, whose plans are reported to start at $449 a month."
+        kit = json.loads(KIT.read_text())
+        kit["picks"][0]["paying"] = hibu
+        kit["picks"][0]["host"] = {"vendor": "hibu", "status": "404", "price": "reported", "from": 449.0}
+        kit["picks"][1]["paying"] = None
+        kit["picks"][1]["host"] = {"vendor": "unknown", "status": "nodns", "price": "unpublished", "from": None}
+        p = self.tmp / "paying.json"
+        p.write_text(json.dumps(kit))
+        r = self.run_it("send", "--kit", str(p), "--go", "--dry-run")
+        self.assertEqual(1, r.stdout.count(hibu), r.stdout)
+        self.assertEqual([], self.outbox())
+        self.run_it("send", "--kit", str(p), "--go")
+        by = {row["to"]: row["text"] for row in self.outbox()}
+        dave, cedar = by["dave@highlandpoolspa.example"], by["hello@cedarhollowlawn.example"]
+        self.assertIn(hibu + " I've made you a page", dave)
+        self.assertNotIn("set up with", cedar)
+        self.assertNotIn("  ", cedar)
+        self.assertRegex(cedar, r"\. I've made you a page")
+        for text in by.values():
+            self.assertNotIn("{paying}", text)
+
     def test_a_suppressed_address_or_place_is_never_written_to(self):
         self.run_it("suppress", "add", "dave@highlandpoolspa.example", "--reason", "by hand")
         self.run_it("suppress", "add", "ChIJfixture0000000000003")

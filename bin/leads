@@ -149,6 +149,16 @@ The kit's machine-readable seam (`leads kit --remote --json`), which
 remote run also saves that envelope beside its page (state/remote/<date>[-segment].json),
 which is where `leads today` reads the morning's six from instead of paying twice.
 
+Hosts (B71, `client-leads/scripts/hosts.py`, plan ~/projects/plans/32-who-hosts-it.md): when the
+census has a `hosts` table (place_id, vendor, evidence, status, checked, url, kind) the candidate
+and kit lines carry `hibu ($449+/mo, 404)` — whose platform the site is on, that vendor's public
+monthly band from client-leads/vendor_prices.md (LEADS_VENDOR_PRICES overrides the path), and
+whether it answers. `candidates --paying` puts an agency-hosted dead or parked site first; `brief`
+prints one sentence in the vendor's own public price; the remote kit's JSON gains `paying` (the
+letter's `{paying}` line, null when the vendor is unknown, free or unpriced) and `host`. Never a
+guess at the business's own bill: every sentence is about the vendor. A missing table means no
+fingerprint yet, and nothing changes. Nothing here writes to it.
+
 Reach (B61, `client-leads/scripts/reach.py`): when the census has a `reach` table
 (place_id, instagram, facebook, email, source, checked, evidence) the kit's picks take
 a handle or an address from it *after* the census's own columns — the listing's own
@@ -435,6 +445,163 @@ def fb_page(value):
     if not name or name.lower() in FB_SKIP:
         return None
     return f"facebook.com/{name}"
+
+
+# ---- the hosts table (B71's `hosts`; read here, written by client-leads/scripts/hosts.py) ----
+
+VENDOR_PRICES = Path(os.environ.get("LEADS_VENDOR_PRICES", PROJECTS / "client-leads/vendor_prices.md"))
+HOST_DEAD = ("404", "410", "nodns", "parked", "expired", "timeout", "refused", "tls", "error")
+HOST_FREE_KINDS = ("social", "directory", "free")
+_HOSTS = None
+_PRICES = None
+
+
+def hosts_table():
+    """place_id -> {'vendor','kind','status','checked','url','evidence' (dict)}, or None when the census has no
+    `hosts` table yet (B71 hasn't run). Read once, never written."""
+    global _HOSTS
+    if _HOSTS is not None:
+        return _HOSTS or None
+    if not CENSUS.exists():
+        return None
+    conn = sqlite3.connect(f"file:{CENSUS}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='hosts'").fetchone():
+            _HOSTS = {}
+            return None
+        rows = conn.execute("SELECT * FROM hosts").fetchall()
+    finally:
+        conn.close()
+    out = {}
+    for r in rows:
+        d = dict(r)
+        try:
+            d["evidence"] = json.loads(d.get("evidence") or "{}")
+        except json.JSONDecodeError:
+            d["evidence"] = {}
+        if d.get("place_id"):
+            out[d["place_id"]] = d
+    _HOSTS = out
+    return out
+
+
+def vendor_prices():
+    """vendor -> {'says','kind','price','from','to','page','brief','note'} from vendor_prices.md's table.
+    A vendor missing from the file is unpublished: no number is ever printed for it."""
+    global _PRICES
+    if _PRICES is not None:
+        return _PRICES
+    out, cols = {}, None
+    try:
+        text = VENDOR_PRICES.read_text()
+    except OSError:
+        text = ""
+    for line in text.splitlines():
+        if not line.startswith("|"):
+            cols = None if not line.strip() else cols
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if cols is None:
+            cols = [c.lower() for c in cells]
+            continue
+        if set("".join(cells)) <= set("-: "):
+            continue
+        row = dict(zip(cols, cells))
+        v = row.get("vendor", "").strip("`")
+        if not v or "price" not in row:
+            continue
+        for k in ("from", "to"):
+            try:
+                row[k] = float(row.get(k, "").replace("$", "").replace(",", "")) if row.get(k) else None
+            except ValueError:
+                row[k] = None
+        if row.get("price") not in ("published", "reported"):
+            row["from"] = row["to"] = None          # an unpublished or free row never carries a number
+        out[v] = row
+    _PRICES = out
+    return out
+
+
+def money(n):
+    return f"${n:,.2f}" if n % 1 else f"${int(n):,}"
+
+
+def host_info(place_id):
+    """The fingerprint joined to the vendor's public price, or None (no table, no row, or nothing to say)."""
+    h = (hosts_table() or {}).get(place_id) if place_id else None
+    if not h or not h.get("vendor"):
+        return None
+    v = h["vendor"]
+    p = vendor_prices().get(v) or {}
+    says = p.get("says") or (v.split(":", 1)[1] if v.startswith("agency:") else v)
+    return {"vendor": v, "kind": h.get("kind") or p.get("kind") or "unknown", "status": h.get("status") or "",
+            "says": says, "price": p.get("price") or ("free" if h.get("kind") in HOST_FREE_KINDS else "unpublished"),
+            "from": p.get("from"), "to": p.get("to"), "page": p.get("page") or None, "brief": p.get("brief") or None,
+            "checked": h.get("checked"), "url": h.get("url"), "evidence": h.get("evidence") or {},
+            "why": (h.get("evidence") or {}).get("why")}
+
+
+def host_dead(hi):
+    """Dead or parked: the link doesn't give a customer a site (a dead deep link whose home page loads isn't)."""
+    st = (hi or {}).get("status") or ""
+    if not (st in HOST_DEAD or st.startswith("5")):
+        return False
+    home = str(((hi.get("evidence") or {}).get("http") or {}).get("home_status") or "")
+    return not (st in ("404", "410") and home[:1] in ("2", "3"))
+
+
+def host_tag(c_or_pid):
+    """'hibu ($449+/mo, 404)' — whose platform, its public band, whether it answers. None when unknown or free."""
+    pid = c_or_pid if isinstance(c_or_pid, str) else (c_or_pid or {}).get("place_id")
+    hi = host_info(pid)
+    if not hi or hi["vendor"] == "unknown" or hi["kind"] in HOST_FREE_KINDS:
+        return None
+    if (hi.get("evidence") or {}).get("url_host"):       # a free wixsite.com-style address: no band to compare
+        return f"{hi['vendor']} ({hi['status']})"
+    band = f"{money(hi['from'])}+/mo" if hi["from"] is not None else "price unpublished"
+    return f"{hi['vendor']} ({band}, {hi['status']})"
+
+
+def host_status_words(hi):
+    st = hi.get("status") or ""
+    home = str(((hi.get("evidence") or {}).get("http") or {}).get("home_status") or "")
+    if st in ("404", "410"):
+        return ("the link on their Google listing returns a 404 (the home page loads)" if home[:1] in ("2", "3")
+                else f"their site for you returns a {st}")
+    return {"nodns": "their site's address doesn't resolve (no DNS)", "parked": "their domain shows a parked page",
+            "expired": "their site shows an expired page", "timeout": "their site for you times out",
+            "refused": "their site for you refuses the connection",
+            "tls": "their site for you fails its security certificate", "error": "their site for you doesn't load",
+            }.get(st, f"their site for you returns a {st} error" if st.startswith("5") else "their site for you is live")
+
+
+def paying_sentence(c_or_pid, audience="brief"):
+    """One sentence in the vendor's own public price.
+    audience 'brief' (Taylor, before a call): the price with where it's from, and whether the site answers —
+        "Hibu's plans start at $449 a month (reported — Hibu quotes only; flashcrafter.ai); their site for you returns a 404."
+    audience 'letter' (the `{paying}` line a lead reads): only a published or reported number, only on the
+        business's own domain, about the vendor and never about their bill; None otherwise so the line drops whole."""
+    pid = c_or_pid if isinstance(c_or_pid, str) else (c_or_pid or {}).get("place_id")
+    hi = host_info(pid)
+    if not hi or hi["vendor"] == "unknown" or hi["kind"] in HOST_FREE_KINDS:
+        return None
+    says, n = hi["says"], hi["from"]
+    if audience == "letter":
+        own_domain = not (hi.get("evidence") or {}).get("url_host")        # not a free wixsite.com-style address
+        if n is None or hi["price"] not in ("published", "reported") or not own_domain:
+            return None
+        if hi["price"] == "reported":
+            return f"Your site's address is set up with {says}, whose plans are reported to start at {money(n)} a month."
+        return f"Your site's address is set up with {says}, whose plans start at {money(n)} a month."
+    if n is None:
+        head = f"It's a {says} site ({says} publishes no price for it)"
+    elif hi["price"] == "reported":
+        head = (f"{says}'s plans start at {money(n)} a month (reported — {says} quotes only; "
+                f"{host_of(hi['page']) if hi.get('page') else hi.get('brief')})")
+    else:
+        head = f"{says}'s plans start at {money(n)} a month (its own pricing page)"
+    return f"{head}; {host_status_words(hi)}."
 
 
 def reach_fill(out, place_id):
@@ -1172,7 +1339,8 @@ def render_segment(order, segment, for_date, today, mode, note, skipped, census_
         lines.append(f"{i}. {p['name']} — {p['miles']} mi · {what} · {where} · {p.get('phone') or 'no phone'}")
         if is_business(p):
             link = f" — {re.sub(r'^https?://(www[.])?', '', p['presence_link']).rstrip('/')}" if p.get("presence_link") else ""
-            lines.append(f"   Presence: {p['presence']}{link}")
+            ht = host_tag(p)
+            lines.append(f"   Presence: {p['presence']}{link}{' · ' + ht if ht else ''}")
         lines.append(f"   Google: {p['summary']}")
         lines.append(f"   Wrong: {' · '.join(p['faults']) if p['faults'] else 'nothing obvious — lead with the text-Patch line'}")
         if p.get("maps"):
@@ -1636,7 +1804,9 @@ def render_segment_remote(picks, segment, today, mode, note, census_date, emails
     for i, p in enumerate(picks, 1):
         rc = p["reach"]
         where = p.get("locality") or (p.get("city") or "").replace(", Utah", "")
-        lines.append(f"{i}. {clean_name(p['name'])} — {p.get('category') or ''} · {where} · {p['summary']}")
+        ht = host_tag(p)
+        lines.append(f"{i}. {clean_name(p['name'])} — {p.get('category') or ''} · {where} · {p['summary']}"
+                     + (f" · {ht}" if ht else ""))
         if rc["instagram"]:
             lines.append(f"   DM on Instagram: instagram.com/{rc['instagram']}")
         elif rc["facebook"]:
@@ -2977,8 +3147,18 @@ def kit_json(picks, segment, today):
             "maps_url": c.get("maps") or clean_maps(c.get("google_maps_uri")),
             # beyond the agreed shape, and additive: the draft itself, so a caller doesn't rebuild it
             "message": c.get("message"), "summary": c.get("summary"),
+            # B71: the letter's `{paying}` line (null drops it whole) and the fingerprint behind it
+            "paying": paying_sentence(c.get("place_id"), "letter"),
+            "host": host_json(c.get("place_id")),
         })
     return {"date": today.isoformat(), "segment": segment, "picks": out}
+
+
+def host_json(place_id):
+    hi = host_info(place_id)
+    if not hi:
+        return None
+    return {k: hi[k] for k in ("vendor", "kind", "status", "price", "from", "to", "page", "brief", "why", "checked")}
 
 
 def cmd_preview(args):
@@ -4177,6 +4357,9 @@ def cmd_brief(args):
     if contact:
         print(f"  {contact}")
     print("  Wrong: " + ("; ".join(fs[:3]) if fs else "nothing obvious — lead with what a site would add"))
+    hosting = paying_sentence(pid) if pid else None
+    if hosting:
+        print(f"  Hosting: {hosting}")
     print(f"  Preview: {pv['url']} (down {dt.date.fromisoformat(pv['expires']).strftime('%-d %b')})" if pv
           else "  Preview: none yet — `leads preview \"" + name + "\"`")
     if lead:
@@ -4262,6 +4445,8 @@ def cmd_kit(args):
 
 def cmd_candidates(args):
     segment = resolve_segment(args.segment)
+    if segment == "restaurant" and args.radius is None:
+        args.radius = 10.0          # the paying sort (B71) reads the services census's `hosts`, not restaurants
     if segment == "restaurant":
         if args.min_reviews is None:
             args.min_reviews = 25
@@ -4269,19 +4454,50 @@ def cmd_candidates(args):
     cands = candidates_for(segment, args.min_reviews)
     skip = recently_kitted(dt.datetime.now(TZ).date())
     floor = SEGMENT_MIN_REVIEWS if args.min_reviews is None else args.min_reviews
-    print(f"{len(cands)} {SEGMENT_NOUN[segment]} with a phone, ≥{floor} reviews and no site of their own "
-          f"(none, page, directory, dead, builder); nearest first (census {census_stamp(cands)})")
+    radius = args.radius if args.radius is not None else (float("inf") if args.paying else 10.0)
+    if args.paying:
+        if hosts_table() is None:
+            print("No host fingerprint yet — run client-leads/scripts/hosts.py (B71); nothing to sort by.")
+            return
+        cands = paying_order(cands)
+        print(f"{len(cands)} {SEGMENT_NOUN[segment]} whose website link is on a platform someone pays for — "
+              f"agency-hosted and dead or parked first, then the other dead ones, then the live ones; the band is the "
+              f"vendor's public price (client-leads/vendor_prices.md), never their bill")
+    else:
+        print(f"{len(cands)} {SEGMENT_NOUN[segment]} with a phone, ≥{floor} reviews and no site of their own "
+              f"(none, page, directory, dead, builder); nearest first (census {census_stamp(cands)})")
     shown = 0
     for c in cands:
-        if c["miles"] > args.radius or shown >= args.n:
+        if shown >= args.n:
+            break
+        if c["miles"] > radius:
+            if args.paying:
+                continue
             break
         tag = f"  (kitted {skip[c['place_id']]})" if c["place_id"] in skip else ""
         if is_business(c):
             what = f"{c.get('category')} · {c.get('presence')}: {presence_short(c['presence'], c['presence_label'], c['presence_link'])}"
         else:
             what = f"restaurant · on {platforms(c)}"
-        print(f"  {c['miles']:>4} mi  {c['name']} · {c.get('locality') or ''} · {c['rating']}★ ({c['reviews']}) · {what}{tag}")
+        ht = host_tag(c)
+        print(f"  {c['miles']:>4} mi  {c['name']} · {c.get('locality') or ''} · {c['rating']}★ ({c['reviews']}) · {what}"
+              f"{' · ' + ht if ht else ''}{tag}")
         shown += 1
+
+
+def paying_order(cands):
+    """The paying-for-dead sort (B71): only rows whose link is on a platform somebody pays for (not unknown, not a
+    free page), agency-hosted dead or parked first, then a priced builder that's dead, then any other dead one,
+    then the live agency sites, then the rest; nearest first within each."""
+    out = []
+    for c in cands:
+        hi = host_info(c.get("place_id"))
+        if not hi or hi["vendor"] == "unknown" or hi["kind"] in HOST_FREE_KINDS:
+            continue
+        dead, agency, priced = host_dead(hi), hi["kind"] == "agency", hi["from"] is not None
+        tier = (0 if dead and agency else 1 if dead and priced else 2 if dead else 3 if agency else 4)
+        out.append((tier, c["miles"], c))
+    return [c for _, _, c in sorted(out, key=lambda t: (t[0], t[1]))]
 
 
 def restaurant_candidates(args):
@@ -4337,6 +4553,18 @@ def cmd_doctor(args):
             em = sum(1 for r in table.values() if r["email"])
             print(f"reach: {len(table)} rows searched — {ig} Instagram, {fb} Facebook, {em} email"
                   + (f"; newest check {max((r['checked'] or '')[:10] for r in table.values())}" if table else ""))
+        ht = hosts_table()
+        if ht is None:
+            print("hosts: no hosts table yet — B71 (client-leads/scripts/hosts.py) hasn't run; no vendor on the lines")
+        else:
+            vs = {}
+            for r in ht.values():
+                vs[r.get("vendor") or "?"] = vs.get(r.get("vendor") or "?", 0) + 1
+            top = ", ".join(f"{v} {n}" for v, n in sorted(vs.items(), key=lambda kv: -kv[1])[:6])
+            print(f"hosts: {len(ht)} links fingerprinted ({top}); newest check "
+                  f"{max((r.get('checked') or '')[:10] for r in ht.values()) if ht else '-'}; "
+                  f"prices: {len(vendor_prices())} vendors in {VENDOR_PRICES}"
+                  + ("" if VENDOR_PRICES.exists() else " — MISSING, so no band is printed"))
         print(f"default segment: {default_segment()}" + (" (LEADS_SEGMENT)" if os.environ.get("LEADS_SEGMENT") else
                                                        f" (services once the services census has {DEFAULT_POOL_MIN} in the kit's pool, else restaurant)"))
     key, where = places_key()
@@ -4464,9 +4692,11 @@ def main():
 
     c = sub.add_parser("candidates", help="the pool the kit picks from (no spend)")
     c.add_argument("--n", type=int, default=20)
-    c.add_argument("--radius", type=float, default=10.0)
+    c.add_argument("--radius", type=float, default=None, help="miles from home (default 10; no limit with --paying)")
     c.add_argument("--min-reviews", type=int, default=None, help="default 25 for restaurants, 3 for the other segments")
     c.add_argument("--segment", choices=SEGMENTS + ("all",))
+    c.add_argument("--paying", action="store_true",
+                   help="only sites on a platform someone pays for (B71): agency-hosted dead or parked first")
     c.set_defaults(fn=cmd_candidates)
 
     lg = sub.add_parser("log", help="log a conversation: leads log \"Name[, City]\" OUTCOME [note...]")

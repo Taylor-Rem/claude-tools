@@ -479,6 +479,35 @@ class BriefDoctorTest(Base):
         self.assertEqual((j["slug"], len(j["reviews"]), j["listing"]["maps_url"]), ("mikes-pool-care", 3, MAPS))
         self.assertEqual(self.run_prep("brief", "NOPE").returncode, 1)
 
+    def test_brief_and_packet_carry_the_hosting_sentence(self):
+        """B71: the fingerprint and the vendor's public price, in the brief and in packet.json; code-owned."""
+        import sqlite3
+        prices = self.t / "vendor_prices.md"
+        prices.write_text("| vendor | says | kind | price | from | to | page | brief | note |\n|---|---|---|---|---|---|---|---|---|\n"
+                          "| hibu | Hibu | agency | reported | 449 | 1500 | https://www.flashcrafter.ai/blog/hibu-review-2026 | "
+                          "2026-09-28-growth/competition.md:35 | |\n")
+        conn = sqlite3.connect(self.db)
+        conn.execute("CREATE TABLE hosts (place_id TEXT PRIMARY KEY, vendor TEXT, evidence TEXT, status TEXT, "
+                     "checked TEXT, url TEXT, kind TEXT)")
+        conn.execute("INSERT INTO hosts VALUES ('FX_S03','hibu',?,'404','2026-09-29T20:00:00','https://x.example/','agency')",
+                     (json.dumps({"why": "cname live.websites.hibu.com", "dns": {"ns": ["ns29.domaincontrol.com"],
+                                  "www": {"cname": ["live.websites.hibu.com"]}}, "http": {"status": 404}}),))
+        conn.commit()
+        conn.close()
+        env = {"LEADS_VENDOR_PRICES": str(prices)}
+        r = self.run_prep("brief", "FX_S03", env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("  hosting: Hibu's plans start at $449 a month (reported — Hibu quotes only; flashcrafter.ai); "
+                      "their site for you returns a 404.", r.stdout)
+        j = json.loads(self.run_prep("brief", "FX_S03", "--json", env=env).stdout)
+        h = j["hosting"]
+        self.assertEqual((h["vendor"], h["status"], h["from"], h["price"]), ("hibu", "404", 449.0, "reported"))
+        self.assertEqual(h["evidence"]["ns"], ["ns29.domaincontrol.com"])
+        doc = P.computed({"facts": []}, dict(j, faults=[]))
+        self.assertEqual(doc["hosting"]["vendor"], "hibu")
+        self.assertNotIn("hosting", [w for w, _ in P.publishable(doc)])   # a price never reaches a site
+        self.assertIsNone(json.loads(self.run_prep("brief", "FX_S01", "--json", env=env).stdout)["hosting"])
+
     def test_doctor(self):
         r = self.run_prep("doctor")
         self.assertIn("ok  login: the subscription (max, claude.ai)", r.stdout)

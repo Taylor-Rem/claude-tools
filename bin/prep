@@ -1500,10 +1500,25 @@ def doctor_checks(live=False):
     return out
 
 
+def shot_ready():
+    """(ok, one line). `shot doctor` is instant and says whether a browser is there; gate 1 is
+    `shot check`, so a run without one would fail every site twice and drop all of them."""
+    try:
+        r = subprocess.run([SHOT_BIN, "doctor"], capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"shot: {exc}"
+    if r.returncode == 0:
+        return True, "shot: a browser, and it renders a page"
+    bad = [ln.strip() for ln in (r.stdout or "").splitlines() if ln.strip().startswith("FAIL")]
+    return False, (f"shot: {bad[0] if bad else (r.stderr or '').strip()[:140]} — gate 1 is `shot check`, "
+                   f"so every site would be dropped")
+
+
 def run_doctor_checks(live=False):
-    """B67's three: the previews project (Taylor's), the approved message frame (Taylor's), and the
+    """B67's: `shot` (gate 1 is its check, so a night without a browser would drop every site), the
+    templates' looks, the previews project (Taylor's), the approved message frame (Taylor's), and the
     marker in requests/ — a marker whose process is dead is cleared here, not reported."""
-    out = []
+    out = [shot_ready()]
     looks = []
     try:
         L = leads()
@@ -3157,12 +3172,16 @@ def write_outline(run_dir, delivered, held=False):
 # ---- the commands ------------------------------------------------------------------------------------
 
 def preflight(no_publish=False):
-    """Why a run can't start, or []. The login is the subscription and neither model is Fable, always;
-    for a real run also the approved frame and the previews project (Taylor's), and no other run going."""
+    """Why a run can't start, or []. The login is the subscription, neither model is Fable and `shot`
+    has a browser, always; for a real run also the approved frame and the previews project (Taylor's),
+    and no other run going."""
     out = []
     for m in (MODEL_BUILD, MODEL_JUDGE):
         if not m or "fable" in m.lower():
             out.append(f"model {m!r}: never Fable, always named")
+    ok, line = shot_ready()
+    if not ok:
+        out.append(line)
     st = auth_status()
     if not (st.get("authMethod") == "claude.ai" and st.get("loggedIn") and st.get("subscriptionType")):
         out.append(f"the claude login is not the subscription ({st.get('authMethod') or st.get('error') or 'logged out'})")

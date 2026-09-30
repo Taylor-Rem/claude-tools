@@ -131,6 +131,10 @@ the one sentence that shows we looked at *them*: from `high` facts, at most
     prep check                                              # the gates, as code will run them
     prep message                                            # the message, filled, and its lint
 
+**One plain command at a time.** No `&&`, no `;`, no pipes, no redirects, no
+`$(…)`, and no `cd` — you are already in this directory. A chained command is
+refused whole, so run them one after another.
+
 Open a screenshot with Read to look at it. Render, look, fix, until `prep
 check` prints OK and the site reads well on the phone. Then stop.
 

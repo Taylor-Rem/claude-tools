@@ -42,8 +42,9 @@ POOL, JENNA, ROSIE = "FX_S01", "FX_C01", "FX_C03"
 SLUGS = {POOL: "mikes-pool-care", JENNA: "photography-by-jenna", ROSIE: "rosies-florals"}
 
 FAKE_SHOT = r'''#!/usr/bin/env python3
-"""A fake `shot`: no browser. `shot check` passes, `shot <page> [--out F]` writes a tiny PNG, every
-call is logged to FAKE_SHOT_LOG. FAKE_SHOT_FAIL is a substring: a target holding it fails check."""
+"""A fake `shot`: no browser. `shot doctor` passes (FAKE_SHOT_NO_BROWSER makes it fail, as an install
+without Playwright does), `shot check` passes, `shot <page> [--out F]` writes a tiny PNG, and every call
+is logged to FAKE_SHOT_LOG. FAKE_SHOT_FAIL is a substring: a target holding it fails check."""
 import base64, json, os, sys
 from pathlib import Path
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAIAAAA7ljmRAAAAEklEQVR4nGNgYGD4z8DAwMDAAAAMAAHKhOSVAAAAAElFTkSuQmCC")
@@ -52,6 +53,10 @@ argv = sys.argv[1:]
 if os.environ.get("FAKE_SHOT_LOG"):
     with open(os.environ["FAKE_SHOT_LOG"], "a") as f:
         f.write(json.dumps({"argv": argv, "cwd": os.getcwd()}) + "\n")
+if argv[:1] == ["doctor"]:
+    print("shot doctor (fake)")
+    print("  OK   headless Chromium launches (fake 1.0)")
+    sys.exit(1 if os.environ.get("FAKE_SHOT_NO_BROWSER") else 0)
 sub = argv[0] if argv and argv[0] in ("check", "text", "site", "css", "diff") else None
 rest = argv[1:] if sub else argv
 targets, out, i = [], None, 0
@@ -834,6 +839,16 @@ class ApproveTest(Base):
 
 
 class ModelTest(Base):
+    def test_a_run_without_a_browser_is_refused_before_it_starts(self):
+        # gate 1 is `shot check`: without a browser every site would fail it twice and be dropped
+        r = self.run_prep("run", "--n", "1", "--places", POOL, "--no-publish", "--foreground",
+                          env={"FAKE_SHOT_NO_BROWSER": "1"})
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("gate 1 is `shot check`, so every site would be dropped", r.stderr)
+        self.assertFalse(self.sessions())
+        self.assertIn("BAD shot:", self.run_prep("doctor", env={"FAKE_SHOT_NO_BROWSER": "1"}).stdout)
+        self.assertIn("ok  shot: a browser", self.run_prep("doctor").stdout)
+
     def test_fable_is_refused_before_a_run_starts(self):
         r = self.run_prep("run", "--n", "1", "--places", POOL, "--no-publish", "--foreground",
                           env={"PREP_MODEL_JUDGE": "claude-fable-5"})

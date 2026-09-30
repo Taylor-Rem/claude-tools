@@ -445,6 +445,7 @@ def likely_names(listing, business_name, city):
     """Words that name a person in this business's reviews: the reviewers' own names, and a capitalised word
     in a review's middle that isn't a common word, the business's own name or a place."""
     own = set(words(business_name)) | set(words(city))
+    own |= {re.split(r"'", w)[0] for w in list(own) if "'" in w}      # Erika's Dance Studio → erika (2026-09-30)
     names = set()
     for r in (listing or {}).get("reviews") or []:
         for tok in re.findall(r"[A-Za-z][A-Za-z'\-]+", ((r.get("authorAttribution") or {}).get("displayName") or "")):

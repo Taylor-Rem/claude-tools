@@ -570,7 +570,9 @@ def curl_header(url, name):
 # the line stays in the repo — the repo is the client's record and a restamp
 # never rewrites a page — and `site publish` leaves it out of what it uploads.
 
-BADGE_LINE = re.compile(r'(?m)^[ \t]*<p class="patchlamp-badge">.*?</p>[ \t]*\r?\n')
+# the badge is one line of one element: <p> in every template, a <span> or <div>
+# where a hand-built footer reads better that way
+BADGE_LINE = re.compile(r'(?m)^[ \t]*<(p|span|div|li)\b[^>]*class="patchlamp-badge".*?</\1>[ \t]*\r?\n')
 BADGE_OFF = re.compile(r"(?mi)^\s*(?:[-*]\s+)?(?:\*\*)?badge(?:\*\*)?:\s*off\b")
 
 

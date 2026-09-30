@@ -144,6 +144,19 @@ class BadgeOptOutTest(unittest.TestCase):
                       "the stylesheet is left alone; one dead rule is cheaper than a second exception")
         self.assertEqual(self.site.strip_badge(tree), 0, "nothing to do the second time")
 
+    def test_the_strip_also_takes_a_hand_built_footer_s_span(self):
+        tree = self.ws / "hand"
+        tree.mkdir()
+        (tree / "index.html").write_text(
+            '<footer class="site-footer">\n  <div class="footer-bottom"><span>&copy; 2026</span></div>\n'
+            '  <span class="patchlamp-badge"><a href="https://patchlamp.com/?from=badge" rel="noopener">'
+            'Patched by Patchlamp</a></span>\n</footer>\n')
+        self.assertTrue(self.site.has_badge(tree))
+        self.assertEqual(self.site.strip_badge(tree), 1)
+        out = (tree / "index.html").read_text()
+        self.assertNotIn("Patchlamp", out)
+        self.assertIn("&copy; 2026", out)
+
     def test_has_badge_reads_the_repo(self):
         repo = self.ws / "repos" / "x"
         repo.mkdir(parents=True)

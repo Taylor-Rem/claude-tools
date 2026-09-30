@@ -1866,12 +1866,12 @@ def segment_email(c, fs):
 
 
 # ---- the register (Taylor, 2026-09-29) --------------------------------------------------------
-# "Hi, this is Taylor in American Fork. Looked you up on Google. 92 reviews at 4.9, but the website link on your
+# "Hi, I'm Taylor. A small business owner in American Fork. Looked you up on Google. 92 reviews at 4.9, but the website link on your
 #  listing goes to a Hibu page that doesn't load anymore. So I went ahead and built you one. Want to see it?"
 # One fault, stated once; a thing already built; a question last. The AI line, the price and the link are message
 # two (`then_text`), after they answer. VISION § Decided 2026-09-29; memory "outreach message register".
 
-DM_HELLO = "Hi, this is Taylor in American Fork."
+DM_HELLO = "Hi, I'm Taylor. A small business owner in American Fork."
 REVIEWS_MIN, RATING_MIN = 10, 4.5
 STARTER_PRICE = "$99"          # Starter on patchlamp.com/pricing (patchlamp/CLAIMS.md, Prices::TIERS)
 
@@ -1970,7 +1970,7 @@ def register_email(c, fs):
     message two in place of the question."""
     hi, biz = greeting(c), plain_name(c["name"])
     url = c.get("preview_url")
-    body = register_dm(c, fs).replace(DM_HELLO, f"Hi {hi},\n\nThis is Taylor Remund in American Fork.", 1)
+    body = register_dm(c, fs).replace(DM_HELLO, f"Hi {hi},\n\nI'm Taylor Remund, a small business owner in American Fork.", 1)
     if url:
         body = body.replace(" Want to see it?", " Here it is: " + then_text(url), 1)
     return (f"A website for {biz}" if url else f"{biz} on Google"), body
@@ -4517,9 +4517,9 @@ def call_opener(p):
     looked = f"Looked you up on Google — {said}" if said else "Looked you up on Google"
     if p.get("preview_url"):
         did = built.removeprefix("So ").rstrip(".")          # "I went ahead and built you one"
-        return (f"Say: \"Hi, is this {biz}? This is Taylor in American Fork. {looked}, so {did}. "
+        return (f"Say: \"Hi, is this {biz}? This is Taylor, a small business owner in American Fork. {looked}, so {did}. "
                 f"Could I text you the link? Nothing to sign, and I'll take it down the moment you say so.\"")
-    return (f"Say: \"Hi, is this {biz}? This is Taylor in American Fork. {looked}. {offer} — could I text you "
+    return (f"Say: \"Hi, is this {biz}? This is Taylor, a small business owner in American Fork. {looked}. {offer} — could I text you "
             f"what it'd look like?\"")
 
 

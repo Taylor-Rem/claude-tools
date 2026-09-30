@@ -99,7 +99,7 @@ class KitTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertLess(len(r.stdout), 3901, "one Telegram message")
         self.assertIn("Remote kit —", r.stdout)
-        self.assertIn("Hi, this is Taylor in American Fork. Looked you up on Google", r.stdout)   # the register
+        self.assertIn("Hi, I'm Taylor. A small business owner in American Fork. Looked you up on Google", r.stdout)   # the register
         self.assertIn("don't send yet", r.stdout)                 # no postal address, no ready email
         self.assertNotIn("not their own", r.stdout.split("Email footer")[0].split('"Hi')[1])
         self.assertNotIn("$", r.stdout)                            # no price in a cold message
@@ -362,7 +362,7 @@ class SegmentTest(unittest.TestCase):
         self.assertIn("Looked you up on Google", msgs["Beat Drop DJs"])
         self.assertIn("there's no website on your listing.", msgs["Beat Drop DJs"])
         for m in msgs.values():
-            self.assertTrue(m.startswith("Hi, this is Taylor in American Fork. Looked "), m)
+            self.assertTrue(m.startswith("Hi, I'm Taylor. A small business owner in American Fork. Looked "), m)
             self.assertNotIn("team", m)
             self.assertNotIn("$", m)
             self.assertNotIn("their", m)

@@ -101,7 +101,7 @@ class MorningTest(Base):
         for i in six:
             self.assertGreaterEqual(len(lines[i].split(" · ")), 4, lines[i])   # name · category · city · how
             under = lines[i + 1]
-            self.assertTrue(under.startswith("Hi, this is Taylor in American Fork.") or
+            self.assertTrue(under.startswith("Hi, I'm Taylor. A small business owner in American Fork.") or
                             under.startswith('Say: "Hi, is this '), under)
         at = next(i for i in six if "Mike's Pool Care" in lines[i])       # B73: strong first, so not by position
         mike = lines[at]
@@ -109,12 +109,12 @@ class MorningTest(Base):
         self.assertTrue(mike.endswith("· good · 14 reviews at 4.9 · 0.4 mi"), mike)   # B73: the level and why, last
         dm = lines[at + 1]
         # 2026-09-29, the register: one fault, a question last; no preview yet, so the offer to build one
-        self.assertEqual(dm, "Hi, this is Taylor in American Fork. Looked Mike's Pool Care up on Google. 14 reviews "
+        self.assertEqual(dm, "Hi, I'm Taylor. A small business owner in American Fork. Looked Mike's Pool Care up on Google. 14 reviews "
                              "at 4.9, but the website link on your listing goes to Facebook, not a site of your own. "
                              "I can build you one in an afternoon — want to see what it'd look like?")
         self.assertEqual(lines[at + 2], '(no preview built — leads preview "Mike\'s Pool Care")')
         for i in six:
-            if lines[i + 1].startswith("Hi, this is Taylor in American Fork."):
+            if lines[i + 1].startswith("Hi, I'm Taylor. A small business owner in American Fork."):
                 self.assertNotRegex(lines[i + 1], r"\btheir\b|\bthey\b|\[|preview|http", lines[i + 1])
         self.assertNotIn("$", r.stdout)                      # no price in the morning message
         self.assertFalse((self.t / "ledger.jsonl").exists(), "census-only costs nothing")
@@ -125,7 +125,7 @@ class MorningTest(Base):
         i = next(i for i, l in enumerate(lines) if "Timp Pressure Washing" in l)
         self.assertIn("call: (801) 555-0104 · weak", lines[i])           # B73: the strength follows the how
         # 2026-09-30: the register in the prep call frame; no preview yet, so the offer
-        self.assertEqual(lines[i + 1], 'Say: "Hi, is this Timp Pressure Washing? This is Taylor in American Fork. Looked '
+        self.assertEqual(lines[i + 1], 'Say: "Hi, is this Timp Pressure Washing? This is Taylor, a small business owner in American Fork. Looked '
                                        'you up on Google — the website link on your listing is your Thumbtack page, not a '
                                        'site of your own. I can build you one in an afternoon — could I text you what '
                                        'it\'d look like?"')
@@ -317,7 +317,7 @@ class MorningEmailTest(Base):
     def test_a_preview_goes_into_the_dm_and_an_address_without_a_page_waits(self):
         out = self.today(OUTREACH_PER_DAY="0").splitlines()
         cy = out.index(next(l for l in out if l.startswith("3. Cy Pools")))
-        self.assertTrue(out[cy + 1].startswith("Hi, this is Taylor in American Fork."), out[cy + 1])
+        self.assertTrue(out[cy + 1].startswith("Hi, I'm Taylor. A small business owner in American Fork."), out[cy + 1])
         self.assertTrue(out[cy + 1].endswith("So I went ahead and built you one. Want to see it?"), out[cy + 1])
         self.assertNotIn("http", out[cy + 1])                            # the link is message two, under it
         self.assertEqual(out[cy + 2], "When they say yes: https://previews.patchlamp.com/cy-pools/ — nothing to sign, "
@@ -641,7 +641,7 @@ class RegisterTest(unittest.TestCase):
     """2026-09-29, Taylor's register: one fault, a thing already built, a question last; message two holds the
     link, the AI line and the price. Pure functions, so the module is loaded and called directly."""
 
-    HELLO = "Hi, this is Taylor in American Fork. "
+    HELLO = "Hi, I'm Taylor. A small business owner in American Fork. "
 
     @classmethod
     def setUpClass(cls):
@@ -747,7 +747,7 @@ class RegisterTest(unittest.TestCase):
     def test_the_email_carries_the_link_and_message_two(self):
         subject, body = self.m.segment_email(self.pick(), ["no website on Google"])
         self.assertEqual(subject, "A website for Summit Roofing")
-        self.assertTrue(body.startswith("Hi Summit Roofing,\n\nThis is Taylor Remund in American Fork. Looked you up"))
+        self.assertTrue(body.startswith("Hi Summit Roofing,\n\nI'm Taylor Remund, a small business owner in American Fork. Looked you up"))
         self.assertTrue(body.endswith("So I went ahead and built you one. Here it is: " + self.m.then_text(
             "https://p.example/x/")), body)
         subject, body = self.m.segment_email(self.pick(preview_url=None), ["no website on Google"])
@@ -818,14 +818,14 @@ class RegisterTest(unittest.TestCase):
     def test_the_call_opener_names_the_same_fault_and_asks_to_text_the_link(self):
         p = dict(self.pick(), faults=["no photos", "the website is a free Wix address (d.wixsite.com)"])
         self.assertEqual(self.m.call_opener(p),
-                         'Say: "Hi, is this Summit Roofing? This is Taylor in American Fork. Looked you up on Google — '
+                         'Say: "Hi, is this Summit Roofing? This is Taylor, a small business owner in American Fork. Looked you up on Google — '
                          'the website on your listing is a free Wix address (d.wixsite.com), so I went ahead and built '
                          'you one of your own. Could I text you the link? Nothing to sign, and I\'ll take it down the '
                          'moment you say so."')
         said = self.m.site_fault_words(p, p["faults"][1])[0]
         self.assertIn(said, self.m.segment_dm_text(p, p["faults"]))           # the DM names the same fault
         self.assertEqual(self.m.call_opener(dict(p, preview_url=None)),
-                         'Say: "Hi, is this Summit Roofing? This is Taylor in American Fork. Looked you up on Google — '
+                         'Say: "Hi, is this Summit Roofing? This is Taylor, a small business owner in American Fork. Looked you up on Google — '
                          'the website on your listing is a free Wix address (d.wixsite.com). I can build you one of your '
                          'own in an afternoon — could I text you what it\'d look like?"')
         for text in (self.m.call_opener(p), self.m.call_opener(dict(p, preview_url=None))):

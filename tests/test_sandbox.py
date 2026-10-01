@@ -9,6 +9,10 @@ OS sandbox it added nothing and refused pipes and chains.
     python3 -m unittest tests.test_sandbox   (from claude-tools/)
 """
 
+import sys as _sys, pathlib as _pathlib  # noqa: E401
+_sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parent))
+import _offline  # noqa: F401,E402  first, before any tool loads: the suite stays off production (tests/_offline.py)
+
 import json
 import os
 import subprocess
@@ -41,9 +45,13 @@ class Tenant(unittest.TestCase):
     # a subcommand of each tool that reads the workspace identity
     TOOLS = {"newsletter": "status", "pay": "status", "gbp": "show", "connections": "ls"}
 
+    # Past the identity check the tools call patchlamp.com; point them at a closed local port so a
+    # passing check ends in "could not reach" here, never in a request to production.
+    NOWHERE = {"PATCHLAMP_URL": "http://127.0.0.1:9"}
+
     def run_tool(self, tool, env):
         return subprocess.run([str(BIN / tool), self.TOOLS[tool]], cwd=str(self.ws),
-                              env=dict(os.environ, **env), capture_output=True, text=True)
+                              env=dict(os.environ, **self.NOWHERE, **env), capture_output=True, text=True)
 
     def test_mismatch_refused(self):
         for tool in self.TOOLS:
@@ -53,13 +61,13 @@ class Tenant(unittest.TestCase):
             self.assertIn("other-client", r.stderr + r.stdout, tool)
 
     def test_match_passes_identity_check(self):
-        # match proceeds past the identity check (then fails on "not registered",
+        # match proceeds past the identity check (then fails reaching the closed port,
         # which proves the cross-check didn't fire).
         r = self.run_tool("newsletter", {"RELAY_PROJECT": "acme"})
         self.assertNotIn("Refusing to touch another client", r.stderr + r.stdout)
 
     def test_no_relay_project_passes(self):
-        env = dict(os.environ)
+        env = dict(os.environ, **self.NOWHERE)
         env.pop("RELAY_PROJECT", None)
         r = subprocess.run([str(BIN / "newsletter"), "status"], cwd=str(self.ws),
                            env=env, capture_output=True, text=True)

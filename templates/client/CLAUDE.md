@@ -43,7 +43,7 @@ That protects this client as much as anyone. What it changes for you:
   and the sites here need no build step.
 - The live site and ordinary public pages load with `curl`; local and private
   network addresses don't.
-- On a demo, the relay offers `site publish`/`ls`/`status`, `img`, `shot` and
+- On a demo, the relay offers `site publish` and `site ls`, `img`, `shot` and
   `git push`/`fetch`: a demo shows a business its site, and the rest acts on
   a real business's accounts.
 

@@ -209,6 +209,15 @@ def gh(*args, check=True, stdin=None, quiet=False):
     if DRY:
         say("  would run: " + " ".join(cmd))
         return 0, "", ""
+    if not shutil.which("gh"):
+        # A walled run's tool sandbox has no gh and no GitHub token, by design (B85): the
+        # GitHub side of a site is Taylor's, from his terminal.
+        why = ("this needs GitHub access, which runs from Taylor's terminal rather than from here; "
+               "`site publish`, `site ls` and `site doctor` work for this business's sites"
+               if os.environ.get("RELAY_SANDBOX") else "gh (the GitHub CLI) isn't installed")
+        if check:
+            die(why)
+        return 127, "", why
     r = subprocess.run(cmd, capture_output=True, text=True, env=gh_env(), input=stdin)
     if check and r.returncode != 0:
         if not quiet:

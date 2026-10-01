@@ -79,26 +79,33 @@ REFUSED = 2          # a request this module won't run (the reason is on stderr)
 # GITHUB_TOKEN is in no tool's key list: git's environment would carry it (site's gh_env),
 # and `site new`/`transfer` — the only users — are Taylor's from a terminal.
 _ALL = None
+# The client role's subcommands are what the client template and PLAYBOOK have Patch run; the
+# rest of each tool (SITE_ADMIN work, platform grants, the rooms' credits, the GitHub side) is
+# Taylor's from a terminal and is refused here with that reason.
+SITE_CLIENT = ("publish", "ls", "doctor", "data", "mail", "handover")
+IMG_CLIENT = ("gen", "stock", "edit", "describe", "video", "styles", "info")
 TOOLS = {
     "site": {"keys": ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "SITE_ORG",
                       "PATCHLAMP_RELAY_SHARED_SECRET"],
              "state": ["registry"], "git": True,
-             "roles": {"client": _ALL, "owner": _ALL, "demo": ("publish", "ls", "status")}},
+             "roles": {"client": SITE_CLIENT, "owner": SITE_CLIENT, "demo": ("publish", "ls")}},
     "db": {"keys": ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"], "state": ["registry"],
            "roles": {"client": _ALL, "owner": _ALL}},
     "img": {"keys": ["GEMINI_API_KEY", "PEXELS_API_KEY", "XAI_API_KEY"], "state": ["ledger"],
-            "roles": {"client": _ALL, "owner": _ALL, "demo": ("gen", "stock", "edit", "describe")}},
+            "bins": ["ffmpeg", "ffprobe"],
+            "roles": {"client": IMG_CLIENT, "owner": IMG_CLIENT, "demo": ("gen", "stock", "edit", "describe")}},
     "newsletter": {"keys": ["PATCHLAMP_RELAY_SHARED_SECRET"], "state": ["ledger"],
                    "roles": {"client": _ALL, "owner": _ALL}},
     "social": {"keys": ["PATCHLAMP_RELAY_SHARED_SECRET"], "state": [],
-               "roles": {"client": _ALL, "owner": _ALL}},
+               "roles": {"client": ("post", "ls", "doctor"), "owner": ("post", "ls", "doctor")}},
     "gbp": {"keys": ["PATCHLAMP_RELAY_SHARED_SECRET"], "state": [],
             "roles": {"client": _ALL, "owner": _ALL}},
     "pay": {"keys": ["PATCHLAMP_RELAY_SHARED_SECRET", "STRIPE_KEY_PATCHLAMP", "STRIPE_TEST_KEY"], "state": [],
             "roles": {"client": _ALL, "owner": _ALL}},
     "connections": {"keys": ["PATCHLAMP_RELAY_SHARED_SECRET"], "state": [],
-                    "roles": {"client": _ALL, "owner": _ALL}},
+                    "roles": {"client": ("ls", "google", "doctor"), "owner": ("ls", "google", "doctor")}},
     "print": {"keys": ["GEMINI_API_KEY", "PEXELS_API_KEY"], "state": ["registry", "ledger", "playwright"],
+              "bins": ["ffmpeg", "ffprobe"],
               "roles": {"client": _ALL, "owner": _ALL}},
     "shot": {"keys": [], "state": ["playwright"],
              "roles": {"client": _ALL, "owner": _ALL, "demo": _ALL}},
@@ -108,6 +115,8 @@ TOOLS = {
             "roles": {"client": ("push", "pull", "fetch"), "owner": ("push", "pull", "fetch"),
                       "demo": ("push", "fetch")}},
 }
+# Words after the subcommand that are Taylor's even when the subcommand isn't.
+TAYLOR_ONLY = {"connections": {"grant", "revoke"}}
 ROLES = ("client", "demo", "owner")
 SHIMS = tuple(TOOLS)                       # what sandbox/bin/ links to tb
 
@@ -802,11 +811,15 @@ def check_request(project, role, workspace, cwd, tool, argv):
         sub = verb
     else:
         sub = next((a for a in argv if not a.startswith("-")), "")
-    if allowed is not None and sub not in allowed:
+    if tool in TAYLOR_ONLY and TAYLOR_ONLY[tool] & set(argv):
+        raise Refused(f"that part of `{tool}` is Taylor's, from his terminal; `{tool} ls` shows what's "
+                      f"connected for this business")
+    if allowed is not None and sub and sub not in allowed:
         if role == "demo":
             raise Refused(f"on a demo, `{tool}` does {', '.join(allowed)}; `{tool} {sub}` acts on more "
                           f"than the demo site, so it isn't available here")
-        raise Refused(f"`{tool} {sub}` isn't available from here; `{tool}` does {', '.join(allowed)}")
+        raise Refused(f"`{tool} {sub}` is Taylor's, from his terminal, so it isn't available from here; "
+                      f"here `{tool}` does {', '.join(allowed)}")
     if tool != "git":
         why = argv_path_problem(argv, here, ws)
         if why:
@@ -901,18 +914,75 @@ def exec_tool(project, role, workspace, cwd, tool, argv):
         if "playwright" in spec["state"] and PLAYWRIGHT.is_dir():
             binds += ["--ro-bind", str(PLAYWRIGHT), str(PLAYWRIGHT)]
             env["PLAYWRIGHT_BROWSERS_PATH"] = str(PLAYWRIGHT)
-        code, _, _ = run_sandboxed(binds, sandbox_env(env), [str(TOOL_BIN / tool), *argv], here)
+        tbin = []
+        for b in spec.get("bins", []):
+            # A binary outside /usr (ffmpeg is a static build in ~/.local/bin here) is bound
+            # read-only at /opt/patchlamp/tbin/<name>, named in the manifest (review amendment 2).
+            found = shutil.which(b, path=os.environ.get("PATH", "") + f":{HOME}/.local/bin")
+            if found and not found.startswith("/usr/"):
+                binds += ["--ro-bind", os.path.realpath(found), f"/opt/patchlamp/tbin/{b}"]
+                tbin.append(b)
+        senv = sandbox_env(env)
+        if tbin:
+            senv["PATH"] = senv["PATH"] + ":/opt/patchlamp/tbin"
+        pushed = {}
+        if tool == "site":
+            binds, senv, pushed = site_mirrors(ws, project, binds, senv)
+        code, _, _ = run_sandboxed(binds, senv, [str(TOOL_BIN / tool), *argv], here)
         if tool == "site" and (call / "sites.json").exists():
             registry_merge_back(project, call / "sites.json")
     finally:
         shutil.rmtree(call, ignore_errors=True)
 
-    if target is not None and code == 0 and target.is_dir() and ahead_of_origin(ws, target):
-        try:                                           # site's own commit (the IndexNow key file)
-            git_push(ws, project, target, role, quiet=True)
-        except Refused as e:
-            print(f"note: {e}", file=sys.stderr)
+    for name, (m, url, before) in pushed.items():          # site's own commits (IndexNow key, mail links, …)
+        after = _rev(m, "refs/heads/main")
+        if after and after != before:
+            c, out, err = keyed_git(m, ["push", "-q", url, "refs/heads/main:refs/heads/main"], url)
+            if c != 0:
+                print(f"note: repos/{name}'s new commit is saved and live, but didn't reach its repository "
+                      f"yet ({(err or out).strip().splitlines()[-1:] or ['?']}); the next `git push` sends it",
+                      file=sys.stderr)
     return code
+
+
+def _rev(mirror, ref):
+    r = subprocess.run([GIT, "--git-dir", str(mirror), "rev-parse", "--verify", "-q", ref],
+                       capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def site_mirrors(ws, project, binds, env):
+    """`site` commits and pushes by itself (the IndexNow key file, `site mail`'s links, `site data`'s
+    wrangler.toml). Inside the tool sandbox there's no key, so each registered repo's push address is
+    rewritten (pushInsteadOf) to its toolbelt mirror, bound rw; afterwards client exec pushes what
+    landed there to the real repository with the key, outside the tool sandbox. Repos without a
+    registry address get nothing: their pushes fail with the NO_SSH sentence."""
+    pushed = {}
+    extra = []
+    for name in repos_of(ws):
+        try:
+            url = push_url(project, name)
+        except Refused:
+            continue
+        if registry_remote_problem(ws, project, name) or repo_problem(ws, name):
+            continue
+        try:
+            m = mirror_for(project, name, url)
+        except Refused:
+            continue
+        binds = binds + ["--bind", str(m), str(m)]
+        raw = origin_url(ws, name)
+        for u in {url, raw} - {""}:
+            extra.append((f"url.{m}.pushInsteadOf", u))
+        pushed[name] = (m, url, _rev(m, "refs/heads/main"))
+    if extra:
+        n = int(env.get("GIT_CONFIG_COUNT", "0"))
+        env = dict(env)
+        for i, (k, v) in enumerate(extra, start=n):
+            env[f"GIT_CONFIG_KEY_{i}"] = k
+            env[f"GIT_CONFIG_VALUE_{i}"] = v
+        env["GIT_CONFIG_COUNT"] = str(n + len(extra))
+    return binds, env, pushed
 
 
 def _call_root():

@@ -102,11 +102,11 @@ class RoleTable(Base):
             why = self.refused("demo-service", "demo", ws, ".", tool, argv, msg=tool)
             self.assertIn(tool, why)
 
-    def test_demo_site_is_publish_ls_status(self):
+    def test_demo_site_is_publish_ls(self):
         ws = str(self.clients / "demo-service")
         ST.check_request("demo-service", "demo", ws, ".", "site", ["publish"])
         ST.check_request("demo-service", "demo", ws, ".", "site", ["ls"])
-        for sub in ("new", "data", "mail", "shell", "checkout"):
+        for sub in ("new", "data", "mail", "shell", "checkout", "status"):
             self.refused("demo-service", "demo", ws, ".", "site", [sub, "x"], msg=sub)
 
     def test_demo_img_no_video(self):
@@ -124,8 +124,18 @@ class RoleTable(Base):
 
     def test_client_gets_its_tools(self):
         for tool, argv in (("pay", ["status"]), ("db", ["query", "SELECT 1"]), ("newsletter", ["status"]),
-                           ("site", ["new", "x"]), ("img", ["video", "x"]), ("discord", ["photos"])):
+                           ("site", ["publish"]), ("site", ["data", "x"]), ("site", ["mail"]),
+                           ("img", ["video", "x"]), ("discord", ["photos"]), ("connections", []),
+                           ("connections", ["google", "invite"])):
             ST.check_request("acme", "client", str(self.ws), ".", tool, argv)
+        # Taylor's from a terminal: SITE_ADMIN work, the GitHub side, platform grants, the rooms' credits
+        for tool, argv in (("site", ["new", "x"]), ("site", ["adopt", "x"]), ("site", ["transfer", "x", "y"]),
+                           ("site", ["domain", "x"]), ("site", ["retire", "x"]), ("site", ["shell"]),
+                           ("site", ["template", "push"]), ("site", ["stamp"]), ("site", ["checkout", "x"]),
+                           ("connections", ["google", "grant"]), ("img", ["credit", "x"]),
+                           ("social", ["connect", "patchlamp"]), ("social", ["queue"])):
+            why = self.refused("acme", "client", str(self.ws), ".", tool, argv, msg=str(argv))
+            self.assertIn("Taylor's", why)
         self.refused("acme", "client", str(self.ws), ".", "discord", ["read", "#general"])
         self.refused("acme", "client", str(self.ws), ".", "leads", ["kit"])
 
@@ -524,6 +534,28 @@ class GitThroughMirror(Base):
         self.assertEqual(ST.exec_tool("acme", "client", str(self.ws), "repos/site", "git", ["pull"]), 0)
         self.assertTrue((repo / "b.html").exists())
 
+    def test_sites_own_commit_reaches_the_repo_through_the_mirror(self):
+        # site commits by itself (IndexNow key, site mail); in the tool sandbox its push lands in the
+        # mirror (pushInsteadOf) and client exec carries it on to the repository afterwards
+        repo = self.setup_site("acme")
+        git(repo, "config", "branch.main.remote", "origin")         # as a clone has it
+        git(repo, "config", "branch.main.merge", "refs/heads/main")
+        ST.exec_tool("acme", "client", str(self.ws), ".", "git", ["-C", "repos/site", "push"])
+        fake = self.t / "fakebin"
+        fake.mkdir()
+        (fake / "site").write_text("#!/bin/sh\nset -e\ncd repos/site\necho k > key.txt\ngit add key.txt\n"
+                                   "git -c user.name=p -c user.email=p@p commit -qm key\ngit push -q\n")
+        (fake / "site").chmod(0o755)
+        saved = ST.TOOL_BIN
+        ST.TOOL_BIN = fake
+        try:
+            self.assertEqual(ST.exec_tool("acme", "client", str(self.ws), ".", "site", ["ls"]), 0)
+        finally:
+            ST.TOOL_BIN = saved
+        head = git(repo, "rev-parse", "HEAD")
+        self.assertEqual(git(self.remote, "rev-parse", "main"), head)
+        self.assertEqual(git(repo, "rev-parse", "refs/remotes/origin/main"), head)
+
     def test_push_address_is_pinned(self):
         self.setup_site("acme")
         ST.exec_tool("acme", "client", str(self.ws), ".", "git", ["-C", "repos/site", "push"])
@@ -532,6 +564,74 @@ class GitThroughMirror(Base):
         ST.REGISTRY.write_text(json.dumps({"acme": {"site": {"project": "acme-site", "remote": str(moved)}}}))
         with self.assertRaises(ST.Refused):
             ST.exec_tool("acme", "client", str(self.ws), ".", "git", ["-C", "repos/site", "push"])
+
+
+@unittest.skipUnless(HAVE_BWRAP, NO_BWRAP)
+class Smoke(unittest.TestCase):
+    """Every tool and subcommand the role table allows starts inside the real tool sandbox and
+    exits without a traceback (`--help`, or the cheapest real call); `site ls` prints its row.
+    Fake keys and a throwaway workspace: nothing reaches Cloudflare, GitHub or a live workspace."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        t = Path(os.path.realpath(cls.tmp.name))
+        cls.clients = t / "clients"
+        for slug, meta in (("acme", {"role": "client"}), ("demo-service", {"role": "demo", "demo": True})):
+            ws = cls.clients / slug
+            (ws / "incoming").mkdir(parents=True)
+            (ws / ".client.json").write_text(json.dumps({"slug": slug, "name": slug.title(), **meta}))
+            for name in ("site", "loose"):
+                repo = ws / "repos" / name
+                repo.mkdir(parents=True)
+                git(repo, "init", "-q", "-b", "main")
+                git(repo, "config", "user.email", "t@t")
+                git(repo, "config", "user.name", "t")
+                git(repo, "remote", "add", "origin", f"git@github.com:patchlamp/{slug}-{name}.git")
+                (repo / "index.html").write_text("<h1>x</h1>")
+                git(repo, "add", "-A")
+                git(repo, "commit", "-qm", "x")
+        cfg = t / "cfg"
+        cfg.mkdir()
+        (cfg / "env").write_text("CLOUDFLARE_API_TOKEN=fake\nCLOUDFLARE_ACCOUNT_ID=fake\nGEMINI_API_KEY=fake\n"
+                                 "PATCHLAMP_RELAY_SHARED_SECRET=fake\nPATCHLAMP_URL=http://127.0.0.1:9\n")
+        reg = {slug: {"site": {"host": "cloudflare", "project": f"{slug}-site", "pages_host": f"{slug}-site.pages.dev",
+                               "remote": f"git@github.com:patchlamp/{slug}-site.git"}}
+               for slug in ("acme", "demo-service")}
+        (cfg / "sites.json").write_text(json.dumps(reg))
+        cls.env = dict(os.environ, CLIENTS_DIR=str(cls.clients), CLAUDE_TOOLS_ENV=str(cfg / "env"),
+                       CLAUDE_TOOLS_STATE=str(t / "state"), SANDBOX_NOTIFY="0", DEMO_STATE=str(t / "demo.json"))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def run_exec(self, project, role, *argv):
+        return subprocess.run([str(ROOT / "bin" / "client"), "exec", "--project", project, "--role", role,
+                               "--workspace", str(self.clients / project), "--cwd", ".", "--", *argv],
+                              env=self.env, capture_output=True, text=True, timeout=120)
+
+    def test_every_allowed_subcommand_starts(self):
+        for tool, spec in ST.TOOLS.items():
+            if tool == "git":
+                continue                                    # GitThroughMirror runs git for real
+            for role, allowed in spec["roles"].items():
+                project = "demo-service" if role == "demo" else "acme"
+                calls = [["--help"]] if allowed is None else [[sub, "--help"] for sub in allowed]
+                for argv in calls:
+                    r = self.run_exec(project, role, tool, *argv)
+                    out = r.stdout + r.stderr
+                    self.assertNotIn("Traceback", out, f"{role} {tool} {argv}:\n{out[-800:]}")
+                    self.assertNotIn("No such file or directory: '", out, f"{role} {tool} {argv}")
+                    self.assertEqual(r.returncode, 0, f"{role} {tool} {argv}:\n{out[-800:]}")
+
+    def test_site_ls_prints_the_registered_row_and_survives_an_unregistered_one(self):
+        r = self.run_exec("acme", "client", "site", "ls")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("cloudflare:acme-site", r.stdout)
+        self.assertIn("https://acme-site.pages.dev/", r.stdout)
+        self.assertIn("loose", r.stdout)                    # no gh in the sandbox: a line, not a traceback
+        self.assertNotIn("Traceback", r.stdout + r.stderr)
 
 
 class RecordRemotes(Base):

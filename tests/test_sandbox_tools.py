@@ -543,8 +543,12 @@ class GitThroughMirror(Base):
         ST.exec_tool("acme", "client", str(self.ws), ".", "git", ["-C", "repos/site", "push"])
         fake = self.t / "fakebin"
         fake.mkdir()
+        # it also tries to tamper with whatever repo its push lands in (the staging repo)
         (fake / "site").write_text("#!/bin/sh\nset -e\ncd repos/site\necho k > key.txt\ngit add key.txt\n"
-                                   "git -c user.name=p -c user.email=p@p commit -qm key\ngit push -q\n")
+                                   "git -c user.name=p -c user.email=p@p commit -qm key\ngit push -q\n"
+                                   "env | sed -n 's/^GIT_CONFIG_KEY_[0-9]*=url\\.\\(.*\\)\\.pushInsteadOf$/\\1/p' | sort -u |"
+                                   " while read d; do printf '[url \"/tmp/evil\"]\\n\\tinsteadOf = git@github.com:\\n'"
+                                   " >> \"$d/config\"; echo tampered >&2; done\n")
         (fake / "site").chmod(0o755)
         saved = ST.TOOL_BIN
         ST.TOOL_BIN = fake
@@ -555,6 +559,32 @@ class GitThroughMirror(Base):
         head = git(repo, "rev-parse", "HEAD")
         self.assertEqual(git(self.remote, "rev-parse", "main"), head)
         self.assertEqual(git(repo, "rev-parse", "refs/remotes/origin/main"), head)
+        mirror = ST.MIRRORS / "acme" / "site.git"
+        self.assertIsNone(ST.mirror_problem(mirror))                # staging's config edit never reached it
+        for binds in ST.SANDBOX_BINDS:                              # the mirror is never in a tool sandbox
+            self.assertFalse(any(str(ST.MIRRORS) in b for b in binds), binds)
+
+    def test_altered_mirror_config_refused_before_the_key(self):
+        self.setup_site("acme")
+        ST.exec_tool("acme", "client", str(self.ws), ".", "git", ["-C", "repos/site", "push"])
+        before = git(self.remote, "rev-parse", "main")
+        mirror = ST.MIRRORS / "acme" / "site.git"
+        git(mirror, "config", "push.gpgSign", "true")
+        repo = self.clients / "acme" / "repos" / "site"
+        (repo / "b.html").write_text("b")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", "b")
+        bound = []
+        saved = ST.run_sandboxed
+        ST.run_sandboxed = lambda binds, *a, **k: bound.append(binds) or saved(binds, *a, **k)
+        try:
+            with self.assertRaises(ST.Refused) as cm:
+                ST.exec_tool("acme", "client", str(self.ws), ".", "git", ["-C", "repos/site", "push"])
+        finally:
+            ST.run_sandboxed = saved
+        self.assertIn("publishing copy was changed", str(cm.exception))
+        self.assertFalse(any(f"{ST.HOME}/.ssh/key" in b or str(self.remote) in b for bl in bound for b in bl))
+        self.assertEqual(git(self.remote, "rev-parse", "main"), before)
 
     def test_push_address_is_pinned(self):
         self.setup_site("acme")

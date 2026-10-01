@@ -65,6 +65,7 @@ TOOL_BIN = Path(os.environ.get("SANDBOX_TOOL_BIN", HERE / "bin")).expanduser()
 BWRAP = shutil.which("bwrap") or "/usr/bin/bwrap"
 GIT = "/usr/bin/git"
 
+SANDBOX_BINDS = []   # every tool sandbox's bind list this process built (tests read it)
 REFUSED = 2          # a request this module won't run (the reason is on stderr)
 
 # ---- the manifest ---------------------------------------------------------------------------
@@ -170,8 +171,12 @@ GIT_KEYS = [re.compile(p) for p in (
 _GIT_FORCE = (("core.hooksPath", "/dev/null"), ("core.fsmonitor", "false"), ("submodule.recurse", "false"),
               ("fetch.recurseSubmodules", "false"), ("commit.gpgSign", "false"), ("tag.gpgSign", "false"),
               ("core.pager", "cat"), ("core.editor", "true"), ("sequence.editor", "true"),
-              ("core.askPass", ""), ("credential.helper", ""), ("protocol.ext.allow", "never"),
-              ("diff.external", ""), ("core.gitProxy", ""))
+              ("core.askPass", ""), ("credential.helper", ""),
+              ("diff.external", ""), ("core.gitProxy", ""), ("push.gpgSign", "false"),
+              ("gpg.program", "/bin/false"), ("gpg.ssh.program", "/bin/false"), ("gpg.x509.program", "/bin/false"),
+              ("core.alternateRefsCommand", ""), ("push.recurseSubmodules", "no"), ("gc.auto", "0"),
+              ("maintenance.auto", "false"), ("core.sshCommand", ""),
+              ("protocol.ext.allow", "never"), ("init.templateDir", ""))
 GIT_ENV = {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_TERMINAL_PROMPT": "0",
            "GIT_CONFIG_COUNT": str(len(_GIT_FORCE)),
            **{f"GIT_CONFIG_KEY_{i}": k for i, (k, _) in enumerate(_GIT_FORCE)},
@@ -619,6 +624,32 @@ def origin_url(ws, name):
     return r.stdout.decode().strip()
 
 
+def _canonical(m):
+    return m.parent / f"{m.name[:-4]}.config"
+
+
+def mirror_problem(m):
+    """None, or why the mirror isn't exactly what mirror_for made: config byte-for-byte the
+    canonical copy (GIT_CONFIG_* can't unset a repo's url.*.insteadOf, push.gpgSign + gpg.program
+    and the rest, so the whole file is compared), hooks only samples, no alternates or commondir."""
+    canon = _canonical(m)
+    try:
+        if not canon.is_file() or (m / "config").read_bytes() != canon.read_bytes() or (m / "config").is_symlink():
+            return "its git config isn't the one the toolbelt wrote"
+    except OSError:
+        return "its git config can't be read"
+    for odd in ("commondir", "objects/info/alternates", "config.worktree"):
+        if os.path.lexists(m / odd):
+            return f"{odd} is there"
+    hooks = m / "hooks"
+    if hooks.is_symlink():
+        return "hooks is a link"
+    for h in (hooks.iterdir() if hooks.is_dir() else []):
+        if h.is_symlink() or not h.is_file() or not h.name.endswith(".sample"):
+            return f"a hook ({h.name}) is installed"
+    return None
+
+
 def mirror_for(project, name, url):
     m = MIRRORS / project / f"{name}.git"
     if not (m / "HEAD").exists():
@@ -628,6 +659,9 @@ def mirror_for(project, name, url):
                      ("fetch.fsckObjects", "true"), ("receive.fsckObjects", "true"),
                      ("core.hooksPath", "/dev/null")):
             subprocess.run([GIT, "--git-dir", str(m), "config", k, v], check=True, capture_output=True)
+        # The canonical copy keyed_git compares against before the key is ever mounted; it sits
+        # beside the mirror, in a directory no sandbox ever binds.
+        shutil.copyfile(m / "config", _canonical(m))
     pinned = subprocess.run([GIT, "--git-dir", str(m), "config", "--get", "patchlamp.url"],
                             capture_output=True, text=True).stdout.strip()
     if pinned != url:
@@ -639,6 +673,13 @@ def mirror_for(project, name, url):
 def keyed_git(mirror, args, url):
     """The one step that sees the SSH key: git on the toolbelt's own mirror, nothing
     from the workspace mounted."""
+    why = mirror_problem(mirror)
+    if why:
+        project, name = mirror.parent.name, mirror.name[:-4]
+        tell_taylor(project, f"sandbox: the toolbelt mirror for {project}/{name} was changed ({why}); "
+                             f"pushes from it are paused. Look at {mirror} before deleting it.")
+        raise Refused(f"repos/{name}'s publishing copy was changed ({why}), so publishing is paused; "
+                      f"Taylor's been told")
     home = HOME
     binds = ["--bind", str(mirror), str(mirror)]
     env = sandbox_env({"GIT_SSH_COMMAND": "/usr/bin/ssh -F /dev/null -o BatchMode=yes -o IdentitiesOnly=yes "
@@ -876,6 +917,7 @@ def exec_tool(project, role, workspace, cwd, tool, argv):
         if ahead_of_origin(ws, target):
             git_push(ws, project, target, role, quiet=True)
 
+    pushed, stage_root = {}, None
     call = Path(tempfile.mkdtemp(prefix="tb-", dir=_call_root()))
     try:
         cfgdir = HOME / ".config" / "claude-tools"
@@ -925,24 +967,45 @@ def exec_tool(project, role, workspace, cwd, tool, argv):
         senv = sandbox_env(env)
         if tbin:
             senv["PATH"] = senv["PATH"] + ":/opt/patchlamp/tbin"
-        pushed = {}
         if tool == "site":
-            binds, senv, pushed = site_mirrors(ws, project, binds, senv)
+            binds, senv, pushed, stage_root = site_mirrors(ws, project, binds, senv)
+        SANDBOX_BINDS.append(list(binds))
         code, _, _ = run_sandboxed(binds, senv, [str(TOOL_BIN / tool), *argv], here)
         if tool == "site" and (call / "sites.json").exists():
             registry_merge_back(project, call / "sites.json")
     finally:
         shutil.rmtree(call, ignore_errors=True)
 
-    for name, (m, url, before) in pushed.items():          # site's own commits (IndexNow key, mail links, …)
-        after = _rev(m, "refs/heads/main")
-        if after and after != before:
-            c, out, err = keyed_git(m, ["push", "-q", url, "refs/heads/main:refs/heads/main"], url)
-            if c != 0:
-                print(f"note: repos/{name}'s new commit is saved and live, but didn't reach its repository "
-                      f"yet ({(err or out).strip().splitlines()[-1:] or ['?']}); the next `git push` sends it",
-                      file=sys.stderr)
+    try:
+        _carry_staged(pushed)
+    finally:
+        if stage_root:
+            shutil.rmtree(stage_root, ignore_errors=True)
     return code
+
+
+def _carry_staged(pushed):
+    for name, (m, url, stage, before) in pushed.items():   # site's own commits (IndexNow key, site mail, …)
+        try:
+            after = _rev(stage, "refs/heads/main")
+            if not after or after == before:
+                continue
+            # staging (written by the tool) -> the mirror, fsck'd, in the no-key, no-network
+            # sandbox with staging read-only; then the keyed push from the mirror as always.
+            c, out, err = run_sandboxed(["--ro-bind", str(stage), str(stage), "--bind", str(m), str(m)],
+                                        sandbox_env(), [GIT, "--git-dir", str(m), "-c", "transfer.fsckObjects=true",
+                                                        "fetch", "-q", "--no-tags", str(stage),
+                                                        "+refs/heads/main:refs/ws/site"], "/", net=False, capture=True)
+            if c != 0:
+                raise Refused(f"its new commit couldn't be checked ({(err or out).strip()[-200:]})")
+            c, out, err = keyed_git(m, ["push", "-q", url, "refs/ws/site:refs/heads/main"], url)
+            if c != 0:
+                raise Refused(f"{(err or out).strip().splitlines()[-1:] or ['?']}")
+            sha = _rev(m, "refs/ws/site")
+            subprocess.run([GIT, "--git-dir", str(m), "update-ref", "refs/heads/main", sha], capture_output=True)
+        except Refused as e:
+            print(f"note: repos/{name}'s new commit is saved, but didn't reach its repository yet ({e}); "
+                  f"the next `git push` sends it", file=sys.stderr)
 
 
 def _rev(mirror, ref):
@@ -953,28 +1016,38 @@ def _rev(mirror, ref):
 
 def site_mirrors(ws, project, binds, env):
     """`site` commits and pushes by itself (the IndexNow key file, `site mail`'s links, `site data`'s
-    wrangler.toml). Inside the tool sandbox there's no key, so each registered repo's push address is
-    rewritten (pushInsteadOf) to its toolbelt mirror, bound rw; afterwards client exec pushes what
-    landed there to the real repository with the key, outside the tool sandbox. Repos without a
-    registry address get nothing: their pushes fail with the NO_SSH sentence."""
+    wrangler.toml). Inside the tool sandbox there's no key, and the real mirror (the repo the key is
+    used on) is never mounted there. Each registered repo gets a fresh per-call staging bare repo,
+    seeded from the mirror by toolbelt code (a local fetch: objects are copied, not hard-linked or
+    shared by alternates, so nothing the tool does to staging reaches the mirror), and the repo's
+    push address is rewritten to it (pushInsteadOf). Afterwards exec_tool fetches what landed into
+    the mirror with fsck in the no-key sandbox and pushes from there. Repos without a registry address
+    get nothing: their pushes fail with the NO_SSH sentence. Returns (binds, env, pushed, stage_root)."""
     pushed = {}
     extra = []
+    stage_root = None
     for name in repos_of(ws):
         try:
             url = push_url(project, name)
-        except Refused:
-            continue
-        if registry_remote_problem(ws, project, name) or repo_problem(ws, name):
-            continue
-        try:
+            if registry_remote_problem(ws, project, name) or repo_problem(ws, name):
+                continue
             m = mirror_for(project, name, url)
         except Refused:
             continue
-        binds = binds + ["--bind", str(m), str(m)]
-        raw = origin_url(ws, name)
-        for u in {url, raw} - {""}:
-            extra.append((f"url.{m}.pushInsteadOf", u))
-        pushed[name] = (m, url, _rev(m, "refs/heads/main"))
+        if mirror_problem(m):
+            continue
+        if stage_root is None:
+            stage_root = Path(tempfile.mkdtemp(prefix="stage-", dir=_call_root()))
+        stage = stage_root / f"{name}.git"
+        subprocess.run([GIT, "init", "--bare", "-q", str(stage)], check=True, capture_output=True,
+                       env={"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "GIT_CONFIG_NOSYSTEM": "1"})
+        subprocess.run([GIT, "--git-dir", str(stage), "fetch", "-q", "--no-tags", str(m),
+                        "+refs/heads/*:refs/heads/*"], capture_output=True,
+                       env={"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "GIT_CONFIG_NOSYSTEM": "1"})
+        binds = binds + ["--bind", str(stage), str(stage)]
+        for u in {url, origin_url(ws, name)} - {""}:
+            extra.append((f"url.{stage}.pushInsteadOf", u))
+        pushed[name] = (m, url, stage, _rev(stage, "refs/heads/main"))
     if extra:
         n = int(env.get("GIT_CONFIG_COUNT", "0"))
         env = dict(env)
@@ -982,7 +1055,7 @@ def site_mirrors(ws, project, binds, env):
             env[f"GIT_CONFIG_KEY_{i}"] = k
             env[f"GIT_CONFIG_VALUE_{i}"] = v
         env["GIT_CONFIG_COUNT"] = str(n + len(extra))
-    return binds, env, pushed
+    return binds, env, pushed, stage_root
 
 
 def _call_root():

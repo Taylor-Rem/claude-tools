@@ -1,9 +1,10 @@
 """B80 — the client/demo sandbox boundary.
 
-Proves, from code, that the PreToolUse hook denies each known bypass (named by
-its finding id in private-docs/security/2026-09-30-{sandbox,relay}.md), that the
-tenant-identity cross-check refuses a mismatched RELAY_PROJECT, and that the
-demo publish gate refuses server-side changes.
+The parts of B80 that carry into B85 (plans/36-os-sandbox.md, decision 6): the
+tenant-identity cross-check refuses a mismatched RELAY_PROJECT, the demo
+publish gate refuses server-side changes, and the stamp denies edits to the
+workspace's identity and settings. The B80 PreToolUse hook is gone: behind the
+OS sandbox it added nothing and refused pipes and chains.
 
     python3 -m unittest tests.test_sandbox   (from claude-tools/)
 """
@@ -26,96 +27,6 @@ S = SourceFileLoader("site_mod", str(BIN / "site")).load_module()
 def git(repo, *args):
     subprocess.run(["git", "-C", str(repo), *args], check=True,
                    capture_output=True, text=True)
-
-
-class Hook(unittest.TestCase):
-    """Each case asserts the hook's decision in code, the way prep's hook is tested."""
-
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.root = Path(os.path.realpath(self.tmp.name))
-        (self.root / "repos" / "site").mkdir(parents=True)
-        (self.root / "incoming").mkdir()
-
-    def tearDown(self):
-        self.tmp.cleanup()
-
-    def decide(self, tool, ti):
-        return C.hook_decide({"tool_name": tool, "tool_input": ti}, self.root)
-
-    def deny(self, tool, ti, msg):
-        allow, why = self.decide(tool, ti)
-        self.assertFalse(allow, f"{msg}: expected deny for {tool} {ti}")
-        self.assertTrue(why, "a denial must carry a reason (VISION Rules 8)")
-
-    def ok(self, tool, ti, msg):
-        allow, why = self.decide(tool, ti)
-        self.assertTrue(allow, f"{msg}: expected allow for {tool} {ti} (why={why})")
-
-    # (i) sandbox-F1 / relay-F1 — a file-opening tool with an input path outside
-    #     the workspace, including a glued scheme:/path form.
-    def test_f1_glued_scheme_path_denied(self):
-        self.deny("Bash", {"command": "magick text:/etc/passwd incoming/x.png"}, "sandbox-F1")
-        self.deny("Bash", {"command": "magick label:@/home/tweenson/.config/env repos/site/x.png"}, "sandbox-F1")
-        self.deny("Bash", {"command": "identify /home/tweenson/.ssh/id_rsa"}, "sandbox-F1")
-
-    # (ii) relay-F1 — a bare Grep/Glob outside cwd.
-    def test_f1_bare_grep_glob_outside_denied(self):
-        self.deny("Grep", {"pattern": "KEY", "path": "/home/tweenson/.config"}, "relay-F1")
-        self.deny("Glob", {"pattern": "../../*.env"}, "relay-F1")
-        self.deny("Bash", {"command": "grep -r token /home/tweenson/.config"}, "relay-F1")
-
-    # (iii) sandbox-F2 / relay-F3 — Write/Edit to .client.json and .claude/**.
-    def test_f2_identity_files_unwritable(self):
-        self.deny("Write", {"file_path": "./.client.json", "content": "{}"}, "sandbox-F2")
-        self.deny("Edit", {"file_path": str(self.root / ".client.json")}, "sandbox-F2")
-        self.deny("Write", {"file_path": "./.claude/settings.json", "content": "{}"}, "relay-F3")
-        self.deny("Edit", {"file_path": str(self.root / ".claude" / "x.json")}, "relay-F3")
-
-    def test_shell_metacharacters_denied(self):
-        for cmd in ("git -C repos/site add . && git -C repos/site commit -m x",
-                    "cat repos/site/index.html | head",
-                    "echo $(cat /etc/passwd)",
-                    "grep x repos/site > /tmp/out"):
-            self.deny("Bash", {"command": cmd}, "chain/redirect/substitution")
-
-    def test_unknown_command_denied(self):
-        self.deny("Bash", {"command": "cat /home/tweenson/.config/claude-tools/env"}, "cat not a tool")
-        self.deny("Bash", {"command": "nc evil.example 1234"}, "nc not a tool")
-
-    def test_normal_client_work_allowed(self):
-        for cmd in ("git -C repos/site status",
-                    "git -C repos/site commit -m Footer: new hours",
-                    "git -C repos/site push",
-                    "shot https://foo.pages.dev/",
-                    "shot repos/site/index.html --mobile",
-                    "grep -n pool repos/site/index.html",
-                    "ls incoming",
-                    "db query SELECT * FROM records",
-                    "img gen a photo of a pool",
-                    "TZ=America/Denver date -d 2026-09-29"):
-            self.ok("Bash", {"command": cmd}, "ordinary client work")
-        self.ok("Read", {"file_path": "repos/site/index.html"}, "read own repo")
-        self.ok("Edit", {"file_path": str(self.root / "repos" / "site" / "index.html")}, "edit own repo")
-        self.ok("Grep", {"pattern": "pool", "path": "repos/site"}, "grep own repo")
-
-    def test_git_dash_C_outside_denied(self):
-        self.deny("Bash", {"command": "git -C /home/tweenson/.ssh log"}, "git -C escape")
-        self.deny("Bash", {"command": "git -C../../other log"}, "git -C escape")
-
-    def test_curl_local_file_denied(self):
-        self.deny("Bash", {"command": "curl -s file:///etc/passwd"}, "curl file scheme")
-        self.ok("Bash", {"command": "curl -s https://foo.pages.dev/"}, "curl own url")
-
-    def test_hook_subprocess_exit_codes(self):
-        """The stamped entry: stdin event in, exit 0 allow / 2 deny."""
-        def run(event):
-            r = subprocess.run([str(CLIENT), "hook", "--dir", str(self.root)],
-                               input=json.dumps(event), capture_output=True, text=True)
-            return r.returncode
-        self.assertEqual(run({"tool_name": "Bash", "tool_input": {"command": "git -C repos/site status"}}), 0)
-        self.assertEqual(run({"tool_name": "Bash", "tool_input": {"command": "magick text:/etc/passwd incoming/x.png"}}), 2)
-        self.assertEqual(run({"tool_name": "Write", "tool_input": {"file_path": "./.client.json"}}), 2)
 
 
 class Tenant(unittest.TestCase):
@@ -212,12 +123,10 @@ class Stamp(unittest.TestCase):
     def settings(self, slug):
         return json.loads((self.clients / slug / ".claude" / "settings.json").read_text())
 
-    def test_hook_and_denies_stamped(self):
+    def test_identity_denies_stamped(self):
         self.assertEqual(self.new("acme").returncode, 0)
         s = self.settings("acme")
-        cmd = s["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
-        self.assertIn("hook", cmd)
-        self.assertIn("client", cmd)
+        self.assertNotIn("hooks", s, "the B80 PreToolUse hook is gone (B85: the wall is the OS sandbox)")
         for d in ("Edit(./.client.json)", "Write(./.client.json)", "Edit(./.claude/**)", "Write(./.claude/**)"):
             self.assertIn(d, s["permissions"]["deny"])
 

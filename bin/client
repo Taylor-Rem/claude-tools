@@ -36,8 +36,6 @@ import argparse
 import importlib.util
 import json
 import os
-import re
-import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -57,207 +55,6 @@ REQUIRED_DENY = ("Bash(* /home/*)", "Bash(*~/*)", "Bash(*../*)", "Bash(*$HOME*)"
 TOOLBELT = Path(os.environ.get("CLAUDE_TOOLS_ENV", "~/.config/claude-tools/env")).expanduser()
 SITES = TOOLBELT.parent / "sites.json"          # `site new` / `site adopt` record every site here
 RELAY_CONFIG = Path(os.environ.get("RELAY_CONFIG", "~/projects/sms-relay/config.json")).expanduser()
-
-
-# ---- the workspace boundary's PreToolUse hook (B80) -------------------------------------------------
-#
-# The stamped allow/deny lists match on the *text* of a command, so a path glued
-# to a token (an ImageMagick `text:/abs/path`, a bare `grep` outside the tree)
-# slips past them. This hook decides in code instead: it resolves every path a
-# command would open and refuses the ones that leave the workspace, so the key
-# file and other clients' trees stay out of reach however the path is spelled.
-# It's modelled on `prep`'s hook (bin/prep hook_decide); the tests prove each
-# known bypass is denied. The allow/deny lists stay as a second layer.
-
-# Commands with no file argument that are safe to run as-is.
-HOOK_PLAIN = {"date", "sleep", "echo", "pwd", "true", "false"}
-# The toolbelt CLIs: each already scopes itself to this workspace; the hook still
-# checks their path-shaped arguments below (an `img edit /abs` must not read out).
-HOOK_TOOLBELT = {"img", "site", "db", "newsletter", "gbp", "pay", "social", "shot",
-                 "print", "doc", "discord", "leads"}
-# File tools whose every path argument must stay inside the workspace. This is
-# where the glued-path reads (sandbox-F1 / relay-F1) are caught.
-HOOK_FILE = {"ls", "head", "wc", "grep", "file", "rm", "mv", "cp", "mkdir",
-             "magick", "identify", "python3"}
-HOOK_VCS = {"git", "gh"}
-HOOK_NET = {"curl", "wget"}
-HOOK_KNOWN = HOOK_PLAIN | HOOK_TOOLBELT | HOOK_FILE | HOOK_VCS | HOOK_NET
-# Resolved paths whose first component is one of these are the workspace's own
-# identity/settings/history: refused for every tool (sandbox-F2 / relay-F3).
-HOOK_PROTECTED = {".client.json", ".claude", ".git"}
-HOOK_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
-HOOK_WEB = {"http", "https", "ftp"}
-HOOK_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-
-
-# The two harmless redirects a tool call often carries — merge stderr, or drop
-# output to the bin. They write nowhere real and chain nothing, so they're
-# cleared before the operator scan (every other redirect is still refused).
-_SAFE_REDIR = re.compile(r"(?:\d*>&\d+|&?\d*>\s*/dev/null(?=\s|$))")
-
-
-def _shell_operator(cmd):
-    """The shell operator that makes this more than one plain command, or None.
-    Quote-aware, so an alternation inside a quoted `grep "a\\|b"` or a `$5` in a
-    caption is fine, but an unquoted pipe/chain/redirect, or a command
-    substitution anywhere, is caught (that's what would slip a second command or
-    a file read past the first-token allowlist). A trailing `2>&1` or
-    `>/dev/null` is allowed — the tool's output comes back either way."""
-    cmd = _SAFE_REDIR.sub(" ", cmd)
-    in_s = in_d = esc = False
-    for i, ch in enumerate(cmd):
-        if esc:
-            esc = False
-            continue
-        if ch == "\\" and not in_s:
-            esc = True
-            continue
-        if ch == "'" and not in_d:
-            in_s = not in_s
-            continue
-        if ch == '"' and not in_s:
-            in_d = not in_d
-            continue
-        if in_s:
-            continue
-        if ch == "`":
-            return "a backtick (command substitution)"
-        if ch == "$" and i + 1 < len(cmd) and cmd[i + 1] == "(":
-            return "$( … ) (command substitution)"
-        if in_d:
-            continue
-        if ch in "|&;<>()":
-            return f"{ch!r} (a pipe, chain, redirect or subshell)"
-        if ch == "$":
-            return "$ (variable expansion)"
-        if ch == "\n":
-            return "a newline (more than one command)"
-    return None
-
-
-def _hook_target(target, root):
-    """(ok, why) for one path a command or tool would touch: it must resolve
-    inside the workspace and not be one of its protected files."""
-    try:
-        p = Path(target).expanduser() if target.startswith("~") else Path(target)
-        if not p.is_absolute():
-            p = root / p
-        rp = Path(os.path.realpath(p))
-    except (OSError, ValueError):
-        return False, "that path can't be used here"
-    if not (rp == root or root in rp.parents):
-        return False, ("that path is outside this workspace; the files you can reach are under ./ "
-                       "— this client's repos/ and incoming/.")
-    rel = rp.relative_to(root)
-    if rel.parts and rel.parts[0] in HOOK_PROTECTED:
-        return False, (f"{rel.parts[0]} holds this workspace's own settings and identity and isn't "
-                       f"editable from here; if it needs to change, ask Taylor.")
-    return True, None
-
-
-def _hook_token(token, root):
-    """(ok, why) for one bash argument that might name a file. Flags and web URLs
-    pass; a `scheme:/path` form is unwrapped and the path checked (so a glued
-    `text:/abs` input is caught); a bare word resolves inside the tree and passes."""
-    if token.startswith("-"):
-        return True, None
-    t = token
-    m = HOOK_SCHEME.match(t)
-    if m:
-        if m.group(0)[:-1].lower() in HOOK_WEB:
-            return True, None
-        t = t[m.end():]                 # text:/abs, file:/abs, caption:/abs, …
-    t = t.lstrip("@")                   # ImageMagick @file
-    if not t:
-        return True, None
-    return _hook_target(t, root)
-
-
-def hook_decide(event, root):
-    """(allow, why) for one PreToolUse event. Plain code so the tests cover every refusal."""
-    tool = event.get("tool_name") or ""
-    ti = event.get("tool_input") or {}
-    if tool in ("Read", "Edit", "Write", "NotebookEdit", "MultiEdit", "Glob", "Grep"):
-        for key in ("file_path", "notebook_path", "path"):
-            if ti.get(key):
-                ok, why = _hook_target(ti[key], root)
-                if not ok:
-                    return False, why
-        if tool in ("Glob", "Grep"):
-            pat = ti.get("pattern") or ""
-            if pat.startswith("/") or pat.startswith("~") or ".." in pat:
-                return False, ("search within this workspace only; the files you can reach are "
-                               "under ./ (repos/ and incoming/).")
-        return True, None
-    if tool != "Bash":
-        return True, None
-    cmd = ti.get("command") or ""
-    op = _shell_operator(cmd)
-    if op:
-        return False, (f"run one plain command at a time here — this has {op}. Do the steps as "
-                       f"separate commands, and use the Edit tool to change a file.")
-    try:
-        argv = shlex.split(cmd)
-    except ValueError:
-        return False, "that command didn't parse; try a simpler one"
-    while argv and HOOK_ASSIGN.match(argv[0]):
-        name = argv[0].split("=", 1)[0].upper()
-        if any(w in name for w in ("KEY", "TOKEN", "SECRET", "PASSWORD", "AUTH")):
-            return False, "setting that variable isn't allowed here"
-        argv = argv[1:]
-    if not argv:
-        return False, "there's no command to run here"
-    head = argv[0]
-    if head not in HOOK_KNOWN:
-        return False, (f"{head!r} isn't one of the commands available in this workspace. You have the "
-                       f"site tools (site, db, img, shot, newsletter, gbp, pay, print, doc), git in "
-                       f"repos/, and the file commands (ls, head, grep, mv, rm) under repos/ and incoming/. "
-                       f"To edit a file use the Edit tool.")
-    args = argv[1:]
-    if head == "git":
-        for i, a in enumerate(args):
-            tgt = a[2:] if a.startswith("-C") and len(a) > 2 else (args[i + 1] if a == "-C" and i + 1 < len(args) else None)
-            if tgt is not None:
-                ok, why = _hook_target(tgt, root)
-                if not ok:
-                    return False, why
-        return True, None
-    if head == "gh":
-        return True, None
-    if head in HOOK_NET:
-        for a in args:
-            if a.startswith("-"):
-                continue
-            m = HOOK_SCHEME.match(a)
-            if m:
-                if m.group(0)[:-1].lower() in HOOK_WEB:
-                    continue
-                return False, "only the site's own web address can be fetched here, not a local file"
-            if a.startswith("/") or a.startswith("~") or ".." in a:
-                return False, "only http(s) web addresses here, not local files"
-        return True, None
-    if head == "python3" and any(a == "-c" or (a.startswith("-") and "c" in a and not a.startswith("--")) for a in args):
-        return False, ("inline Python (`python3 -c`) runs code that steps around this boundary — "
-                       "run a script that lives under repos/ instead, or use the Edit tool to write files.")
-    for a in args:                       # toolbelt + file tools: every path argument stays inside
-        ok, why = _hook_token(a, root)
-        if not ok:
-            return False, why
-    return True, None
-
-
-def cmd_hook(a):
-    try:
-        event = json.loads(sys.stdin.read() or "{}")
-    except json.JSONDecodeError:
-        print("client hook: unreadable event", file=sys.stderr)
-        sys.exit(2)
-    root = Path(os.path.realpath(a.dir or event.get("cwd") or os.getcwd()))
-    allow, why = hook_decide(event, root)
-    if allow:
-        sys.exit(0)
-    print(f"workspace boundary: {why}", file=sys.stderr)
-    sys.exit(2)
 
 
 def relay_config():
@@ -423,13 +220,6 @@ DEMO_DROP_TOOLS = ("db", "newsletter", "gbp", "pay", "social", "print", "doc")
 DEMO_SITE = ("Bash(site publish*)", "Bash(site ls*)", "Bash(site doctor*)")
 
 
-def hook_command(ws):
-    """The PreToolUse hook line stamped into a workspace's settings: this very
-    `client` with the `hook` subcommand, pinned to the workspace directory."""
-    self = Path(__file__).resolve()
-    return " ".join(shlex.quote(x) for x in (sys.executable, str(self), "hook", "--dir", str(ws)))
-
-
 def render_settings(meta, ws):
     tpl = json.loads((TEMPLATES / "settings.json").read_text())
     rules = tpl.pop("_rules")
@@ -443,9 +233,6 @@ def render_settings(meta, ws):
     for url in site_urls(meta):
         allow += [r.format(url=url.rstrip("/")) for r in rules["live_url"]]
     tpl["permissions"]["allow"] = allow
-    # The hook is the wall; the allow/deny lists above are a second layer.
-    tpl["hooks"] = {"PreToolUse": [{"matcher": "Bash|Read|Edit|Write|Glob|Grep|NotebookEdit|MultiEdit",
-                                    "hooks": [{"type": "command", "command": hook_command(ws), "timeout": 15}]}]}
     return json.dumps(tpl, indent=2) + "\n"
 
 
@@ -619,11 +406,6 @@ def cmd_doctor(a):
                 print(f"  FAIL missing path denies: {', '.join(missing)}  (client new {ws.name} --restamp)"); ok = False
             if "{" in json.dumps(allow):
                 print("  FAIL unrendered placeholder in allowlist"); ok = False
-            conf = json.loads(settings.read_text())
-            hooks = (conf.get("hooks") or {}).get("PreToolUse") or []
-            hook_cmds = [h.get("command", "") for grp in hooks for h in (grp.get("hooks") or [])]
-            if not any("hook" in c and ("client" in c or "client-hook" in c) for c in hook_cmds):
-                print(f"  FAIL no PreToolUse boundary hook in settings  (client new {ws.name} --restamp)"); ok = False
             m0 = read_meta(ws)
             if is_demo(m0):
                 leaked = [t for t in DEMO_DROP_TOOLS if any(r.startswith(f"Bash({t} ") for r in allow)]
@@ -694,7 +476,7 @@ def cmd_doctor(a):
         if gaps:
             print(f"  FAIL these tools no longer cross-check RELAY_PROJECT: {', '.join(gaps)}"); ok = False
         else:
-            print("  identity tools cross-check RELAY_PROJECT; boundary hook stamped")
+            print("  identity tools cross-check RELAY_PROJECT")
     sys.exit(0 if ok else 1)
 
 
@@ -723,8 +505,6 @@ def main():
     d.add_argument("slug", nargs="?"); d.set_defaults(fn=cmd_doctor)
     s = sub.add_parser("snippet", help="print the config.json entry for a client")
     s.add_argument("slug"); s.set_defaults(fn=cmd_snippet)
-    h = sub.add_parser("hook", help=argparse.SUPPRESS)   # the stamped PreToolUse boundary; reads an event on stdin
-    h.add_argument("--dir"); h.set_defaults(fn=cmd_hook)
     a = ap.parse_args()
     a.fn(a)
 

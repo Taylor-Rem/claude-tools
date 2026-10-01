@@ -272,7 +272,7 @@ def main():
     f = sub.add_parser("form", help="print the sign-up box to paste into the site")
     f.add_argument("--label", default="Get news, shows and releases by email")
     f.add_argument("--button", default="Sign up")
-    f.add_argument("--thanks", default="You're on the list. Check your inbox.")
+    f.add_argument("--thanks", default="Almost there. Check your inbox and press Confirm.")
     f.add_argument("--css", action="store_true", help="also print starter CSS for the box")
     f.set_defaults(fn=cmd_form)
     sub.add_parser("status", help="set up? how many? the form URL").set_defaults(fn=cmd_status)

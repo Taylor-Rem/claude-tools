@@ -10,6 +10,7 @@ templates/client/ in the claude-tools repo.
   client ls
   client doctor [slug]
   client snippet <slug>          # the config.json project entry to paste
+  client remotes [slug] [--write] # record each registered repo's push address in sites.json (B85)
   client exec --project P --role client|demo|owner --workspace WS --cwd C -- TOOL ARGV…
                                  # the relay's broker only: one keyed tool for a walled run (B85)
 
@@ -333,6 +334,11 @@ def cmd_new(a):
             die(f"--template {template!r}: not a kind of site ({', '.join(known)})")
         meta["template"] = template                       # the kind of site they chose on /start; `site new` uses it
     stamp(ws, meta)
+    for name, url, note in sandbox_tools.record_remotes(a.slug, ws, write=True):   # B85: push addresses
+        if note == "recorded":
+            print(f"  registry: repos/{name} pushes to {url} (recorded)")
+        elif url is None:
+            print(f"  registry: repos/{name}: {note}")
     print(f"{'restamped' if stamped else 'created'} {ws}" + (f" · template: {meta['template']}" if meta.get("template") else ""))
     print(f"  repos: {', '.join(repos_of(ws)) or '(none yet — site new <slug> from inside it, or clone into repos/)'}"
           f" · sites allowed: {meta['sites']}")
@@ -429,6 +435,10 @@ def cmd_doctor(a):
             d = ws / "repos" / r
             # Before any git runs here (outside every sandbox): settings a run could have
             # added (a hook, fsmonitor, an include) would execute as Taylor (B85).
+            rprob = sandbox_tools.registry_remote_problem(ws, ws.name, r)
+            if rprob:
+                print(f"  FAIL repo {r}: push address: {rprob}  (client remotes {ws.name} --write records a "
+                      f"missing one; a mismatch is Taylor's to look at)"); ok = False
             gprob = sandbox_tools.repo_problem(ws, r)
             if gprob:
                 print(f"  FAIL repo {r}: git settings look changed ({gprob}); publishing from it is paused. "
@@ -534,6 +544,18 @@ def sandbox_doctor(a):
     return ok
 
 
+def cmd_remotes(a):
+    """Record each registered repo's origin into its sites.json row as `remote` (B85): the only
+    place a walled run's git push/fetch address comes from. Prints what it would do without --write."""
+    targets = [CLIENTS_DIR / a.slug] if a.slug else [d for d in sorted(CLIENTS_DIR.iterdir())
+                                                     if d.is_dir() and (d / ".client.json").exists()]
+    for ws in targets:
+        for name, url, note in sandbox_tools.record_remotes(ws.name, ws, write=a.write):
+            print(f"{ws.name}/{name}: {url or '-'}  ({note})")
+    if not a.write:
+        print("(nothing written; --write records them)")
+
+
 def cmd_exec(a):
     """The broker's entry point: one keyed tool call for a walled run (lib/sandbox_tools.py)."""
     sys.exit(sandbox_tools.main_exec(a))
@@ -566,6 +588,9 @@ def main():
     d.set_defaults(fn=cmd_doctor)
     s = sub.add_parser("snippet", help="print the config.json entry for a client")
     s.add_argument("slug"); s.set_defaults(fn=cmd_snippet)
+    r = sub.add_parser("remotes", help="record each registered repo's push address in sites.json (B85)")
+    r.add_argument("slug", nargs="?"); r.add_argument("--write", action="store_true")
+    r.set_defaults(fn=cmd_remotes)
     x = sub.add_parser("exec", help="(the relay's broker) run one keyed tool for a walled run")
     x.add_argument("--project", required=True); x.add_argument("--role", required=True, choices=sandbox_tools.ROLES)
     x.add_argument("--workspace", required=True); x.add_argument("--cwd", default=".")

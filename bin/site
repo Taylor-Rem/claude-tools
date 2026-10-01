@@ -283,11 +283,17 @@ def demo_publish_block(meta, d):
     if mode == "off":
         return ("this is a demo site, so changes go live only on its nightly reset. Your edit is "
                 "saved in the repo; the reset is what puts it on the web.")
-    has_golden = git(d, "rev-parse", "--verify", "--quiet", "golden^{commit}", check=False)[0] == 0
-    if has_golden:
-        changed = git(d, "diff", "--name-only", "golden", "HEAD", check=False)[1].splitlines()
-    else:
-        changed = git(d, "ls-files", check=False)[1].splitlines()
+    # The golden commit `demo golden` recorded outside the workspace (demo.json), never the
+    # repo's `golden` ref: a run can move that with `git tag -f` (sandbox-F3, B85).
+    import sandbox_tools
+    golden = sandbox_tools.demo_golden(meta.get("slug", ""))
+    if not golden:
+        return ("this demo has no golden copy on record, so nothing publishes until its nightly reset "
+                "(Taylor's `demo golden` makes one)")
+    if git(d, "cat-file", "-e", f"{golden}^{{commit}}", check=False)[0] != 0:
+        return ("this demo's golden copy on record isn't in its repo, so nothing publishes until its "
+                "nightly reset")
+    changed = git(d, "diff", "--name-only", golden, "HEAD", check=False)[1].splitlines()
     hits = sorted({c for c in changed if any(c == p or c.startswith(p + "/") for p in DEMO_SERVER_PATHS)})
     if hits:
         return ("this demo can put page edits live, but not changes to how its site runs "
@@ -546,10 +552,25 @@ def cmd_templates(a):
             say(f"{'':<11} demo: {demo}")
 
 
+def registry_remote_of(ws, name):
+    """repos/<name>'s origin as the registry records it (git@github.com:owner/repo.git), or None."""
+    if ws is None:
+        return None
+    import sandbox_tools
+    m = sandbox_tools.GITHUB_URL.match(sandbox_tools.origin_url(ws, name) or "")
+    return f"git@github.com:{m.group(1)}/{m.group(2)}.git" if m else None
+
+
 def site_register(meta, name, project, domains=None, template=None):
     reg = registry_load()
     row = reg.setdefault(meta["slug"], {}).setdefault(name, {})
     row.update({"host": "cloudflare", "project": project})
+    # B85: where a walled run's `git push` goes comes only from this row, never from the repo's
+    # own config (which a run can write); recorded here, outside the wall, from the origin.
+    if not row.get("remote"):
+        url = registry_remote_of(Path.cwd() if (Path.cwd() / ".client.json").exists() else None, name)
+        if url:
+            row["remote"] = url
     if not DRY and pages_host(project) != f"{project}.pages.dev":
         row["pages_host"] = pages_host(project)        # a suffixed host (the name was taken on pages.dev)
     if template:

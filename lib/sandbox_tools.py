@@ -523,17 +523,76 @@ def check_fetch_args(rest, verb):
                       f"other remotes and options don't")
 
 
-def push_url(ws, project, name, repo_cfg_url):
-    """Where repos/<name> pushes: the registry's `remote` for it when there is one, else the
-    origin in its git config (validated, and read-only to the run), pinned in the mirror."""
-    entry = (registry_load().get(project) or {}).get(name) or {}
-    url = entry.get("remote") or repo_cfg_url
-    if os.environ.get("SANDBOX_TEST_REMOTES") == "1" and url and url.startswith("/"):
+def push_url(project, name):
+    """Where repos/<name> pushes and fetches: only the registry row for this project and repo
+    (sites.json, which the run never sees a writable copy of). Never the repo's own config,
+    and never trust on first use: a run can `git init repos/new` with any origin it likes,
+    and the step that follows holds an account-wide SSH key. The mirror's pin stays as a
+    second check."""
+    entry = (registry_load().get(project) or {}).get(name)
+    if entry is None:
+        raise Refused(f"repos/{name} isn't one of this business's registered sites, so it can't be pushed "
+                      f"or fetched from here; Taylor sets that up")
+    url = entry.get("remote") or ""
+    if os.environ.get("SANDBOX_TEST_REMOTES") == "1" and url.startswith("/"):
         return url
-    m = GITHUB_URL.match(url or "")
+    m = GITHUB_URL.match(url)
     if not m:
-        raise Refused(f"repos/{name} has no GitHub origin to push to; Taylor sets that up")
+        raise Refused(f"repos/{name} has no repository address on record, so it can't be pushed or fetched "
+                      f"from here; Taylor sets that up")
     return f"git@github.com:{m.group(1)}/{m.group(2)}.git"
+
+
+def registry_remote_problem(ws, project, name):
+    """None, or why repos/<name>'s recorded address and its config origin disagree."""
+    entry = (registry_load().get(project) or {}).get(name)
+    if entry is None:
+        return None
+    rec = entry.get("remote")
+    if not rec:
+        return "no repository address recorded in the registry (client remotes --write)"
+    if rec.startswith("/") and os.environ.get("SANDBOX_TEST_REMOTES") == "1":
+        return None
+    m = GITHUB_URL.match(origin_url(ws, name) or "")
+    have = f"git@github.com:{m.group(1)}/{m.group(2)}.git" if m else None
+    if have != rec:
+        return f"its origin ({have or 'none'}) isn't the recorded address ({rec})"
+    return None
+
+
+def record_remotes(project, ws, write=False):
+    """[(repo, url|None, note)]: each registered repo's origin, validated, recorded into its
+    registry row as `remote` when `write` and the row has none. Run outside the wall."""
+    out = []
+    reg = registry_load()
+    rows = reg.get(project) or {}
+    changed = False
+    for name, row in sorted(rows.items()):
+        bad = repo_problem(ws, name) if (ws / "repos" / name).is_dir() else "no repo on disk"
+        m = None if bad else GITHUB_URL.match(origin_url(ws, name) or "")
+        url = f"git@github.com:{m.group(1)}/{m.group(2)}.git" if m else None
+        if row.get("remote"):
+            out.append((name, row["remote"], "already recorded" if row["remote"] == url
+                        else f"recorded; the repo's origin now says {url or 'nothing'}"))
+        elif not url:
+            out.append((name, None, f"nothing recorded: {bad or 'no GitHub origin in its .git/config'}"))
+        else:
+            if write:
+                row["remote"] = url
+                changed = True
+            out.append((name, url, "recorded" if write else "would record"))
+    if changed:
+        lock = REGISTRY.with_suffix(".lock")
+        with open(lock, "a") as lf:
+            fcntl.flock(lf, fcntl.LOCK_EX)
+            cur = registry_load()
+            for name, url, note in out:
+                if note == "recorded" and name in (cur.get(project) or {}):
+                    cur[project][name].setdefault("remote", url)
+            tmp = REGISTRY.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(cur, indent=2, sort_keys=True) + "\n")
+            tmp.replace(REGISTRY)
+    return out
 
 
 def origin_url(ws, name):
@@ -593,7 +652,10 @@ def git_push(ws, project, repo, role, quiet=False):
         why = demo_push_problem(ws, repo)
         if why:
             raise Refused(why)
-    url = push_url(ws, project, name, origin_url(ws, name))
+    url = push_url(project, name)
+    why = registry_remote_problem(ws, project, name)
+    if why:
+        raise Refused(f"repos/{name}'s address changed ({why}), so publishing is paused; Taylor's been told")
     lock = MIRRORS / project / f"{name}.lock"
     lock.parent.mkdir(parents=True, exist_ok=True)
     with open(lock, "a") as lf:
@@ -622,7 +684,10 @@ def git_push(ws, project, repo, role, quiet=False):
 
 def git_fetch(ws, project, repo, pull=False):
     name = repo.name
-    url = push_url(ws, project, name, origin_url(ws, name))
+    url = push_url(project, name)
+    why = registry_remote_problem(ws, project, name)
+    if why:
+        raise Refused(f"repos/{name}'s address changed ({why}), so publishing is paused; Taylor's been told")
     lock = MIRRORS / project / f"{name}.lock"
     lock.parent.mkdir(parents=True, exist_ok=True)
     with open(lock, "a") as lf:
@@ -657,17 +722,38 @@ def demo_push_problem(ws, repo):
     if mode == "off":
         return ("this is a demo site, so changes go live only on its nightly reset. Your edit is "
                 "saved in the repo; the reset is what puts it on the web.")
-    code, _, _ = sandboxed_git(ws, repo, ["rev-parse", "--verify", "--quiet", "golden^{commit}"], ro_ws=True)
-    if code == 0:
-        _, out, _ = sandboxed_git(ws, repo, ["diff", "--name-only", "golden", "HEAD"], ro_ws=True)
-    else:
-        _, out, _ = sandboxed_git(ws, repo, ["ls-files"], ro_ws=True)
+    golden = demo_golden(meta.get("slug") or ws.name)
+    if not golden:
+        return ("this demo has no golden copy on record, so nothing publishes until its nightly reset "
+                "(Taylor's `demo golden` makes one)")
+    code, _, _ = sandboxed_git(ws, repo, ["cat-file", "-e", f"{golden}^{{commit}}"], ro_ws=True)
+    if code != 0:
+        return ("this demo's golden copy on record isn't in its repo, so nothing publishes until its "
+                "nightly reset")
+    # Against the sha bin/demo recorded outside the workspace, never the repo's `golden` ref,
+    # which the run can move (sandbox-F3).
+    _, out, _ = sandboxed_git(ws, repo, ["diff", "--name-only", golden, "HEAD"], ro_ws=True)
     hits = sorted({c for c in out.splitlines()
                    if any(c == p or c.startswith(p + "/") for p in DEMO_SERVER_PATHS)})
     if hits:
         return ("this demo can put page edits live, but not changes to how its site runs "
                 f"({', '.join(hits[:6])}). Those stay until the nightly reset.")
     return None
+
+
+DEMO_STATE = Path(os.environ.get("DEMO_STATE", STATE / "demo.json")).expanduser()
+
+
+def demo_golden(slug):
+    """The golden commit `demo golden` recorded for this demo, outside the workspace, or None.
+    (testaurant's block is the file's top level; the others are under "demos".)"""
+    try:
+        data = json.loads(DEMO_STATE.read_text())
+    except (OSError, ValueError):
+        return None
+    block = data if slug == "testaurant" else (data.get("demos") or {}).get(slug) or {}
+    g = block.get("golden") or ""
+    return g if re.fullmatch(r"[0-9a-f]{40}", g) else None
 
 
 def ahead_of_origin(ws, repo):
@@ -794,8 +880,7 @@ def exec_tool(project, role, workspace, cwd, tool, argv):
         binds += ["--bind", str(ws), str(ws)]
         if "registry" in spec["state"]:
             reg = registry_load()
-            if tool != "site":
-                reg = {project: reg[project]} if project in reg else {}
+            reg = {project: reg[project]} if project in reg else {}     # this business's rows only
             (call / "sites.json").write_text(json.dumps(reg, indent=2, sort_keys=True) + "\n")
         styles = cfgdir / "img-styles.json"
         if tool in ("img", "print") and styles.is_file():
@@ -810,6 +895,9 @@ def exec_tool(project, role, workspace, cwd, tool, argv):
             env["IMG_LEDGER"] = str(LEDGER)
         if tool in ("img", "print"):
             env.update(VIDEO_CAPS[role])
+        if tool == "site" and DEMO_STATE.is_file():            # the demo publish gate's golden record, ro
+            binds += ["--ro-bind", str(DEMO_STATE), str(DEMO_STATE)]
+            env["DEMO_STATE"] = str(DEMO_STATE)
         if "playwright" in spec["state"] and PLAYWRIGHT.is_dir():
             binds += ["--ro-bind", str(PLAYWRIGHT), str(PLAYWRIGHT)]
             env["PLAYWRIGHT_BROWSERS_PATH"] = str(PLAYWRIGHT)

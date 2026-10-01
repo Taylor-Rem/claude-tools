@@ -46,11 +46,12 @@ class Base(unittest.TestCase):
         self.clients = self.t / "clients"
         self.state = self.t / "state"
         self.saved = {k: getattr(ST, k) for k in ("CLIENTS_DIR", "STATE", "MIRRORS", "REGISTRY", "TOOLBELT_ENV",
-                                                  "LEDGER", "TOOL_BIN")}
+                                                  "LEDGER", "TOOL_BIN", "DEMO_STATE")}
         ST.CLIENTS_DIR = self.clients
         ST.STATE = self.state
         ST.MIRRORS = self.state / "mirrors"
         ST.LEDGER = self.state / "ledger.jsonl"
+        ST.DEMO_STATE = self.t / "demo.json"
         self.cfg = self.t / "cfg"
         self.cfg.mkdir()
         ST.TOOLBELT_ENV = self.cfg / "env"
@@ -359,10 +360,11 @@ class ToolSandbox(Base):
 p = env.parent / "sites.json"
 reg = json.loads(p.read_text())
 reg["acme"]["site"]["indexnow_key"] = "k1"
-reg["other"]["x"]["project"] = "hijacked"
+reg["other"] = {"x": {"project": "hijacked"}}
 p.write_text(json.dumps(reg))
 ''')
-        code, _ = self.run_exec("client", "site", ["ls"])
+        code, r = self.run_exec("client", "site", ["ls"])
+        self.assertEqual(set(r["registry"]), {"acme"})               # site sees only its own business's rows
         reg = json.loads(ST.REGISTRY.read_text())
         self.assertEqual(reg["acme"]["site"]["indexnow_key"], "k1")
         self.assertEqual(reg["other"]["x"]["project"], "other-x")
@@ -417,9 +419,13 @@ class GitThroughMirror(Base):
         self.assertNotEqual(subprocess.run(["git", "-C", str(self.remote), "rev-parse", "--verify", "-q", "main"],
                                            capture_output=True).returncode, 0)
 
+    def record_golden(self, repo):
+        ST.DEMO_STATE.write_text(json.dumps({"demos": {"demo-service": {"golden": git(repo, "rev-parse", "HEAD")}}}))
+
     def test_demo_push_with_functions_refused(self):
         repo = self.setup_site("demo-service")
         git(repo, "tag", "golden")
+        self.record_golden(repo)
         (repo / "functions").mkdir()
         (repo / "functions" / "x.js").write_text("export default 1")
         git(repo, "add", "-A")
@@ -431,9 +437,74 @@ class GitThroughMirror(Base):
         with self.assertRaises(ST.Refused):
             ST.exec_tool("demo-service", "demo", ws, ".", "site", ["publish", "site"])
 
+    def test_demo_moving_golden_ref_still_refused(self):
+        # sandbox-F3: `git tag -f golden HEAD` after committing functions/ changes nothing
+        repo = self.setup_site("demo-service")
+        self.record_golden(repo)
+        (repo / "functions").mkdir()
+        (repo / "functions" / "x.js").write_text("export default 1")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", "fn")
+        git(repo, "tag", "-f", "golden", "HEAD")
+        ws = str(self.clients / "demo-service")
+        for tool, argv in (("git", ["-C", "repos/site", "push"]), ("site", ["publish", "site"])):
+            with self.assertRaises(ST.Refused, msg=tool) as cm:
+                ST.exec_tool("demo-service", "demo", ws, ".", tool, argv)
+            self.assertIn("functions", str(cm.exception))
+
+    def test_demo_without_golden_record_refused(self):
+        self.setup_site("demo-service")
+        ws = str(self.clients / "demo-service")
+        with self.assertRaises(ST.Refused) as cm:
+            ST.exec_tool("demo-service", "demo", ws, ".", "git", ["-C", "repos/site", "push"])
+        self.assertIn("no golden copy on record", str(cm.exception))
+
+    def test_unregistered_repo_never_reaches_a_key(self):
+        # sandbox-F1: a run's own `git init repos/evil` with any GitHub origin is not pushable or fetchable
+        self.setup_site("acme")
+        evil = self.make_repo("acme", "evil")
+        git(evil, "remote", "set-url", "origin", "git@github.com:patchlamp/patchlamp.git")
+        called = []
+        saved = ST.keyed_git
+        ST.keyed_git = lambda *a, **k: called.append(a) or (0, "", "")
+        try:
+            for verb in ("push", "fetch"):
+                with self.assertRaises(ST.Refused, msg=verb) as cm:
+                    ST.exec_tool("acme", "client", str(self.ws), ".", "git", ["-C", "repos/evil", verb])
+                self.assertIn("isn't one of this business's registered sites", str(cm.exception))
+        finally:
+            ST.keyed_git = saved
+        self.assertEqual(called, [])
+        self.assertFalse((ST.MIRRORS / "acme" / "evil.git").exists())
+
+    def test_registered_repo_with_changed_origin_refused(self):
+        repo = self.make_repo("acme", "real")
+        ST.REGISTRY.write_text(json.dumps({"acme": {"real": {"project": "acme-real",
+                                                             "remote": "git@github.com:patchlamp/real.git"}}}))
+        git(repo, "remote", "set-url", "origin", "git@github.com:patchlamp/patchlamp.git")
+        called = []
+        saved = ST.keyed_git
+        ST.keyed_git = lambda *a, **k: called.append(a) or (0, "", "")
+        try:
+            for verb in ("push", "fetch"):
+                with self.assertRaises(ST.Refused, msg=verb) as cm:
+                    ST.exec_tool("acme", "client", str(self.ws), ".", "git", ["-C", "repos/real", verb])
+                self.assertIn("address changed", str(cm.exception))
+        finally:
+            ST.keyed_git = saved
+        self.assertEqual(called, [])
+
+    def test_registered_repo_without_address_refused(self):
+        self.make_repo("acme", "real")
+        ST.REGISTRY.write_text(json.dumps({"acme": {"real": {"project": "acme-real"}}}))
+        with self.assertRaises(ST.Refused) as cm:
+            ST.exec_tool("acme", "client", str(self.ws), ".", "git", ["-C", "repos/real", "push"])
+        self.assertIn("no repository address on record", str(cm.exception))
+
     def test_demo_page_edit_pushes(self):
         repo = self.setup_site("demo-service")
         git(repo, "tag", "golden")
+        self.record_golden(repo)
         (repo / "index.html").write_text("<h1>new</h1>")
         git(repo, "commit", "-qam", "page")
         ws = str(self.clients / "demo-service")
@@ -461,6 +532,26 @@ class GitThroughMirror(Base):
         ST.REGISTRY.write_text(json.dumps({"acme": {"site": {"project": "acme-site", "remote": str(moved)}}}))
         with self.assertRaises(ST.Refused):
             ST.exec_tool("acme", "client", str(self.ws), ".", "git", ["-C", "repos/site", "push"])
+
+
+class RecordRemotes(Base):
+    """`client remotes --write` / the restamp: the registry learns each registered repo's address."""
+
+    def test_records_validated_origins_only(self):
+        self.make_repo("acme", "site")
+        bad = self.make_repo("acme", "hooked")
+        git(bad, "config", "core.hooksPath", "/tmp")
+        self.make_repo("acme", "unregistered")
+        ST.REGISTRY.write_text(json.dumps({"acme": {"site": {"project": "acme-site"},
+                                                    "hooked": {"project": "acme-hooked"}}}))
+        got = {n: (u, note) for n, u, note in ST.record_remotes("acme", self.ws, write=True)}
+        self.assertEqual(got["site"][0], "git@github.com:patchlamp/site.git")
+        self.assertIsNone(got["hooked"][0])
+        self.assertNotIn("unregistered", got)
+        reg = json.loads(ST.REGISTRY.read_text())["acme"]
+        self.assertEqual(reg["site"]["remote"], "git@github.com:patchlamp/site.git")
+        self.assertNotIn("remote", reg["hooked"])
+        self.assertIsNone(ST.registry_remote_problem(self.ws, "acme", "site"))
 
 
 class FakeBroker(threading.Thread):

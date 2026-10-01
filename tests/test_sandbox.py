@@ -83,9 +83,31 @@ class DemoGate(unittest.TestCase):
         git(self.repo, "tag", "golden")
         self.meta = {"slug": "demo-service", "demo": True, "demo_publish": "static"}
         S.DRY = False
+        # B85: the gate compares against the golden sha bin/demo recorded outside the workspace
+        import sandbox_tools
+        self.st = sandbox_tools
+        self.saved_state = sandbox_tools.DEMO_STATE
+        sandbox_tools.DEMO_STATE = self.ws / "demo.json"
+        head = subprocess.run(["git", "-C", str(self.repo), "rev-parse", "HEAD"], capture_output=True,
+                              text=True).stdout.strip()
+        sandbox_tools.DEMO_STATE.write_text(json.dumps({"demos": {"demo-service": {"golden": head}}}))
 
     def tearDown(self):
+        self.st.DEMO_STATE = self.saved_state
         self.tmp.cleanup()
+
+    def test_moving_the_golden_ref_changes_nothing(self):
+        (self.repo / "functions").mkdir()
+        (self.repo / "functions" / "evil.js").write_text("export default 1")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "add fn")
+        git(self.repo, "tag", "-f", "golden", "HEAD")
+        why = S.demo_publish_block(self.meta, self.repo)
+        self.assertTrue(why and "functions" in why)
+
+    def test_no_golden_record_refuses(self):
+        self.st.DEMO_STATE.write_text("{}")
+        self.assertIn("no golden copy on record", S.demo_publish_block(self.meta, self.repo))
 
     def test_page_edit_static_allowed(self):
         (self.repo / "index.html").write_text("<h1>new</h1>")

@@ -211,7 +211,7 @@ def cmd_send(a):
     path = Path(a.file)
     if not path.is_file():
         die(f"no such file: {a.file}")
-    md = path.read_text().strip()
+    md = tenant.read_inside(path, die).strip()   # B85: a link out of the workspace isn't mailed
     if not md:
         die("the issue is empty")
     _, res = api("POST", f"/{meta['slug']}/newsletter/send", {"subject": a.subject, "markdown": md})

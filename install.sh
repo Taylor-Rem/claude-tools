@@ -18,5 +18,12 @@ if command -v npm >/dev/null 2>&1; then
 else
   echo "note: npm not found; bin/shot needs node 20+ (apt install nodejs npm, then re-run)"
 fi
+# B85: client and demo runs live inside bwrap, and `client exec` runs their keyed tools in
+# one too. sandbox/bin (the shims) is mounted by the relay, never linked here.
+if command -v bwrap >/dev/null 2>&1; then
+  echo "bwrap present ($(bwrap --version 2>/dev/null)); sandbox/bin is mounted by the relay, not linked"
+else
+  echo "note: bwrap not found (apt install bubblewrap): walled client/demo runs and their keyed tools won't start"
+fi
 case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) echo "note: add ~/.local/bin to PATH";; esac
 echo "next: ~/.config/claude-tools/setenv.sh   (fills the key file; values are never echoed)"

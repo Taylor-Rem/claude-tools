@@ -15,6 +15,7 @@ exact case the sandbox review found, not ordinary use.
 
 import os
 import sys
+from pathlib import Path
 
 # RELAY_PROJECT values that are not a single client's workspace: the owner's own
 # session, or the relay's internal jobs. These never bind a tool to a slug.
@@ -37,3 +38,36 @@ def enforce(slug, die=None):
         die(msg)
     print(f"error: {msg}", file=sys.stderr)
     sys.exit(2)
+
+
+def _workspace_root(start):
+    d = Path(os.path.realpath(start))
+    for p in (d, *d.parents):
+        if (p / ".client.json").is_file():
+            return p
+    return d
+
+
+def read_inside(path, die=None):
+    """The text of `path`, refused if its real path (taken from the open file, so a link
+    swapped in afterwards changes nothing) is outside the workspace — when the tool runs
+    for a walled run (RELAY_SANDBOX, B85). The tool's own keys are readable in the tool
+    sandbox; a link from the workspace to them must not get mailed or published.
+    Outside a walled run it's a plain read."""
+    if not os.environ.get("RELAY_SANDBOX"):
+        return Path(path).read_text()
+    root = _workspace_root(os.getcwd())
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        real = Path(os.readlink(f"/proc/self/fd/{fd}"))
+        if not (real == root or root in real.parents):
+            msg = (f"{path} links to a file outside this workspace, so it can't be used here; "
+                   f"copy the text into a file under ./ and use that")
+            if die:
+                die(msg)
+            print(f"error: {msg}", file=sys.stderr)
+            sys.exit(2)
+        with os.fdopen(fd, "r", closefd=False) as f:
+            return f.read()
+    finally:
+        os.close(fd)

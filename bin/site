@@ -592,6 +592,19 @@ def export_tree(repo, dest, server=None):
     if archive.returncode != 0:
         die(f"git archive failed: {archive.stderr.decode().strip()}")
     subprocess.run(["tar", "-x", "-C", str(dest)], input=archive.stdout, check=True)
+    # A committed symlink is extracted as a symlink, and wrangler would upload what it points
+    # at: from a walled run's tool sandbox that could be this process's own keys
+    # (/proc/self/environ, the key file). Checked here, in our private copy, so nothing the
+    # run does meanwhile changes the answer (B85, sandbox-F1).
+    out_links = []
+    for p in dest.rglob("*"):
+        if p.is_symlink():
+            real = Path(os.path.realpath(p))
+            if not (real == dest or dest.resolve() in real.parents):
+                out_links.append(str(p.relative_to(dest)))
+    if out_links:
+        die(f"the repo has a link to something outside it ({', '.join(out_links[:3])}), and a published "
+            f"site can't carry that; remove the link (git rm, then commit) and publish again")
     if server is not None and (dest / "functions").is_dir():
         shutil.move(str(dest / "functions"), str(server / "functions"))
         toml = (dest / "wrangler.toml").read_text() if (dest / "wrangler.toml").exists() else ""
@@ -640,6 +653,8 @@ BADGE_OFF = re.compile(r"(?mi)^\s*(?:[-*]\s+)?(?:\*\*)?badge(?:\*\*)?:\s*off\b")
 
 def badge_off(ws):
     """True when this workspace's NOTES.md says `badge: off` (PLAYBOOK § The badge)."""
+    if (ws / "NOTES.md").is_symlink():          # B85: a run's link is never followed
+        return False
     try:
         return bool(BADGE_OFF.search((ws / "NOTES.md").read_text(encoding="utf-8")))
     except (OSError, UnicodeDecodeError):
@@ -983,7 +998,8 @@ def cmd_publish(a):
             f"(nothing to run); to move one: SITE_ADMIN=1 site adopt {name} from an owner session.")
     project = entry["project"]
 
-    if is_demo(meta.get("slug", "")) and not os.environ.get("SITE_DEMO_RESET"):
+    demo_run = is_demo(meta.get("slug", "")) or os.environ.get("RELAY_ROLE") == "demo"   # B85: the relay's role
+    if demo_run and not os.environ.get("SITE_DEMO_RESET"):
         blocked = demo_publish_block(meta, d)
         if blocked:
             die(blocked)
@@ -3125,8 +3141,8 @@ def cmd_handover(a):
     if is_demo(slug):
         notes.append("memory.md and the schedules: a demo's are shared by everyone who texts it")
     else:
-        if (ws / "memory.md").is_file():
-            shutil.copy2(ws / "memory.md", out / "memory.md")
+        if (ws / "memory.md").is_file() and not (ws / "memory.md").is_symlink():   # B85: a link is never followed
+            shutil.copy2(ws / "memory.md", out / "memory.md", follow_symlinks=False)
             have.append("memory.md — what Patch knows about your business")
         else:
             notes.append("memory.md: Patch hasn't written one for this business yet")

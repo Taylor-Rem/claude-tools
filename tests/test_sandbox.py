@@ -130,16 +130,14 @@ class Stamp(unittest.TestCase):
         for d in ("Edit(./.client.json)", "Write(./.client.json)", "Edit(./.claude/**)", "Write(./.claude/**)"):
             self.assertIn(d, s["permissions"]["deny"])
 
-    def test_demo_allowlist_trimmed(self):
+    def test_demo_stamp_fields(self):
+        # B85: the demo's narrower tools are the broker's role table (lib/sandbox_tools.py,
+        # tests/test_sandbox_tools.py), not a trimmed allowlist; the stamp carries role + demo_publish.
         self.assertEqual(self.new("demo-service").returncode, 0)
         meta = json.loads((self.clients / "demo-service" / ".client.json").read_text())
         self.assertTrue(meta["demo"])
+        self.assertEqual(meta["role"], "demo")
         self.assertEqual(meta["demo_publish"], "static")
-        allow = self.settings("demo-service")["permissions"]["allow"]
-        for t in C.DEMO_DROP_TOOLS:
-            self.assertFalse(any(r.startswith(f"Bash({t} ") for r in allow), f"demo still grants {t}")
-        self.assertNotIn("Bash(site *)", allow)
-        self.assertIn("Bash(site publish*)", allow)
 
 
 if __name__ == "__main__":

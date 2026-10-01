@@ -81,6 +81,10 @@
       "Bash(cat *)",
       "Bash(cp *)",
       "Bash(mv repos/* incoming/*)",
+      "Edit(./.client.json)",
+      "Write(./.client.json)",
+      "Edit(./.claude/**)",
+      "Write(./.claude/**)",
       "mcp__playwright"
     ]
   },
@@ -106,7 +110,6 @@
       "Bash(git -C repos/* rm *)",
       "Bash(gh run list*)",
       "Bash(gh run view*)",
-      "Bash(python3 -m http.server*)",
       "Bash(mkdir repos/*)",
       "Bash(mv incoming/* repos/*)",
       "Bash(mv repos/* repos/*)",

@@ -125,6 +125,8 @@ import tempfile
 import time
 import urllib.request
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+import tenant  # noqa: E402  (shared tenant-identity check, B80)
 
 HERE = Path(__file__).resolve().parent.parent
 SITES_DIR = HERE / "templates" / "sites"
@@ -263,7 +265,34 @@ def workspace():
         die(f".client.json is not valid JSON: {exc}")
     if not meta.get("slug"):
         die(".client.json has no slug; run client new <slug> --restamp")
+    tenant.enforce(meta["slug"], die)
     return ws, meta
+
+
+# Server-side pieces of a Cloudflare Pages deploy. A demo in "static" mode may
+# publish page edits but not changes to these — a stranger steering a demo mustn't
+# push live Functions/headers/redirects (sandbox-F3).
+DEMO_SERVER_PATHS = ("functions", "_worker.js", "_routes.json", "_headers",
+                     "_redirects", "wrangler.toml", "wrangler.jsonc", "wrangler.json")
+
+
+def demo_publish_block(meta, d):
+    """None if this demo may publish; else the reason it may not. `demo reset`
+    sets SITE_DEMO_RESET to bypass this — the nightly reset always republishes."""
+    mode = meta.get("demo_publish", "static")
+    if mode == "off":
+        return ("this is a demo site, so changes go live only on its nightly reset. Your edit is "
+                "saved in the repo; the reset is what puts it on the web.")
+    has_golden = git(d, "rev-parse", "--verify", "--quiet", "golden^{commit}", check=False)[0] == 0
+    if has_golden:
+        changed = git(d, "diff", "--name-only", "golden", "HEAD", check=False)[1].splitlines()
+    else:
+        changed = git(d, "ls-files", check=False)[1].splitlines()
+    hits = sorted({c for c in changed if any(c == p or c.startswith(p + "/") for p in DEMO_SERVER_PATHS)})
+    if hits:
+        return ("this demo can put page edits live, but not changes to how its site runs "
+                f"({', '.join(hits[:6])}). Those stay until the nightly reset.")
+    return None
 
 
 def repos_of(ws):
@@ -953,6 +982,11 @@ def cmd_publish(a):
         die(f"repos/{name} isn't a Cloudflare site in the registry. GitHub Pages repos deploy on push "
             f"(nothing to run); to move one: SITE_ADMIN=1 site adopt {name} from an owner session.")
     project = entry["project"]
+
+    if is_demo(meta.get("slug", "")) and not os.environ.get("SITE_DEMO_RESET"):
+        blocked = demo_publish_block(meta, d)
+        if blocked:
+            die(blocked)
 
     _, dirty = git(d, "status", "--porcelain", "--untracked-files=no", check=False)
     if dirty.strip():

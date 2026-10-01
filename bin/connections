@@ -32,6 +32,8 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+import tenant  # noqa: E402  (shared tenant-identity check, B80)
 
 ENV_FILE = Path(os.environ.get("CLAUDE_TOOLS_ENV", Path.home() / ".config/claude-tools/env"))
 
@@ -67,9 +69,11 @@ def workspace_slug():
     if not p.exists():
         return None
     try:
-        return json.loads(p.read_text()).get("slug")
+        slug = json.loads(p.read_text()).get("slug")
     except (ValueError, OSError):
         return None
+    tenant.enforce(slug, die)   # B80: the file identity must match the run's RELAY_PROJECT
+    return slug
 
 
 def project_of(args):

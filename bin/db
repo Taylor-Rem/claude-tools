@@ -65,6 +65,8 @@ import tomllib
 import urllib.error
 import urllib.request
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+import tenant  # noqa: E402  (shared tenant-identity check, B80)
 
 HERE = Path(__file__).resolve().parent.parent
 ENV_FILE = Path(os.environ.get("CLAUDE_TOOLS_ENV", Path.home() / ".config/claude-tools/env"))
@@ -151,6 +153,7 @@ def workspace():
         die(f".client.json is not valid JSON: {exc}")
     if not meta.get("slug"):
         die(".client.json has no slug")
+    tenant.enforce(meta["slug"], die)
     return ws, meta
 
 

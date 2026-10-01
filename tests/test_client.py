@@ -4,7 +4,8 @@
 
 The tier table is the relay's own relay/tiers.py, copied beside the temp
 config.json the way it sits beside the real one (skipped if the relay isn't
-checked out next to the toolbelt).
+checked out next to the toolbelt). RELAY_TIERS points it at another copy,
+e.g. a relay worktree's, to check a tier change before it merges.
 """
 
 import sys as _sys, pathlib as _pathlib  # noqa: E401
@@ -21,7 +22,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 CLIENT = HERE.parent / "bin" / "client"
-TIERS = HERE.parent.parent / "sms-relay" / "relay" / "tiers.py"
+TIERS = Path(os.environ.get("RELAY_TIERS") or HERE.parent.parent / "sms-relay" / "relay" / "tiers.py")
 
 
 @unittest.skipUnless(TIERS.exists(), "sms-relay not checked out beside claude-tools")
@@ -54,7 +55,7 @@ class ClientTiers(unittest.TestCase):
     def test_ls_names_the_new_tiers(self):
         out = self.run_client("ls").stdout
         self.assertIn("on Hosting", out)
-        self.assertIn("plan: Hosting $10/mo · no usage · 0 texters (texts get the hosting reply, no changes) · no schedules", out)
+        self.assertIn("plan: Hosting $10/mo · $10 usage/mo ($20 first) · 1 texter · no schedules", out)
         self.assertIn("on Light", out)
         self.assertIn("plan: Light $50/mo · $40 usage/mo ($80 first) · 1 texter · no schedules", out)
 

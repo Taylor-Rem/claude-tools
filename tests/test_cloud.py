@@ -8,6 +8,10 @@ for the production app's environment variables: no command may ever print it.
 `origin/main` comes from a throwaway clone of a throwaway bare repo, through `git ls-remote`.
 """
 
+import sys as _sys, pathlib as _pathlib  # noqa: E401
+_sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parent))
+import _offline  # noqa: F401,E402  first, before any tool loads: the suite stays off production (tests/_offline.py)
+
 import json
 import os
 import re

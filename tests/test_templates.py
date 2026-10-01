@@ -11,6 +11,10 @@ sections and forms as its template — the demo is the template with demo
 content, so a demo that works is a template that works.
 """
 
+import sys as _sys, pathlib as _pathlib  # noqa: E401
+_sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parent))
+import _offline  # noqa: F401,E402  first, before any tool loads: the suite stays off production (tests/_offline.py)
+
 import importlib.machinery
 import importlib.util
 import json

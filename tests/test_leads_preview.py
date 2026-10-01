@@ -16,6 +16,11 @@ moved clock and `sweep` takes down exactly the expired one; `--remove` is a
 takedown; `--claim` runs `client new` + `site new` and carries the same files
 over with every preview-only block cut.
 """
+
+import sys as _sys, pathlib as _pathlib  # noqa: E401
+_sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parent))
+import _offline  # noqa: F401,E402  first, before any tool loads: the suite stays off production (tests/_offline.py)
+
 import json
 import os
 import re

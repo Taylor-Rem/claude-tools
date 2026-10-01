@@ -1,5 +1,5 @@
 [Unit]
-Description=Patchlamp: the nightly build window (a headless /continue with a three-hour cap; GROWTH.md § 19.5)
+Description=Patchlamp: the nightly build window (a headless /build with a three-hour cap; GROWTH.md § 19.5)
 
 [Service]
 Type=oneshot

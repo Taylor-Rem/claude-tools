@@ -18,6 +18,13 @@ the shared repo's request box (`todo request`) and starts a headless
 `claude -p` in ~/projects — capped, one at a time, reply in
 requests/<name>.reply.md (`session_status`). No shell, no arbitrary
 commands, no keys, nothing under clients/ or rooms/.
+
+session_run is the one tool here that starts a model with tools, and it starts
+it the way every request-box run starts (B83, `todo` § Unattended runs): a
+stamped settings file from claude-tools/templates/headless/ (a "/build" prompt
+gets the build supervisor's, anything else the narrow one in dontAsk mode),
+--strict-mcp-config with playwright only, no claude.ai connectors, its own
+login. `doctor` checks that launch through `todo request --dry-run`.
 """
 
 import json
@@ -91,7 +98,7 @@ def t_ctx(a):
 def t_session_run(a):
     prompt = str(a.get("prompt", "")).strip()
     if not prompt:
-        raise ValueError("prompt is required (e.g. \"/continue\", or a question about the repos)")
+        raise ValueError("prompt is required (e.g. \"/build\", or a question about the repos)")
     name = run(["todo", "request", prompt])
     return (f"started request {name} in ~/projects; a headless claude session is running it "
             f"(one at a time, 45-minute cap). Check with session_status(\"{name}\"); the reply also "
@@ -125,7 +132,7 @@ TOOLS = {
     "relay_costs": ("The relay ledger: what every run and image cost.", {}, t_relay_costs),
     "relay_billing": ("Who is on what plan and where their allowance stands.", {}, t_relay_billing),
     "ctx": ("Every relay conversation's context gauge.", {}, t_ctx),
-    "session_run": ("Start a headless Claude Code session in ~/projects with this prompt — \"/continue\" picks up the next ROADMAP build item; anything else is a question about the repos. Files a request in the shared repo; one at a time, 45-minute cap.",
+    "session_run": ("Start a headless Claude Code session in ~/projects with this prompt — \"/build\" picks up the next ROADMAP build item; anything else is a question about the repos, answered read-only (it can edit the planning files, not push, publish or message anyone). Files a request in the shared repo; one at a time, 45-minute cap.",
                     {"prompt": {"type": "string"}}, t_session_run),
     "session_status": ("The reply to a request started with session_run (by name), or the list of requests when no name is given.",
                        {"name": {"type": "string"}}, t_session_status),
@@ -203,6 +210,11 @@ def doctor():
     ts = subprocess.run(["tailscale", "ip", "-4"], capture_output=True, text=True)
     print(f"  tailscale: {ts.stdout.strip() or 'not running'}")
     print(f"  tools: {', '.join(TOOLS)}")
+    for prompt, mode in (("/build", "--permission-mode auto"), ("a question", "--permission-mode dontAsk")):
+        dry = run(["todo", "request", "--dry-run", prompt])
+        good = all(f in dry for f in ("--strict-mcp-config", "--settings ", "--setting-sources project", mode))
+        print(f"  session_run {prompt!r} launches under the stamped boundary: {'ok' if good else 'FAIL (todo request --dry-run)'}")
+        ok = ok and good
     smoke = subprocess.run([sys.executable, __file__, "serve"], input='{"jsonrpc":"2.0","id":1,"method":"tools/list"}\n',
                            capture_output=True, text=True, timeout=30)
     n = len(json.loads(smoke.stdout.strip().splitlines()[0])["result"]["tools"]) if smoke.stdout.strip() else 0

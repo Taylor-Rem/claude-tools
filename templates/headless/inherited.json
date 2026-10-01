@@ -1,0 +1,20 @@
+{
+  "_about": "B83: the allow rules in ~/projects/.claude/settings.json reach the unattended runs (--setting-sources project keeps the project's CLAUDE.md and skills, /build among them, and with them its settings file). Each rule here was read on the date below and is either taken back by a deny in settings.request.json / settings.build.json / settings.common.json or kept on purpose. `todo doctor` warns about any project allow rule that isn't listed, so a rule Taylor adds later gets the same look before an unattended run relies on it. User and local settings never load in these runs.",
+  "reviewed": "2026-09-30",
+  "rules": {
+    "mcp__playwright": {"request": "kept for the read-only browser tools; run_code_unsafe, file_upload, evaluate, fill_form, webmcp_call denied", "build": "kept; run_code_unsafe and file_upload denied"},
+    "Bash(shot *)": {"request": "kept; runs with SHOT_SANDBOX=1 (paths stay inside ~/projects, no private addresses)", "build": "kept"},
+    "Bash(./relay.py *)": {"request": "denied", "build": "kept; refund, upgrade, credit, paywall, apps approve/deny, stripe, backup restore, walkthrough, demo on, send denied"},
+    "Bash(.venv/bin/python relay.py *)": {"request": "denied", "build": "kept; the same subcommands denied"},
+    "Bash(site *)": {"request": "denied", "build": "kept (a client site publish is part of a client row); SITE_ADMIN=1 denied"},
+    "Bash(SITE_ADMIN=1 site *)": {"request": "denied", "build": "denied"},
+    "Bash(client *)": {"request": "denied", "build": "kept (restamps after a template change)"},
+    "Bash(newsletter *)": {"request": "denied", "build": "kept; newsletter send denied"},
+    "Bash(git push *)": {"request": "denied", "build": "kept; --force, -f, +refspec, a new remote denied"},
+    "Bash(git -C * push *)": {"request": "denied", "build": "kept; the same forms denied"},
+    "Bash(gh pr create *)": {"request": "denied", "build": "kept; any command naming a key file is denied by path"},
+    "Bash(gh pr merge *)": {"request": "denied", "build": "kept: shipping is the build's job (skill § 7); --admin denied. The residual H2 risk; O6 is the account half"},
+    "Bash(systemctl --user restart relay-*)": {"request": "denied", "build": "denied (the build restarts through ./relay.py queue restart)"},
+    "Bash(systemctl --user restart relay-* *)": {"request": "denied", "build": "denied"}
+  }
+}

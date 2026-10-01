@@ -29,8 +29,8 @@ default ~/projects/sms-relay/config.json) for what is true of each client
 now — on the plan or unbilled, the demo, frozen, who texts, and which key
 actually pays — so the listing can't drift from the relay. The tier's name,
 price, texter cap and schedules come from the relay's own relay/tiers.py
-beside that config.json (six tiers since B31: Hosting has 0 texters and
-no changes by text — its texts get the hosting reply).
+beside that config.json (six tiers since B31; since B96 Hosting holds a
+few small changes by text a month, one texter, no top-up).
 
 CLIENTS_DIR overrides ~/projects/clients. No keys needed (it only checks names).
 """
@@ -82,13 +82,12 @@ def relay_tiers():
 
 
 def plan_line(tier_key):
-    """'Hosting $10/mo · 0 texters (texts get the hosting reply) · no schedules', or '' when unknown."""
+    """'Hosting $10/mo · $10 usage/mo ($20 first) · 1 texter · no schedules', or '' when unknown."""
     tiers = relay_tiers()
     t = tiers.get(tier_key) if tiers else None
     if not t:
         return f"tier {tier_key!r} (not in the relay's tiers.py)" if tier_key else ""
-    who = ("0 texters (texts get the hosting reply, no changes)" if t["texters"] == 0 else
-           "unlimited texters" if t["texters"] is None else f"{t['texters']} texter{'s' if t['texters'] != 1 else ''}")
+    who = ("unlimited texters" if t["texters"] is None else f"{t['texters']} texter{'s' if t['texters'] != 1 else ''}")
     usage = (f"${t['monthly_allowance_usd']:g} usage/mo (${t['first_period_allowance_usd']:g} first)"
              if t["monthly_allowance_usd"] else "no usage")
     sched = f"{t['schedules']} schedules" if t["schedules"] else "no schedules"

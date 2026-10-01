@@ -1,0 +1,14 @@
+{
+ "GET /applications": "applications.json",
+ "GET /applications/app-1/environments": "environments.json",
+ "GET /environments/env-1/deployments": "deploys-p1.json",
+ "GET /environments/env-1/deployments?page=2": "deploys-p2.json",
+ "GET /environments/env-1?include=currentDeployment": "environment-1.json",
+ "GET /environments/env-1/logs": "logs.json",
+ "GET /environments/env-2/deployments": "deploys-staging.json",
+ "GET /environments/env-2/logs": {
+  "status": 403
+ },
+ "GET /deployments/dep-9": "deployment-9.json",
+ "GET /deployments/dep-6/logs": "deploy-logs-6.json"
+}

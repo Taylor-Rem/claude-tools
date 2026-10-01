@@ -1,0 +1,53 @@
+{
+ "data": [
+  {
+   "message": "GET /account",
+   "level": "info",
+   "type": "access",
+   "logged_at": "2026-10-01T18:10:00Z",
+   "data": {
+    "status": 200,
+    "method": "GET",
+    "path": "/account/login/abcdefghijklmnopqrstuvwxyz123456?signature=deadbeef",
+    "duration_ms": 42,
+    "bytes_sent": 100,
+    "ip": "203.0.113.9",
+    "user_agent": "UA-should-not-show",
+    "country": "US"
+   }
+  },
+  {
+   "message": "Stripe call failed",
+   "level": "error",
+   "type": "exception",
+   "logged_at": "2026-10-01T18:09:00Z",
+   "data": {
+    "class": "Stripe\\Exception\\AuthenticationException",
+    "code": 401,
+    "file": "x.php",
+    "trace": [
+     "a"
+    ]
+   }
+  },
+  {
+   "message": "queue worker started",
+   "level": "info",
+   "type": "application",
+   "logged_at": "2026-10-01T18:08:00Z",
+   "data": {
+    "channel": "stack",
+    "context": {
+     "api_key": "PLANTED-SECRET-b88-never-print-me"
+    },
+    "extra": {}
+   }
+  }
+ ],
+ "meta": {
+  "cursor": "",
+  "type": "all",
+  "from": "x",
+  "to": "y"
+ }
+}

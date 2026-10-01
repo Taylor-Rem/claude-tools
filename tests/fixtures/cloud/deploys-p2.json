@@ -1,0 +1,71 @@
+{
+ "data": [
+  {
+   "id": "dep-1",
+   "type": "deployments",
+   "attributes": {
+    "slug": "dep-1",
+    "status": "deployment.succeeded",
+    "branch_name": "main",
+    "commit_hash": "fffffff6666666666666666666666666666666666",
+    "commit_message": "The oldest",
+    "commit_author": "Taylor",
+    "failure_reason": null,
+    "php_major_version": "8.4",
+    "build_command": null,
+    "node_version": "22",
+    "uses_octane": false,
+    "uses_hibernation": false,
+    "hibernation_wake_up_interval": null,
+    "started_at": "2026-09-28T10:00:00Z",
+    "finished_at": "2026-09-28T10:01:00Z"
+   },
+   "links": {
+    "self": {
+     "href": "https://cloud.laravel.com/api/deployments/dep-1"
+    }
+   }
+  },
+  {
+   "id": "dep-0",
+   "type": "deployments",
+   "attributes": {
+    "slug": "dep-0",
+    "status": "cancelled",
+    "branch_name": "main",
+    "commit_hash": "0000000777777777777777777777777777777777",
+    "commit_message": "Cancelled one",
+    "commit_author": "Taylor",
+    "failure_reason": null,
+    "php_major_version": "8.4",
+    "build_command": null,
+    "node_version": "22",
+    "uses_octane": false,
+    "uses_hibernation": false,
+    "hibernation_wake_up_interval": null,
+    "started_at": "2026-09-27T10:00:00Z",
+    "finished_at": "2026-09-27T10:00:30Z"
+   },
+   "links": {
+    "self": {
+     "href": "https://cloud.laravel.com/api/deployments/dep-0"
+    }
+   }
+  }
+ ],
+ "links": {
+  "first": "a",
+  "last": "b",
+  "next": null
+ },
+ "meta": {
+  "current_page": 2,
+  "from": 1,
+  "last_page": 2,
+  "links": [],
+  "path": "x",
+  "per_page": 5,
+  "to": 5,
+  "total": 7
+ }
+}

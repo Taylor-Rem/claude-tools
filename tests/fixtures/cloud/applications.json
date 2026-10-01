@@ -1,0 +1,22 @@
+{
+ "data": [
+  {
+   "id": "app-1",
+   "type": "applications",
+   "attributes": {
+    "name": "patchlamp",
+    "slug": "patchlamp",
+    "region": "us-east-2",
+    "created_at": "2026-09-15T12:00:00Z"
+   },
+   "relationships": {
+    "defaultEnvironment": {
+     "data": {
+      "id": "env-1",
+      "type": "environments"
+     }
+    }
+   }
+  }
+ ]
+}

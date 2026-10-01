@@ -1,0 +1,56 @@
+{
+ "data": [
+  {
+   "id": "env-2",
+   "type": "environments",
+   "attributes": {
+    "name": "staging",
+    "slug": "staging",
+    "status": "running",
+    "vanity_domain": "staging-abc.laravel.cloud",
+    "php_major_version": "8.4",
+    "uses_push_to_deploy": true,
+    "environment_variables": {
+     "APP_KEY": "base64:PLANTED-SECRET-b88-never-print-me",
+     "STRIPE_SECRET": "PLANTED-SECRET-b88-never-print-me",
+     "DB_PASSWORD": "PLANTED-SECRET-b88-never-print-me"
+    },
+    "created_at": "2026-09-15T12:00:00Z"
+   },
+   "relationships": {
+    "application": {
+     "data": {
+      "id": "app-1",
+      "type": "applications"
+     }
+    }
+   }
+  },
+  {
+   "id": "env-1",
+   "type": "environments",
+   "attributes": {
+    "name": "production",
+    "slug": "production",
+    "status": "running",
+    "vanity_domain": "production-abc.laravel.cloud",
+    "php_major_version": "8.4",
+    "uses_push_to_deploy": true,
+    "environment_variables": {
+     "APP_KEY": "base64:PLANTED-SECRET-b88-never-print-me",
+     "STRIPE_SECRET": "PLANTED-SECRET-b88-never-print-me",
+     "DB_PASSWORD": "PLANTED-SECRET-b88-never-print-me"
+    },
+    "created_at": "2026-09-15T12:00:00Z"
+   },
+   "relationships": {
+    "application": {
+     "data": {
+      "id": "app-1",
+      "type": "applications"
+     }
+    }
+   }
+  }
+ ]
+}

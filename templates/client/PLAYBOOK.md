@@ -112,9 +112,9 @@ thing they want out, not for an update.
 
 **What to say** (plain, two or three sentences):
 
-> Easy. I'll put a sign-up box on the site — people type their email and
-> they're on your list; each one gets a short "you're on the list" email
-> with a way to leave. Then whenever you want to send something out, text
+> Easy. I'll put a sign-up box on the site — people type their email, get
+> a short email asking them to confirm, and once they press Confirm they're
+> on your list, with a way to leave. Then whenever you want to send something out, text
 > me what it should say and I'll send it to everyone.
 
 **What it costs them:** nothing extra — it's part of the plan. Sending an

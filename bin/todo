@@ -18,11 +18,35 @@ GitHub API with a fine-grained token Taylor pastes once in the browser.
   todo init                    one time: the private data repo, the timer
   todo site push               publish todo-site/index.html to the Pages repo
   todo open                    print the page URL
+  todo request "<prompt>" [--later] | ls | run NAME     the request box (below)
+  todo request --dry-run "<prompt>"   print how that prompt would launch; files nothing
+  todo inbox ls | run NAME     Flint's inbox (flint/inbox -> flint/outbox)
   todo doctor
+
+Unattended runs (B83, 2026-09-30). A request, an inbox answer and build-night's
+/build all start from a file that came through the shared repo, so none of them
+runs under the ambient ~/projects rules or with Taylor's connectors. Each is
+`claude -p` in ~/projects with a settings file stamped from
+templates/headless/ (--settings, --setting-sources project, so the project's
+CLAUDE.md and skills still load), --strict-mcp-config with a playwright-only
+--mcp-config, --no-chrome, and ENABLE_CLAUDEAI_MCP_SERVERS=false. A /build
+request (or the old /continue, rewritten to /build) gets settings.build.json
+in auto mode; anything else gets settings.request.json in dontAsk mode. The
+login: a dedicated CLAUDE_CONFIG_DIR (~/.local/state/claude-tools/headless/
+config) signed in by CLAUDE_HEADLESS_OAUTH_TOKEN, a long-lived subscription
+token Taylor makes once with `claude setup-token`; until it's set, the run uses
+the interactive login the way `prep` does (connectors still off), and says so
+in its reply and in `todo doctor`. `claude auth status` is checked before every
+run; a run that can't sign in writes its reply saying why instead of failing
+silently.
 
 Config, by name only (values never printed):
   GITHUB_TOKEN  in ~/.config/claude-tools/env — passed to gh as GH_TOKEN when
                 present; otherwise gh's own login. Pushes use SSH.
+  CLAUDE_HEADLESS_OAUTH_TOKEN  in the same file: the unattended runs' login
+                (`claude setup-token`). Passed to the run as CLAUDE_CODE_OAUTH_TOKEN.
+  TODO_HEADLESS_LOGIN=dedicated  refuse to fall back to the interactive login
+  TODO_REQUEST_MODEL (fable) / TODO_FLINT_MODEL (fable) / TODO_BUILD_PERMISSION_MODE (auto)
   TODO_FILE     the markdown file (default ~/projects/TAYLOR-TODO.md)
   TODO_OWNER    GitHub owner for both repos (default: gh's logged-in user)
   TODO_DATA_REPO / TODO_SITE_REPO   default taylor-todo (private) / todo (public)
@@ -32,6 +56,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import time
@@ -92,6 +117,222 @@ Rules: anything that changes the plan goes into ROADMAP / TAYLOR-TODO / HISTORY 
 --- flint/inbox/{name}.md ---
 {text}
 """
+
+# The unattended runs (B83; private-docs/security/2026-09-30-plan.md § B83, host-H2 and M10).
+HEADLESS = HERE / "templates" / "headless"
+HEADLESS_STATE = Path(os.environ.get("TODO_HEADLESS_STATE", "~/.local/state/claude-tools/headless")).expanduser()
+HEADLESS_CONFIG = HEADLESS_STATE / "config"          # the runs' own CLAUDE_CONFIG_DIR
+HEADLESS_TOKEN = "CLAUDE_HEADLESS_OAUTH_TOKEN"       # by name in the toolbelt env; `claude setup-token`
+HEADLESS_LOGIN = os.environ.get("TODO_HEADLESS_LOGIN", "fallback")   # "dedicated": no fallback
+CLAUDE = os.environ.get("TODO_CLAUDE") or "claude"   # the tests' fake
+REQUEST_MODEL = os.environ.get("TODO_REQUEST_MODEL", "fable")
+BUILD_MODE = os.environ.get("TODO_BUILD_PERMISSION_MODE", "auto")
+BUILD_COMMANDS = ("/build", "/continue")             # /continue: the old name, until 2026-09-30
+# What a run must never inherit from the launcher's environment: an API key would bill outside
+# Taylor's plan (VISION § Rules 1), and a config dir or token from the caller would undo the login choice.
+HEADLESS_SCRUB = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL",
+                  "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
+                  "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT",
+                  HEADLESS_TOKEN)
+# The denies `todo doctor` insists on (the plan's acceptance): a stamped file without them fails loudly.
+HEADLESS_REQUIRED_DENY = ("Read(~/.config/**)", "Read(~/.ssh/**)", "Read(~/.claude/**)", "Read(~/.claude.json)",
+                          "mcp__playwright__browser_run_code_unsafe", "mcp__playwright__browser_file_upload")
+# One sentence a run gets about its own boundary, so a refused call reads as the boundary and not as a
+# fault to work around (VISION § Rules 8). B78 (c) owns the rest of the framing (the cap, writing early).
+BOUNDARY = {
+    "request": ("About this run's boundary: its prompt came through the shared repo, so it runs unattended under "
+                "a narrow permission set (claude-tools/templates/headless/settings.request.json). It can read the "
+                "tree, edit ROADMAP.md, TAYLOR-TODO.md, HISTORY.md and flint/outbox/, and run the read-only checks "
+                "(git logs, todo ls, front, ctx, shot, the relay's queue/costs/billing/check, gh pr view); it can't "
+                "push, publish, message anyone, change settings, use the claude.ai connectors, or read the key files "
+                "under ~/.config, ~/.ssh and ~/.claude. A refused tool call is that boundary, not a fault: say in "
+                "the answer what you couldn't do and who can (usually Taylor, at the terminal)."),
+    "build": ("About this run's boundary: it is an unattended /build started through the request box or "
+              "build-night, so it runs under a stamped permission set "
+              "(claude-tools/templates/headless/settings.build.json) in auto mode. You and your builders can "
+              "read, edit, test, commit, push branches, open and merge pull requests and run the relay's queue "
+              "and check; you can't read the key files under ~/.config, ~/.ssh and ~/.claude, use the claude.ai "
+              "connectors, change permission or MCP settings, run the relay's money or messaging commands, "
+              "restart a daemon with systemctl, force-push or start another claude. A refused call is that "
+              "boundary, not a fault: record what it stopped (TAYLOR-TODO § 1, as the skill says) and carry on "
+              "with the rest."),
+}
+
+
+def is_build(prompt):
+    words = (prompt or "").split(None, 1)
+    return bool(words) and words[0] in BUILD_COMMANDS
+
+
+def as_build(prompt):
+    """`/continue` was renamed `/build` on 2026-09-30 (the desktop app reads /continue as "continue a
+    session"). A request or note that still says /continue runs as /build, so the alias skill can go."""
+    s = (prompt or "").lstrip()
+    return "/build" + s[len("/continue"):] if s.split(None, 1)[:1] == ["/continue"] else prompt
+
+
+def _fill(text):
+    return (text.replace("{{PROJECTS}}", str(WORK_TREE)).replace("{{CONFIG}}", str(HEADLESS_CONFIG))
+            .replace("{{TOOLBELT}}", str(HERE)))
+
+
+def stamped_settings(variant):
+    """settings.common.json + settings.<variant>.json, placeholders filled; the lists concatenate."""
+    common = json.loads(_fill((HEADLESS / "settings.common.json").read_text()))
+    own = json.loads(_fill((HEADLESS / f"settings.{variant}.json").read_text()))
+    out = {k: v for k, v in common.items() if k not in ("_about", "permissions")}
+    out.update({k: v for k, v in own.items() if k not in ("_about", "permissions")})
+    perms = dict(common.get("permissions") or {})
+    for k, v in (own.get("permissions") or {}).items():
+        perms[k] = (perms.get(k) or []) + v if isinstance(v, list) else v
+    return {"_about": f"stamped by `todo` from claude-tools/templates/headless/settings.common.json + "
+                      f"settings.{variant}.json; edit those, not this file", "permissions": perms, **out}
+
+
+def _write_private(path, text):
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text)
+    tmp.chmod(0o600)
+    tmp.replace(path)
+
+
+def stamp_headless(variant):
+    """Write the stamped settings and the playwright-only MCP config under HEADLESS_STATE; -> (settings, mcp)."""
+    HEADLESS_STATE.mkdir(parents=True, exist_ok=True)
+    HEADLESS_STATE.chmod(0o700)
+    settings, mcp = HEADLESS_STATE / f"settings.{variant}.json", HEADLESS_STATE / "mcp.json"
+    _write_private(settings, json.dumps(stamped_settings(variant), indent=2) + "\n")
+    _write_private(mcp, json.dumps(json.loads(_fill((HEADLESS / "mcp.json").read_text())), indent=2) + "\n")
+    return settings, mcp
+
+
+def project_slug(path):
+    return re.sub(r"[^A-Za-z0-9]", "-", str(path))
+
+
+def prepare_config_dir():
+    """The dedicated CLAUDE_CONFIG_DIR: ~/projects marked trusted in its .claude.json (an untrusted
+    workspace loses the project's settings source, and with it CLAUDE.md and the /build skill), and a
+    fresh copy of Flint's memory, so a run starts knowing what the interactive Flint knows while what it
+    writes there stays in the copy (an unattended run can't change what later sessions remember)."""
+    HEADLESS_CONFIG.mkdir(parents=True, exist_ok=True)
+    HEADLESS_CONFIG.chmod(0o700)
+    cj = HEADLESS_CONFIG / ".claude.json"
+    try:
+        data = json.loads(cj.read_text()) if cj.exists() else {}
+    except ValueError:
+        data = None                         # not ours to repair; the run will say if it can't start
+    if data is not None:
+        entry = data.setdefault("projects", {}).setdefault(str(WORK_TREE), {})
+        if not entry.get("hasTrustDialogAccepted"):
+            entry["hasTrustDialogAccepted"] = True
+            _write_private(cj, json.dumps(data, indent=2) + "\n")
+    src = Path.home() / ".claude" / "projects" / project_slug(WORK_TREE) / "memory"
+    dst = HEADLESS_CONFIG / "projects" / project_slug(WORK_TREE) / "memory"
+    if src.is_dir():
+        if dst.exists():
+            shutil.rmtree(dst)
+        shutil.copytree(src, dst)
+
+
+def headless_login():
+    """-> (env additions, label). The dedicated config dir signs in with the long-lived token Taylor
+    makes once; without it the run uses the interactive login, as `prep` does, unless
+    TODO_HEADLESS_LOGIN=dedicated (then label 'none' and the run is refused)."""
+    tok = toolbelt().get(HEADLESS_TOKEN)
+    if tok:
+        return {"CLAUDE_CONFIG_DIR": str(HEADLESS_CONFIG), "CLAUDE_CODE_OAUTH_TOKEN": tok}, "dedicated"
+    if HEADLESS_LOGIN == "dedicated":
+        return {"CLAUDE_CONFIG_DIR": str(HEADLESS_CONFIG)}, "none"
+    return {}, "interactive"
+
+
+LOGIN_WORDS = {
+    "dedicated": f"the dedicated config dir {HEADLESS_CONFIG}, signed in by {HEADLESS_TOKEN}",
+    "interactive": (f"the interactive login (fallback: {HEADLESS_TOKEN} isn't set; connectors stay off through "
+                    f"--strict-mcp-config and ENABLE_CLAUDEAI_MCP_SERVERS=false)"),
+    "none": f"none: {HEADLESS_TOKEN} isn't set and TODO_HEADLESS_LOGIN=dedicated refuses the fallback",
+}
+
+
+def headless_env(variant, extra=None):
+    env = {k: v for k, v in os.environ.items() if k not in HEADLESS_SCRUB}
+    login, label = headless_login()
+    env.update(login)
+    env["ENABLE_CLAUDEAI_MCP_SERVERS"] = "false"
+    if variant == "request":
+        env["SHOT_SANDBOX"] = "1"          # shot's paths stay inside ~/projects, no private addresses
+    env.update(extra or {})
+    return env, label
+
+
+def headless_cmd(prompt, variant, model_id, settings, mcp):
+    mode = "dontAsk" if variant == "request" else BUILD_MODE
+    cmd = [CLAUDE, "-p", prompt, "--model", model_id, "--output-format", "json",
+           "--permission-mode", mode, "--settings", str(settings), "--setting-sources", "project",
+           "--strict-mcp-config", "--mcp-config", str(mcp), "--no-chrome",
+           "--append-system-prompt", BOUNDARY[variant]]
+    if "fable" in model_id:
+        cmd += ["--effort", "high"]        # what ~/.claude/settings.json gives Fable; user settings don't load here
+    return cmd
+
+
+def headless_auth(env):
+    """(ok, why) — the run's login, asked the way the run will ask it."""
+    try:
+        r = subprocess.run([CLAUDE, "auth", "status", "--json"], env=env, cwd=WORK_TREE,
+                           capture_output=True, text=True, timeout=60)
+        st = json.loads(r.stdout or "{}")
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        return False, f"couldn't ask claude for its login ({exc.__class__.__name__})"
+    method = str(st.get("authMethod") or "none")
+    if st.get("loggedIn") and method != "none" and "api" not in method.lower():
+        return True, method
+    return False, f"not signed in ({method})"
+
+
+def headless_launch(prompt, variant, model_id, timeout, extra_env):
+    """Run one unattended session. -> (CompletedProcess or None, login label, refusal or None).
+    TimeoutExpired / FileNotFoundError reach the caller, as before."""
+    settings, mcp = stamp_headless(variant)
+    env, label = headless_env(variant, extra_env)
+    if label == "none":
+        return None, label, LOGIN_WORDS["none"]
+    if label == "dedicated":
+        prepare_config_dir()
+    ok, why = headless_auth(env)
+    if not ok:
+        return None, label, (f"the run's login ({LOGIN_WORDS[label]}) is {why}. Taylor: `claude setup-token`, "
+                             f"then `~/.config/claude-tools/setenv.sh {HEADLESS_TOKEN}` (TAYLOR-TODO § 1)")
+    cmd = headless_cmd(prompt, variant, model_id, settings, mcp)
+    return subprocess.run(cmd, cwd=WORK_TREE, capture_output=True, text=True, timeout=timeout, env=env), label, None
+
+
+def request_model(prompt):
+    # The build is supervised by a Fable session (VISION § Decided 2026-09-28): it spawns the Opus
+    # builders itself. A plain request ran on ~/.claude/settings.json's model (Fable) and still does.
+    return INBOX_MODELS["fable"] if is_build(prompt) else INBOX_MODELS.get(REQUEST_MODEL, REQUEST_MODEL)
+
+
+def describe_launch(prompt, variant, model_id):
+    """What `--dry-run` prints: the files, the login, the env it adds (names only) and the command."""
+    settings, mcp = stamp_headless(variant)
+    env, label = headless_env(variant)
+    shown = {k: ("<" + HEADLESS_TOKEN + ">" if k == "CLAUDE_CODE_OAUTH_TOKEN" else env[k])
+             for k in ("CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN", "ENABLE_CLAUDEAI_MCP_SERVERS", "SHOT_SANDBOX")
+             if k in env}
+    cmd = headless_cmd(f"<prompt, {len(prompt)} chars>", variant, model_id, settings, mcp)
+    cmd[cmd.index("--append-system-prompt") + 1] = "<the boundary sentence>"
+    mode = cmd[cmd.index("--permission-mode") + 1]
+    lines = [f"variant: {variant} ({mode}) from {HEADLESS}/settings.common.json + settings.{variant}.json",
+             f"settings: {settings}", f"mcp: {mcp} (servers: {', '.join(json.loads(mcp.read_text())['mcpServers'])})",
+             f"login: {LOGIN_WORDS[label]}",
+             f"CLAUDE_CONFIG_DIR: {env.get('CLAUDE_CONFIG_DIR') or f'unset (the interactive one); the dedicated dir is {HEADLESS_CONFIG}'}",
+             "env added: " + " ".join(f"{k}={v}" for k, v in shown.items()),
+             "cwd: " + str(WORK_TREE),
+             "command: " + shlex.join(cmd),
+             "boundary sentence: " + BOUNDARY[variant]]
+    return "\n".join(lines)
 
 
 def tracked_paths():
@@ -482,6 +723,10 @@ def cmd_request(args):
         die("todo request \"<prompt>\"")
     if len(text) > REQUEST_MAX_CHARS:
         die(f"prompt is over {REQUEST_MAX_CHARS} characters")
+    if args.dry_run:                        # how it would launch; files nothing, starts nothing
+        text = as_build(text)
+        print(describe_launch(text, "build" if is_build(text) else "request", request_model(text)))
+        return
     REQUESTS.mkdir(exist_ok=True)
     name = new_request_name(text)
     (REQUESTS / f"{name}.md").write_text(text + "\n")
@@ -499,30 +744,30 @@ def run_request(name):
         die(f"no such request: {name}")
     if reply.exists():
         die(f"{name} is already answered")
-    prompt = prompt_path.read_text().strip()[:REQUEST_MAX_CHARS]
+    prompt = as_build(prompt_path.read_text().strip()[:REQUEST_MAX_CHARS])
+    variant = "build" if is_build(prompt) else "request"
     started = time.strftime("%Y-%m-%d %H:%M:%S")
     running.write_text(f"started {started}\n")
     head = [f"# reply to {name}", f"started {started} in {WORK_TREE}", ""]
     try:
-        cmd = ["claude", "-p", prompt, "--permission-mode", "auto", "--output-format", "json"]
-        if prompt.startswith("/continue"):
-            # The build is supervised by a Fable session (VISION § Decided 2026-09-28):
-            # it spawns the Opus builders itself, so the request runs on Fable.
-            cmd[3:3] = ["--model", INBOX_MODELS["fable"]]
-        r = subprocess.run(cmd, cwd=WORK_TREE, capture_output=True, text=True, timeout=REQUEST_TIMEOUT,
-                           env=dict(os.environ, TODO_REQUEST=name))
-        body, meta = r.stdout, {}
-        try:
-            data = json.loads(r.stdout)
-            body = data.get("result") or r.stdout
-            meta = {k: data.get(k) for k in ("num_turns", "duration_ms", "total_cost_usd", "is_error") if k in data}
-        except ValueError:
-            pass
-        status = f"finished {time.strftime('%Y-%m-%d %H:%M:%S')}, exit {r.returncode}"
-        if meta:
-            status += f", {meta.get('num_turns', '?')} turns, {round((meta.get('duration_ms') or 0) / 60000, 1)} min, ${meta.get('total_cost_usd') or 0:.2f}"
-        if r.returncode and r.stderr.strip():
-            body = (body or "") + "\n\nstderr:\n" + r.stderr.strip()[-2000:]
+        r, label, refusal = headless_launch(prompt, variant, request_model(prompt), REQUEST_TIMEOUT,
+                                            {"TODO_REQUEST": name})
+        head[-1:] = [f"boundary: templates/headless/settings.{variant}.json; login: {label}", ""]
+        if refusal:
+            status, body = "not started", f"I couldn't start this request: {refusal}."
+        else:
+            body, meta = r.stdout, {}
+            try:
+                data = json.loads(r.stdout)
+                body = data.get("result") or r.stdout
+                meta = {k: data.get(k) for k in ("num_turns", "duration_ms", "total_cost_usd", "is_error") if k in data}
+            except ValueError:
+                pass
+            status = f"finished {time.strftime('%Y-%m-%d %H:%M:%S')}, exit {r.returncode}"
+            if meta:
+                status += f", {meta.get('num_turns', '?')} turns, {round((meta.get('duration_ms') or 0) / 60000, 1)} min, ${meta.get('total_cost_usd') or 0:.2f}"
+            if r.returncode and r.stderr.strip():
+                body = (body or "") + "\n\nstderr:\n" + r.stderr.strip()[-2000:]
     except subprocess.TimeoutExpired:
         status = f"timed out after {REQUEST_TIMEOUT // 60} minutes"
         body = "(the session was stopped at the cap; whatever it committed is in the repos)"
@@ -534,11 +779,11 @@ def run_request(name):
     notify_reply(name, status, reply)
 
 
-def notify_reply(name, status, reply):
+def notify_reply(name, status, reply, kind="request"):
     """Tell Taylor a request is answered (relay `notify`: the channel he last used, else a DM).
     Best effort — a missing relay never breaks the runner."""
     try:
-        subprocess.run(["notify", "--file", str(reply), "--chars", "1200", f"request {name}: {status}"],
+        subprocess.run(["notify", "--file", str(reply), "--chars", "1200", f"{kind} {name}: {status}"],
                        capture_output=True, text=True, timeout=60, cwd=WORK_TREE)
     except (OSError, subprocess.SubprocessError):
         pass
@@ -564,23 +809,25 @@ def run_inbox(name):
     OUTBOX.mkdir(parents=True, exist_ok=True)
     running.write_text(f"started {started}\n")
     prompt = FLINT_PROMPT.format(name=name, today=time.strftime("%Y-%m-%d %H:%M %Z"), text=text[:INBOX_MAX_CHARS])
-    body, status = "", ""
+    body, status, refusal = "", "", None
     try:
-        r = subprocess.run(["claude", "-p", prompt, "--model", model_id, "--permission-mode", "auto", "--output-format", "json"],
-                           cwd=WORK_TREE, capture_output=True, text=True, timeout=INBOX_TIMEOUT,
-                           env=dict(os.environ, TODO_INBOX=name))
-        body, meta = r.stdout, {}
-        try:
-            data = json.loads(r.stdout)
-            body = data.get("result") or r.stdout
-            meta = {k: data.get(k) for k in ("num_turns", "duration_ms", "total_cost_usd") if k in data}
-        except ValueError:
-            pass
-        status = f"{model}, {meta.get('num_turns', '?')} turns, {round((meta.get('duration_ms') or 0) / 60000, 1)} min"
-        if r.returncode:
-            status += f", exit {r.returncode}"
-            if r.stderr.strip():
-                body = (body or "") + "\n\nstderr:\n" + r.stderr.strip()[-2000:]
+        # An inbox note is answered, never built from: always the narrow boundary, whatever its first word.
+        r, label, refusal = headless_launch(prompt, "request", model_id, INBOX_TIMEOUT, {"TODO_INBOX": name})
+        if refusal:
+            status, body = f"not started, login {label}", f"I couldn't answer this note: {refusal}."
+        else:
+            body, meta = r.stdout, {}
+            try:
+                data = json.loads(r.stdout)
+                body = data.get("result") or r.stdout
+                meta = {k: data.get(k) for k in ("num_turns", "duration_ms", "total_cost_usd") if k in data}
+            except ValueError:
+                pass
+            status = f"{model}, login {label}, {meta.get('num_turns', '?')} turns, {round((meta.get('duration_ms') or 0) / 60000, 1)} min"
+            if r.returncode:
+                status += f", exit {r.returncode}"
+                if r.stderr.strip():
+                    body = (body or "") + "\n\nstderr:\n" + r.stderr.strip()[-2000:]
     except subprocess.TimeoutExpired:
         status = f"stopped at the {INBOX_TIMEOUT // 60}-minute cap"
         body = "(the session was stopped at the cap before it wrote the reply)"
@@ -595,6 +842,8 @@ def run_inbox(name):
                          f"{(body or '').strip()[-6000:]}\n\n_(headless Flint session, {status}; "
                          f"tell Taylor if this keeps happening)_\n")
     running.unlink(missing_ok=True)
+    if refusal:                             # only Taylor can sign the runs in; tell him, once a note
+        notify_reply(name, status, reply, kind="inbox")
 
 
 def cmd_inbox(args):
@@ -712,7 +961,102 @@ def cmd_open(args):
     print(site_url())
 
 
+def settings_valid(variant, settings):
+    """`claude -p` ignores a settings file that fails validation without a word, which would leave a run
+    without its deny rules; `claude doctor` names every invalid file and rule, so ask it, on a copy."""
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "proj" / ".claude").mkdir(parents=True)
+        (Path(tmp) / "proj" / ".claude" / "settings.json").write_text(settings.read_text())
+        env = {k: v for k, v in os.environ.items() if k not in HEADLESS_SCRUB}
+        env["CLAUDE_CONFIG_DIR"] = str(Path(tmp) / "cfg")
+        try:
+            r = subprocess.run([CLAUDE, "doctor"], cwd=Path(tmp) / "proj", env=env, stdin=subprocess.DEVNULL,
+                               capture_output=True, text=True, timeout=120)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return ("warn", f"unattended {variant}: couldn't ask `claude doctor` to validate the settings ({exc.__class__.__name__})")
+    bad = [l.strip("- ").split("›", 1)[-1].strip() for l in r.stdout.splitlines() if "settings.json ›" in l]
+    if bad:
+        return ("FAIL", f"unattended {variant}: claude rejects part of the stamped settings: " + "; ".join(bad)[:600])
+    if "Claude Code doctor" not in r.stdout:
+        return ("warn", f"unattended {variant}: `claude doctor` gave no report to validate against (exit {r.returncode})")
+    return ("ok", f"unattended {variant}: claude doctor accepts the stamped settings")
+
+
+def headless_checks(mcp_list=True):
+    """[(level, line)], level ok | warn | FAIL: the unattended launchers still carry the boundary (B83)."""
+    out = []
+    for variant in ("request", "build"):
+        try:
+            settings, mcp = stamp_headless(variant)
+            doc = json.loads(settings.read_text())
+            servers = sorted(json.loads(mcp.read_text()).get("mcpServers") or {})
+        except (OSError, ValueError) as exc:
+            out.append(("FAIL", f"unattended {variant}: templates/headless won't stamp ({exc})"))
+            continue
+        cmd = headless_cmd("x", variant, "claude-opus-5-5", settings, mcp)
+        arg = lambda flag: cmd[cmd.index(flag) + 1] if flag in cmd else None
+        want_mode = "dontAsk" if variant == "request" else BUILD_MODE
+        flags_ok = ("--strict-mcp-config" in cmd and arg("--mcp-config") == str(mcp) and arg("--settings") == str(settings)
+                    and arg("--setting-sources") == "project" and "--no-chrome" in cmd and arg("--permission-mode") == want_mode)
+        out.append(("ok" if flags_ok else "FAIL",
+                    f"unattended {variant}: --settings {settings.name}, --setting-sources project, --strict-mcp-config, "
+                    f"--no-chrome, {arg('--permission-mode')}" + ("" if flags_ok else " (a launch flag is missing)")))
+        deny = set((doc.get("permissions") or {}).get("deny") or [])
+        missing = [d for d in HEADLESS_REQUIRED_DENY if d not in deny]
+        out.append(("FAIL" if missing else "ok", f"unattended {variant}: {len(deny)} deny rules"
+                    + (f"; missing {', '.join(missing)}" if missing else ", the key-file reads and the two unsafe browser tools among them")))
+        if variant == "build" and doc.get("permissions", {}).get("defaultMode") != BUILD_MODE:
+            out.append(("warn", f"unattended build: the stamped defaultMode isn't {BUILD_MODE}"))
+        out.append(("ok" if servers == ["playwright"] else "FAIL", f"unattended {variant}: MCP servers {', '.join(servers) or 'none'}"
+                    + ("" if servers == ["playwright"] else " (should be playwright only)")))
+        if doc.get("disableClaudeAiConnectors") is not True:
+            out.append(("FAIL", f"unattended {variant}: disableClaudeAiConnectors isn't set"))
+        out.append(settings_valid(variant, settings))
+    cli = HERE / "node_modules" / "@playwright" / "mcp" / "cli.js"
+    out.append(("ok" if cli.exists() else "warn", f"playwright MCP for the runs: {cli}" + ("" if cli.exists() else " missing (npm install here)")))
+    env, label = headless_env("request")
+    out.append(({"dedicated": "ok", "interactive": "warn", "none": "FAIL"}[label], "unattended login: " + LOGIN_WORDS[label]
+                + ("" if label == "dedicated" else f" — Taylor: `claude setup-token`, then `~/.config/claude-tools/setenv.sh {HEADLESS_TOKEN}`")))
+    if label == "dedicated":
+        prepare_config_dir()
+        mode = oct(HEADLESS_CONFIG.stat().st_mode & 0o777)
+        cred = (HEADLESS_CONFIG / ".credentials.json").exists()        # by path only; never opened
+        out.append(("warn" if cred or mode != "0o700" else "ok", f"config dir {HEADLESS_CONFIG} ({mode})"
+                    + ("; it holds an interactive login too (someone ran /login there): remove it so only the token signs in" if cred else "")))
+    if label != "none":
+        good, why = headless_auth(env)
+        out.append(("ok" if good else "FAIL", f"unattended login signs in: {why}"))
+    try:
+        proj = json.loads((WORK_TREE / ".claude" / "settings.json").read_text())
+        reviewed = json.loads((HEADLESS / "inherited.json").read_text())
+        new = [a for a in (proj.get("permissions") or {}).get("allow") or [] if a not in reviewed["rules"]]
+        out.append(("warn" if new else "ok", "project allow rules the runs inherit: "
+                    + (f"{len(new)} not reviewed in templates/headless/inherited.json: {', '.join(new)}" if new
+                       else f"all reviewed ({reviewed['reviewed']})")))
+    except (OSError, ValueError, KeyError):
+        out.append(("ok", f"project allow rules the runs inherit: none ({WORK_TREE / '.claude/settings.json'} unreadable or absent)"))
+    if mcp_list and label != "none":
+        try:
+            r = subprocess.run([CLAUDE, "mcp", "list"], env=env, cwd=WORK_TREE, capture_output=True, text=True, timeout=180)
+            names = [l.split(": ", 1)[0] for l in r.stdout.splitlines() if ": " in l and not l.startswith("Checking")]
+            conn = [n for n in names if n.startswith("claude.ai ")]
+            plug = [n for n in names if n.startswith("plugin:")]
+            out.append(("FAIL" if conn else "ok", "claude mcp list under the runs' login: "
+                        + (f"connectors visible: {', '.join(conn)}" if conn else
+                           (", ".join(names) or "nothing") + " (no claude.ai connectors"
+                           + ("; plugin servers come from user settings, which the runs don't load" if plug else "") + ")")))
+        except (OSError, subprocess.SubprocessError) as exc:
+            out.append(("warn", f"claude mcp list: couldn't run ({exc.__class__.__name__})"))
+    return out
+
+
 def cmd_doctor(args):
+    hl = headless_checks(mcp_list=not args.quick)
+    mark = {"ok": "[  ok  ]", "warn": "[ warn ]", "FAIL": "[ FAIL ]"}
+    if args.headless:
+        for level, line in hl:
+            print(f"{mark[level]} {line}")
+        sys.exit(1 if any(level == "FAIL" for level, _ in hl) else 0)
     o = owner()
     ok = lambda c: "[  ok  ]" if c else "[ FAIL ]"
     print(f"{ok(TODO_FILE.exists())} {TODO_FILE}")
@@ -730,10 +1074,14 @@ def cmd_doctor(args):
     print(f"{ok('running' not in ib or True)} flint inbox: {ib.count('waiting')} waiting, {ib.count('running')} running, {ib.count('answered')} answered since {INBOX_SINCE} (model {INBOX_MODEL}, cap {INBOX_TIMEOUT // 60} min)")
     site = gh("api", f"repos/{o}/{SITE_REPO}/pages", "--jq", ".html_url", check=False)
     print(f"{ok(site.returncode == 0)} Pages site " + (site.stdout.strip() if site.returncode == 0 else "not published — `todo site push`"))
+    for level, line in hl:
+        print(f"{mark[level]} {line}")
     print("\nBrowser token (one time, in the browser, never in a repo):")
     print("  github.com/settings/personal-access-tokens/new → Repository access: Only select → "
           f"{DATA_REPO}; Permissions → Contents: Read and write; expiry 1 year → Generate,")
     print(f"  then open {site_url(o)} and paste it. It stays in that browser's localStorage.")
+    if any(level == "FAIL" for level, _ in hl):
+        sys.exit(1)
 
 
 def main():
@@ -746,10 +1094,14 @@ def main():
     p = sub.add_parser("init"); p.set_defaults(fn=cmd_init)
     p = sub.add_parser("site"); p.add_argument("action", choices=["push"]); p.set_defaults(fn=cmd_site)
     p = sub.add_parser("open"); p.set_defaults(fn=cmd_open)
-    p = sub.add_parser("doctor"); p.set_defaults(fn=cmd_doctor)
+    p = sub.add_parser("doctor")
+    p.add_argument("--headless", action="store_true", help="only the unattended runs' checks (B83)")
+    p.add_argument("--quick", action="store_true", help="skip `claude mcp list` (it starts every server to check it)")
+    p.set_defaults(fn=cmd_doctor)
     p = sub.add_parser("request", help="the request box: todo request \"<prompt>\" | todo request ls | todo request run NAME")
     p.add_argument("name", nargs="?", help="the prompt (new), or the request name (run)")
     p.add_argument("--later", action="store_true", help="file it; let the next sync start it")
+    p.add_argument("--dry-run", action="store_true", help="print how the prompt would launch; file nothing")
     p.add_argument("--run", dest="action", action="store_const", const="run", default="new")
     p.add_argument("--ls", dest="action", action="store_const", const="ls")
     p.set_defaults(fn=cmd_request)

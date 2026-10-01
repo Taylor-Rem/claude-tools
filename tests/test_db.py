@@ -70,7 +70,7 @@ class DbTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def row(self, name, db_id):
-        return {"host": "cloudflare", "project": name, "d1": {"name": name, "id": db_id, "owner": "owner@acme.test"}}
+        return {"host": "cloudflare", "project": name, "remote": f"git@github.com:acme/{name}.git", "d1": {"name": name, "id": db_id, "owner": "owner@acme.test"}}
 
     def register(self, rows):
         (self.root / "sites.json").write_text(json.dumps({"acme": rows}))

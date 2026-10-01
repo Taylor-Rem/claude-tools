@@ -10,6 +10,9 @@ templates/client/ in the claude-tools repo.
   client ls
   client doctor [slug]
   client snippet <slug>          # the config.json project entry to paste
+  client remotes [slug] [--write] # record each registered repo's push address in sites.json (B85)
+  client exec --project P --role client|demo|owner --workspace WS --cwd C -- TOOL ARGV…
+                                 # the relay's broker only: one keyed tool for a walled run (B85)
 
 Per-client facts that must survive a --restamp (who decides what, standing
 instructions, anything Taylor said about this one client) go in the
@@ -49,10 +52,14 @@ DANGEROUS = ("Bash(python3 -c:*)", "Bash(python:*)", "Bash(cat:*)", "Bash(cp:*)"
              "Bash(magick *)", "Bash(identify *)", "Bash(bash:*)", "Bash(sh:*)", "Bash(curl:*)", "Bash(wget:*)",
              "Bash(env:*)", "Read", "Bash", "Edit", "Write")
 REQUIRED_DENY = ("Bash(* /home/*)", "Bash(*~/*)", "Bash(*../*)", "Bash(*$HOME*)",
-                 "Bash(*$ANTHROPIC*)", "Bash(*$GEMINI*)", "Bash(*_API_KEY*)")   # the run's own keys stay out of commands
+                 "Bash(*$ANTHROPIC*)", "Bash(*$GEMINI*)", "Bash(*_API_KEY*)",   # the run's own keys stay out of commands
+                 "Edit(./.client.json)", "Write(./.client.json)",               # the tenant identity isn't the agent's to change (B80)
+                 "Edit(./.claude/**)", "Write(./.claude/**)")                    # nor its own settings
 TOOLBELT = Path(os.environ.get("CLAUDE_TOOLS_ENV", "~/.config/claude-tools/env")).expanduser()
 SITES = TOOLBELT.parent / "sites.json"          # `site new` / `site adopt` record every site here
 RELAY_CONFIG = Path(os.environ.get("RELAY_CONFIG", "~/projects/sms-relay/config.json")).expanduser()
+sys.path.insert(0, str(HERE / "lib"))
+import sandbox_tools  # noqa: E402  (client exec, B85; also read_beneath for anything read from a workspace)
 
 
 def relay_config():
@@ -200,11 +207,31 @@ def repos_of(ws):
 
 
 def read_meta(ws):
-    p = ws / ".client.json"
-    return json.loads(p.read_text()) if p.exists() else {}
+    """.client.json, read without following a link (a run could leave one; B85)."""
+    raw = sandbox_tools.read_beneath(ws, ".client.json") if ws.is_dir() else None
+    try:
+        return json.loads(raw) if raw else {}
+    except ValueError:
+        return {}
 
 
-def render_settings(meta):
+def write_plain(ws, rel, text):
+    """Write ws/rel as a plain file: a symlink a run left in its place is removed first,
+    never followed, so a restamp can't be aimed at a file outside the workspace (B85)."""
+    p = ws / rel
+    if p.is_symlink():
+        p.unlink()
+    fd = sandbox_tools.open_beneath(ws, rel, os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+
+
+def is_demo(meta):
+    """A demo workspace: the slug the templates reset nightly, or marked in .client.json."""
+    return bool(meta.get("demo")) or (meta.get("slug") or "").startswith("demo-")
+
+
+def render_settings(meta, ws):
     tpl = json.loads((TEMPLATES / "settings.json").read_text())
     rules = tpl.pop("_rules")
     allow = list(tpl["permissions"]["allow"]) + rules["repos"]
@@ -243,12 +270,16 @@ def stamp(ws, meta):
     (ws / "incoming" / ".keep").touch()
     (ws / "mail" / "drafts").mkdir(parents=True, exist_ok=True)   # B75: Patch's reply drafts, EMAIL-DRAFT: <id>
     (ws / ".claude").mkdir(exist_ok=True)
-    notes_file = ws / "NOTES.md"
-    notes = notes_file.read_text() if notes_file.exists() else ""
-    (ws / "CLAUDE.md").write_text(render_claude_md(meta, notes))
-    (ws / "PLAYBOOK.md").write_text((TEMPLATES / "PLAYBOOK.md").read_text())   # capabilities Patch sets up itself
-    (ws / ".claude" / "settings.json").write_text(render_settings(meta))
-    (ws / ".client.json").write_text(json.dumps(meta, indent=2) + "\n")
+    # NOTES.md is read without following a link: a run could leave NOTES.md pointing at a
+    # file outside the workspace, and this text is folded into CLAUDE.md, which it reads.
+    if (ws / "NOTES.md").is_symlink():
+        print("  note: NOTES.md is a link, not a file; left out of CLAUDE.md (make it a plain file)")
+    raw = sandbox_tools.read_beneath(ws, "NOTES.md")
+    notes = raw.decode("utf-8", "replace") if raw else ""
+    write_plain(ws, "CLAUDE.md", render_claude_md(meta, notes))
+    write_plain(ws, "PLAYBOOK.md", (TEMPLATES / "PLAYBOOK.md").read_text())   # capabilities Patch sets up itself
+    write_plain(ws, ".claude/settings.json", render_settings(meta, ws))
+    write_plain(ws, ".client.json", json.dumps(meta, indent=2) + "\n")
 
 
 def snippet(slug, meta):
@@ -285,6 +316,17 @@ def cmd_new(a):
             "auth": None if a.shared_key else (old.get("auth") or key_name(a.slug))}
     if old.get("contact_email"):
         meta["contact_email"] = old["contact_email"]      # `newsletter setup --contact` wrote it; a restamp keeps it
+    # role: what the toolbelt's role table (lib/sandbox_tools.py) calls this workspace. The
+    # relay reads a run's role from its own config.json, never from this file (B85).
+    meta["role"] = "client"
+    if is_demo({"slug": a.slug, "demo": old.get("demo")}):
+        meta["demo"] = True
+        meta["role"] = "demo"
+        # Whether a stranger's text may still put a demo site live (B80 change 5,
+        # supervisor review): "static" lets page edits go live but refuses any
+        # change to Functions/_worker.js/_headers/wrangler against golden; "off"
+        # lets only `demo reset` publish. Default static; kept on a restamp.
+        meta["demo_publish"] = old.get("demo_publish") or "static"
     template = a.template or old.get("template")
     if template:
         known = sorted(d.name for d in (HERE / "templates" / "sites").iterdir() if d.is_dir() and not d.name.startswith("_"))
@@ -292,6 +334,11 @@ def cmd_new(a):
             die(f"--template {template!r}: not a kind of site ({', '.join(known)})")
         meta["template"] = template                       # the kind of site they chose on /start; `site new` uses it
     stamp(ws, meta)
+    for name, url, note in sandbox_tools.record_remotes(a.slug, ws, write=True):   # B85: push addresses
+        if note == "recorded":
+            print(f"  registry: repos/{name} pushes to {url} (recorded)")
+        elif url is None:
+            print(f"  registry: repos/{name}: {note}")
     print(f"{'restamped' if stamped else 'created'} {ws}" + (f" · template: {meta['template']}" if meta.get("template") else ""))
     print(f"  repos: {', '.join(repos_of(ws)) or '(none yet — site new <slug> from inside it, or clone into repos/)'}"
           f" · sites allowed: {meta['sites']}")
@@ -377,8 +424,26 @@ def cmd_doctor(a):
                 print(f"  FAIL missing path denies: {', '.join(missing)}  (client new {ws.name} --restamp)"); ok = False
             if "{" in json.dumps(allow):
                 print("  FAIL unrendered placeholder in allowlist"); ok = False
+            m0 = read_meta(ws)
+            want = "demo" if is_demo(m0) else "client"
+            if m0.get("role") != want:
+                print(f"  FAIL .client.json role is {m0.get('role')!r}, not {want!r}  (client new {ws.name} --restamp)"); ok = False
+            if is_demo(m0):
+                if m0.get("demo_publish") not in ("static", "off"):
+                    print(f"  FAIL demo_publish is {m0.get('demo_publish')!r}, not 'static' or 'off'  (client new {ws.name} --restamp)"); ok = False
         for r in repos_of(ws):
             d = ws / "repos" / r
+            # Before any git runs here (outside every sandbox): settings a run could have
+            # added (a hook, fsmonitor, an include) would execute as Taylor (B85).
+            rprob = sandbox_tools.registry_remote_problem(ws, ws.name, r)
+            if rprob:
+                print(f"  FAIL repo {r}: push address: {rprob}  (client remotes {ws.name} --write records a "
+                      f"missing one; a mismatch is Taylor's to look at)"); ok = False
+            gprob = sandbox_tools.repo_problem(ws, r)
+            if gprob:
+                print(f"  FAIL repo {r}: git settings look changed ({gprob}); publishing from it is paused. "
+                      f"Look at repos/{r}/.git/config and hooks/ by hand before running git there"); ok = False
+                continue
             remote = subprocess.run(["git", "-C", str(d), "remote", "get-url", "origin"],
                                     capture_output=True, text=True).stdout.strip()
             branch = subprocess.run(["git", "-C", str(d), "rev-parse", "--abbrev-ref", "HEAD"],
@@ -427,7 +492,73 @@ def cmd_doctor(a):
         stray = [p.name for p in (ws / "incoming").iterdir() if p.name != ".keep"] if (ws / "incoming").is_dir() else []
         if stray:
             print(f"  note: {len(stray)} file(s) left in incoming/")
+    # One repo-wide check (B80): the identity tools cross-check .client.json
+    # against RELAY_PROJECT, through lib/tenant.py.
+    print("== toolbelt")
+    if not (HERE / "lib" / "tenant.py").exists():
+        print("  FAIL lib/tenant.py is missing (the tenant-identity cross-check)"); ok = False
+    else:
+        gaps = [t for t in ("site", "db", "newsletter", "social", "gbp", "pay", "connections")
+                if (HERE / "bin" / t).exists() and "tenant.enforce" not in (HERE / "bin" / t).read_text()]
+        if gaps:
+            print(f"  FAIL these tools no longer cross-check RELAY_PROJECT: {', '.join(gaps)}"); ok = False
+        else:
+            print("  identity tools cross-check RELAY_PROJECT")
+    ok = sandbox_doctor(a) and ok
     sys.exit(0 if ok else 1)
+
+
+def sandbox_doctor(a):
+    """The B85 half that lives here: bwrap, the shims, and (with --all) the relay's word that
+    every client and demo project runs walled. Before the relay half ships, its absence is a
+    note, not a failure, so merging the toolbelt first changes nothing."""
+    ok = True
+    print("== sandbox (B85)")
+    if not Path(sandbox_tools.BWRAP).exists():
+        print("  FAIL bwrap is not installed (apt install bubblewrap); keyed tools can't run for a walled run"); ok = False
+    shims = HERE / "sandbox" / "bin"
+    missing = [t for t in sandbox_tools.SHIMS if os.readlink(shims / t) != "tb"] if shims.is_dir() and all(
+        (shims / t).is_symlink() for t in sandbox_tools.SHIMS) else list(sandbox_tools.SHIMS)
+    if missing or not (shims / "tb").is_file():
+        print(f"  FAIL sandbox/bin shims missing or not linked to tb: {', '.join(missing) or 'tb'}"); ok = False
+    else:
+        print(f"  bwrap present; {len(sandbox_tools.SHIMS)} shims in sandbox/bin (mounted by the relay, never in ~/.local/bin)")
+    if not getattr(a, "all", False):
+        return ok
+    relay = RELAY_CONFIG.parent / "relay.py"
+    try:
+        r = subprocess.run([str(relay), "sandbox", "doctor", "--json"], capture_output=True, text=True, timeout=60)
+        data = json.loads(r.stdout) if r.stdout.strip().startswith("{") else None
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        data = None
+    if data is None:
+        print("  note: the relay has no `sandbox doctor --json` yet (its half of B85); runs are unwalled as today")
+        return ok
+    unwalled = [p.get("project", "?") for p in data.get("projects", []) if not p.get("walled")]
+    if data.get("mode") != "on" or unwalled:
+        print(f"  FAIL relay sandbox is {data.get('mode')!r}; unwalled: {', '.join(unwalled) or 'every project'}"
+              f"  (./relay.py sandbox doctor)")
+        ok = False
+    else:
+        print(f"  relay: every client and demo project walled ({len(data.get('projects', []))})")
+    return ok
+
+
+def cmd_remotes(a):
+    """Record each registered repo's origin into its sites.json row as `remote` (B85): the only
+    place a walled run's git push/fetch address comes from. Prints what it would do without --write."""
+    targets = [CLIENTS_DIR / a.slug] if a.slug else [d for d in sorted(CLIENTS_DIR.iterdir())
+                                                     if d.is_dir() and (d / ".client.json").exists()]
+    for ws in targets:
+        for name, url, note in sandbox_tools.record_remotes(ws.name, ws, write=a.write):
+            print(f"{ws.name}/{name}: {url or '-'}  ({note})")
+    if not a.write:
+        print("(nothing written; --write records them)")
+
+
+def cmd_exec(a):
+    """The broker's entry point: one keyed tool call for a walled run (lib/sandbox_tools.py)."""
+    sys.exit(sandbox_tools.main_exec(a))
 
 
 def cmd_snippet(a):
@@ -452,9 +583,18 @@ def main():
     n.set_defaults(fn=cmd_new)
     sub.add_parser("ls", help="list client workspaces").set_defaults(fn=cmd_ls)
     d = sub.add_parser("doctor", help="check workspaces are stamped and repos are pushable")
-    d.add_argument("slug", nargs="?"); d.set_defaults(fn=cmd_doctor)
+    d.add_argument("slug", nargs="?")
+    d.add_argument("--all", action="store_true", help="every workspace, and fail if the relay runs any client/demo unwalled")
+    d.set_defaults(fn=cmd_doctor)
     s = sub.add_parser("snippet", help="print the config.json entry for a client")
     s.add_argument("slug"); s.set_defaults(fn=cmd_snippet)
+    r = sub.add_parser("remotes", help="record each registered repo's push address in sites.json (B85)")
+    r.add_argument("slug", nargs="?"); r.add_argument("--write", action="store_true")
+    r.set_defaults(fn=cmd_remotes)
+    x = sub.add_parser("exec", help="(the relay's broker) run one keyed tool for a walled run")
+    x.add_argument("--project", required=True); x.add_argument("--role", required=True, choices=sandbox_tools.ROLES)
+    x.add_argument("--workspace", required=True); x.add_argument("--cwd", default=".")
+    x.add_argument("argv", nargs=argparse.REMAINDER); x.set_defaults(fn=cmd_exec)
     a = ap.parse_args()
     a.fn(a)
 

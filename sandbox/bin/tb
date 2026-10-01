@@ -1,0 +1,104 @@
+#!/usr/bin/python3
+"""tb — the toolbelt inside a walled run (ROADMAP B85, plans/36-os-sandbox.md § Contract).
+
+Inside the relay's sandbox the keyed tools (site, db, img, newsletter, social, gbp,
+pay, connections, print, shot, discord) and `git push|pull|fetch` are this one
+file under their own names. It sends the command to the relay's broker over
+PATCHLAMP_BROKER (a unix socket) and prints what comes back; the relay runs the
+real tool outside the sandbox with this project's keys, so no key is ever in
+here. Every other git command runs /usr/bin/git as usual.
+
+Protocol, one JSON line out: {"v":1,"tool":"site","argv":[...],"cwd":"repos/x"}
+(cwd relative to the workspace, the directory holding .client.json); lines back:
+{"o":b64} stdout, {"e":b64} stderr, then {"exit":N}. Stdin isn't forwarded.
+
+Stdlib only; never linked into ~/.local/bin (the relay mounts sandbox/bin at
+/opt/patchlamp/bin).
+"""
+import base64
+import json
+import os
+import socket
+import sys
+
+NO_BROKER = ("this tool runs through the relay; it isn't available here")
+GIT_FORWARD = ("push", "pull", "fetch")
+
+
+def git_verb(args):
+    """git's subcommand, skipping its global options (-C dir, -c k=v, --no-pager …)."""
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"):
+            i += 2
+            continue
+        if a.startswith("-"):
+            i += 1
+            continue
+        return a
+    return None
+
+
+def workspace_rel(cwd):
+    """cwd relative to the workspace root (the nearest directory with .client.json); the
+    absolute path when there's none (the broker confines it either way)."""
+    d = cwd
+    while True:
+        if os.path.isfile(os.path.join(d, ".client.json")):
+            return os.path.relpath(cwd, d)
+        parent = os.path.dirname(d)
+        if parent == d:
+            return cwd
+        d = parent
+
+
+def main():
+    tool = os.path.basename(sys.argv[0])
+    args = sys.argv[1:]
+    if tool == "tb":
+        if not args:
+            print("usage: tb TOOL [ARGS…] (normally reached as the tool's own name)", file=sys.stderr)
+            return 2
+        tool, args = args[0], args[1:]
+    if tool == "git" and git_verb(args) not in GIT_FORWARD:
+        os.execv("/usr/bin/git", ["git", *args])
+    sock_path = os.environ.get("PATCHLAMP_BROKER")
+    if not sock_path:
+        print(NO_BROKER, file=sys.stderr)
+        return 3
+    try:
+        cwd = os.getcwd()
+    except OSError:
+        cwd = "."
+    req = {"v": 1, "tool": tool, "argv": args, "cwd": workspace_rel(cwd)}
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.connect(sock_path)
+    except OSError as e:
+        print(f"the relay's tool runner isn't answering ({e.strerror or e}), so {tool} can't run right now; "
+              f"try again in a minute, and if it keeps happening say so in the reply", file=sys.stderr)
+        return 3
+    with s:
+        s.sendall((json.dumps(req) + "\n").encode())
+        f = s.makefile("rb")
+        for line in f:
+            try:
+                msg = json.loads(line)
+            except ValueError:
+                continue
+            if "o" in msg:
+                sys.stdout.buffer.write(base64.b64decode(msg["o"]))
+                sys.stdout.buffer.flush()
+            elif "e" in msg:
+                sys.stderr.buffer.write(base64.b64decode(msg["e"]))
+                sys.stderr.buffer.flush()
+            elif "exit" in msg:
+                return int(msg["exit"])
+    print(f"the relay stopped answering partway through {tool}; what printed above is what happened so far",
+          file=sys.stderr)
+    return 3
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -335,7 +335,23 @@ def cmd_reset(args):
         print(f"{name} already matched golden in git")
     if has_db(repo):
         reset_data(ws, name, repo)
-    r = subprocess.run(["site", "publish", name], capture_output=True, text=True, cwd=str(ws))
+    # A stranger's conversation is forgotten with the files: the next person who
+    # texts this demo starts clean (B80 change 4b; relay-F4's wipe for the demos).
+    # Never followed if it's a link (B85): a run could leave memory.md pointing at a file
+    # outside the workspace, and the wipe would empty that file instead.
+    mem = ws / "memory.md"
+    if mem.is_symlink():
+        mem.unlink()
+        mem.touch()
+        print("  memory: was a link, not a file; replaced with an empty file")
+    elif mem.is_file() and mem.stat().st_size:
+        fd = os.open(mem, os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW)
+        os.close(fd)
+        print("  memory: cleared (this demo forgets the last conversation on reset)")
+    # The nightly reset is allowed to republish even an "off" demo: it restores
+    # golden, it isn't a stranger's edit (bin/site demo_publish_block honours this).
+    pub_env = dict(os.environ, SITE_DEMO_RESET="1")
+    r = subprocess.run(["site", "publish", name], capture_output=True, text=True, cwd=str(ws), env=pub_env)
     tail = (r.stdout or r.stderr).strip().splitlines()[-2:]
     for line in tail:
         print("  " + line.strip())

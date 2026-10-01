@@ -125,6 +125,8 @@ import tempfile
 import time
 import urllib.request
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+import tenant  # noqa: E402  (shared tenant-identity check, B80)
 
 HERE = Path(__file__).resolve().parent.parent
 SITES_DIR = HERE / "templates" / "sites"
@@ -207,6 +209,15 @@ def gh(*args, check=True, stdin=None, quiet=False):
     if DRY:
         say("  would run: " + " ".join(cmd))
         return 0, "", ""
+    if not shutil.which("gh"):
+        # A walled run's tool sandbox has no gh and no GitHub token, by design (B85): the
+        # GitHub side of a site is Taylor's, from his terminal.
+        why = ("this needs GitHub access, which runs from Taylor's terminal rather than from here; "
+               "`site publish`, `site ls` and `site doctor` work for this business's sites"
+               if os.environ.get("RELAY_SANDBOX") else "gh (the GitHub CLI) isn't installed")
+        if check:
+            die(why)
+        return 127, "", why
     r = subprocess.run(cmd, capture_output=True, text=True, env=gh_env(), input=stdin)
     if check and r.returncode != 0:
         if not quiet:
@@ -263,7 +274,40 @@ def workspace():
         die(f".client.json is not valid JSON: {exc}")
     if not meta.get("slug"):
         die(".client.json has no slug; run client new <slug> --restamp")
+    tenant.enforce(meta["slug"], die)
     return ws, meta
+
+
+# Server-side pieces of a Cloudflare Pages deploy. A demo in "static" mode may
+# publish page edits but not changes to these — a stranger steering a demo mustn't
+# push live Functions/headers/redirects (sandbox-F3).
+DEMO_SERVER_PATHS = ("functions", "_worker.js", "_routes.json", "_headers",
+                     "_redirects", "wrangler.toml", "wrangler.jsonc", "wrangler.json")
+
+
+def demo_publish_block(meta, d):
+    """None if this demo may publish; else the reason it may not. `demo reset`
+    sets SITE_DEMO_RESET to bypass this — the nightly reset always republishes."""
+    mode = meta.get("demo_publish", "static")
+    if mode == "off":
+        return ("this is a demo site, so changes go live only on its nightly reset. Your edit is "
+                "saved in the repo; the reset is what puts it on the web.")
+    # The golden commit `demo golden` recorded outside the workspace (demo.json), never the
+    # repo's `golden` ref: a run can move that with `git tag -f` (sandbox-F3, B85).
+    import sandbox_tools
+    golden = sandbox_tools.demo_golden(meta.get("slug", ""))
+    if not golden:
+        return ("this demo has no golden copy on record, so nothing publishes until its nightly reset "
+                "(Taylor's `demo golden` makes one)")
+    if git(d, "cat-file", "-e", f"{golden}^{{commit}}", check=False)[0] != 0:
+        return ("this demo's golden copy on record isn't in its repo, so nothing publishes until its "
+                "nightly reset")
+    changed = git(d, "diff", "--name-only", golden, "HEAD", check=False)[1].splitlines()
+    hits = sorted({c for c in changed if any(c == p or c.startswith(p + "/") for p in DEMO_SERVER_PATHS)})
+    if hits:
+        return ("this demo can put page edits live, but not changes to how its site runs "
+                f"({', '.join(hits[:6])}). Those stay until the nightly reset.")
+    return None
 
 
 def repos_of(ws):
@@ -517,10 +561,25 @@ def cmd_templates(a):
             say(f"{'':<11} demo: {demo}")
 
 
+def registry_remote_of(ws, name):
+    """repos/<name>'s origin as the registry records it (git@github.com:owner/repo.git), or None."""
+    if ws is None:
+        return None
+    import sandbox_tools
+    m = sandbox_tools.GITHUB_URL.match(sandbox_tools.origin_url(ws, name) or "")
+    return f"git@github.com:{m.group(1)}/{m.group(2)}.git" if m else None
+
+
 def site_register(meta, name, project, domains=None, template=None):
     reg = registry_load()
     row = reg.setdefault(meta["slug"], {}).setdefault(name, {})
     row.update({"host": "cloudflare", "project": project})
+    # B85: where a walled run's `git push` goes comes only from this row, never from the repo's
+    # own config (which a run can write); recorded here, outside the wall, from the origin.
+    if not row.get("remote"):
+        url = registry_remote_of(Path.cwd() if (Path.cwd() / ".client.json").exists() else None, name)
+        if url:
+            row["remote"] = url
     if not DRY and pages_host(project) != f"{project}.pages.dev":
         row["pages_host"] = pages_host(project)        # a suffixed host (the name was taken on pages.dev)
     if template:
@@ -563,6 +622,19 @@ def export_tree(repo, dest, server=None):
     if archive.returncode != 0:
         die(f"git archive failed: {archive.stderr.decode().strip()}")
     subprocess.run(["tar", "-x", "-C", str(dest)], input=archive.stdout, check=True)
+    # A committed symlink is extracted as a symlink, and wrangler would upload what it points
+    # at: from a walled run's tool sandbox that could be this process's own keys
+    # (/proc/self/environ, the key file). Checked here, in our private copy, so nothing the
+    # run does meanwhile changes the answer (B85, sandbox-F1).
+    out_links = []
+    for p in dest.rglob("*"):
+        if p.is_symlink():
+            real = Path(os.path.realpath(p))
+            if not (real == dest or dest.resolve() in real.parents):
+                out_links.append(str(p.relative_to(dest)))
+    if out_links:
+        die(f"the repo has a link to something outside it ({', '.join(out_links[:3])}), and a published "
+            f"site can't carry that; remove the link (git rm, then commit) and publish again")
     if server is not None and (dest / "functions").is_dir():
         shutil.move(str(dest / "functions"), str(server / "functions"))
         toml = (dest / "wrangler.toml").read_text() if (dest / "wrangler.toml").exists() else ""
@@ -611,6 +683,8 @@ BADGE_OFF = re.compile(r"(?mi)^\s*(?:[-*]\s+)?(?:\*\*)?badge(?:\*\*)?:\s*off\b")
 
 def badge_off(ws):
     """True when this workspace's NOTES.md says `badge: off` (PLAYBOOK § The badge)."""
+    if (ws / "NOTES.md").is_symlink():          # B85: a run's link is never followed
+        return False
     try:
         return bool(BADGE_OFF.search((ws / "NOTES.md").read_text(encoding="utf-8")))
     except (OSError, UnicodeDecodeError):
@@ -953,6 +1027,12 @@ def cmd_publish(a):
         die(f"repos/{name} isn't a Cloudflare site in the registry. GitHub Pages repos deploy on push "
             f"(nothing to run); to move one: SITE_ADMIN=1 site adopt {name} from an owner session.")
     project = entry["project"]
+
+    demo_run = is_demo(meta.get("slug", "")) or os.environ.get("RELAY_ROLE") == "demo"   # B85: the relay's role
+    if demo_run and not os.environ.get("SITE_DEMO_RESET"):
+        blocked = demo_publish_block(meta, d)
+        if blocked:
+            die(blocked)
 
     _, dirty = git(d, "status", "--porcelain", "--untracked-files=no", check=False)
     if dirty.strip():
@@ -3091,8 +3171,8 @@ def cmd_handover(a):
     if is_demo(slug):
         notes.append("memory.md and the schedules: a demo's are shared by everyone who texts it")
     else:
-        if (ws / "memory.md").is_file():
-            shutil.copy2(ws / "memory.md", out / "memory.md")
+        if (ws / "memory.md").is_file() and not (ws / "memory.md").is_symlink():   # B85: a link is never followed
+            shutil.copy2(ws / "memory.md", out / "memory.md", follow_symlinks=False)
             have.append("memory.md — what Patch knows about your business")
         else:
             notes.append("memory.md: Patch hasn't written one for this business yet")

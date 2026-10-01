@@ -13,8 +13,11 @@
 #   ./setenv.sh SOME_NEW_KEY    # add/update just the named key(s)
 #   ./setenv.sh --list          # show which keys are set (never the values)
 #
-# Tools consume the file with:
-#   set -a; . "$HOME/.config/claude-tools/env"; set +a
+# Tools read the file by parsing it (KEY=value per line, split on the first
+# "="; see `read_env` in bin/site or bin/cloud), keeping values in memory.
+# Never source it with a shell (`. env`, `set -a; . env`): values aren't
+# quoted, a token can hold `|`, `&` or `$`, and the shell would run or print
+# them (2026-10-01 that put half a token into a transcript). Never `cat` it.
 
 set -euo pipefail
 umask 077
@@ -28,6 +31,7 @@ KNOWN_KEYS=(
   DISCORD_BOT_TOKEN     # sms-relay
   GITHUB_TOKEN          # site (repo create/pages); gh honours it as GH_TOKEN
   GOOGLE_MAPS_API_KEY   # leads (Places API (New), Place Details)
+  LARAVEL_CLOUD_TOKEN   # cloud (view-only token from the Laravel Cloud UI)
 )
 
 mkdir -p "$(dirname "$ENV_FILE")"

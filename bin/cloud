@@ -1,0 +1,648 @@
+#!/usr/bin/env python3
+"""cloud — what is deployed on Laravel Cloud, read from its API (ROADMAP B88).
+
+patchlamp.com runs on Laravel Cloud and a push to `main` deploys it. Until
+this tool a session proved a deploy by probing the live site, and nobody could
+read the site's logs from here. This reads both back.
+
+  cloud deploys [-n 5]        # the last deploys: status, commit, branch, message, started, finished
+  cloud status                # the commit that is live against origin/main, and any deploy in flight
+  cloud wait [SHA]            # block until that commit's deploy succeeds or fails (default: origin/main)
+  cloud logs [--since 1h]     # the site's application/access logs (--type, --query, --errors, -n)
+  cloud logs --deploy [SHA]   # one deploy's build and deploy steps (default: the newest)
+  cloud doctor                # the key, the token, the app and environment it resolves to
+
+Options on every command: --app NAME|ID, --env NAME|ID (default: the app's
+default environment; CLOUD_APP / CLOUD_ENV in the environment or the key file
+do the same). --json on deploys/status/wait prints the same named fields as
+JSON, never the API's own response.
+
+Exit codes: 0 ok; 1 an error (bad token, unreachable, nothing to resolve);
+`status` exits 3 when the live commit is not origin/main or a deploy is in
+flight; `wait` exits 1 when the deploy failed and 2 when it timed out.
+
+Read-only by construction. Every request goes through `_get()`, which builds
+a GET and nothing else, whatever the token would allow (a test greps this file
+for any other verb). The environment object the API returns carries the
+production app's environment variables, which are the site's real secrets,
+so this tool reads fields by name, keeps nothing on disk, and on an error
+prints the HTTP status and a short reason, never the response body.
+
+Config, by name, never printed:
+  LARAVEL_CLOUD_TOKEN   ~/.config/claude-tools/env (view-only token from the Cloud UI)
+  PATCHLAMP_REPO        optional; the local clone whose `origin` is compared (default ~/projects/patchlamp)
+The key file is parsed here, never sourced by a shell: the token holds a `|`.
+"""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+
+ENV_FILE = Path(os.environ.get("CLAUDE_TOOLS_ENV", Path.home() / ".config/claude-tools/env"))
+API = "https://cloud.laravel.com/api"
+# Cloud refuses Python's default user agent with a 403; any honest one passes.
+USER_AGENT = "claude-tools-cloud/1 (+https://patchlamp.com)"
+
+SUCCEEDED = {"deployment.succeeded"}
+FAILED = {"build.failed", "deployment.failed", "failed", "cancelled"}
+TERMINAL = SUCCEEDED | FAILED
+# GET /environments/{id}/logs refuses a start more than a day back (a 422); stay just inside it.
+LOG_WINDOW = 86400 - 120
+
+# The only deployment fields this tool ever reads or prints.
+DEPLOY_FIELDS = ("status", "commit_hash", "commit_message", "branch_name", "commit_author",
+                 "failure_reason", "started_at", "finished_at")
+
+
+class CloudError(Exception):
+    """Something went wrong talking to Cloud; the message is safe to print."""
+
+
+def die(msg, code=1):
+    print(f"cloud: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+# ---------------------------------------------------------------- the key file
+
+def read_env():
+    """Parse the toolbelt key file (KEY=value lines). Values stay in memory only."""
+    keys = {}
+    if ENV_FILE.exists():
+        for line in ENV_FILE.read_text().splitlines():
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                keys[k.strip()] = v.strip()
+    return keys
+
+
+def setting(name):
+    return os.environ.get(name) or read_env().get(name) or ""
+
+
+def token():
+    val = setting("LARAVEL_CLOUD_TOKEN")
+    if not val:
+        raise CloudError("LARAVEL_CLOUD_TOKEN is not in the toolbelt. Taylor makes a view-only token in "
+                         "the Cloud UI and runs: ~/.config/claude-tools/setenv.sh LARAVEL_CLOUD_TOKEN")
+    return val
+
+
+# ---------------------------------------------------------------- the one request
+
+REASONS = {
+    401: "the token was refused; it may be revoked or mistyped (setenv.sh LARAVEL_CLOUD_TOKEN replaces it)",
+    403: "the token may not read this (or the request was blocked)",
+    404: "not found; the app or environment may have been renamed or removed",
+    422: "Cloud would not answer this request as asked",
+    429: "rate limited by Cloud; wait a minute and try again",
+}
+
+_fixture_hits = {}
+
+
+def _fixture(path, params):
+    """CLOUD_FIXTURES=<dir>: answer from <dir>/routes.json — tests only.
+
+    routes.json maps "GET <path>[?k=v&...]" to a file, a list of files (served in
+    order, the last one repeating: a deploy changing state between polls), or
+    {"status": 401} for an error. `from`/`to` are left out of the key."""
+    root = Path(os.environ["CLOUD_FIXTURES"])
+    routes = json.loads((root / "routes.json").read_text())
+    key = "GET " + path
+    params = {k: v for k, v in params.items() if k not in ("from", "to")}   # the log window moves with the clock
+    if params:
+        key += "?" + urllib.parse.urlencode(sorted(params.items()))
+    if key not in routes:
+        raise CloudError(f"404 from {path}: " + REASONS[404])
+    target = routes[key]
+    if isinstance(target, dict):
+        code = target["status"]
+        raise CloudError(f"{code} from {path}: " + REASONS.get(code, "unexpected answer"))
+    if isinstance(target, list):
+        i = _fixture_hits.get(key, 0)
+        _fixture_hits[key] = i + 1
+        target = target[min(i, len(target) - 1)]
+    return json.loads((root / target).read_text())
+
+
+def _get(path, params=None):
+    """GET <API><path>. The only network call in this file, and it is a GET."""
+    params = {k: v for k, v in (params or {}).items() if v is not None}
+    if os.environ.get("CLOUD_FIXTURES"):
+        return _fixture(path, params)
+    url = API + path + ("?" + urllib.parse.urlencode(params, doseq=True) if params else "")
+    req = urllib.request.Request(url, method="GET", headers={
+        "Authorization": f"Bearer {token()}",
+        "Accept": "application/json",
+        "User-Agent": USER_AGENT,
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        # Never the body: an error page could echo anything back. The one exception is a 422's
+        # `message`, a validation sentence ("The start date cannot be more than 1 days ago."),
+        # read by name and cut short.
+        why = REASONS.get(e.code, e.reason or "unexpected answer")
+        if e.code == 422:
+            try:
+                msg = json.loads(e.read().decode()).get("message")
+                if isinstance(msg, str) and msg.strip():
+                    why = first_line(msg, 160)
+            except (ValueError, AttributeError, OSError):
+                pass
+        raise CloudError(f"{e.code} from {path}: {why}") from None
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        reason = getattr(e, "reason", e)
+        raise CloudError(f"could not reach cloud.laravel.com ({reason}); check the network and try again") from None
+    except ValueError:
+        raise CloudError(f"{path} answered with something that is not JSON") from None
+
+
+# ---------------------------------------------------------------- reading by name
+
+def attrs(resource, fields):
+    """Only the named attributes of one JSON:API resource."""
+    a = (resource or {}).get("attributes") or {}
+    return {f: a.get(f) for f in fields}
+
+
+def rel_id(resource, name):
+    d = (((resource or {}).get("relationships") or {}).get(name) or {}).get("data")
+    return d.get("id") if isinstance(d, dict) else None
+
+
+def pick(items, want, label, kind):
+    """The resource whose id, slug or name is `want` (case-insensitive)."""
+    w = want.lower()
+    for it in items:
+        a = attrs(it, ("name", "slug"))
+        if w in {str(it.get("id", "")).lower(), str(a["name"] or "").lower(), str(a["slug"] or "").lower()}:
+            return it
+    names = ", ".join(attrs(i, ("name",))["name"] or i.get("id", "?") for i in items) or "none"
+    raise CloudError(f"no {kind} called {want!r} ({label}); the token can see: {names}")
+
+
+def resolve(args):
+    """(app {id,name}, env {id,name,status}) for this run."""
+    apps = _get("/applications").get("data") or []
+    if not apps:
+        raise CloudError("the token sees no applications; it may belong to another organization")
+    want = args.app or setting("CLOUD_APP")
+    if want:
+        app = pick(apps, want, "--app/CLOUD_APP", "application")
+    elif len(apps) == 1:
+        app = apps[0]
+    else:
+        try:
+            app = pick(apps, "patchlamp", "default", "application")
+        except CloudError:
+            raise CloudError("the token sees several applications; name one with --app") from None
+    envs = _get(f"/applications/{app['id']}/environments").get("data") or []
+    if not envs:
+        raise CloudError(f"application {attrs(app, ('name',))['name']} has no environments")
+    want = args.env or setting("CLOUD_ENV")
+    if want:
+        env = pick(envs, want, "--env/CLOUD_ENV", "environment")
+    else:
+        default = rel_id(app, "defaultEnvironment")
+        env = next((e for e in envs if e.get("id") == default), None)
+        if env is None:
+            env = next((e for e in envs if (attrs(e, ("name",))["name"] or "").lower() in ("production", "main")), None)
+        if env is None and len(envs) == 1:
+            env = envs[0]
+        if env is None:
+            raise CloudError("several environments and no default; name one with --env")
+    a = attrs(app, ("name",))
+    e = attrs(env, ("name", "status", "vanity_domain"))
+    return ({"id": app["id"], "name": a["name"]},
+            {"id": env["id"], "name": e["name"], "status": e["status"], "vanity_domain": e["vanity_domain"]})
+
+
+def deployment(resource):
+    d = attrs(resource, DEPLOY_FIELDS)
+    d["id"] = resource.get("id")
+    return d
+
+
+def list_deploys(env_id, n):
+    """The newest `n` deployments, newest first (sorted here; Cloud's order is not promised)."""
+    out, page = [], 1
+    while len(out) < n and page <= 10:
+        body = _get(f"/environments/{env_id}/deployments", {"page": page} if page > 1 else None)
+        out += [deployment(r) for r in body.get("data") or []]
+        meta = body.get("meta") or {}
+        if not (body.get("links") or {}).get("next") or page >= (meta.get("last_page") or page):
+            break
+        page += 1
+    # Not started yet sorts first; then by start time, newest first.
+    out.sort(key=lambda d: d["started_at"] or "9999", reverse=True)
+    return out[:n]
+
+
+# ---------------------------------------------------------------- formatting
+
+def when(iso):
+    if not iso:
+        return "-"
+    try:
+        t = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    except ValueError:
+        return iso
+    return t.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def ago(iso):
+    if not iso:
+        return ""
+    try:
+        t = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    s = int((datetime.now(timezone.utc) - t).total_seconds())
+    if s < 90:
+        return f"{max(s, 0)}s ago"
+    if s < 5400:
+        return f"{s // 60}m ago"
+    if s < 172800:
+        return f"{s // 3600}h ago"
+    return f"{s // 86400}d ago"
+
+
+def took(d):
+    try:
+        a = datetime.fromisoformat(d["started_at"].replace("Z", "+00:00"))
+        b = datetime.fromisoformat(d["finished_at"].replace("Z", "+00:00"))
+    except (AttributeError, ValueError, TypeError):
+        return ""
+    s = int((b - a).total_seconds())
+    return f"{s // 60}m{s % 60:02d}s"
+
+
+def first_line(text, width=72):
+    line = (text or "").strip().splitlines()[0] if (text or "").strip() else ""
+    return line if len(line) <= width else line[: width - 1] + "…"
+
+
+def short(sha):
+    return (sha or "")[:7] or "-------"
+
+
+def describe(d, why=True):
+    """One line a person can read; the failure reason under it if there is one."""
+    status = d["status"] or "?"
+    dur = took(d)
+    line = (f"{status:<20} {short(d['commit_hash'])}  {d['branch_name'] or '-':<8} "
+            f"started {when(d['started_at'])}  finished {when(d['finished_at'])}"
+            + (f" ({dur})" if dur else "") + f"  {first_line(d['commit_message'])}")
+    if why and d["failure_reason"] and status in FAILED:
+        line += "\n" + "    why: " + first_line(d["failure_reason"], 300)
+    return line
+
+
+def public(d):
+    """The named fields for --json."""
+    return {k: d.get(k) for k in ("id",) + DEPLOY_FIELDS}
+
+
+# ---------------------------------------------------------------- origin/main
+
+def patchlamp_repo():
+    return Path(setting("PATCHLAMP_REPO") or Path.home() / "projects/patchlamp").expanduser()
+
+
+def origin_head(branch="main"):
+    """(sha, how) for origin/<branch>.
+
+    Asks the remote itself with `git ls-remote` (read-only, no fetch, nothing in
+    the clone changes), because the clone's own origin/main is only as fresh as
+    its last fetch. Falls back to that local ref, said so, when the remote can't
+    be reached."""
+    repo = patchlamp_repo()
+    if not (repo / ".git").exists():
+        return None, f"no git clone at {repo} (set PATCHLAMP_REPO)"
+    try:
+        r = subprocess.run(["git", "-C", str(repo), "ls-remote", "origin", f"refs/heads/{branch}"],
+                           capture_output=True, text=True, timeout=30,
+                           env=dict(os.environ, GIT_TERMINAL_PROMPT="0"))
+        if r.returncode == 0 and r.stdout.split():
+            return r.stdout.split()[0], "git ls-remote origin"
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    try:
+        r = subprocess.run(["git", "-C", str(repo), "rev-parse", f"origin/{branch}"],
+                           capture_output=True, text=True, timeout=10)
+        if r.returncode == 0:
+            return r.stdout.strip(), "local origin/main (the remote was unreachable; may be stale)"
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    return None, "could not read origin/main from the remote or the clone"
+
+
+# ---------------------------------------------------------------- commands
+
+def cmd_deploys(a):
+    app, env = resolve(a)
+    ds = list_deploys(env["id"], a.n)
+    if a.json:
+        print(json.dumps([public(d) for d in ds], indent=2))
+        return 0
+    print(f"{app['name']} / {env['name']}: last {len(ds)} deploy{'s' if len(ds) != 1 else ''}, newest first")
+    if not ds:
+        print("  no deploys yet")
+    for d in ds:
+        print("  " + describe(d).replace("\n", "\n  "))
+    return 0
+
+
+def live_deploy(env_id, ds):
+    """The deployment running now: Cloud's currentDeployment if it names one, else the newest success."""
+    body = _get(f"/environments/{env_id}", {"include": "currentDeployment"})
+    cur_id = rel_id(body.get("data"), "currentDeployment")
+    for inc in body.get("included") or []:
+        if inc.get("type") == "deployments" and (cur_id is None or inc.get("id") == cur_id):
+            return deployment(inc)
+    for d in ds:
+        if d["id"] == cur_id:
+            return d
+    return next((d for d in ds if d["status"] in SUCCEEDED), None)
+
+
+def cmd_status(a):
+    app, env = resolve(a)
+    ds = list_deploys(env["id"], 10)
+    live = live_deploy(env["id"], ds)
+    flying = [d for d in ds if d["status"] not in TERMINAL]
+    branch = (live or {}).get("branch_name") or "main"
+    head, how = origin_head(branch)
+    live_sha = ((live or {}).get("commit_hash") or "").lower()
+    up_to_date = bool(live_sha and head and head.lower().startswith(live_sha))
+    if a.json:
+        print(json.dumps({"app": app["name"], "environment": env["name"], "environment_status": env["status"],
+                          "live": public(live) if live else None, "origin": {"branch": branch, "sha": head, "how": how},
+                          "up_to_date": up_to_date, "in_flight": [public(d) for d in flying]}, indent=2))
+        return 0 if up_to_date and not flying else 3
+    print(f"{app['name']} / {env['name']} ({env['status'] or 'status unknown'})")
+    if live:
+        print(f"  live:        {short(live['commit_hash'])}  {live['branch_name'] or '-'}  "
+              f"deployed {when(live['finished_at'])} ({ago(live['finished_at'])})  {first_line(live['commit_message'])}")
+    else:
+        print("  live:        no successful deploy found")
+    if head:
+        verdict = "the live commit" if up_to_date else "NOT live yet" if live else ""
+        print(f"  origin/{branch}: {short(head)}  {verdict}  [{how}]")
+    else:
+        print(f"  origin/{branch}: unknown ({how})")
+    if flying:
+        for d in flying:
+            print(f"  in flight:   {d['status']}  {short(d['commit_hash'])}  started {when(d['started_at'])}  "
+                  f"{first_line(d['commit_message'])}")
+    else:
+        print("  in flight:   nothing")
+    return 0 if up_to_date and not flying else 3
+
+
+def cmd_wait(a):
+    app, env = resolve(a)
+    sha = (a.sha or "").lower()
+    if not sha:
+        sha, how = origin_head("main")
+        if not sha:
+            raise CloudError(f"no SHA given and origin/main is unknown ({how}); pass the commit: cloud wait SHA")
+    if len(sha) < 7:
+        raise CloudError("give at least seven characters of the commit")
+    deadline = time.monotonic() + a.timeout
+    said = None
+    while True:
+        ds = [d for d in list_deploys(env["id"], 15) if (d["commit_hash"] or "").lower().startswith(sha)]
+        d = ds[0] if ds else None
+        if d and d["status"] in TERMINAL:
+            if d["status"] in FAILED and d["id"]:
+                # The single-deployment endpoint gives the failed step's output, the list only a stored reason.
+                try:
+                    d = deployment(_get(f"/deployments/{d['id']}").get("data") or {}) | {"id": d["id"]}
+                except CloudError:
+                    pass
+            if a.json:
+                print(json.dumps(public(d), indent=2))
+            else:
+                ok = d["status"] in SUCCEEDED
+                print(f"{'deployed' if ok else 'FAILED'}: " + describe(d, why=False))
+                if not ok and d["failure_reason"]:
+                    reason = d["failure_reason"].strip()
+                    print("  reason (last lines):\n" + "\n".join("    " + x for x in reason.splitlines()[-15:]))
+            return 0 if d["status"] in SUCCEEDED else 1
+        state = d["status"] if d else "no deploy for it yet"
+        if state != said and not a.json:
+            print(f"waiting on {short(sha)} ({app['name']} / {env['name']}): {state}", file=sys.stderr, flush=True)
+            said = state
+        if time.monotonic() >= deadline:
+            hint = ("" if d else " Was it pushed to main, and is push-to-deploy on? A commit that was never "
+                    "the head of main when Cloud looked gets no deploy of its own.")
+            print(f"cloud: gave up after {a.timeout}s on {short(sha)}: {state}.{hint}", file=sys.stderr)
+            return 2
+        time.sleep(a.interval)
+
+
+def parse_since(s):
+    units = {"m": 60, "h": 3600, "d": 86400}
+    try:
+        return int(s[:-1]) * units[s[-1]]
+    except (KeyError, ValueError, IndexError):
+        raise CloudError(f"--since takes 30m, 2h or 1d, not {s!r}") from None
+
+
+def iso(t):
+    return t.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def cmd_logs(a):
+    app, env = resolve(a)
+    if a.deploy is not None:
+        return deploy_logs(env, a.deploy)
+    now = datetime.now(timezone.utc)
+    since = parse_since(a.since)
+    if since > LOG_WINDOW:
+        print(f"cloud: Cloud keeps a day of logs to search; showing the last {LOG_WINDOW // 3600}h", file=sys.stderr)
+        since, a.since = LOG_WINDOW, f"{LOG_WINDOW // 3600}h"
+    params = {"from": iso(datetime.fromtimestamp(now.timestamp() - since, timezone.utc)),
+              "to": iso(now), "type": a.type, "query": a.query}
+    rows, cursor = [], None
+    for _ in range(10):
+        try:
+            body = _get(f"/environments/{env['id']}/logs", params | ({"cursor": cursor} if cursor else {}))
+        except CloudError as e:
+            if str(e).startswith(("401", "403")):
+                raise CloudError(f"this token can't read the logs ({e}). The site's logs are on the Cloud "
+                                 "dashboard; a token with log access would let this read them.") from None
+            raise
+        for r in body.get("data") or []:
+            level = r.get("level") or ""
+            if a.errors and level not in ("error", "warning"):
+                continue
+            rows.append(r)
+        cursor = (body.get("meta") or {}).get("cursor")
+        if not cursor or len(rows) >= a.n:
+            break
+    rows.sort(key=lambda r: r.get("logged_at") or "")
+    rows = rows[-a.n:]
+    print(f"{app['name']} / {env['name']}: {len(rows)} log line{'s' if len(rows) != 1 else ''}, last {a.since}"
+          + (f", type {a.type}" if a.type else "") + (f", matching {a.query!r}" if a.query else "")
+          + (", errors and warnings only" if a.errors else ""))
+    for r in rows:
+        print("  " + log_line(r))
+    return 0
+
+
+def log_line(r):
+    """One log row by named fields. Access rows: method, path, status, time. Others: the message (and an
+    exception's class). Never the context/extra maps or IPs and user agents."""
+    kind, level = r.get("type") or "?", r.get("level") or "?"
+    data = r.get("data") if isinstance(r.get("data"), dict) else {}
+    head = f"{when(r.get('logged_at'))}  {level:<7} {kind:<11} "
+    if kind == "access":
+        return head + f"{data.get('status', '?')} {data.get('method', '?')} {safe_path(data.get('path'))} " \
+                      f"{data.get('duration_ms', '?')}ms"
+    msg = first_line(r.get("message"), 200)
+    if kind == "exception" and data.get("class"):
+        msg = f"{data.get('class')}: {msg}"
+    return head + msg
+
+
+def safe_path(path):
+    """An access log path without what could log someone in: the query string goes (signed links
+    carry `signature=`), and any long token-like segment is cut to its first four characters."""
+    if not path:
+        return "?"
+    bare, _, query = str(path).partition("?")
+    parts = [(x[:4] + "…") if len(x) >= 24 and x.replace("-", "").replace("_", "").isalnum() else x
+             for x in bare.split("/")]
+    return "/".join(parts) + ("?…" if query else "")
+
+
+def deploy_logs(env, which):
+    ds = list_deploys(env["id"], 15)
+    which = (which or "").lower()
+    d = next((x for x in ds if not which or (x["commit_hash"] or "").lower().startswith(which)), None)
+    if not d:
+        raise CloudError(f"no recent deploy of {which!r} in {env['name']}")
+    body = _get(f"/deployments/{d['id']}/logs")
+    data = body.get("data") or {}
+    print(describe(d))
+    for phase in ("build", "deploy"):
+        part = data.get(phase) or {}
+        if not part.get("available"):
+            print(f"  {phase}: no log available")
+            continue
+        print(f"  {phase}:")
+        for s in part.get("steps") or []:
+            ms = s.get("duration_ms")
+            print(f"    {s.get('status') or '?':<10} {s.get('description') or s.get('step') or '?'}"
+                  + (f" ({ms / 1000:.1f}s)" if isinstance(ms, (int, float)) else ""))
+            if (s.get("status") or "").lower() in ("failed", "error") and s.get("output"):
+                for x in s["output"].strip().splitlines()[-20:]:
+                    print("      " + x[:300])
+    return 0
+
+
+def cmd_doctor(a):
+    ok = True
+
+    def line(good, text):
+        nonlocal ok
+        ok = ok and good
+        print(f"  [{'ok' if good else '!!'}] {text}")
+
+    print("cloud doctor")
+    source = "the environment" if os.environ.get("LARAVEL_CLOUD_TOKEN") else str(ENV_FILE)
+    have = bool(setting("LARAVEL_CLOUD_TOKEN"))
+    line(have, f"LARAVEL_CLOUD_TOKEN set (from {source})" if have else
+         "LARAVEL_CLOUD_TOKEN missing: Taylor runs ~/.config/claude-tools/setenv.sh LARAVEL_CLOUD_TOKEN")
+    if not have:
+        return 1
+    try:
+        n = len(_get("/applications").get("data") or [])
+        line(True, f"token accepted by cloud.laravel.com ({n} application{'s' if n != 1 else ''} visible)")
+    except CloudError as e:
+        line(False, f"token check failed: {e}")
+        return 1
+    try:
+        app, env = resolve(a)
+        line(True, f"resolved {app['name']} / {env['name']} ({env['status'] or 'status unknown'})")
+        ds = list_deploys(env["id"], 1)
+        line(bool(ds), f"deploys readable; newest {ds[0]['status']} {short(ds[0]['commit_hash'])} "
+                       f"({ago(ds[0]['started_at'])})" if ds else "deploys readable but none listed")
+    except CloudError as e:
+        line(False, str(e))
+        return 1
+    try:
+        now = datetime.now(timezone.utc)
+        _get(f"/environments/{env['id']}/logs",
+             {"from": iso(datetime.fromtimestamp(now.timestamp() - 300, timezone.utc)), "to": iso(now)})
+        line(True, "logs readable (cloud logs)")
+    except CloudError as e:
+        # Not fatal: deploys and status work without it.
+        print(f"  [--] logs not readable with this token ({e}); cloud logs will say so")
+    head, how = origin_head("main")
+    line(bool(head), f"origin/main {short(head)} via {how}" if head else f"origin/main unknown: {how}")
+    print("all good" if ok else "something above needs fixing")
+    return 0 if ok else 1
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(prog="cloud", description=__doc__.split("\n\n")[0],
+                                formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--app", help="application name, slug or id (default: the only one, or patchlamp)")
+    common.add_argument("--env", help="environment name, slug or id (default: the app's default environment)")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    s = sub.add_parser("deploys", parents=[common], help="the last deploys")
+    s.add_argument("-n", type=int, default=5)
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_deploys)
+
+    s = sub.add_parser("status", parents=[common], help="the live commit against origin/main")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_status)
+
+    s = sub.add_parser("wait", parents=[common], help="block until a commit's deploy finishes")
+    s.add_argument("sha", nargs="?", help="the commit (7+ characters; default origin/main)")
+    s.add_argument("--timeout", type=int, default=1200, help="seconds before giving up (default 1200)")
+    s.add_argument("--interval", type=float, default=15, help="seconds between looks (default 15)")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_wait)
+
+    s = sub.add_parser("logs", parents=[common], help="the site's logs, or one deploy's steps")
+    s.add_argument("--since", default="1h", help="30m, 2h, 1d (default 1h)")
+    s.add_argument("--type", choices=("all", "application", "access"), help="default: Cloud's own (all)")
+    s.add_argument("--query", help="only lines containing this text")
+    s.add_argument("--errors", action="store_true", help="errors and warnings only")
+    s.add_argument("-n", type=int, default=50, help="at most this many lines, newest last (default 50)")
+    s.add_argument("--deploy", nargs="?", const="", default=None, metavar="SHA",
+                   help="a deploy's build/deploy steps instead (default: the newest)")
+    s.set_defaults(fn=cmd_logs)
+
+    s = sub.add_parser("doctor", parents=[common], help="check the key, the token and what it resolves to")
+    s.set_defaults(fn=cmd_doctor)
+
+    a = p.parse_args(argv)
+    try:
+        return a.fn(a)
+    except CloudError as e:
+        die(str(e))
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())

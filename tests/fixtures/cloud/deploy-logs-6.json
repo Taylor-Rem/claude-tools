@@ -1,0 +1,30 @@
+{
+ "data": {
+  "build": {
+   "available": true,
+   "steps": [
+    {
+     "step": "clone",
+     "status": "finished",
+     "description": "Cloning application source control repository",
+     "output": "ok",
+     "duration_ms": 4100
+    },
+    {
+     "step": "build",
+     "status": "finished",
+     "description": "Running build commands",
+     "output": "npm run build",
+     "duration_ms": 14200
+    }
+   ]
+  },
+  "deploy": {
+   "available": false,
+   "steps": []
+  }
+ },
+ "meta": {
+  "deployment_status": "deployment.succeeded"
+ }
+}

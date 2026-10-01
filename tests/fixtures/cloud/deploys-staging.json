@@ -1,0 +1,43 @@
+{
+ "data": [
+  {
+   "id": "dep-9",
+   "type": "deployments",
+   "attributes": {
+    "slug": "dep-9",
+    "status": "deployment.failed",
+    "branch_name": "dev",
+    "commit_hash": "abcdef01234567890abcdef01234567890abcdef",
+    "commit_message": "Bad migration",
+    "commit_author": "Taylor",
+    "failure_reason": "stored reason",
+    "php_major_version": "8.4",
+    "build_command": null,
+    "node_version": "22",
+    "uses_octane": false,
+    "uses_hibernation": false,
+    "hibernation_wake_up_interval": null,
+    "started_at": "2026-10-01T18:00:00Z",
+    "finished_at": "2026-10-01T18:02:00Z"
+   },
+   "links": {
+    "self": {
+     "href": "https://cloud.laravel.com/api/deployments/dep-9"
+    }
+   }
+  }
+ ],
+ "links": {
+  "next": null
+ },
+ "meta": {
+  "current_page": 1,
+  "from": 1,
+  "last_page": 1,
+  "links": [],
+  "path": "x",
+  "per_page": 5,
+  "to": 5,
+  "total": 7
+ }
+}

@@ -1,0 +1,62 @@
+{
+ "data": {
+  "id": "env-1",
+  "type": "environments",
+  "attributes": {
+   "name": "production",
+   "slug": "production",
+   "status": "running",
+   "vanity_domain": "production-abc.laravel.cloud",
+   "php_major_version": "8.4",
+   "uses_push_to_deploy": true,
+   "environment_variables": {
+    "APP_KEY": "base64:PLANTED-SECRET-b88-never-print-me",
+    "STRIPE_SECRET": "PLANTED-SECRET-b88-never-print-me",
+    "DB_PASSWORD": "PLANTED-SECRET-b88-never-print-me"
+   },
+   "created_at": "2026-09-15T12:00:00Z"
+  },
+  "relationships": {
+   "application": {
+    "data": {
+     "id": "app-1",
+     "type": "applications"
+    }
+   },
+   "currentDeployment": {
+    "data": {
+     "id": "dep-6",
+     "type": "deployments"
+    }
+   }
+  }
+ },
+ "included": [
+  {
+   "id": "dep-6",
+   "type": "deployments",
+   "attributes": {
+    "slug": "dep-6",
+    "status": "deployment.succeeded",
+    "branch_name": "main",
+    "commit_hash": "{{HEAD}}",
+    "commit_message": "Merge pull request #83 from patchlamp/dev",
+    "commit_author": "Taylor",
+    "failure_reason": null,
+    "php_major_version": "8.4",
+    "build_command": null,
+    "node_version": "22",
+    "uses_octane": false,
+    "uses_hibernation": false,
+    "hibernation_wake_up_interval": null,
+    "started_at": "2026-10-01T17:48:14Z",
+    "finished_at": "2026-10-01T17:49:03Z"
+   },
+   "links": {
+    "self": {
+     "href": "https://cloud.laravel.com/api/deployments/dep-6"
+    }
+   }
+  }
+ ]
+}

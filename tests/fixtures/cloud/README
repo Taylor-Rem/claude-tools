@@ -1,0 +1,4 @@
+Hand-written to the shape of Laravel Cloud's API (recorded 2026-10-01), never a captured
+response. PLANTED-SECRET-b88-never-print-me in environment_variables and a log context is the
+canary: tests/test_cloud.py fails if any command prints it. {{HEAD}} is replaced by the test
+repo's commit. routes.json: "GET path[?query]" -> file | [files served in turn] | {"status": N}.

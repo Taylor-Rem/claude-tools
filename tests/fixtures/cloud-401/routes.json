@@ -1,0 +1,5 @@
+{
+ "GET /applications": {
+  "status": 401
+ }
+}

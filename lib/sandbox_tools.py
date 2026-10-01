@@ -98,7 +98,7 @@ TOOLS = {
             "roles": {"client": _ALL, "owner": _ALL}},
     "connections": {"keys": ["PATCHLAMP_RELAY_SHARED_SECRET"], "state": [],
                     "roles": {"client": _ALL, "owner": _ALL}},
-    "print": {"keys": ["GEMINI_API_KEY", "PEXELS_API_KEY"], "state": ["registry", "ledger"],
+    "print": {"keys": ["GEMINI_API_KEY", "PEXELS_API_KEY"], "state": ["registry", "ledger", "playwright"],
               "roles": {"client": _ALL, "owner": _ALL}},
     "shot": {"keys": [], "state": ["playwright"],
              "roles": {"client": _ALL, "owner": _ALL, "demo": _ALL}},
@@ -153,14 +153,20 @@ GIT_KEYS = [re.compile(p) for p in (
     r"init\.defaultbranch",
 )]
 
-# Git settings every sandboxed git call gets on top of the repo's (command-line
-# configuration wins over the repo's): no hooks, no fsmonitor, no submodule fetches.
+# Git settings every sandboxed git call (and every tool's git in a tool sandbox) gets on top
+# of the repo's — configuration from the environment wins over the repo's: no hooks, no
+# fsmonitor, no signing program, no editor or pager, no submodule fetches. A filter driver
+# can't be switched off this way; the relay's self-bound .git keeps the checked config in
+# place (plan § Contract), and check_repos refuses one.
+_GIT_FORCE = (("core.hooksPath", "/dev/null"), ("core.fsmonitor", "false"), ("submodule.recurse", "false"),
+              ("fetch.recurseSubmodules", "false"), ("commit.gpgSign", "false"), ("tag.gpgSign", "false"),
+              ("core.pager", "cat"), ("core.editor", "true"), ("sequence.editor", "true"),
+              ("core.askPass", ""), ("credential.helper", ""), ("protocol.ext.allow", "never"),
+              ("diff.external", ""), ("core.gitProxy", ""))
 GIT_ENV = {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_TERMINAL_PROMPT": "0",
-           "GIT_CONFIG_COUNT": "4",
-           "GIT_CONFIG_KEY_0": "core.hooksPath", "GIT_CONFIG_VALUE_0": "/dev/null",
-           "GIT_CONFIG_KEY_1": "core.fsmonitor", "GIT_CONFIG_VALUE_1": "false",
-           "GIT_CONFIG_KEY_2": "submodule.recurse", "GIT_CONFIG_VALUE_2": "false",
-           "GIT_CONFIG_KEY_3": "fetch.recurseSubmodules", "GIT_CONFIG_VALUE_3": "false"}
+           "GIT_CONFIG_COUNT": str(len(_GIT_FORCE)),
+           **{f"GIT_CONFIG_KEY_{i}": k for i, (k, _) in enumerate(_GIT_FORCE)},
+           **{f"GIT_CONFIG_VALUE_{i}": v for i, (_, v) in enumerate(_GIT_FORCE)}}
 # Inside a tool sandbox there is no SSH key; a tool's own `git push` says where pushes go.
 NO_SSH = ("sh -c 'echo \"pushes run through the relay: the next git push (or site publish) "
           "sends this commit\" >&2; exit 1'")
@@ -780,6 +786,9 @@ def exec_tool(project, role, workspace, cwd, tool, argv):
         with os.fdopen(fd, "w") as f:
             f.write("".join(f"{k}={v}\n" for k, v in keys.items()))
         binds = ["--ro-bind", str(HERE), str(HERE)]
+        nm = HERE / "node_modules"
+        if nm.is_symlink() and nm.resolve().is_dir():          # a worktree's link to the main checkout's
+            binds += ["--ro-bind", str(nm.resolve()), str(nm.resolve())]
         if not inside(TOOL_BIN, HERE):
             binds += ["--ro-bind", str(TOOL_BIN), str(TOOL_BIN)]
         binds += ["--bind", str(ws), str(ws)]

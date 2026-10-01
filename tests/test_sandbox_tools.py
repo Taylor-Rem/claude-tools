@@ -340,6 +340,15 @@ class ToolSandbox(Base):
         self.assertEqual({p: False for p in probes}, r["probes"])
         self.assertEqual(r["keys"], ["PATCHLAMP_RELAY_SHARED_SECRET", "STRIPE_KEY_PATCHLAMP"])
 
+    def test_project_is_the_relays_not_the_environment(self):
+        # sandbox-F2 / relay-F3: whatever RELAY_PROJECT the environment carries, the tool runs as --project
+        os.environ["RELAY_PROJECT"] = "other"
+        try:
+            code, r = self.run_exec("client", "img", ["gen", "x"])
+        finally:
+            del os.environ["RELAY_PROJECT"]
+        self.assertEqual(r["project"], "acme")
+
     def test_registry_copy_is_this_projects_row_for_db(self):
         code, r = self.run_exec("client", "db", ["query", "SELECT 1"])
         self.assertEqual(r["registry"], {"acme": {"site": {"project": "acme-site"}}})

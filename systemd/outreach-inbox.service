@@ -1,0 +1,7 @@
+[Unit]
+Description=Patchlamp: the email lane's replies (outreach inbox; ROADMAP B46, B90)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/outreach inbox
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin

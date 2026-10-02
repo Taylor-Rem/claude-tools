@@ -1,0 +1,9 @@
+[Unit]
+Description=Patchlamp: outreach tick every five minutes on weekdays, 08:00-17:00 (it sends nothing while OUTREACH_MAILBOX_PER_DAY is 0)
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 08..16:00/5:00
+Persistent=false
+
+[Install]
+WantedBy=timers.target

@@ -5590,6 +5590,8 @@ def confirm_packet(c, today):
     True when the business still qualifies."""
     items = []
     for f in c["all_faults"]:
+        if len(items) >= 2:              # two confirmed are all a letter says: don't ask a site more than that needs
+            break
         if f.get("recheck"):
             g = recheck(f, today)
             if not g:

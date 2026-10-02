@@ -419,7 +419,8 @@ class WeekTest(Base):
 
     def test_json_is_the_row_the_experiment_log_wants(self):
         self.messaged("Mike's Pool Care", dt.date(2026, 9, 29), "FX_S01", source="saturday")
-        d = json.loads(self.run_leads("week", "--json", now=dt.date(2026, 10, 4)).stdout)
+        # B102: `week --json` alone is the overview's counts now; the B52 envelope is `--by channel --json`
+        d = json.loads(self.run_leads("week", "--by", "channel", "--json", now=dt.date(2026, 10, 4)).stdout)
         self.assertEqual(d["week_of"], "2026-09-28")
         self.assertEqual(sorted(d["total"]), ["churned", "conversations", "fixes", "paid", "replies",
                                               "sent", "trials"])

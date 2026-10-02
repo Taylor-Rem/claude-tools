@@ -15,6 +15,8 @@ B25 (the remote lane), B7 (the pipeline: log, follow-ups, the week).
   leads week [--ago 1]         # this week's numbers
   leads week --by channel      # the Sunday review (B52): the funnel per channel + GROWTH § 2.4's rows
   leads pipeline [--all]       # every lead by stage
+  leads pipeline --json        # counts by stage + due today, no names (B102: the owner's overview)
+  leads week --json            # this week's counts as one object (B102); `--by channel --json` is the B52 envelope
   leads pipeline --strong      # only the strong ones, each with why (B73)
   leads strength "Name"        # strong / good / weak and the reasons, in words (B73)
   leads strength "Name" strong "owner asked for a call in November"
@@ -4332,7 +4334,9 @@ def cmd_week(args):
         msg = week_strength_message(d, min(end, today))
         print(json.dumps(dict(d, message=msg), indent=1, default=str) if args.json else msg, end="\n" if args.json else "")
         return
-    if args.by == "channel" or args.json:
+    if args.json and not args.by:                # B102: the overview's counts, nothing else (plan 42)
+        return json_out(week_counts, start, end, today)
+    if args.by == "channel":
         w = week_numbers(start, end)
         msg = week_by_channel(w, start)
         silent = strong_silent_lines()           # B73: the strong leads past their last touch, for Taylor's call
@@ -4950,7 +4954,51 @@ def cmd_brief(args):
           "  Booking link: not set yet (LEADS_BOOKING_URL, TAYLOR-TODO §1) — name a day and `leads log … --next`")
 
 
+# ---- the owner's overview (B102, plan ~/projects/plans/42-owner-overview-contract.md) --------------------
+# The relay pushes these two objects to patchlamp.com/account/overview. They leave the laptop, so they hold
+# counts only: no lead's name, phone, email, place id or note. Each prints one JSON object on stdout and
+# nothing else, so the relay can parse it whole; a failure is {"ok": false, "why": …} with a non-zero exit.
+
+def json_out(fn, *a):
+    try:
+        out = dict({"ok": True}, **fn(*a))
+    except SystemExit as exc:                    # die() already said why on stderr
+        print(json.dumps({"ok": False, "why": f"leads exited {exc.code}; see stderr"}))
+        sys.exit(1)
+    except Exception as exc:                     # noqa: BLE001  the relay needs a reason, not a traceback
+        # the message itself stays on stderr: it could quote a pipeline line, and this object leaves the laptop
+        print(f"leads: {type(exc).__name__}: {exc}", file=sys.stderr)
+        print(json.dumps({"ok": False, "why": f"reading the pipeline failed ({type(exc).__name__}); see stderr"}))
+        sys.exit(1)
+    print(json.dumps(out))
+
+
+def pipeline_counts():
+    """Every stage `leads pipeline` knows with its count (zeros included) and the follow-ups due today or earlier."""
+    state = pipeline_state()
+    stages = {s: sum(1 for l in state.values() if l.get("stage") == s) for s in STAGES}
+    odd = sum(1 for l in state.values() if l.get("stage") not in STAGES)
+    if odd:
+        print(f"leads: {odd} lead(s) with no known stage, not counted", file=sys.stderr)
+    return {"stages": stages, "due_today": len(due_by(now_date()))}
+
+
+def week_counts(start, end, today):
+    """The numbers `leads week`'s first line prints, for the week of `start`. `talked` is that line's
+    "conversations" (visited, talked, interested, demo, later, won, lost); `replied` is what
+    `leads week --by channel` calls replies: a conversation outcome this week from a lead we had messaged."""
+    evs = week_events(start, end)
+    counts = {o: sum(1 for e in evs if e.get("outcome") == o) for o in OUTCOMES}
+    messaged = {e.get("key") for e in pipeline_events() if e.get("outcome") == "messaged"}
+    replied = sum(1 for e in evs if e.get("outcome") in CONVERSATION and e.get("key") in messaged)
+    convo = sum(counts[o] for o in ("visited", "talked", "interested", "demo", "later", "won", "lost"))
+    return {"of": start.isoformat(), "messaged": counts["messaged"], "replied": replied, "talked": convo,
+            "interested": counts["interested"], "demos": counts["demo"], "won": counts["won"], "lost": counts["lost"]}
+
+
 def cmd_pipeline(args):
+    if getattr(args, "json", False):
+        return json_out(pipeline_counts)
     state = pipeline_state()
     if getattr(args, "strong", False):
         return cmd_pipeline_strong(state)
@@ -6840,12 +6888,13 @@ def main():
     wk.add_argument("--by", choices=["channel", "strength"],
                     help="channel: the Sunday review (B52), the funnel per channel and the § 2.4 rows; "
                          "strength: outcomes by strength and by reason (B73)")
-    wk.add_argument("--json", action="store_true", help="the same numbers, for GROWTH § 13's row")
+    wk.add_argument("--json", action="store_true", help="alone: the overview's counts (B102); with --by: that view as JSON")
     wk.set_defaults(fn=cmd_week)
 
     pp = sub.add_parser("pipeline", help="every lead by stage")
     pp.add_argument("--all", action="store_true", help="list won and lost too")
     pp.add_argument("--strong", action="store_true", help="only the strong leads, each with why (B73)")
+    pp.add_argument("--json", action="store_true", help="counts by stage and due today, no names (B102)")
     pp.set_defaults(fn=cmd_pipeline)
 
     pv = sub.add_parser("preview", help="a lead's own website, built from the census row (B45): NAME | --kit | ls | sweep")

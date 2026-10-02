@@ -4,6 +4,7 @@
 
   books                         # this month's P&L
   books pl [--year Y|--month Y-M]        gross, fees, refunds, net income, cash expenses, net profit
+  books pl --json [--month Y-M]          Stripe only, integer cents, one object (B102: the owner's overview)
   books income [--year|--month] [--all]  every Stripe balance transaction that is money in (or out), per account
   books expenses [--year|--month]        real spend: API keys, Gemini, Resend, manual rows; the statement-only vendors
   books setaside [--year|--month]        25-30% of net profit, the rule in TAXES.md §4
@@ -27,6 +28,7 @@ import argparse
 import csv
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.parse
@@ -288,6 +290,8 @@ def compute(args):
 
 
 def cmd_pl(args):
+    if getattr(args, "json", False):
+        return cmd_pl_json(args)
     d = compute(args)
     it = d["income_totals"]
     names = sorted(accounts()) or ["(no Stripe key in the toolbelt)"]
@@ -307,6 +311,61 @@ def cmd_pl(args):
         print(f"  paid out to bank    {money(it['payouts']):>12}   (transfers, not income)")
     for p in d["problems"]:
         print(f"  ! {p}")
+
+
+def pl_cents(rows):
+    """The same arithmetic as income_totals, in integer cents, Stripe rows only (B102). refunds_cents is the
+    refunds line as `books pl` prints it; a fee Stripe hands back on a refund (usually none) rides in
+    other_cents, so net_cents = gross − fees − refunds + other, to the cent of "net income"."""
+    t = dict.fromkeys(("gross", "fees", "refunds", "other"), 0)
+    c = lambda x: int(round(x * 100))                               # noqa: E731  rows are cents / 100
+    for r in rows:
+        if r["bucket"] == "sale":
+            t["gross"] += c(r["gross"])
+            t["fees"] += c(r["fee"])
+        elif r["bucket"] == "refund":
+            t["refunds"] += -c(r["gross"])
+            t["other"] += -c(r["fee"])
+        elif r["bucket"] == "fee":
+            t["fees"] += -c(r["gross"])
+        elif r["bucket"] != "payout":
+            t["other"] += c(r["net"])
+    t["net"] = t["gross"] - t["fees"] - t["refunds"] + t["other"]
+    return t
+
+
+def cmd_pl_json(args):
+    """`books pl --json`: one object on stdout for the owner's overview (plan 42). Stripe figures only — the
+    manual cash rows and the notional plan usage stay out — and no id, email or description of any row."""
+    def fail(why):
+        # the relay pushes this line to patchlamp.com: no key fragment (Stripe quotes a masked key), id or email
+        why = re.sub(r"\b(sk|rk|pk|cus|sub|pi|ch|acct|in|price|prod|txn|po|re)_[A-Za-z0-9*_]+", "[id]", why)
+        why = re.sub(r"\S+@\S+", "[email]", why)
+        print(json.dumps({"ok": False, "why": why}))
+        sys.exit(1)
+    if getattr(args, "year", None):
+        fail("--json takes --month YYYY-MM (or nothing: this month), not --year")
+    if not getattr(args, "month", None):
+        args.month = datetime.now(TZ).strftime("%Y-%m")
+    try:
+        start, end, label = window(args)
+    except ValueError:
+        fail(f"--month is YYYY-MM, not {args.month!r}")
+    names = sorted(accounts())
+    if not names:
+        fail("no STRIPE_KEY_* in the toolbelt")
+    try:
+        rows, problems = income_rows(start, end)
+    except Exception as exc:                                        # noqa: BLE001  a reason, not a traceback
+        fail(f"{type(exc).__name__} reading Stripe")
+    if problems:
+        fail("; ".join(problems)[:300])
+    cur = sorted({(r.get("currency") or "usd").lower() for r in rows}) or ["usd"]
+    if cur != ["usd"]:
+        fail(f"currencies other than usd in {label}: {', '.join(cur)}")
+    t = pl_cents(rows)
+    print(json.dumps({"ok": True, "month": label, "currency": "usd", "gross_cents": t["gross"], "fees_cents": t["fees"],
+                      "refunds_cents": t["refunds"], "other_cents": t["other"], "net_cents": t["net"], "accounts": names}))
 
 
 def cmd_income(args):
@@ -439,6 +498,8 @@ def main():
         win(p)
         if name == "income":
             p.add_argument("--all", action="store_true", help="include payouts to the bank")
+        if name == "pl":
+            p.add_argument("--json", action="store_true", help="Stripe totals in cents as one object (B102)")
         p.set_defaults(fn=fn)
     p = sub.add_parser("export", help="CSVs for the CPA")
     win(p)

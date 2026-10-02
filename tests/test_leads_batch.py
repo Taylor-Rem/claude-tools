@@ -403,5 +403,244 @@ class BatchTest(unittest.TestCase):
         self.assertIn("clients kept out: 1 addresses", r.stdout)
 
 
+# ---- B99: the faults `site_checks` stores, said in code (client-leads/scripts/site_checks.py, spot-checks/b99-*.md) ----
+SITE_CHECKS_DDL = """
+CREATE TABLE site_checks (place_id TEXT PRIMARY KEY, url TEXT, checked TEXT, form TEXT, form_pages TEXT,
+    form_evidence TEXT, https TEXT, https_url TEXT, https_why TEXT, psi_score INTEGER, psi_date TEXT, psi_why TEXT,
+    psi_evidence TEXT, sideways INTEGER, sideways_evidence TEXT, broken_images INTEGER, broken_images_evidence TEXT,
+    broken_links INTEGER, links_checked INTEGER, broken_links_evidence TEXT, render_why TEXT, requests INTEGER,
+    seconds REAL);
+"""
+TODAY = dt.date.today()
+FRESH = (TODAY - dt.timedelta(days=2)).isoformat() + "T21:00:00"
+STALE = (TODAY - dt.timedelta(days=45)).isoformat() + "T21:00:00"
+
+
+def links_ev(page, *links):
+    return json.dumps({"page": page, "links": [{"href": h, "text": t, "status": 404} for h, t in links]})
+
+
+# id, name, listing website, checks {column: value}, copyright year on the site
+C = [
+    ("FX_E01", "Arc Electric", "http://arcelectric.example/",
+     dict(https="fails", https_url="https://arcelectric.example/",
+          https_why="ERR_CERT_COMMON_NAME_INVALID in Chromium; python: tls",
+          broken_links=1, broken_links_evidence=links_ev("http://arcelectric.example/",
+                                                         ("http://arcelectric.example/about", "ABOUT"))), None),
+    ("FX_E02", "Bolt Electric", "https://www.boltelectric.example/",
+     dict(https="fails", https_url="https://www.boltelectric.example/",
+          https_why="ERR_SSL_PROTOCOL_ERROR in Chromium; python: tls"), YEAR - 6),
+    ("FX_E03", "Circuit Electric", "https://circuitelectric.example/",
+     dict(broken_links=1, broken_links_evidence=links_ev("https://circuitelectric.example/",
+                                                         ("https://circuitelectric.example/home", "(801)"))), None),
+    ("FX_E04", "Dynamo Electric", "https://dynamoelectric.example/",
+     dict(broken_links=1, broken_links_evidence=links_ev("https://dynamoelectric.example/",
+                                                         ("https://dynamoelectric.example/team", "Our Team"))), None),
+    ("FX_E05", "Edison Electric", "https://edisonelectric.example/",
+     dict(sideways=120, sideways_evidence=json.dumps({"vw": 390, "sw": 510, "scrollX": 120}), broken_images=1,
+          broken_images_evidence=json.dumps({"images": [{"src": "https://cdn.example/e.jpg", "status": 404}]}),
+          psi_score=34, psi_date=TODAY.isoformat()), None),
+    ("FX_E06", "Flux Electric", "https://fluxelectric.example/",
+     dict(broken_links=1, broken_links_evidence=links_ev("https://fluxelectric.example/",
+                                                         ("https://fluxelectric.example/gallery/1", "")),
+          https="fails", https_url="https://fluxelectric.example/", https_why="x", checked=STALE), None),
+    ("FX_E07", "Grid Electric", "https://gridelectric.example/",
+     dict(https="to-http", https_url="https://gridelectric.example/",
+          https_why="https://gridelectric.example/ redirects to http://gridelectric.example/"), None),
+    ("FX_E08", "Hertz Electric", "https://hertzelectric.example/locations/draper",
+     dict(https="fails", https_url="https://hertzelectric.example/", https_why="nothing answers on 443",
+          broken_links=1, broken_links_evidence=links_ev("https://hertzelectric.example/locations/draper",
+                                                         ("https://hertzelectric.example/x", "Contact"))), None),
+]
+STATUS = {"https://arcelectric.example/": "tls", "http://arcelectric.example/about": 404,
+          "https://www.boltelectric.example/": "tls", "https://circuitelectric.example/home": 410,
+          "https://dynamoelectric.example/team": 200,               # fixed since the crawl: not said
+          "https://cdn.example/e.jpg": 404, "https://gridelectric.example/": "http",
+          "https://hertzelectric.example/": "refused", "https://hertzelectric.example/x": 404}
+
+
+def add_check_businesses(db, pages_json):
+    conn = sqlite3.connect(db)
+    conn.executescript(SITE_CHECKS_DDL)
+    pages = json.loads(Path(pages_json).read_text())
+    for i, (pid, name, site, chk, yr) in enumerate(C):
+        dom = host = re.sub(r"^https?://(www\.)?", "", site).split("/")[0]
+        conn.execute("""INSERT INTO place_cache (place_id, name, address, phone, website, has_website, rating, reviews,
+                        lat, lng, refreshed_at, locality, postal_code, primary_type, types, business_status,
+                        google_maps_uri) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                     (pid, name, f"{300 + i} S State St, Draper, UT 84020, USA", f"(801) 555-{2000 + i}", site, "yes",
+                      4.8, 50 + i, 40.52, -111.86, TODAY.isoformat() + "T12:00:00", "Draper", "84020", "electrician",
+                      "[]", "OPERATIONAL", f"https://maps.google.com/?cid={pid}"))
+        conn.execute("""INSERT INTO businesses (place_id, segment, category, categories, city, first_seen, source,
+                        presence_class, presence_url, presence_checked, is_chain, chain_override)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                     (pid, "services", "electrician", '["electrician"]', "Draper, Utah", "2026-09-28", "scan",
+                      "own", site, "2026-09-28T12:00:00", 0, None))
+        conn.execute("INSERT INTO emails VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                     (pid, f"office@{dom}", "site", "own-domain", OWN, "mailto", site, name, 1, "ok", "[]",
+                      "2026-10-01", "2026-10-01"))
+        conn.execute("INSERT INTO site_facts VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                     (pid, site, site, 1, 1, yr, None, 1, "[]", 1, "2026-10-01", "{}"))
+        pages[site] = f"<footer>&copy; {yr} {name}</footer>" if yr else "<footer>hi</footer>"
+        row = dict(place_id=pid, url=site, checked=FRESH, form="none", https="serves", sideways=0, broken_images=0,
+                   broken_links=0)
+        row.update(chk)
+        cols = ",".join(row)
+        conn.execute(f"INSERT INTO site_checks ({cols}) VALUES ({','.join('?' * len(row))})", list(row.values()))
+    conn.commit()
+    conn.close()
+    Path(pages_json).write_text(json.dumps(pages))
+
+
+class CheckFaultsTest(unittest.TestCase):
+    """B99's sentences: the two proven faults said, re-checked the day of the batch; the waiting ones never said
+    but counted; "no form" never a fault; a pick still exactly two entries, a fault first."""
+    setUp0, tearDown, run_leads = BatchTest.setUp, BatchTest.tearDown, BatchTest.run_leads
+
+    def setUp(self):
+        self.setUp0()
+        add_check_businesses(self.db, self.env["LEADS_PAGE_FIXTURE"])
+        st = self.t / "status.json"
+        st.write_text(json.dumps(STATUS))
+        self.env["LEADS_STATUS_FIXTURE"] = str(st)
+
+    def draper(self, *extra, env=None):
+        r = self.run_leads("batch", "--segment", "services", "--city", "Draper", "--category", "electrician",
+                           "--json", "--no-save", *extra, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return {p["place_id"]: p for p in json.loads(r.stdout)["picks"]}
+
+    def test_the_sentences(self):
+        by = self.draper()
+        self.assertEqual(set(by), {"FX_E01", "FX_E02", "FX_E03", "FX_E07", "FX_E08"})
+        for p in by.values():
+            self.assertEqual(len(p["faults"]), 2, p)
+            self.assertEqual(p["faults"][0]["kind"], "fault")
+            for f in p["faults"]:
+                self.assertEqual(set(f), CONTRACT_FAULT)
+                self.assertNotRegex(f["sentence"], r"[.!?]$|https?://|\.example")   # no link, one sentence
+        arc = by["FX_E01"]["faults"]
+        self.assertEqual([f["key"] for f in arc], ["https_fails", "broken_link"])   # the order of preference
+        self.assertEqual(arc[0]["sentence"], 'the website on your Google listing has no working secure (https) '
+                                             'version, so Chrome marks it "Not secure"')
+        self.assertIn("https://arcelectric.example/", arc[0]["evidence"])
+        self.assertIn(f"checked {FRESH[:10]}", arc[0]["evidence"])
+        self.assertIn(f"asked again {TODAY.isoformat()}: tls", arc[0]["evidence"])
+        self.assertEqual(arc[1]["sentence"], "the \"About\" link on your site's home page goes to a page that "
+                                             "isn't there")
+        self.assertIn("http://arcelectric.example/about answered 404", arc[1]["evidence"])
+        bolt = by["FX_E02"]["faults"]            # the listing links the https address: Chrome's error page
+        self.assertEqual([f["key"] for f in bolt], ["https_fails", "old_copyright"])
+        self.assertEqual(bolt[0]["sentence"],
+                         "the website link on your Google listing opens a browser error page instead of your site")
+        circ = by["FX_E03"]["faults"]            # "(801)" isn't quoted: a count instead, and a fact beside it
+        self.assertEqual([(f["key"], f["kind"]) for f in circ], [("broken_link", "fault"), ("google_standing", "fact")])
+        self.assertEqual(circ[0]["sentence"], "a link on your site's home page goes to a page that isn't there")
+        grid = by["FX_E07"]["faults"]            # https sends them to http: it loads, marked
+        self.assertIn('"Not secure"', grid[0]["sentence"])
+        hertz = by["FX_E08"]["faults"]           # a location page: its links aren't "your site", the listing link is
+        self.assertEqual([f["key"] for f in hertz], ["https_fails", "google_standing"])
+
+    def test_left_out(self):
+        r = self.run_leads("batch", "--segment", "services", "--city", "Draper", "--category", "electrician",
+                           "--no-save")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        for name in ("Dynamo", "Edison", "Flux"):
+            self.assertNotIn(name, r.stdout)
+        self.assertIn("1 left out on a second look", r.stdout)      # Dynamo's link answers now
+
+    def test_nothing_rechecked_is_said_when_reads_are_off(self):
+        env = {"LEADS_STATUS_FIXTURE": str(self.t / "missing.json")}
+        r = self.run_leads("batch", "--segment", "services", "--city", "Draper", "--category", "electrician",
+                           "--json", "--no-save", env=env)
+        if r.returncode == 0:
+            for p in json.loads(r.stdout)["picks"]:
+                for f in p["faults"]:
+                    self.assertNotIn(f["key"], ("https_fails", "broken_link"))
+        else:
+            self.assertIn("second look", r.stderr)
+
+    def test_waiting_faults_are_never_said(self):
+        m = leads_module(self.env)
+        self.assertEqual(m.CHECK_FAULTS_PROVEN, ("https_fails", "broken_link"))
+        for k in ("sideways", "broken_image", "psi_poor", "form_none", "no_contact_form"):
+            self.assertNotIn(k, m.CHECK_FAULTS_PROVEN)
+        c = {"website": "https://edisonelectric.example/", "checks": {
+            "url": "https://edisonelectric.example/", "checked": FRESH, "form": "none", "sideways": 120,
+            "sideways_evidence": json.dumps({"vw": 390, "sw": 510}), "broken_images": 1,
+            "broken_images_evidence": json.dumps({"images": [{"src": "https://cdn.example/e.jpg", "status": 404}]}),
+            "psi_score": 34, "psi_date": TODAY.isoformat()}}
+        said = {i["key"]: i for i in m.check_fault_items(c, TODAY)}
+        self.assertEqual(set(said), {"sideways", "broken_image", "psi_poor"})   # written, and form isn't a fault
+        self.assertEqual(said["sideways"]["sentence"],
+                         "on a phone, your site's home page slides sideways, part of it off the screen")
+        self.assertEqual(said["broken_image"]["sentence"], "on a phone, an image on your site's home page doesn't load")
+        self.assertEqual(said["psi_poor"]["sentence"], "Google's PageSpeed test scored your site's home page 34 out "
+                                                       f"of 100 on a phone on {TODAY:%B} {TODAY.day}")
+        self.assertEqual(m.facts_packet(dict(c, segment="services"), None, TODAY), [])
+        c["checks"]["psi_score"] = 50                                # 50 is not Google's poor band
+        self.assertNotIn("psi_poor", {i["key"] for i in m.check_fault_items(c, TODAY)})
+
+    def test_stale_and_missing_rows_say_nothing(self):
+        m = leads_module(self.env)
+        row = {"url": "https://x.example/", "https": "fails", "https_url": "https://x.example/", "https_why": "x",
+               "broken_links": 1, "broken_links_evidence": links_ev("https://x.example/", ("https://x.example/a", "A b"))}
+        c = {"website": "https://x.example/", "checks": dict(row, checked=STALE)}
+        self.assertEqual(m.check_fault_items(c, TODAY), [])
+        self.assertEqual(m.check_fault_items({"website": "https://x.example/", "checks": None}, TODAY), [])
+        edge = (TODAY - dt.timedelta(days=m.SITE_CHECK_MAX_DAYS)).isoformat()
+        self.assertEqual(len(m.check_fault_items(dict(c, checks=dict(row, checked=edge)), TODAY)), 2)
+        # an https address on another host than the listing's is not said of their listing
+        self.assertEqual(m.check_fault_items({"website": "https://other.example/",
+                                              "checks": dict(row, checked=FRESH, broken_links=0)}, TODAY), [])
+
+    def test_quotable(self):
+        m = leads_module(self.env)
+        for text, want in (("About", "About"), ("ABOUT", "About"), ("Terms & Conditons", "Terms & Conditons"),
+                           ("URBAN ARROW BUY NOW", "Urban Arrow Buy Now"), ("Contact Us", "Contact Us"),
+                           ("(801)", None), ("", None), ("0 items", None), ("SEE MORE...", None),
+                           ("www.festivalderua.com", None), ("Click here for Tea Party Info & Reservat", None),
+                           ("Entrusting anyone with your celebration", None), ("<b>x</b>", None)):
+            self.assertEqual(m.quotable(text), want, text)
+
+    def test_recheck(self):
+        m = leads_module(self.env)
+        f = {"key": "broken_link", "sentence": "s", "evidence": "e", "recheck": {
+            "kind": "links", "page": "https://x.example/", "on": "2026-10-01",
+            "links": [{"href": "https://dynamoelectric.example/team", "text": "Our Team", "status": 404},
+                      {"href": "https://circuitelectric.example/home", "text": "(801)", "status": 404},
+                      {"href": "http://arcelectric.example/about", "text": "About", "status": 404}]}}
+        saved = dict(os.environ)
+        os.environ["LEADS_STATUS_FIXTURE"] = self.env["LEADS_STATUS_FIXTURE"]
+        try:
+            g = m.recheck(f, TODAY)
+            self.assertEqual(g["sentence"], "the \"About\" link on your site's home page goes to a page that "
+                                            "isn't there")
+            self.assertNotIn("dynamoelectric", g["evidence"])        # it answers 200 now: not part of what's said
+            h = m.recheck({"key": "https_fails", "evidence": "e", "recheck": {
+                "kind": "https", "url": "https://dynamoelectric.example/team", "listed": ""}}, TODAY)
+            self.assertIsNone(h)                                      # serves now: dropped
+            self.assertEqual(m.ask_again("https://never.example/", TODAY), "unsure")
+        finally:
+            os.environ.clear()
+            os.environ.update(saved)
+
+    def test_stats_counts_the_waiting(self):
+        r = self.run_leads("batch", "--stats", "--segment", "services", "--json")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        s = json.loads(r.stdout)
+        self.assertEqual(s["faults_on"], ["https_fails", "broken_link"])
+        self.assertEqual(s["site_checks"], len(C))
+        self.assertEqual(s["keys"]["https_fails"], 4)                 # Arc, Bolt, Grid, Hertz (Flux's is stale)
+        self.assertEqual(s["keys"]["broken_link"], 3)                 # Arc, Circuit, Dynamo (stored; asked again later)
+        self.assertEqual(s["waiting"]["sideways"], {"true_of": 1, "would_add": 1})       # Edison, alone
+        self.assertEqual(s["waiting"]["broken_image"], {"true_of": 1, "would_add": 1})
+        self.assertEqual(s["waiting"]["psi_poor"], {"true_of": 1, "would_add": 1})
+        self.assertNotIn("form_none", s["keys"])
+        txt = self.run_leads("batch", "--stats", "--segment", "services").stdout
+        self.assertIn("sideways 1 (waiting)", txt)
+        self.assertIn("Waiting on thirty spot checks, never said", txt)
+
+
 if __name__ == "__main__":
     unittest.main()

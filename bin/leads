@@ -143,8 +143,9 @@ Config, by name, never printed:
   LEADS_LIVE_READS_PER_DAY  listing reads `leads batch --live` may make a day (default 100, ~$0.025 each)
   LEADS_CLIENTS_DIR     the client workspaces whose addresses, domains and phones a batch keeps out (~/projects/clients)
   LEADS_OUTREACH_BIN    the `outreach` a batch asks for the suppression list (beside this file)
-  LEADS_PAGE_CHECK      =0: a batch doesn't re-read a pick's page, so an old copyright year is never said;
-                        LEADS_PAGE_FIXTURE a JSON {url: html} (tests)
+  LEADS_PAGE_CHECK      =0: a batch doesn't re-read a pick's page, so an old copyright year is never said
+                        (nor a broken link, a broken image or a failing secure address: those are asked again too);
+                        LEADS_PAGE_FIXTURE a JSON {url: html}, LEADS_STATUS_FIXTURE a JSON {url: status} (tests)
   LEADS_PIPELINE        the pipeline, one event per line (default
                         ~/projects/private-docs/leads/pipeline.jsonl: backed up
                         nightly, in no repo — it holds names and numbers). The
@@ -5392,11 +5393,33 @@ WEAK_EMAIL_WHY = "titled with"
 CLIENTS_DIR = Path(os.environ.get("LEADS_CLIENTS_DIR", PROJECTS / "clients"))
 OUTREACH_BIN = Path(os.environ.get("LEADS_OUTREACH_BIN", Path(__file__).resolve().parent / "outreach"))
 
-# key -> rank: lower is said first. The surest site facts first — the copyright year (their own words, with a
-# number), no viewport tag (absent from the page we read) — then the listing (true as of the read).
-FAULT_RANK = {"old_copyright": 10, "no_viewport": 20, "website_link": 40,
+# key -> rank: lower is said first. What a customer meets first and can't be argued with leads: the secure address
+# failing (the first thing a click from the listing meets, in the browser's own words), then a named link that goes
+# nowhere (asked again the day the batch is made), then the phone layout sliding sideways and an image that doesn't
+# load (seen on the page, on a phone). Then their own words with a number (the copyright year), a tag absent from
+# the page (no viewport), Google's own phone score (a number, but one that moves between runs), then the listing.
+FAULT_RANK = {"https_fails": 4, "broken_link": 6, "sideways": 7, "broken_image": 8,
+              "old_copyright": 10, "no_viewport": 20, "psi_poor": 30, "website_link": 40,
               "no_hours": 50, "closed_saturday": 52, "no_photos": 55, "few_photos": 56, "no_phone": 60,
               "menu_page": 70, "low_review": 85, "listing": 88}
+
+# B99: the faults client-leads/scripts/site_checks.py stores in `site_checks` (its README has every column and rule).
+# A fault is said only once thirty spot checks of it found none false (client-leads/spot-checks/b99-*.md); this is
+# that list, and the one place a fault is switched on. The others are computed, tested and counted by
+# `--stats` as waiting, and never reach a letter. "No contact form" is not here and must not come back: forms hide
+# in booking flows and pages two clicks deep (8 of 30 false), so `form` is a fact the pass stores, never a fault.
+CHECK_FAULTS_PROVEN = ("https_fails", "broken_link")        # https 30/30; links 56 true, 0 false (2026-10-01)
+CHECK_FAULTS_WAITING = ("sideways", "broken_image", "psi_poor")   # 4/4, 6/7 and no scores yet: fewer than thirty
+# A stored check older than this isn't said: the pass reads the whole census in a night, and a month is long enough
+# for a batch a week to draw on one re-read while short enough that a redesign rarely lands in between. The faults a
+# re-check can confirm (the secure address, a link, an image) are also asked again the day the batch is made; the
+# age still matters for them, since a link that still fails may no longer be on the page.
+SITE_CHECK_MAX_DAYS = 30
+SIDEWAYS_MIN_PX = 40      # site_checks.py's own threshold: less is a wobble (an off-canvas menu edge)
+PSI_POOR_BELOW = 50       # Google's own "poor" band for the performance score
+LINK_TEXT_RE = re.compile(r"^[A-Za-z][A-Za-z0-9 &'’-]{1,29}$")    # a link's words safe to quote back to them
+CHECK_UA = ("Mozilla/5.0 (compatible; PatchlampBot/1.0; +https://patchlamp.com; founder@patchlamp.com) "
+            "reading published business contact details")       # the pass's own honest user agent (emails.py)
 
 
 def email_tables():
@@ -5448,6 +5471,8 @@ def batch_rows(segments):
         for r in conn.execute("SELECT * FROM emails"):
             mail.setdefault(r["place_id"], []).append(dict(r))
         facts = {r["place_id"]: dict(r) for r in conn.execute("SELECT * FROM site_facts")}
+        checks = ({r["place_id"]: dict(r) for r in conn.execute("SELECT * FROM site_checks")}
+                  if "site_checks" in tables else {})
         pages = {}
         if "email_pass" in tables:
             for r in conn.execute("SELECT place_id, pages FROM email_pass"):
@@ -5483,6 +5508,7 @@ def batch_rows(segments):
         if not e:
             continue
         d["mail"], d["facts"], d["pages"] = e, facts.get(d["place_id"]), pages.get(d["place_id"]) or []
+        d["checks"] = checks.get(d["place_id"])
         d["town"] = (d.get("locality") or (d.get("city") or "").replace(", Utah", "")).strip()
         out.append(d)
     return out
@@ -5559,10 +5585,17 @@ def _copyright_in(html):
 
 
 def confirm_packet(c, today):
-    """Re-read what the stored facts said and could have changed (the copyright year); drop a fault the page no
-    longer bears out and recompute the two specifics. True when the business still qualifies."""
+    """Re-read what the stored facts said and could have changed (the copyright year; B99's secure address, broken
+    links and images, asked again); drop a fault the site no longer bears out and recompute the two specifics.
+    True when the business still qualifies."""
     items = []
     for f in c["all_faults"]:
+        if f.get("recheck"):
+            g = recheck(f, today)
+            if not g:
+                c.setdefault("dropped", []).append(f"{f['key']} (not borne out when asked again)")
+                continue
+            f = g
         if f["key"] == "old_copyright":
             y, why = copyright_now(f["evidence"], today)
             if not y or y > today.year - OLD_YEAR_GAP:
@@ -5613,6 +5646,208 @@ def site_fault_items(c, today):
     # without one (GoDaddy, a bare <textarea>) or by script (Wix, Squarespace): B90's spot check found three false of
     # thirty-six read. It becomes a fault once the crawl stores "a message box anywhere on the contact page".
     return out
+
+
+def _check_day(s):
+    try:
+        return dt.date.fromisoformat((s or "")[:10])
+    except ValueError:
+        return None
+
+
+def _say_date(d):
+    return f"{d:%B} {d.day}"
+
+
+def quotable(text):
+    """A link's visible words as we may quote them back, or None: plain characters only, short, starting with a
+    letter (an icon link, a phone number, a web address or a sentence falls back to a count). All capitals are
+    usually a stylesheet's doing, so they are said in title case."""
+    t = re.sub(r"\s+", " ", text or "").strip()
+    if not LINK_TEXT_RE.match(t) or len(t.split()) > 4:
+        return None
+    return t.title() if t.isupper() and len(t) > 3 else t
+
+
+def https_sentence(state, listed, https_url):
+    """What a visitor meets, said of the website on their Google listing (a third of these are a vendor's ordering
+    page, so never "your designer" or "your site"). A listing that links the https address itself opens Chrome's
+    error page; one that links http (or an https address that sends them to http) loads, marked "Not secure"."""
+    if state == "fails" and (listed or "").lower().startswith("https://") and \
+            urllib.parse.urlsplit(listed).hostname == urllib.parse.urlsplit(https_url).hostname:
+        return "the website link on your Google listing opens a browser error page instead of your site"
+    return 'the website on your Google listing has no working secure (https) version, so Chrome marks it "Not secure"'
+
+
+def check_fault_items(c, today):
+    """Every fault B99's `site_checks` row makes true, each {key, sentence, evidence, ...}, proven or not (the caller
+    keeps the ones on CHECK_FAULTS_PROVEN). None for a missing row or one older than SITE_CHECK_MAX_DAYS. The site's
+    own faults (links, images, layout, score) only on the business's own home page, as B90's are; the secure address
+    on any link the listing carries, because the link is theirs to change even when the page is a vendor's."""
+    r = c.get("checks")
+    if not r:
+        return []
+    day = _check_day(r.get("checked"))
+    if not day or (today - day).days > SITE_CHECK_MAX_DAYS:
+        return []
+    out, on = [], day.isoformat()
+    listed = c.get("website") or ""
+    if r.get("https") in ("fails", "to-http") and r.get("https_url") and \
+            host_of(r["https_url"]) == host_of(listed or r.get("url") or ""):
+        out.append({"key": "https_fails", "sentence": https_sentence(r["https"], listed, r["https_url"]),
+                    "evidence": f"{r['https_url']}: {r.get('https_why') or r['https']} (checked {on})",
+                    "recheck": {"kind": "https", "url": r["https_url"], "listed": listed}})
+    if not own_home_page(listed or r.get("url"), r.get("url")):
+        return out
+    page = strip_tracking(r.get("url") or "")
+    try:
+        links = (json.loads(r.get("broken_links_evidence") or "{}") or {}).get("links") or []
+    except ValueError:
+        links = []
+    # Only a link with visible words: an icon or image link may be one a visitor can't follow (B99's two unsure).
+    links = [lk for lk in links if (lk.get("text") or "").strip() and lk.get("href")]
+    if (r.get("broken_links") or 0) > 0 and links:
+        out.append({"key": "broken_link", "sentence": "", "evidence": "",
+                    "recheck": {"kind": "links", "links": links[:3], "page": page, "on": on}})
+    try:
+        imgs = (json.loads(r.get("broken_images_evidence") or "{}") or {}).get("images") or []
+    except ValueError:
+        imgs = []
+    imgs = [im for im in imgs if im.get("src")]
+    if (r.get("broken_images") or 0) > 0 and imgs:
+        out.append({"key": "broken_image", "sentence": "", "evidence": "",
+                    "recheck": {"kind": "images", "images": imgs[:3], "page": page, "on": on}})
+    if (r.get("sideways") or 0) >= SIDEWAYS_MIN_PX:
+        try:
+            ev = json.loads(r.get("sideways_evidence") or "{}") or {}
+        except ValueError:
+            ev = {}
+        out.append({"key": "sideways",
+                    "sentence": "on a phone, your site's home page slides sideways, part of it off the screen",
+                    "evidence": f"{page}: on a {ev.get('vw') or 390}-px phone the page is {ev.get('sw') or '?'} px "
+                                f"wide and scrolls {r['sideways']} px sideways (checked {on})"})
+    psi_day = _check_day(r.get("psi_date"))
+    if r.get("psi_score") is not None and r["psi_score"] < PSI_POOR_BELOW and psi_day and \
+            (today - psi_day).days <= SITE_CHECK_MAX_DAYS:
+        out.append({"key": "psi_poor",
+                    "sentence": f"Google's PageSpeed test scored your site's home page {int(r['psi_score'])} out "
+                                f"of 100 on a phone on {_say_date(psi_day)}",
+                    "evidence": f"https://pagespeed.web.dev/ for {page}: mobile performance {int(r['psi_score'])} "
+                                f"(run {psi_day.isoformat()}; under {PSI_POOR_BELOW} is Google's poor band)"})
+    # Stored counts are what the pass saw; until the day's re-check, the two below say it plainly from storage.
+    for it in out:
+        if it["key"] == "broken_link":
+            it["sentence"], it["evidence"] = link_words(it["recheck"]["links"], page, on)
+        elif it["key"] == "broken_image":
+            it["sentence"], it["evidence"] = image_words(it["recheck"]["images"], page, on)
+    return out
+
+
+NUMBER_WORDS = {2: "two", 3: "three", 4: "four", 5: "five"}
+
+
+def link_words(dead, page, on, today=None):
+    """(sentence, evidence) for links found gone: the first one whose words can be quoted, named; otherwise how many."""
+    named = next((lk for lk in dead if quotable(lk.get("text"))), None)
+    when = f"checked {on}" + (f", asked again {today}" if today else "")
+    ev = f"{page}: " + "; ".join(f"\"{(lk.get('text') or '').strip()[:40]}\" → {lk['href']} answered "
+                                 f"{lk.get('now') or lk.get('status')}" for lk in dead) + f" ({when})"
+    if named:
+        return f"the \"{quotable(named['text'])}\" link on your site's home page goes to a page that isn't there", ev
+    if len(dead) == 1:
+        return "a link on your site's home page goes to a page that isn't there", ev
+    return f"{NUMBER_WORDS.get(len(dead), len(dead))} links on your site's home page go to pages that aren't there", ev
+
+
+def image_words(dead, page, on, today=None):
+    when = f"checked {on}" + (f", asked again {today}" if today else "")
+    ev = f"{page}: " + "; ".join(f"{im['src']} answered {im.get('now') or im.get('status')}" for im in dead) + \
+        f" ({when}, drawn on a 390-px phone)"
+    if len(dead) == 1:
+        return "on a phone, an image on your site's home page doesn't load", ev
+    return f"on a phone, {NUMBER_WORDS.get(len(dead), len(dead))} images on your site's home page don't load", ev
+
+
+_RECHECK = None
+_LAST_HIT = {}
+
+
+def ask_again(url, today):
+    """One GET of a stored address the day a batch is made: an HTTP status (int), or "tls" / "refused" when the
+    secure connection fails, "http" when it lands on an http:// page, or "unsure" (a timeout, anything odd). One
+    request a second per host, the pass's user agent, nothing sent; answers kept for the day. LEADS_STATUS_FIXTURE
+    is a JSON {url: answer} (tests); LEADS_PAGE_CHECK=0 makes every answer "unsure", so nothing re-checked is said."""
+    global _RECHECK
+    fx = os.environ.get("LEADS_STATUS_FIXTURE")
+    if fx or os.environ.get("LEADS_PAGE_FIXTURE"):
+        try:
+            return json.loads(Path(fx).read_text()).get(url, "unsure") if fx else "unsure"
+        except (OSError, ValueError):
+            return "unsure"
+    if os.environ.get("LEADS_PAGE_CHECK") == "0":
+        return "unsure"
+    path = STATE / "rechecks.json"
+    if _RECHECK is None:
+        try:
+            _RECHECK = json.loads(path.read_text())
+        except (OSError, ValueError):
+            _RECHECK = {}
+    row = _RECHECK.get(url)
+    if row and row.get("day") == today.isoformat():
+        return row["answer"]
+    host = urllib.parse.urlsplit(url).hostname or ""
+    wait = 1.0 - (time.monotonic() - _LAST_HIT.get(host, -10.0))
+    if wait > 0:
+        time.sleep(wait)
+    _LAST_HIT[host] = time.monotonic()
+    req = urllib.request.Request(url, headers={"User-Agent": CHECK_UA, "Accept": "text/html,*/*;q=0.5"})
+    try:
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            answer = "http" if resp.geturl().lower().startswith("http://") and url.lower().startswith("https://") \
+                else resp.status
+    except urllib.error.HTTPError as exc:
+        answer = exc.code
+    except urllib.error.URLError as exc:
+        why = str(exc.reason).lower()
+        answer = ("tls" if "ssl" in why or "certificate" in why else
+                  "refused" if "refused" in why else "unsure")
+    except Exception:                    # noqa: BLE001 — anything else is unsure, and unsure is never said
+        answer = "unsure"
+    _RECHECK[url] = {"answer": answer, "day": today.isoformat()}
+    try:
+        STATE.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(_RECHECK, indent=0, sort_keys=True) + "\n")
+    except OSError:
+        pass
+    return answer
+
+
+def recheck(f, today):
+    """The fault as it stands today, or None when the site no longer bears it out (or we can't tell)."""
+    rc = f.get("recheck") or {}
+    if rc.get("kind") == "https":
+        a = ask_again(rc["url"], today)
+        if a in ("tls", "refused"):
+            state = "fails"
+        elif a == "http":
+            state = "to-http"
+        else:
+            return None                  # it serves now, or we couldn't tell
+        return dict(f, sentence=https_sentence(state, rc["listed"], rc["url"]),
+                    evidence=f"{f['evidence']}; asked again {today.isoformat()}: {a}")
+    if rc.get("kind") in ("links", "images"):
+        items = rc["links"] if rc["kind"] == "links" else rc["images"]
+        dead = []
+        for it in items:
+            a = ask_again(it["href" if rc["kind"] == "links" else "src"], today)
+            if a in (404, 410):
+                dead.append(dict(it, now=a))
+        if not dead:
+            return None
+        words = link_words if rc["kind"] == "links" else image_words
+        s, ev = words(dead, rc["page"], rc["on"], today.isoformat())
+        return dict(f, sentence=s, evidence=ev)
+    return f
 
 
 def listing_fault_item(fault, c, read_on):
@@ -5668,10 +5903,12 @@ def listing_fault_items(c, details, today):
     return [i for i in items if not (i["key"] == "low_review" and n_rev > LOW_REVIEW_MAX_REVIEWS)]
 
 
-def facts_packet(c, details, today):
-    """Every fault true of this business, most specific and surest first: [{key, sentence, evidence}]. One per key."""
+def facts_packet(c, details, today, on=CHECK_FAULTS_PROVEN):
+    """Every fault true of this business, most specific and surest first: [{key, sentence, evidence}]. One per key.
+    `on` is the B99 faults that may be said (the proven list; `--stats` widens it to count the waiting ones)."""
     items, seen = [], set()
-    for it in sorted(site_fault_items(c, today) + listing_fault_items(c, details, today),
+    checked = [i for i in check_fault_items(c, today) if i["key"] in on]
+    for it in sorted(checked + site_fault_items(c, today) + listing_fault_items(c, details, today),
                      key=lambda i: FAULT_RANK.get(i["key"], 90)):
         if it["key"] in seen:
             continue
@@ -6039,8 +6276,8 @@ def cmd_batch(args):
         notes.append("next biggest: " + ", ".join(f"{k[1]}" + (f" in {k[0]}" if city else "") + f" ({m})"
                                                   for m, k in others))
     if second_look:
-        notes.append(f"{second_look} left out on a second look: the page no longer shows the old copyright year "
-                     f"(a range to this year, a script-written year, or changed since the crawl)")
+        notes.append(f"{second_look} left out on a second look: the site no longer bears a stored fault out (the "
+                     f"copyright year read again, or a link, an image or the secure address asked again)")
     left_out = {k: v for k, v in skipped.items()}
     if left_out:
         notes.append("left out: " + ", ".join(f"{v} {k}" for k, v in sorted(left_out.items(), key=lambda kv: -kv[1])))
@@ -6075,7 +6312,8 @@ def batch_stats(args, today):
     c_emails, c_domains, c_phones = client_marks()
     cache_only = Places(None, None)
     by_seg, by_city, by_trade, keys, excl = {}, {}, {}, {}, {}
-    total = qual = two = faulted = 0
+    total = qual = two = faulted = checked_rows = 0
+    waiting = {}
     seen_mail = set()
     for c in rows:
         reason = why.get(c["place_id"]) or ("a chain" if (c.get("name") or "").lower() in chain_names_ else None)
@@ -6089,14 +6327,23 @@ def batch_stats(args, today):
                            or re.sub(r"\D", "", c.get("phone") or "")[-10:] in c_phones):
             reason = "a client"
         seen_mail.add(addr)
-        fs = facts_packet(c, cache_only.get(c["place_id"]), today)
+        det = cache_only.get(c["place_id"])
+        fs = facts_packet(c, det, today)
         sp = specifics(c, today, fs)
         total += 1
         faulted += bool(fs)
         s = by_seg.setdefault(c["segment"], [0, 0, 0, 0])      # with an address, qualify, two faults, excluded
         s[0] += 1
-        for it in fs + fact_items(c, today):
+        everything = facts_packet(c, det, today, on=CHECK_FAULTS_PROVEN + CHECK_FAULTS_WAITING)
+        for it in everything + fact_items(c, today):
             keys[it["key"]] = keys.get(it["key"], 0) + 1
+        if c.get("checks"):
+            checked_rows += 1
+        if not reason and not sp:
+            for k in CHECK_FAULTS_WAITING:      # how many each waiting fault would add, switched on alone
+                if any(i["key"] == k for i in everything) and \
+                        specifics(c, today, facts_packet(c, det, today, on=CHECK_FAULTS_PROVEN + (k,))):
+                    waiting[k] = waiting.get(k, 0) + 1
         if not sp:
             continue
         if reason:
@@ -6118,6 +6365,9 @@ def batch_stats(args, today):
                           "by_segment": {k: {"with_address": v[0], "qualify": v[1], "two_faults": v[2],
                                              "excluded": v[3]} for k, v in by_seg.items()},
                           "excluded": excl, "by_city": by_city, "keys": keys,
+                          "site_checks": checked_rows, "faults_on": list(CHECK_FAULTS_PROVEN),
+                          "waiting": {k: {"true_of": keys.get(k, 0), "would_add": waiting.get(k, 0)}
+                                      for k in CHECK_FAULTS_WAITING},
                           "trades": [{"segment": t[0], "category": t[1], "n": n} for t, n in trades]}, indent=1))
         return
     print(f"Email lane, {today}: {total} businesses with a usable address (MX ok, not tied by the page title alone), "
@@ -6134,7 +6384,12 @@ def batch_stats(args, today):
     print("Batches by trade, across the corridor (top 15): " + ", ".join(f"{t[1]} ({t[0]}) {n}" for t, n in trades[:15]))
     print("By city: " + ", ".join(f"{k} {v}" for k, v in sorted(by_city.items(), key=lambda kv: -kv[1])[:15]))
     print("True of how many (faults and facts, before exclusions): " + ", ".join(
-        f"{k} {v}" for k, v in sorted(keys.items(), key=lambda kv: -kv[1])))
+        f"{k} {v}" + (" (waiting)" if k in CHECK_FAULTS_WAITING else "")
+        for k, v in sorted(keys.items(), key=lambda kv: -kv[1])))
+    print(f"Site checks (B99): {checked_rows} of these {total} have a `site_checks` row; said: "
+          f"{', '.join(CHECK_FAULTS_PROVEN)} (stored within {SITE_CHECK_MAX_DAYS} days, asked again at batch time). "
+          "Waiting on thirty spot checks, never said: " + ", ".join(
+              f"{k} true of {keys.get(k, 0)}, would add {waiting.get(k, 0)}" for k in CHECK_FAULTS_WAITING) + ".")
 
 
 def latest(folder):

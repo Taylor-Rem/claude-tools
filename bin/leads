@@ -5772,11 +5772,28 @@ _RECHECK = None
 _LAST_HIT = {}
 
 
-def ask_again(url, today):
+# What a page that isn't there says. A 404 is not enough for a link: a site can answer 404 and still show a whole
+# page (B99's real-pick check: Nepali Chulo's Squarespace answers 404 for /mneu-nepali-chulo and shows its About
+# page), and a visitor who meets a real page has not met a broken link. A blank answer is unsure, not gone.
+GONE_PAGE_RE = re.compile(r"not\s*found|\b404\b|can\s*not be found|could\s*not be found|couldn.t find|can.t find|"
+                          r"could not find|unable to find|does\s*n.?o?t exist|no longer exists|no longer available|"
+                          r"page (?:you|you're) (?:are |were )?(?:looking|searching) for", re.I)
+
+
+def reads_gone(body):
+    """True when a 404/410 answer's page says it isn't there (title and visible words, scripts and styles out)."""
+    t = re.sub(r"(?is)<(script|style|noscript)\b.*?</\1\s*>", " ", body or "")
+    t = html.unescape(re.sub(r"<[^>]+>", " ", t))
+    return bool(GONE_PAGE_RE.search(t[:200_000]))
+
+
+def ask_again(url, today, page=False):
     """One GET of a stored address the day a batch is made: an HTTP status (int), or "tls" / "refused" when the
-    secure connection fails, "http" when it lands on an http:// page, or "unsure" (a timeout, anything odd). One
-    request a second per host, the pass's user agent, nothing sent; answers kept for the day. LEADS_STATUS_FIXTURE
-    is a JSON {url: answer} (tests); LEADS_PAGE_CHECK=0 makes every answer "unsure", so nothing re-checked is said."""
+    secure connection fails, "http" when it lands on an http:// page, or "unsure" (a timeout, anything odd). With
+    page=True a 404/410 counts only when its page says so (reads_gone); one that shows a page comes back as
+    "404-page". One request a second per host, the pass's user agent, nothing sent; answers kept for the day.
+    LEADS_STATUS_FIXTURE is a JSON {url: answer} (tests); LEADS_PAGE_CHECK=0 makes every answer "unsure", so nothing
+    re-checked is said."""
     global _RECHECK
     fx = os.environ.get("LEADS_STATUS_FIXTURE")
     if fx or os.environ.get("LEADS_PAGE_FIXTURE"):
@@ -5792,7 +5809,8 @@ def ask_again(url, today):
             _RECHECK = json.loads(path.read_text())
         except (OSError, ValueError):
             _RECHECK = {}
-    row = _RECHECK.get(url)
+    key = url + ("#page" if page else "")
+    row = _RECHECK.get(key)
     if row and row.get("day") == today.isoformat():
         return row["answer"]
     host = urllib.parse.urlsplit(url).hostname or ""
@@ -5807,13 +5825,20 @@ def ask_again(url, today):
                 else resp.status
     except urllib.error.HTTPError as exc:
         answer = exc.code
+        if page and answer in (404, 410):
+            try:
+                body = exc.read(1_000_000).decode("utf-8", "replace")
+            except Exception:            # noqa: BLE001 — a body we can't read is a page we can't vouch for
+                body = ""
+            if not reads_gone(body):
+                answer = f"{answer}-page"
     except urllib.error.URLError as exc:
         why = str(exc.reason).lower()
         answer = ("tls" if "ssl" in why or "certificate" in why else
                   "refused" if "refused" in why else "unsure")
     except Exception:                    # noqa: BLE001 — anything else is unsure, and unsure is never said
         answer = "unsure"
-    _RECHECK[url] = {"answer": answer, "day": today.isoformat()}
+    _RECHECK[key] = {"answer": answer, "day": today.isoformat()}
     try:
         STATE.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(_RECHECK, indent=0, sort_keys=True) + "\n")
@@ -5839,7 +5864,7 @@ def recheck(f, today):
         items = rc["links"] if rc["kind"] == "links" else rc["images"]
         dead = []
         for it in items:
-            a = ask_again(it["href" if rc["kind"] == "links" else "src"], today)
+            a = ask_again(it["href" if rc["kind"] == "links" else "src"], today, page=rc["kind"] == "links")
             if a in (404, 410):
                 dead.append(dict(it, now=a))
         if not dead:

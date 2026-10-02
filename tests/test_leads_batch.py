@@ -621,9 +621,27 @@ class CheckFaultsTest(unittest.TestCase):
                 "kind": "https", "url": "https://dynamoelectric.example/team", "listed": ""}}, TODAY)
             self.assertIsNone(h)                                      # serves now: dropped
             self.assertEqual(m.ask_again("https://never.example/", TODAY), "unsure")
+            # a 404 that shows a whole page (Nepali Chulo's Squarespace shows its About page) is not a broken link
+            st = json.loads(Path(os.environ["LEADS_STATUS_FIXTURE"]).read_text())
+            st["https://shown.example/menu"] = "404-page"
+            Path(os.environ["LEADS_STATUS_FIXTURE"]).write_text(json.dumps(st))
+            self.assertIsNone(m.recheck(dict(f, recheck=dict(f["recheck"], links=[
+                {"href": "https://shown.example/menu", "text": "Menu", "status": 404}])), TODAY))
         finally:
             os.environ.clear()
             os.environ.update(saved)
+
+    def test_a_404_page_must_say_so(self):
+        m = leads_module(self.env)
+        for body in ("<title>Page not found | Alta Air</title>", "<h1>404</h1><p>Oops</p>",
+                     "<p>We couldn&#39;t find the page you were looking for.</p>",
+                     "<div>4 04</div><p>The page you are looking for<br>can not be found</p>",
+                     "<p>Sorry, but the page you are trying to view does not exist.</p>"):
+            self.assertTrue(m.reads_gone(body), body)
+        for body in ("<title>About — Nepali Chulo</title><p>Chulo is a traditional Nepali wood stove</p>"
+                     "<p>801 987-8404, UT 84120</p>",
+                     "", "<script>var e = 'not found 404';</script><p>Our menu</p>"):
+            self.assertFalse(m.reads_gone(body), body)
 
     def test_stats_counts_the_waiting(self):
         r = self.run_leads("batch", "--stats", "--segment", "services", "--json")

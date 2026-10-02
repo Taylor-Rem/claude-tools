@@ -17,6 +17,8 @@
   outreach resume MAILBOX | --lane        # Taylor's word after a pause or a stop
   outreach inbox [--dry-run]   # replies since the cursor: classified, the routine ones answered,
                                # the warm ones handed to Taylor with a brief
+  outreach build [NAME]        # B92, Taylor's word after an interested reply: `prep one` for that
+                               # business, detached; the outline comes by notify. Nothing else starts it
   outreach suppress add hello@x.example | ChIJ…      # off the list for good, both channels
   outreach suppress ls [--json]            # --json: [{value, kind: address|domain|place_id}] for `leads batch`
   outreach status              # today's sends, the caps, replies by class, bounces, complaints
@@ -87,7 +89,8 @@ Config, by name, never printed:
   OUTREACH_STATE          state dir (default ~/.local/state/claude-tools/outreach)
   OUTREACH_TEMPLATES      the letters (default ../templates/outreach beside this file)
   INSTANTLY_API_BASE / ANTHROPIC_API_BASE    tests only: stand-ins for the real hosts.
-  OUTREACH_LEADS_BIN / OUTREACH_NOTIFY_BIN   tests only: stand-ins for `leads` / `notify`.
+  OUTREACH_LEADS_BIN / OUTREACH_NOTIFY_BIN / OUTREACH_PREP_BIN
+                          tests only: stand-ins for `leads` / `notify` / `prep`.
   OUTREACH_KIT_JSON       tests only: a kit file instead of running `leads`.
 
 The provider is an interface with two implementations. `fake` keeps everything in
@@ -2684,7 +2687,7 @@ def answer_yes(provider, r, row, name, pid, email, first, first200, room):
     is what happened before there was a yes path. -> True when the machine answered."""
     def hand_over(why):
         notify(f"{name} said yes to the preview, and it couldn't go back automatically ({why}): {first200} — "
-               f"`leads brief {name}` before you answer.")
+               f"`leads brief {name}` before you answer{offer_build(row, pid)}")
         leads_log(name, "interested", f"said yes to the preview: {first200[:120]}", place_id=pid, email=email,
                   next_when="tomorrow")
         say(f"  handed to Taylor: {why}")
@@ -2729,9 +2732,99 @@ def answer_yes(provider, r, row, name, pid, email, first, first200, room):
     except (Unreachable, ProviderError) as exc:
         return hand_over(f"the reply didn't go: {exc}")
     row.update(answered=True, answer_template="answer-yes", preview_url=url)
-    notify(f"{name} said yes; their preview went back: {url}. `leads brief {name}` before a call.")
+    notify(f"{name} said yes; their preview went back: {url}. `leads brief {name}` before a call"
+           f"{offer_build(row, pid)}")
     leads_log(name, "interested", f"said yes; preview sent: {url}", place_id=pid, email=email, next_when="tomorrow")
     return True
+
+
+# ---- the build word (B92, plan 37 § 4) -----------------------------------------------
+# The message to Taylor about an interested reply (or a yes) ends with BUILD_LINE, and the reply row
+# remembers it offered. His "build" reaches this tool through Patch, which runs `outreach build` on
+# his word, as `go` becomes `outreach send --go`. Only that command starts `prep one`: the inbox pass,
+# the tick and the classifier never do, and a lead writing the word "build" is just a reply.
+
+BUILD_LINE = "reply `build` and the full site is ready before you call"
+BUILD_OFFER_DAYS = 14
+
+
+def offer_build(row, pid):
+    """The tail of Taylor's message when one word from him can start the researched site: only for a
+    business we can name by its census place id. Marks the reply row so `outreach build` can find it."""
+    if not pid:
+        return "."
+    row["build_offered"] = True
+    return f" — {BUILD_LINE}."
+
+
+def builds_file():
+    return state_dir("builds.jsonl")
+
+
+def build_offers():
+    """The replies whose message to Taylor offered `build` in the last BUILD_OFFER_DAYS, newest first,
+    one a place."""
+    cutoff = (today() - dt.timedelta(days=BUILD_OFFER_DAYS)).isoformat()
+    seen, out = set(), []
+    for r in reversed(read_jsonl(replies_file())):
+        pid = r.get("place_id")
+        if r.get("build_offered") and pid and (r.get("date") or "") >= cutoff and pid not in seen:
+            seen.add(pid)
+            out.append(r)
+    return out
+
+
+def build_target(who):
+    """(reply row, None) for the business Taylor means, or (None, a line saying why not / which one)."""
+    started = {b.get("place_id") for b in read_jsonl(builds_file()) if b.get("ok")}
+    offers = build_offers()
+    if not who:
+        waiting = [r for r in offers if r["place_id"] not in started]
+        if len(waiting) == 1:
+            return waiting[0], None
+        if not waiting:
+            return None, (f"Nothing is waiting on `build`: no interested reply in the last {BUILD_OFFER_DAYS} days "
+                          f"that hasn't been started. `outreach build NAME` names one.")
+        lines = [f"{len(waiting)} replies are waiting on `build`; which one?"]
+        lines += [f"  {r.get('name')} ({r.get('date')}): {(r.get('text') or '')[:80]}" for r in waiting]
+        lines.append("Say `build NAME` for the one you mean.")
+        return None, "\n".join(lines)
+    low = who.lower()
+    rows = [r for r in reversed(read_jsonl(replies_file())) if r.get("place_id")]
+    hits = ([r for r in rows if r["place_id"] == who]
+            or [r for r in offers if low in str(r.get("name") or "").lower()]
+            or [r for r in rows if low in str(r.get("name") or "").lower()])
+    places = list(dict.fromkeys(r["place_id"] for r in hits))
+    if not places:
+        return None, (f"No reply from a business matching \"{who}\". `outreach build` alone takes the one the "
+                      f"last message was about; `prep one PLACE_ID` builds any business in the census.")
+    if len(places) > 1:
+        names = sorted({str(r.get("name")) for r in hits})
+        return None, f"\"{who}\" matches {len(places)} businesses ({', '.join(names)}); say a longer name."
+    return hits[0], None
+
+
+def cmd_build(args):
+    """Taylor's word: `prep one` for the business an interested reply was about, detached. The outline
+    comes by notify when it finishes (an hour or two); this answers at once with what started."""
+    target, why = build_target(" ".join(args.who or []).strip())
+    if not target:
+        say(why)
+        sys.exit(1)
+    pid, name = target["place_id"], target.get("name") or target["place_id"]
+    cmd = [tool_path("prep"), "one", pid, "--why", f"outreach build: {name} replied {target.get('date') or ''}".strip()]
+    if DRY:
+        cmd.append("--dry-run")                          # prep's own dry run: it says what it would spend
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        code, out = r.returncode, ((r.stdout or "") + (r.stderr or "")).strip()
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        code, out = 1, f"`prep one {pid}` couldn't run: {exc}"
+    say(out or f"`prep one {pid}` exited {code} and said nothing")
+    if not DRY:
+        append_jsonl(builds_file(), {"ts": now_iso(), "place_id": pid, "name": name, "ok": code == 0,
+                                     "reply_ts": target.get("ts"), "said": out[-400:]})
+    sys.exit(code)
 
 
 def answer_for(topic):
@@ -2843,7 +2936,8 @@ def cmd_inbox(args):
             tail = f"reply yes to book {when}" if when else f"reply yes to send the booking link ({book})"
             # an "unsure" carries the classifier's reason to Taylor, as its prompt promises
             because = f" (the classifier was unsure: {why})" if cls == "unsure" and why else ""
-            notify(f"{name} replied: {first200}{because} — leads brief pending; {tail}")
+            notify(f"{name} replied: {first200}{because} — leads brief pending; {tail}"
+                   + (offer_build(row, pid) if cls == "interested" else "."))
             leads_log(name, "interested", f"replied to the email: {first200[:120]}",
                       place_id=pid, email=email, next_when="tomorrow")
             say(f"  handed to Taylor: {tail}")
@@ -3176,7 +3270,7 @@ def cmd_doctor(args):
     say(f"  state: {STATE}  ({len(read_jsonl(sends_file()))} sends, {len(read_jsonl(replies_file()))} replies, "
         f"{len(suppressed())} suppressed)")
     say(f"  ledger: {LEDGER}")
-    for t in ("leads", "notify"):
+    for t in ("leads", "notify", "prep"):
         p = tool_path(t)
         say(f"  {t}: {p if Path(p).exists() else 'MISSING — ' + p}")
         if not Path(p).exists():
@@ -3293,6 +3387,11 @@ def main():
     s = sub.add_parser("inbox", parents=[common], help="replies: classified, the routine ones answered")
     s.add_argument("--limit", type=int, help="only the first N new replies")
     s.set_defaults(fn=cmd_inbox)
+
+    s = sub.add_parser("build", parents=[common],
+                       help="Taylor's `build`: the researched site (prep one) for an interested reply")
+    s.add_argument("who", nargs="*", help="a name or place id (default: the one the last message offered)")
+    s.set_defaults(fn=cmd_build)
 
     s = sub.add_parser("suppress", parents=[common], help="off the list for good")
     s.add_argument("action", choices=("add", "ls"))

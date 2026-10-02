@@ -894,5 +894,112 @@ class ModelTest(Base):
         self.assertFalse((self.t / "requests").exists() and any((self.t / "requests").iterdir()))
 
 
+# ---- B92: one business on Taylor's word -----------------------------------------------------------
+
+class OneTest(Base):
+    """`prep one PLACE_ID` (plan 37 § 4): the run's machinery for one named business, never a fork of it."""
+
+    def one(self, *args, env=None):
+        return self.run_prep("one", *args, env=env)
+
+    def test_one_delivers_one_judged_site_with_the_gates_green_and_the_outline_by_notify(self):
+        self.write_plan({"build": "good", "judge": "pass", "batch": "good"})
+        self.approve_and_make_the_project()
+        r = self.one(POOL, "--foreground", "--why", "outreach build: Mike's Pool Care replied")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("Prep 2026-09-29-a: building Mike's Pool Care", r.stdout)
+        run_dir = self.run_dir()
+        rj = self.rj(run_dir)
+        self.assertEqual(rj["state"], "done")
+        self.assertEqual(rj["n"], 1)
+        self.assertTrue(rj["opts"]["one"])
+        self.assertEqual(rj["opts"]["why"], "outreach build: Mike's Pool Care replied")
+        self.assertEqual(rj["delivered"], [SLUGS[POOL]])
+        wd = run_dir / SLUGS[POOL]
+        self.assertTrue(json.loads((wd / "check.json").read_text())["ok"])          # the gates, green
+        self.assertTrue(json.loads((wd / "review.json").read_text()))                # judged
+        usage = rj["usage"]
+        self.assertEqual(usage["research"]["models"], ["claude-sonnet-5-5"])
+        self.assertEqual(usage["build"]["models"], ["claude-sonnet-5-5"])
+        self.assertEqual(usage["judge"]["models"], ["claude-opus-5-5"])
+        self.assertFalse((usage.get("batch") or {}).get("sessions"))   # one site: no batch pass to compare
+        pub = [c for c in self.rows("site.jsonl") if c["argv"][:1] == ["previews"]]
+        self.assertEqual(len(pub), 1)
+        self.assertNotIn("--yes", pub[0]["argv"])
+        notices = self.notices()
+        self.assertEqual(len(notices), 3)                 # the header, the entry, the message
+        self.assertTrue(notices[0].startswith("Prep 2026-09-29-a (one business, on your word) · 1 ready"),
+                        notices[0])
+        self.assertIn("Site: https://", notices[1])
+        self.assertEqual(self.rows("leads/remote.jsonl")[0]["place_ids"], [POOL])
+
+    def test_a_second_build_says_what_exists_instead_of_building_twice(self):
+        self.write_plan({"build": "good", "judge": "pass", "batch": "good"})
+        self.approve_and_make_the_project()
+        self.one(POOL, "--foreground")
+        sessions = len(self.sessions())
+        r = self.one(POOL, "--foreground")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertRegex(r.stdout, r"is already built: prep 2026-09-29-a delivered it \d{4}-\d\d-\d\d, https://")
+        self.assertIn("`prep last 2026-09-29-a`", r.stdout)
+        self.assertEqual(len(self.sessions()), sessions)
+        self.assertEqual(len([d for d in (self.t / "prep").iterdir() if (d / "run.json").exists()]), 1)
+
+    def test_a_business_a_run_still_holds_is_not_started_again(self):
+        self.write_plan({"build": "good", "judge": "pass", "batch": "good"})
+        self.run_prep("run", "--n", "1", "--places", POOL, "--no-publish", env={"FAKE_CLAUDE_SLEEP": "2"})
+        end = time.time() + 40
+        while time.time() < end and self.rj().get("state") != "running":
+            time.sleep(0.2)
+        r = self.one(POOL, "--no-publish")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("is already being built in prep 2026-09-29-a", r.stdout)
+        self.run_prep("stop")
+
+    def test_it_refuses_before_spending_anything_until_taylor_has_given_his_two(self):
+        self.write_plan({"build": "good", "judge": "pass", "batch": "good"})
+        r = self.one(POOL, "--foreground")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("not starting Mike's Pool Care", r.stderr)
+        self.assertIn("the message frame isn't approved", r.stderr)
+        self.assertIn("the previews project isn't there yet", r.stderr)
+        self.assertFalse((self.t / "prep").exists() and any((self.t / "prep").iterdir()))
+        self.assertFalse(self.sessions())
+
+    def test_a_place_outside_the_census_is_refused_plainly(self):
+        r = self.one("FX_NOT_THERE")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("not in the services census", r.stderr)
+        self.assertFalse(self.sessions())
+
+    def test_dry_run_says_what_it_would_do_and_spend_and_starts_nothing(self):
+        r = self.one(POOL, "--dry-run")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        out = r.stdout
+        self.assertIn("prep one --dry-run: Mike's Pool Care", out)
+        self.assertIn("one claude-sonnet-5-5 session", out)
+        self.assertIn("a fresh claude-opus-5-5 session a round", out)
+        self.assertIn("the listing is on disk: no Places read", out)
+        self.assertIn("Taylor's subscription", out)
+        self.assertIn("would refuse:", out)                      # nothing approved in this world yet
+        self.assertNotIn("fable", out.lower())
+        self.assertFalse((self.t / "prep").exists() and any((self.t / "prep").iterdir()))
+        self.assertFalse(self.sessions())
+        self.assertFalse([c for c in self.rows("site.jsonl")])   # a dry run asks Cloudflare nothing
+
+    def test_a_dropped_site_comes_back_as_a_plain_why_by_notify(self):
+        self.write_plan({"build": "good", "judge": "drop", "batch": "good"})
+        self.approve_and_make_the_project()
+        r = self.one(POOL, "--foreground")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        notices = self.notices()
+        self.assertIn("0 ready", notices[0])
+        self.assertTrue(notices[-1].startswith("Dropped: "), notices)
+        # a dropped attempt holds nothing: Taylor may ask again
+        self.write_plan({"build": "good", "judge": "pass", "batch": "good"})
+        r = self.one(POOL, "--foreground")
+        self.assertEqual(self.rj()["state"], "done", r.stdout + r.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

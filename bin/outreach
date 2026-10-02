@@ -3220,6 +3220,41 @@ def cmd_approve(args):
     say("Whoever ran this command approved it; it is Taylor's step, and the file records the exact hash.")
 
 
+def cmd_probe(args):
+    """One plain test mail from each mailbox (or --mailbox) to an address Taylor names.
+    The same builder and SMTP path a letter uses; nothing is logged as a send, no pipeline row,
+    no ledger line. Only Taylor asks for it (it writes to a real inbox)."""
+    to = args.to
+    if "@" not in to:
+        die(f"{to!r} isn't an address")
+    boxes = [args.mailbox] if getattr(args, "mailbox", None) else mailboxes()
+    if not boxes:
+        die("OUTREACH_MAILBOXES isn't set (see `outreach doctor`)")
+    smtp = toolbelt("OUTREACH_SMTP_HOST", "smtp.gmail.com:465")
+    from_name = toolbelt("OUTREACH_FROM_NAME", "Taylor Remund")
+    when = dt.datetime.now().strftime("%a %-d %b %H:%M")
+    ok = 0
+    for i, mb in enumerate(boxes, 1):
+        pw = toolbelt(password_name(mb))
+        if not pw:
+            say(f"  {mb}: {password_name(mb)} isn't set — skipped"); continue
+        mid = mail.make_message_id(mail.domain_of(mb))
+        msg = mail.build_message(mb, from_name, to, f"outreach probe {i} of {len(boxes)} — {mb}",
+                                 f"A test from {mb} through the outreach tool's own sender, {when}.\n"
+                                 f"Nothing to do with it; if it reached you, this mailbox can send.\n\nTaylor Remund\n",
+                                 mid)
+        if DRY:
+            say(f"  [dry-run] {mb} -> {to}"); ok += 1; continue
+        try:
+            mail.smtp_send(smtp, mb, pw, msg)
+        except mail.MailError as exc:
+            say(f"  {mb}: FAILED — {exc}"); continue
+        say(f"  {mb} -> {to}: sent ({mid})"); ok += 1
+    say(f"{ok} of {len(boxes)} sent" + (" (dry run)" if DRY else ""))
+    if ok != len(boxes):
+        sys.exit(1)
+
+
 def cmd_doctor(args):
     ok = True
     keys = read_env()
@@ -3456,6 +3491,11 @@ def main():
     s = sub.add_parser("approve", parents=[common], help="print each letter, then record Taylor's approval")
     s.add_argument("--template", action="append", help="just this one (repeatable)")
     s.set_defaults(fn=cmd_approve)
+
+    s = sub.add_parser("probe", parents=[common], help="one plain test mail from each mailbox to an address (Taylor's ask)")
+    s.add_argument("to")
+    s.add_argument("--mailbox", help="just this one")
+    s.set_defaults(fn=cmd_probe)
 
     s = sub.add_parser("doctor", parents=[common])
     s.add_argument("--kit", help="a kit JSON file instead of running `leads kit --remote --json`")

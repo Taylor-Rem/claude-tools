@@ -1,0 +1,7 @@
+[Unit]
+Description=Patchlamp: the email lane's tick (outreach tick; ROADMAP B90, plan 37 § 3)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/outreach tick
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin

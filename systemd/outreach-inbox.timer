@@ -1,0 +1,9 @@
+[Unit]
+Description=Patchlamp: outreach inbox every fifteen minutes, 07:00-20:00
+
+[Timer]
+OnCalendar=*-*-* 07..19:00/15:00
+Persistent=false
+
+[Install]
+WantedBy=timers.target

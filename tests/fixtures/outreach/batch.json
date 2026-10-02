@@ -1,0 +1,1559 @@
+{
+ "batch_id": "2026-10-16-services-lehi-plumber-1",
+ "date": "2026-10-16",
+ "segment": "services",
+ "category": "Plumber",
+ "city": "Lehi",
+ "picks": [
+  {
+   "place_id": "ChIJbatch00000000000000000",
+   "name": "Summit Plumbing",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1000",
+   "site_url": "https://summitplumbing0.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000000",
+   "rating": 4.0,
+   "reviews": 10,
+   "email": "office@summitplumbing0.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://summitplumbing0.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "hours_saturday",
+     "kind": "fault",
+     "sentence": "your Google listing has no hours for Saturday",
+     "evidence": "https://summitplumbing0.example/"
+    },
+    {
+     "key": "mobile",
+     "kind": "fault",
+     "sentence": "your website has no layout for a phone, so it shows the desktop page shrunk",
+     "evidence": "https://maps.google.com/?cid=2000000000000000000"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000001",
+   "name": "Timpanogos Plumbing",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1001",
+   "site_url": "https://timpanogosplumbing1.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000001",
+   "rating": 4.1,
+   "reviews": 11,
+   "email": "office@timpanogosplumbing1.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://timpanogosplumbing1.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "mobile",
+     "kind": "fault",
+     "sentence": "your website has no layout for a phone, so it shows the desktop page shrunk",
+     "evidence": "https://timpanogosplumbing1.example/"
+    },
+    {
+     "key": "photos",
+     "kind": "fault",
+     "sentence": "your Google listing has only 2 photos",
+     "evidence": "https://maps.google.com/?cid=2000000000000000001"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000002",
+   "name": "Alpine Plumbing",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1002",
+   "site_url": "https://alpineplumbing2.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000002",
+   "rating": 4.2,
+   "reviews": 12,
+   "email": "office@alpineplumbing2.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://alpineplumbing2.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "https",
+     "kind": "fault",
+     "sentence": "your website doesn't load over https, so browsers mark it \"Not secure\"",
+     "evidence": "https://alpineplumbing2.example/"
+    },
+    {
+     "key": "hours",
+     "kind": "fault",
+     "sentence": "your Google listing has no hours on it at all",
+     "evidence": "https://maps.google.com/?cid=2000000000000000002"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000003",
+   "name": "Thanksgiving Point Plumbing",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1003",
+   "site_url": "https://thanksgivingpointplumbing3.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000003",
+   "rating": 4.3,
+   "reviews": 13,
+   "email": "owner3@gmail.example",
+   "email_kind": "free-mail",
+   "email_mx": "ok",
+   "email_evidence": "https://thanksgivingpointplumbing3.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "copyright",
+     "kind": "fault",
+     "sentence": "your website's footer still says © 2017",
+     "evidence": "https://thanksgivingpointplumbing3.example/"
+    },
+    {
+     "key": "https",
+     "kind": "fault",
+     "sentence": "your website doesn't load over https, so browsers mark it \"Not secure\"",
+     "evidence": "https://maps.google.com/?cid=2000000000000000003"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000004",
+   "name": "Wasatch Plumbing",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1004",
+   "site_url": "https://wasatchplumbing4.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000004",
+   "rating": 4.4,
+   "reviews": 14,
+   "email": "office@wasatchplumbing4.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://wasatchplumbing4.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "photos",
+     "kind": "fault",
+     "sentence": "your Google listing has only 2 photos",
+     "evidence": "https://wasatchplumbing4.example/"
+    },
+    {
+     "key": "phone_mismatch",
+     "kind": "fault",
+     "sentence": "the phone number on your website isn't the one on your Google listing",
+     "evidence": "https://maps.google.com/?cid=2000000000000000004"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000005",
+   "name": "Cedar Plumbing",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1005",
+   "site_url": "https://cedarplumbing5.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000005",
+   "rating": 4.5,
+   "reviews": 15,
+   "email": "office@cedarplumbing5.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://cedarplumbing5.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "phone_mismatch",
+     "kind": "fault",
+     "sentence": "the phone number on your website isn't the one on your Google listing",
+     "evidence": "https://cedarplumbing5.example/"
+    },
+    {
+     "key": "hours_saturday",
+     "kind": "fault",
+     "sentence": "your Google listing has no hours for Saturday",
+     "evidence": "https://maps.google.com/?cid=2000000000000000005"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000006",
+   "name": "Highland Plumbing",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1006",
+   "site_url": "https://highlandplumbing6.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000006",
+   "rating": 4.6,
+   "reviews": 16,
+   "email": "office@highlandplumbing6.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://highlandplumbing6.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "no_form",
+     "kind": "fault",
+     "sentence": "there's no way to send you a message from your website, only a phone number",
+     "evidence": "https://highlandplumbing6.example/"
+    },
+    {
+     "key": "copyright",
+     "kind": "fault",
+     "sentence": "your website's footer still says © 2017",
+     "evidence": "https://maps.google.com/?cid=2000000000000000006"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000007",
+   "name": "Saratoga Plumbing",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1007",
+   "site_url": "https://saratogaplumbing7.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000007",
+   "rating": 4.7,
+   "reviews": 17,
+   "email": "office@saratogaplumbing7.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://saratogaplumbing7.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "hours",
+     "kind": "fault",
+     "sentence": "your Google listing has no hours on it at all",
+     "evidence": "https://saratogaplumbing7.example/"
+    },
+    {
+     "key": "no_form",
+     "kind": "fault",
+     "sentence": "there's no way to send you a message from your website, only a phone number",
+     "evidence": "https://maps.google.com/?cid=2000000000000000007"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000008",
+   "name": "Eagle Plumbing",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1008",
+   "site_url": "https://eagleplumbing8.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000008",
+   "rating": 4.8,
+   "reviews": 18,
+   "email": "office@eagleplumbing8.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://eagleplumbing8.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "hours_saturday",
+     "kind": "fault",
+     "sentence": "your Google listing has no hours for Saturday",
+     "evidence": "https://eagleplumbing8.example/"
+    },
+    {
+     "key": "mobile",
+     "kind": "fault",
+     "sentence": "your website has no layout for a phone, so it shows the desktop page shrunk",
+     "evidence": "https://maps.google.com/?cid=2000000000000000008"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000009",
+   "name": "Canyon Plumbing",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1009",
+   "site_url": "https://canyonplumbing9.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000009",
+   "rating": 4.9,
+   "reviews": 19,
+   "email": "office@canyonplumbing9.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://canyonplumbing9.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "mobile",
+     "kind": "fault",
+     "sentence": "your website has no layout for a phone, so it shows the desktop page shrunk",
+     "evidence": "https://canyonplumbing9.example/"
+    },
+    {
+     "key": "photos",
+     "kind": "fault",
+     "sentence": "your Google listing has only 2 photos",
+     "evidence": "https://maps.google.com/?cid=2000000000000000009"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000010",
+   "name": "Summit Drain & Rooter",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1010",
+   "site_url": "https://summitdrainandrooter10.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000010",
+   "rating": 4.0,
+   "reviews": 20,
+   "email": "owner10@gmail.example",
+   "email_kind": "free-mail",
+   "email_mx": "ok",
+   "email_evidence": "https://summitdrainandrooter10.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "https",
+     "kind": "fault",
+     "sentence": "your website doesn't load over https, so browsers mark it \"Not secure\"",
+     "evidence": "https://summitdrainandrooter10.example/"
+    },
+    {
+     "key": "hours",
+     "kind": "fault",
+     "sentence": "your Google listing has no hours on it at all",
+     "evidence": "https://maps.google.com/?cid=2000000000000000010"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000011",
+   "name": "Timpanogos Drain & Rooter",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1011",
+   "site_url": "https://timpanogosdrainandrooter11.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000011",
+   "rating": 4.1,
+   "reviews": 21,
+   "email": "office@timpanogosdrainandrooter11.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://timpanogosdrainandrooter11.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "copyright",
+     "kind": "fault",
+     "sentence": "your website's footer still says © 2017",
+     "evidence": "https://timpanogosdrainandrooter11.example/"
+    },
+    {
+     "key": "https",
+     "kind": "fault",
+     "sentence": "your website doesn't load over https, so browsers mark it \"Not secure\"",
+     "evidence": "https://maps.google.com/?cid=2000000000000000011"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000012",
+   "name": "Alpine Drain & Rooter",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1012",
+   "site_url": "https://alpinedrainandrooter12.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000012",
+   "rating": 4.2,
+   "reviews": 22,
+   "email": "office@alpinedrainandrooter12.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://alpinedrainandrooter12.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "photos",
+     "kind": "fault",
+     "sentence": "your Google listing has only 2 photos",
+     "evidence": "https://alpinedrainandrooter12.example/"
+    },
+    {
+     "key": "phone_mismatch",
+     "kind": "fault",
+     "sentence": "the phone number on your website isn't the one on your Google listing",
+     "evidence": "https://maps.google.com/?cid=2000000000000000012"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000013",
+   "name": "Thanksgiving Point Drain & Rooter",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1013",
+   "site_url": "https://thanksgivingpointdrainandrooter13.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000013",
+   "rating": 4.3,
+   "reviews": 23,
+   "email": "office@thanksgivingpointdrainandrooter13.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://thanksgivingpointdrainandrooter13.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "phone_mismatch",
+     "kind": "fault",
+     "sentence": "the phone number on your website isn't the one on your Google listing",
+     "evidence": "https://thanksgivingpointdrainandrooter13.example/"
+    },
+    {
+     "key": "hours_saturday",
+     "kind": "fault",
+     "sentence": "your Google listing has no hours for Saturday",
+     "evidence": "https://maps.google.com/?cid=2000000000000000013"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000014",
+   "name": "Wasatch Drain & Rooter",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1014",
+   "site_url": "https://wasatchdrainandrooter14.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000014",
+   "rating": 4.4,
+   "reviews": 24,
+   "email": "office@wasatchdrainandrooter14.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://wasatchdrainandrooter14.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "no_form",
+     "kind": "fault",
+     "sentence": "there's no way to send you a message from your website, only a phone number",
+     "evidence": "https://wasatchdrainandrooter14.example/"
+    },
+    {
+     "key": "copyright",
+     "kind": "fault",
+     "sentence": "your website's footer still says © 2017",
+     "evidence": "https://maps.google.com/?cid=2000000000000000014"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000015",
+   "name": "Cedar Drain & Rooter",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1015",
+   "site_url": "https://cedardrainandrooter15.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000015",
+   "rating": 4.5,
+   "reviews": 25,
+   "email": "office@cedardrainandrooter15.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://cedardrainandrooter15.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "hours",
+     "kind": "fault",
+     "sentence": "your Google listing has no hours on it at all",
+     "evidence": "https://cedardrainandrooter15.example/"
+    },
+    {
+     "key": "no_form",
+     "kind": "fault",
+     "sentence": "there's no way to send you a message from your website, only a phone number",
+     "evidence": "https://maps.google.com/?cid=2000000000000000015"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000016",
+   "name": "Highland Drain & Rooter",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1016",
+   "site_url": "https://highlanddrainandrooter16.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000016",
+   "rating": 4.6,
+   "reviews": 26,
+   "email": "office@highlanddrainandrooter16.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://highlanddrainandrooter16.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "hours_saturday",
+     "kind": "fault",
+     "sentence": "your Google listing has no hours for Saturday",
+     "evidence": "https://highlanddrainandrooter16.example/"
+    },
+    {
+     "key": "mobile",
+     "kind": "fault",
+     "sentence": "your website has no layout for a phone, so it shows the desktop page shrunk",
+     "evidence": "https://maps.google.com/?cid=2000000000000000016"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000017",
+   "name": "Saratoga Drain & Rooter",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1017",
+   "site_url": "https://saratogadrainandrooter17.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000017",
+   "rating": 4.7,
+   "reviews": 27,
+   "email": "owner17@gmail.example",
+   "email_kind": "free-mail",
+   "email_mx": "ok",
+   "email_evidence": "https://saratogadrainandrooter17.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "mobile",
+     "kind": "fault",
+     "sentence": "your website has no layout for a phone, so it shows the desktop page shrunk",
+     "evidence": "https://saratogadrainandrooter17.example/"
+    },
+    {
+     "key": "photos",
+     "kind": "fault",
+     "sentence": "your Google listing has only 2 photos",
+     "evidence": "https://maps.google.com/?cid=2000000000000000017"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000018",
+   "name": "Eagle Drain & Rooter",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1018",
+   "site_url": "https://eagledrainandrooter18.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000018",
+   "rating": 4.8,
+   "reviews": 28,
+   "email": "office@eagledrainandrooter18.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://eagledrainandrooter18.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "https",
+     "kind": "fault",
+     "sentence": "your website doesn't load over https, so browsers mark it \"Not secure\"",
+     "evidence": "https://eagledrainandrooter18.example/"
+    },
+    {
+     "key": "hours",
+     "kind": "fault",
+     "sentence": "your Google listing has no hours on it at all",
+     "evidence": "https://maps.google.com/?cid=2000000000000000018"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000019",
+   "name": "Canyon Drain & Rooter",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1019",
+   "site_url": "https://canyondrainandrooter19.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000019",
+   "rating": 4.9,
+   "reviews": 29,
+   "email": "office@canyondrainandrooter19.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://canyondrainandrooter19.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "copyright",
+     "kind": "fault",
+     "sentence": "your website's footer still says © 2017",
+     "evidence": "https://canyondrainandrooter19.example/"
+    },
+    {
+     "key": "https",
+     "kind": "fault",
+     "sentence": "your website doesn't load over https, so browsers mark it \"Not secure\"",
+     "evidence": "https://maps.google.com/?cid=2000000000000000019"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000020",
+   "name": "Summit Water Heaters",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1020",
+   "site_url": "https://summitwaterheaters20.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000020",
+   "rating": 4.0,
+   "reviews": 30,
+   "email": "office@summitwaterheaters20.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://summitwaterheaters20.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "photos",
+     "kind": "fault",
+     "sentence": "your Google listing has only 2 photos",
+     "evidence": "https://summitwaterheaters20.example/"
+    },
+    {
+     "key": "phone_mismatch",
+     "kind": "fault",
+     "sentence": "the phone number on your website isn't the one on your Google listing",
+     "evidence": "https://maps.google.com/?cid=2000000000000000020"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000021",
+   "name": "Timpanogos Water Heaters",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1021",
+   "site_url": "https://timpanogoswaterheaters21.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000021",
+   "rating": 4.1,
+   "reviews": 31,
+   "email": "office@timpanogoswaterheaters21.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://timpanogoswaterheaters21.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "phone_mismatch",
+     "kind": "fault",
+     "sentence": "the phone number on your website isn't the one on your Google listing",
+     "evidence": "https://timpanogoswaterheaters21.example/"
+    },
+    {
+     "key": "hours_saturday",
+     "kind": "fault",
+     "sentence": "your Google listing has no hours for Saturday",
+     "evidence": "https://maps.google.com/?cid=2000000000000000021"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000022",
+   "name": "Alpine Water Heaters",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1022",
+   "site_url": "https://alpinewaterheaters22.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000022",
+   "rating": 4.2,
+   "reviews": 32,
+   "email": "office@alpinewaterheaters22.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://alpinewaterheaters22.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "no_form",
+     "kind": "fault",
+     "sentence": "there's no way to send you a message from your website, only a phone number",
+     "evidence": "https://alpinewaterheaters22.example/"
+    },
+    {
+     "key": "copyright",
+     "kind": "fault",
+     "sentence": "your website's footer still says © 2017",
+     "evidence": "https://maps.google.com/?cid=2000000000000000022"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000023",
+   "name": "Thanksgiving Point Water Heaters",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1023",
+   "site_url": "https://thanksgivingpointwaterheaters23.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000023",
+   "rating": 4.3,
+   "reviews": 33,
+   "email": "office@thanksgivingpointwaterheaters23.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://thanksgivingpointwaterheaters23.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "hours",
+     "kind": "fault",
+     "sentence": "your Google listing has no hours on it at all",
+     "evidence": "https://thanksgivingpointwaterheaters23.example/"
+    },
+    {
+     "key": "no_form",
+     "kind": "fault",
+     "sentence": "there's no way to send you a message from your website, only a phone number",
+     "evidence": "https://maps.google.com/?cid=2000000000000000023"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000024",
+   "name": "Wasatch Water Heaters",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1024",
+   "site_url": "https://wasatchwaterheaters24.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000024",
+   "rating": 4.4,
+   "reviews": 34,
+   "email": "owner24@gmail.example",
+   "email_kind": "free-mail",
+   "email_mx": "ok",
+   "email_evidence": "https://wasatchwaterheaters24.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "hours_saturday",
+     "kind": "fault",
+     "sentence": "your Google listing has no hours for Saturday",
+     "evidence": "https://wasatchwaterheaters24.example/"
+    },
+    {
+     "key": "mobile",
+     "kind": "fault",
+     "sentence": "your website has no layout for a phone, so it shows the desktop page shrunk",
+     "evidence": "https://maps.google.com/?cid=2000000000000000024"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000025",
+   "name": "Cedar Water Heaters",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1025",
+   "site_url": "https://cedarwaterheaters25.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000025",
+   "rating": 4.5,
+   "reviews": 35,
+   "email": "office@cedarwaterheaters25.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://cedarwaterheaters25.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "mobile",
+     "kind": "fault",
+     "sentence": "your website has no layout for a phone, so it shows the desktop page shrunk",
+     "evidence": "https://cedarwaterheaters25.example/"
+    },
+    {
+     "key": "photos",
+     "kind": "fault",
+     "sentence": "your Google listing has only 2 photos",
+     "evidence": "https://maps.google.com/?cid=2000000000000000025"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000026",
+   "name": "Highland Water Heaters",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1026",
+   "site_url": "https://highlandwaterheaters26.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000026",
+   "rating": 4.6,
+   "reviews": 36,
+   "email": "office@highlandwaterheaters26.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://highlandwaterheaters26.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "https",
+     "kind": "fault",
+     "sentence": "your website doesn't load over https, so browsers mark it \"Not secure\"",
+     "evidence": "https://highlandwaterheaters26.example/"
+    },
+    {
+     "key": "hours",
+     "kind": "fault",
+     "sentence": "your Google listing has no hours on it at all",
+     "evidence": "https://maps.google.com/?cid=2000000000000000026"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000027",
+   "name": "Saratoga Water Heaters",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1027",
+   "site_url": "https://saratogawaterheaters27.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000027",
+   "rating": 4.7,
+   "reviews": 37,
+   "email": "office@saratogawaterheaters27.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://saratogawaterheaters27.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "copyright",
+     "kind": "fault",
+     "sentence": "your website's footer still says © 2017",
+     "evidence": "https://saratogawaterheaters27.example/"
+    },
+    {
+     "key": "https",
+     "kind": "fault",
+     "sentence": "your website doesn't load over https, so browsers mark it \"Not secure\"",
+     "evidence": "https://maps.google.com/?cid=2000000000000000027"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000028",
+   "name": "Eagle Water Heaters",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1028",
+   "site_url": "https://eaglewaterheaters28.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000028",
+   "rating": 4.8,
+   "reviews": 38,
+   "email": "office@eaglewaterheaters28.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://eaglewaterheaters28.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "photos",
+     "kind": "fault",
+     "sentence": "your Google listing has only 2 photos",
+     "evidence": "https://eaglewaterheaters28.example/"
+    },
+    {
+     "key": "phone_mismatch",
+     "kind": "fault",
+     "sentence": "the phone number on your website isn't the one on your Google listing",
+     "evidence": "https://maps.google.com/?cid=2000000000000000028"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000029",
+   "name": "Canyon Water Heaters",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1029",
+   "site_url": "https://canyonwaterheaters29.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000029",
+   "rating": 4.9,
+   "reviews": 39,
+   "email": "office@canyonwaterheaters29.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://canyonwaterheaters29.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "phone_mismatch",
+     "kind": "fault",
+     "sentence": "the phone number on your website isn't the one on your Google listing",
+     "evidence": "https://canyonwaterheaters29.example/"
+    },
+    {
+     "key": "hours_saturday",
+     "kind": "fault",
+     "sentence": "your Google listing has no hours for Saturday",
+     "evidence": "https://maps.google.com/?cid=2000000000000000029"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000030",
+   "name": "Summit Pipe Works",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1030",
+   "site_url": "https://summitpipeworks30.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000030",
+   "rating": 4.0,
+   "reviews": 40,
+   "email": "office@summitpipeworks30.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://summitpipeworks30.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "no_form",
+     "kind": "fault",
+     "sentence": "there's no way to send you a message from your website, only a phone number",
+     "evidence": "https://summitpipeworks30.example/"
+    },
+    {
+     "key": "copyright",
+     "kind": "fault",
+     "sentence": "your website's footer still says © 2017",
+     "evidence": "https://maps.google.com/?cid=2000000000000000030"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000031",
+   "name": "Timpanogos Pipe Works",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1031",
+   "site_url": "https://timpanogospipeworks31.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000031",
+   "rating": 4.1,
+   "reviews": 41,
+   "email": "owner31@gmail.example",
+   "email_kind": "free-mail",
+   "email_mx": "ok",
+   "email_evidence": "https://timpanogospipeworks31.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "hours",
+     "kind": "fault",
+     "sentence": "your Google listing has no hours on it at all",
+     "evidence": "https://timpanogospipeworks31.example/"
+    },
+    {
+     "key": "no_form",
+     "kind": "fault",
+     "sentence": "there's no way to send you a message from your website, only a phone number",
+     "evidence": "https://maps.google.com/?cid=2000000000000000031"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000032",
+   "name": "Alpine Pipe Works",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1032",
+   "site_url": "https://alpinepipeworks32.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000032",
+   "rating": 4.2,
+   "reviews": 42,
+   "email": "office@alpinepipeworks32.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://alpinepipeworks32.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "hours_saturday",
+     "kind": "fault",
+     "sentence": "your Google listing has no hours for Saturday",
+     "evidence": "https://alpinepipeworks32.example/"
+    },
+    {
+     "key": "mobile",
+     "kind": "fault",
+     "sentence": "your website has no layout for a phone, so it shows the desktop page shrunk",
+     "evidence": "https://maps.google.com/?cid=2000000000000000032"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000033",
+   "name": "Thanksgiving Point Pipe Works",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1033",
+   "site_url": "https://thanksgivingpointpipeworks33.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000033",
+   "rating": 4.3,
+   "reviews": 43,
+   "email": "office@thanksgivingpointpipeworks33.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://thanksgivingpointpipeworks33.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "mobile",
+     "kind": "fault",
+     "sentence": "your website has no layout for a phone, so it shows the desktop page shrunk",
+     "evidence": "https://thanksgivingpointpipeworks33.example/"
+    },
+    {
+     "key": "photos",
+     "kind": "fault",
+     "sentence": "your Google listing has only 2 photos",
+     "evidence": "https://maps.google.com/?cid=2000000000000000033"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000034",
+   "name": "Wasatch Pipe Works",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1034",
+   "site_url": "https://wasatchpipeworks34.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000034",
+   "rating": 4.4,
+   "reviews": 44,
+   "email": "office@wasatchpipeworks34.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://wasatchpipeworks34.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "https",
+     "kind": "fault",
+     "sentence": "your website doesn't load over https, so browsers mark it \"Not secure\"",
+     "evidence": "https://wasatchpipeworks34.example/"
+    },
+    {
+     "key": "hours",
+     "kind": "fault",
+     "sentence": "your Google listing has no hours on it at all",
+     "evidence": "https://maps.google.com/?cid=2000000000000000034"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000035",
+   "name": "Cedar Pipe Works",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1035",
+   "site_url": "https://cedarpipeworks35.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000035",
+   "rating": 4.5,
+   "reviews": 45,
+   "email": "office@cedarpipeworks35.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://cedarpipeworks35.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "copyright",
+     "kind": "fault",
+     "sentence": "your website's footer still says © 2017",
+     "evidence": "https://cedarpipeworks35.example/"
+    },
+    {
+     "key": "https",
+     "kind": "fault",
+     "sentence": "your website doesn't load over https, so browsers mark it \"Not secure\"",
+     "evidence": "https://maps.google.com/?cid=2000000000000000035"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000036",
+   "name": "Highland Pipe Works",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1036",
+   "site_url": "https://highlandpipeworks36.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000036",
+   "rating": 4.6,
+   "reviews": 46,
+   "email": "office@highlandpipeworks36.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://highlandpipeworks36.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "photos",
+     "kind": "fault",
+     "sentence": "your Google listing has only 2 photos",
+     "evidence": "https://highlandpipeworks36.example/"
+    },
+    {
+     "key": "phone_mismatch",
+     "kind": "fault",
+     "sentence": "the phone number on your website isn't the one on your Google listing",
+     "evidence": "https://maps.google.com/?cid=2000000000000000036"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000037",
+   "name": "Saratoga Pipe Works",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1037",
+   "site_url": "https://saratogapipeworks37.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000037",
+   "rating": 4.7,
+   "reviews": 47,
+   "email": "office@saratogapipeworks37.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://saratogapipeworks37.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "phone_mismatch",
+     "kind": "fault",
+     "sentence": "the phone number on your website isn't the one on your Google listing",
+     "evidence": "https://saratogapipeworks37.example/"
+    },
+    {
+     "key": "hours_saturday",
+     "kind": "fault",
+     "sentence": "your Google listing has no hours for Saturday",
+     "evidence": "https://maps.google.com/?cid=2000000000000000037"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000038",
+   "name": "Eagle Pipe Works",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1038",
+   "site_url": "https://eaglepipeworks38.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000038",
+   "rating": 4.8,
+   "reviews": 48,
+   "email": "owner38@gmail.example",
+   "email_kind": "free-mail",
+   "email_mx": "ok",
+   "email_evidence": "https://eaglepipeworks38.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "no_form",
+     "kind": "fault",
+     "sentence": "there's no way to send you a message from your website, only a phone number",
+     "evidence": "https://eaglepipeworks38.example/"
+    },
+    {
+     "key": "copyright",
+     "kind": "fault",
+     "sentence": "your website's footer still says © 2017",
+     "evidence": "https://maps.google.com/?cid=2000000000000000038"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000039",
+   "name": "Canyon Pipe Works",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1039",
+   "site_url": "https://canyonpipeworks39.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000039",
+   "rating": 4.9,
+   "reviews": 49,
+   "email": "office@canyonpipeworks39.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://canyonpipeworks39.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "hours",
+     "kind": "fault",
+     "sentence": "your Google listing has no hours on it at all",
+     "evidence": "https://canyonpipeworks39.example/"
+    },
+    {
+     "key": "no_form",
+     "kind": "fault",
+     "sentence": "there's no way to send you a message from your website, only a phone number",
+     "evidence": "https://maps.google.com/?cid=2000000000000000039"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000040",
+   "name": "Summit Plumbing Co.",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1040",
+   "site_url": "https://summitplumbingco40.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000040",
+   "rating": 4.0,
+   "reviews": 50,
+   "email": "office@summitplumbingco40.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://summitplumbingco40.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "hours_saturday",
+     "kind": "fault",
+     "sentence": "your Google listing has no hours for Saturday",
+     "evidence": "https://summitplumbingco40.example/"
+    },
+    {
+     "key": "mobile",
+     "kind": "fault",
+     "sentence": "your website has no layout for a phone, so it shows the desktop page shrunk",
+     "evidence": "https://maps.google.com/?cid=2000000000000000040"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000041",
+   "name": "Timpanogos Plumbing Co.",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1041",
+   "site_url": "https://timpanogosplumbingco41.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000041",
+   "rating": 4.1,
+   "reviews": 51,
+   "email": "office@timpanogosplumbingco41.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://timpanogosplumbingco41.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "mobile",
+     "kind": "fault",
+     "sentence": "your website has no layout for a phone, so it shows the desktop page shrunk",
+     "evidence": "https://timpanogosplumbingco41.example/"
+    },
+    {
+     "key": "photos",
+     "kind": "fault",
+     "sentence": "your Google listing has only 2 photos",
+     "evidence": "https://maps.google.com/?cid=2000000000000000041"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000042",
+   "name": "Alpine Plumbing Co.",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1042",
+   "site_url": "https://alpineplumbingco42.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000042",
+   "rating": 4.2,
+   "reviews": 52,
+   "email": "office@alpineplumbingco42.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://alpineplumbingco42.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "https",
+     "kind": "fault",
+     "sentence": "your website doesn't load over https, so browsers mark it \"Not secure\"",
+     "evidence": "https://alpineplumbingco42.example/"
+    },
+    {
+     "key": "hours",
+     "kind": "fault",
+     "sentence": "your Google listing has no hours on it at all",
+     "evidence": "https://maps.google.com/?cid=2000000000000000042"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000043",
+   "name": "Thanksgiving Point Plumbing Co.",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1043",
+   "site_url": "https://thanksgivingpointplumbingco43.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000043",
+   "rating": 4.3,
+   "reviews": 53,
+   "email": "office@thanksgivingpointplumbingco43.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://thanksgivingpointplumbingco43.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "copyright",
+     "kind": "fault",
+     "sentence": "your website's footer still says © 2017",
+     "evidence": "https://thanksgivingpointplumbingco43.example/"
+    },
+    {
+     "key": "https",
+     "kind": "fault",
+     "sentence": "your website doesn't load over https, so browsers mark it \"Not secure\"",
+     "evidence": "https://maps.google.com/?cid=2000000000000000043"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000044",
+   "name": "Wasatch Plumbing Co.",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1044",
+   "site_url": "https://wasatchplumbingco44.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000044",
+   "rating": 4.4,
+   "reviews": 54,
+   "email": "office@wasatchplumbingco44.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://wasatchplumbingco44.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "photos",
+     "kind": "fault",
+     "sentence": "your Google listing has only 2 photos",
+     "evidence": "https://wasatchplumbingco44.example/"
+    },
+    {
+     "key": "phone_mismatch",
+     "kind": "fault",
+     "sentence": "the phone number on your website isn't the one on your Google listing",
+     "evidence": "https://maps.google.com/?cid=2000000000000000044"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000045",
+   "name": "Cedar Plumbing Co.",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1045",
+   "site_url": "https://cedarplumbingco45.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000045",
+   "rating": 4.5,
+   "reviews": 55,
+   "email": "owner45@gmail.example",
+   "email_kind": "free-mail",
+   "email_mx": "ok",
+   "email_evidence": "https://cedarplumbingco45.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "phone_mismatch",
+     "kind": "fault",
+     "sentence": "the phone number on your website isn't the one on your Google listing",
+     "evidence": "https://cedarplumbingco45.example/"
+    },
+    {
+     "key": "hours_saturday",
+     "kind": "fault",
+     "sentence": "your Google listing has no hours for Saturday",
+     "evidence": "https://maps.google.com/?cid=2000000000000000045"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000046",
+   "name": "Highland Plumbing Co.",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1046",
+   "site_url": "https://highlandplumbingco46.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000046",
+   "rating": 4.6,
+   "reviews": 56,
+   "email": "office@highlandplumbingco46.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://highlandplumbingco46.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "no_form",
+     "kind": "fault",
+     "sentence": "there's no way to send you a message from your website, only a phone number",
+     "evidence": "https://highlandplumbingco46.example/"
+    },
+    {
+     "key": "copyright",
+     "kind": "fault",
+     "sentence": "your website's footer still says © 2017",
+     "evidence": "https://maps.google.com/?cid=2000000000000000046"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000047",
+   "name": "Saratoga Plumbing Co.",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1047",
+   "site_url": "https://saratogaplumbingco47.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000047",
+   "rating": 4.7,
+   "reviews": 57,
+   "email": "office@saratogaplumbingco47.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://saratogaplumbingco47.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "hours",
+     "kind": "fault",
+     "sentence": "your Google listing has no hours on it at all",
+     "evidence": "https://saratogaplumbingco47.example/"
+    },
+    {
+     "key": "no_form",
+     "kind": "fault",
+     "sentence": "there's no way to send you a message from your website, only a phone number",
+     "evidence": "https://maps.google.com/?cid=2000000000000000047"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000048",
+   "name": "Eagle Plumbing Co.",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1048",
+   "site_url": "https://eagleplumbingco48.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000048",
+   "rating": 4.8,
+   "reviews": 58,
+   "email": "office@eagleplumbingco48.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://eagleplumbingco48.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "hours_saturday",
+     "kind": "fault",
+     "sentence": "your Google listing has no hours for Saturday",
+     "evidence": "https://eagleplumbingco48.example/"
+    },
+    {
+     "key": "mobile",
+     "kind": "fault",
+     "sentence": "your website has no layout for a phone, so it shows the desktop page shrunk",
+     "evidence": "https://maps.google.com/?cid=2000000000000000048"
+    }
+   ]
+  },
+  {
+   "place_id": "ChIJbatch00000000000000049",
+   "name": "Canyon Plumbing Co.",
+   "category": "Plumber",
+   "segment": "services",
+   "city": "Lehi",
+   "phone": "801-555-1049",
+   "site_url": "https://canyonplumbingco49.example/",
+   "maps_url": "https://maps.google.com/?cid=2000000000000000049",
+   "rating": 4.9,
+   "reviews": 59,
+   "email": "office@canyonplumbingco49.example",
+   "email_kind": "own-domain",
+   "email_mx": "ok",
+   "email_evidence": "https://canyonplumbingco49.example/contact",
+   "email_why": "mailto link on the contact page",
+   "faults": [
+    {
+     "key": "mobile",
+     "kind": "fault",
+     "sentence": "your website has no layout for a phone, so it shows the desktop page shrunk",
+     "evidence": "https://canyonplumbingco49.example/"
+    },
+    {
+     "key": "photos",
+     "kind": "fault",
+     "sentence": "your Google listing has only 2 photos",
+     "evidence": "https://maps.google.com/?cid=2000000000000000049"
+    }
+   ]
+  }
+ ]
+}

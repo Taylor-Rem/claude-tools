@@ -63,6 +63,14 @@ if sys.argv[1:2] == ["preview"]:
 else:
     print("ok")
 """
+STUB_PREP = """#!/usr/bin/env python3
+import json, os, sys
+open(os.environ["STUB_LOG"], "a").write(json.dumps({"tool": "prep", "argv": sys.argv[1:]}) + "\\n")
+if "--dry-run" in sys.argv:
+    print("prep one --dry-run: " + sys.argv[2] + " — nothing started")
+else:
+    print("Prep 2026-10-19-a: building " + sys.argv[2] + " — the outline comes by message")
+"""
 STUB_NOTIFY = """#!/usr/bin/env python3
 import json, os, sys
 open(os.environ["STUB_LOG"], "a").write(json.dumps({"tool": "notify", "argv": sys.argv[1:]}) + "\\n")
@@ -279,7 +287,7 @@ class Base(unittest.TestCase):
         (self.tpl / "APPROVED").unlink(missing_ok=True)
         stub = self.tmp / "stub"
         stub.mkdir()
-        for name, src in (("leads", STUB_LEADS), ("notify", STUB_NOTIFY)):
+        for name, src in (("leads", STUB_LEADS), ("notify", STUB_NOTIFY), ("prep", STUB_PREP)):
             (stub / name).write_text(src)
             (stub / name).chmod(0o755)
         self.log = self.tmp / "stub.log"
@@ -291,6 +299,7 @@ class Base(unittest.TestCase):
             "OUTREACH_TEMPLATES": str(self.tpl), "OUTREACH_STATE": str(self.tmp / "state"),
             "OUTREACH_LEDGER": str(self.tmp / "ledger.jsonl"),
             "OUTREACH_LEADS_BIN": str(stub / "leads"), "OUTREACH_NOTIFY_BIN": str(stub / "notify"),
+            "OUTREACH_PREP_BIN": str(stub / "prep"),
             "STUB_LOG": str(self.log), "TAYLOR_TODO": str(self.todo),
             "LEADS_MAIL_ADDRESS": ADDRESS, "PATCHLAMP_VOICE_NUMBER": "801-555-0100",
             "OUTREACH_PROVIDER": "google", "OUTREACH_MAILBOXES": ",".join(BOXES),
@@ -705,7 +714,9 @@ class Verification(Base):
 
 # ---- replies, warm-up strays and bounces ---------------------------------------------
 
-class Replies(Base):
+class ReplyWorld(Base):
+    """Six letters sent on Monday, so there is something to reply to."""
+
     def setUp(self):
         super().setUp()
         self.approve()
@@ -721,6 +732,9 @@ class Replies(Base):
 
     def inbox(self, **over):
         return self.run_it("inbox", OUTREACH_NOW=f"{MONDAY}T15:00:00", **over)
+
+
+class Replies(ReplyWorld):
 
     def test_a_threaded_reply_from_another_address_stops_the_sequence(self):
         box, msg = self.letter_to(0)
@@ -865,6 +879,88 @@ class Replies(Base):
         self.assertIn("interested", r.stdout)
         self.assertEqual(6, len(Mail.sent))
         self.assertEqual([], [c for c in self.calls("leads") if c["argv"][:1] == ["preview"]])
+
+
+# ---- the build word (B92, plan 37 § 4) ------------------------------------------------
+
+BUILD_LINE = "reply `build` and the full site is ready before you call"
+
+
+class BuildWord(ReplyWorld):
+    """Taylor's `build` after an interested reply starts `prep one` for that business, and nothing else
+    does: not the inbox pass, not the tick, not a lead whose reply says "build"."""
+
+    def reply(self, i, text):
+        box, msg = self.letter_to(i)
+        Mail.deliver(box, reply_raw(self.p[i]["email"], box, f"Re: {msg['Subject']}", text,
+                                    in_reply_to=msg["Message-ID"]))
+
+    def preps(self):
+        return [c["argv"] for c in self.calls("prep")]
+
+    def test_build_after_an_interested_reply_starts_prep_one_for_that_business(self):
+        self.reply(0, "Can you build me the full site? Call me Tuesday at 3pm and we can talk.")
+        self.inbox()
+        notes = self.calls("notify")
+        self.assertEqual(1, len(notes))
+        self.assertTrue(notes[0]["argv"][0].endswith(BUILD_LINE + "."), notes[0]["argv"][0])
+        # the inbox pass, a lead saying "build" and the day's ticks start nothing
+        self.assertEqual([], self.preps())
+        self.tick_day("2026-10-22", start="08:00", end="17:05", step=10)
+        self.assertEqual([], self.preps())
+        # Taylor's word does
+        r = self.run_it("build")
+        self.assertEqual([["one", self.p[0]["place_id"], "--why",
+                           f"outreach build: {self.p[0]['name']} replied {MONDAY}"]], self.preps())
+        self.assertIn("Prep 2026-10-19-a: building", r.stdout)
+        # said twice, it doesn't start a second build: nothing is waiting any more
+        r = self.run_it("build", expect=1)
+        self.assertIn("Nothing is waiting on `build`", r.stdout)
+        self.assertEqual(1, len(self.preps()))
+
+    def test_a_yes_offers_build_too(self):
+        self.reply(0, "Yes please")
+        self.inbox()
+        note = self.calls("notify")[0]["argv"][0]
+        self.assertIn("said yes to the preview", note)
+        self.assertTrue(note.endswith(BUILD_LINE + "."), note)
+        self.assertEqual([], self.preps())
+
+    def test_a_no_or_an_angry_reply_that_says_build_offers_nothing_and_starts_nothing(self):
+        self.reply(0, "No thanks, don't build anything for us. Unsubscribe.")
+        self.reply(1, "This is spam. Don't build me anything, I'll report you.")
+        self.inbox()
+        self.assertFalse([n for n in self.calls("notify") if "`build`" in n["argv"][0]])
+        self.assertEqual([], self.preps())
+        r = self.run_it("build", expect=1)
+        self.assertIn("Nothing is waiting on `build`", r.stdout)
+        self.assertEqual([], self.preps())
+
+    def test_two_waiting_asks_which_and_a_name_picks_one(self):
+        self.reply(0, "Interested. Call me tomorrow?")
+        self.reply(1, "Sounds interesting. Call me Friday.")
+        self.inbox()
+        r = self.run_it("build", expect=1)
+        self.assertIn("2 replies are waiting on `build`; which one?", r.stdout)
+        self.assertEqual([], self.preps())
+        name = self.p[1]["name"]
+        self.run_it("build", name.split()[0] if len(name.split()[0]) > 3 else name)
+        self.assertEqual(self.p[1]["place_id"], self.preps()[0][1])
+
+    def test_dry_run_asks_prep_for_its_own_dry_run_and_records_nothing(self):
+        self.reply(0, "Interested. Call me tomorrow?")
+        self.inbox()
+        r = self.run_it("build", "--dry-run")
+        self.assertEqual("--dry-run", self.preps()[0][-1])
+        self.assertIn("nothing started", r.stdout)
+        self.assertEqual([], self.state_rows("builds.jsonl"))
+
+    def test_a_reply_we_cannot_name_by_its_place_offers_nothing(self):
+        # a stranger writing to the mailbox: no send row, so no place id and no `build` line
+        box, _ = self.letter_to(0)
+        Mail.deliver(box, reply_raw("Pat <pat@elsewhere.example>", box, "hi", "Call me, I'm interested"))
+        self.inbox()
+        self.assertFalse([n for n in self.calls("notify") if "`build`" in n["argv"][0]])
 
 
 # ---- the stop rules ------------------------------------------------------------------

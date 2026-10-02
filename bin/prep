@@ -33,6 +33,11 @@ B67, the run (the conductor: code conducts, Sonnet works, Opus judges):
                                     # rehearsal: everything but the publish, the hold and notify (the
                                     # outline goes to a file). --reuse copies a finished research run's
                                     # facts for the same place ids instead of researching them again.
+  prep one PLACE_ID [--dry-run] [--no-publish] [--again] [--foreground]
+                                    # B92: a run of one named business (Taylor's `build`, through
+                                    # `outreach build`): the same research, build, judge, gates and
+                                    # finish; says what exists instead when a run delivered it or holds
+                                    # it; --dry-run says what it would do and spend
   prep resume [ID] [--foreground]   # pick a stopped or killed run up where run.json says it was
   prep status [ID]                  # every business's stage, the usage by stage, the marker
   prep stop [ID]                    # stop the conductor and its sessions; resume carries on
@@ -3175,7 +3180,8 @@ def write_outline(run_dir, delivered, held=False):
     bs = rj["businesses"]
     dropped = [(s, b) for s, b in bs.items() if b.get("stage") == "dropped"]
     researched = sum(1 for b in bs.values() if "research" in (b.get("stages") or {}))
-    header = (f"Prep {run_dir.name} · {len(msgs)} ready · {researched} researched, {len(dropped)} dropped"
+    one = " (one business, on your word)" if (rj.get("opts") or {}).get("one") else ""
+    header = (f"Prep {run_dir.name}{one} · {len(msgs)} ready · {researched} researched, {len(dropped)} dropped"
               + (" · HELD: the publish failed, nothing sent" if held else ""))
     notes.append(header)
     for i, (s, m) in enumerate(msgs.items(), 1):
@@ -3203,10 +3209,10 @@ def write_outline(run_dir, delivered, held=False):
 
 # ---- the commands ------------------------------------------------------------------------------------
 
-def preflight(no_publish=False):
+def preflight(no_publish=False, live=True):
     """Why a run can't start, or []. The login is the subscription, neither model is Fable and `shot`
     has a browser, always; for a real run also the approved frame and the previews project (Taylor's),
-    and no other run going."""
+    and no other run going. `live=False` asks Cloudflare nothing (a dry run reads what's on record)."""
     out = []
     for m in (MODEL_BUILD, MODEL_JUDGE):
         if not m or "fable" in m.lower():
@@ -3223,7 +3229,7 @@ def preflight(no_publish=False):
     if not no_publish:
         if not frame_approved():
             out.append("the message frame isn't approved: read templates/prep/message.md, then `prep approve`")
-        ok, why = previews_project()
+        ok, why = previews_project(live=live)
         if not ok:
             out.append(f"the previews project isn't there yet ({why}): TAYLOR-TODO §1 \"Preview sites\"")
     return out
@@ -3315,6 +3321,114 @@ def cmd_run(args):
     print(f"Prep {run_id}: {len(active)} picked ({names}), {len(picks) - len(active)} in reserve. "
           + ("Rehearsal: nothing is published and nobody is notified; " if args.no_publish else
              f"Running now; the outline comes by message by {when} at the latest, and ")
+          + f"lands in {run_dir / 'outline.md'}.")
+    sys.stdout.flush()
+    return launch(run_id, run_dir, foreground=args.foreground)
+
+
+# ---- one business on Taylor's word (B92, plan 37 § 4) ----------------------------------------------
+# `prep one PLACE_ID` is a run of one: the same init_run, launch, conductor and finish as `prep run
+# --places ID --n 1`, so every rule a run keeps (the preflight, the gates, the judge, the publish only
+# by code, the hold, the outline by notify) holds here by construction. What it adds is the check that
+# the business isn't already built or being built, and a dry run that says what it would spend.
+# `outreach build` runs it when Taylor answers an interested reply with "build"; nothing else does.
+
+def runs_holding(place_id):
+    """[(run_dir, run.json, slug, business)] for every prep run that has this place, newest first."""
+    out = []
+    for d in sorted(STATE.iterdir(), reverse=True) if STATE.exists() else []:
+        rj = read_json(d / "run.json")
+        if not rj or rj.get("kind") != "prep":
+            continue
+        for s, b in (rj.get("businesses") or {}).items():
+            if b.get("place_id") == place_id:
+                out.append((d, rj, s, b))
+    return out
+
+
+def what_exists(place_id):
+    """("built" | "going", a line for Taylor) when a run delivered this place within the preview's life or
+    a run still holds it; (None, None) when nothing does (a dropped or failed attempt holds nothing)."""
+    L = leads()
+    cutoff = (today() - dt.timedelta(days=3)).isoformat()
+    live_for = int(getattr(L, "PREVIEW_DAYS", 30))
+    for d, rj, s, b in runs_holding(place_id):
+        st, name = rj.get("state"), b.get("name") or s
+        if st == "done" and s in (rj.get("delivered") or []):
+            done = (rj.get("finished") or rj.get("created") or "")[:10]
+            if done and done < (today() - dt.timedelta(days=live_for)).isoformat():
+                continue                                    # its preview has come down: build afresh
+            url = next((r.get("preview_url") for r in read_json(d / "outline.json", []) or []
+                        if r.get("slug") == s), None) or L.preview_url(b.get("preview_slug") or s)
+            return "built", (f"{name} is already built: prep {d.name} delivered it {done}, {url}. "
+                             f"`prep last {d.name}` reprints its outline; `prep one {place_id} --again` "
+                             f"builds it afresh.")
+        if b.get("stage") == "dropped":
+            continue
+        if st in LIVE_STATES:
+            return "going", (f"{name} is already being built in prep {d.name} ({b.get('stage')}); the outline "
+                             f"comes by message when it finishes. `prep status {d.name}` shows where it is.")
+        if st == "publish_failed":
+            return "going", (f"{name} is built in prep {d.name} but its publish failed: `prep publish {d.name}` "
+                             f"retries it and then sends the outline.")
+        if st == "stopped" and (rj.get("created") or "") >= cutoff:
+            return "going", (f"{name} is in prep {d.name}, which was stopped at {b.get('stage')}: "
+                             f"`prep resume {d.name}` carries on.")
+    return None, None
+
+
+def one_plan_lines(p, listing_on_disk):
+    """What `prep one` would do and spend, in Taylor's terms."""
+    rounds = ROUNDS
+    return [
+        f"  research  one {MODEL_BUILD} session: at most {CAPS['minutes']:g} minutes, {CAPS['searches']} searches, "
+        f"{CAPS['fetches']} fetches → facts.json, linted and re-read in code",
+        f"  build     one {MODEL_BUILD} session (at most {STAGE_MINUTES['build']:g} minutes) writes content.json "
+        f"and message.json for the {p['template']} template; then the seven gates, in code",
+        f"  judge     a fresh {MODEL_JUDGE} session a round (at most {STAGE_MINUTES['judge']:g} minutes) from the "
+        f"screenshots; up to {rounds} fix rounds in the build session ({STAGE_MINUTES['fix']:g} minutes each), "
+        f"then it is dropped and the outline says why",
+        "  finish    the gates again, the publish to the previews project (code, never a model), the 56-day "
+        "hold, one ledger line, the outline by notify",
+        "  spend     " + ("the listing is on disk: no Places read" if listing_on_disk else
+                         f"no listing on disk: one Places read, about ${leads().DETAILS_COST_USD:.3f}")
+        + "; the sessions run on Taylor's subscription (no API spend; the list price is kept as a notional "
+          "number in the ledger)",
+        f"  time      about an hour, two at most; the conductor stops itself at {HOURS:g} hours",
+    ]
+
+
+def cmd_one(args):
+    pid = (args.place_id or "").strip()
+    for m in (MODEL_BUILD, MODEL_JUDGE):
+        refuse_fable(m)
+    c = census_row(pid)
+    if not c:
+        die(f"{pid}: not in the services census, so there is nothing to research it from. Nothing started.")
+    kind, line = what_exists(pid)
+    if kind == "going" or (kind == "built" and not args.again):
+        print(line)
+        return 0
+    picks = picks_for_places([pid], 1)               # dies, plainly, when its template has no looks yet
+    p = picks[0]
+    on_disk = (leads().STATE / "details" / f"{pid}.json").exists()
+    why = preflight(no_publish=bool(args.no_publish), live=not args.dry_run)
+    if args.dry_run:
+        print(f"prep one --dry-run: {p['name']} · {p['category']} · {p['city']} ({pid}) — nothing started")
+        print("\n".join(one_plan_lines(p, on_disk)))
+        if kind == "built":
+            print(f"  note      {line}")
+        print(("  would refuse:\n    " + "\n    ".join(why)) if why else "  nothing in the way: it would start now")
+        return 0
+    if why:
+        die(f"not starting {p['name']}:\n  " + "\n  ".join(why))
+    opts = {"segment": None, "allow_calls": True, "no_publish": bool(args.no_publish), "reuse": None,
+            "places": [pid], "one": True, "why": args.why}
+    run_id, run_dir = init_run(picks, 1, opts)
+    when = (now() + dt.timedelta(hours=HOURS)).strftime("%-I:%M %p")
+    print(f"Prep {run_id}: building {p['name']} ({p['category']}, {p['city']}) — research, build and judge, "
+          + ("a rehearsal: nothing is published and nobody is notified; " if args.no_publish else
+             f"about an hour; the outline comes by message by {when} at the latest, and ")
           + f"lands in {run_dir / 'outline.md'}.")
     sys.stdout.flush()
     return launch(run_id, run_dir, foreground=args.foreground)
@@ -3550,6 +3664,14 @@ def main():
     p.add_argument("--reuse", metavar="RUN", help="take the facts for these places from a finished run")
     p.add_argument("--foreground", action="store_true", help="conduct it here instead of detaching")
     p.set_defaults(fn=cmd_run)
+    p = sub.add_parser("one", help="one named business through the whole run (Taylor's `build`)")
+    p.add_argument("place_id")
+    p.add_argument("--dry-run", action="store_true", help="say what it would do and spend, start nothing")
+    p.add_argument("--no-publish", action="store_true", help="the rehearsal: publish nothing, notify nobody")
+    p.add_argument("--again", action="store_true", help="build it afresh though a run already delivered it")
+    p.add_argument("--why", help="what asked for it, kept in run.json (outreach build passes the reply)")
+    p.add_argument("--foreground", action="store_true", help="conduct it here instead of detaching")
+    p.set_defaults(fn=cmd_one)
     p = sub.add_parser("conduct", help=argparse.SUPPRESS)      # internal: the detached conductor
     p.add_argument("run_id")
     p.set_defaults(fn=cmd_conduct)

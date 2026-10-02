@@ -6,12 +6,21 @@
                                # the day's approved emails: reads `leads kit --remote --json`,
                                # skips no-address and suppressed picks, renders the approved
                                # letter, sends, logs the pipeline through `leads`, one ledger row
+  outreach send --batch FILE|- [--dry-run | --go]
+                               # B90: a batch from `leads batch --json` (plan 37 § Contract).
+                               # --dry-run renders every first letter; no flag lists the names
+                               # and their two faults for Taylor's `go`; --go queues three
+                               # touches a business (day 0, 3, 10, never a fourth) and runs a tick
+  outreach tick                # sends what is due now: one letter a mailbox a tick at most,
+                               # irregular gaps across working hours, under each mailbox's cap
+  outreach postmaster 0.08 [--domain D]   # record a Google Postmaster spam-rate reading (percent)
+  outreach resume MAILBOX | --lane        # Taylor's word after a pause or a stop
   outreach inbox [--dry-run]   # replies since the cursor: classified, the routine ones answered,
                                # the warm ones handed to Taylor with a brief
   outreach suppress add hello@x.example | ChIJ…      # off the list for good, both channels
-  outreach suppress ls
+  outreach suppress ls [--json]            # --json: [{value, kind: address|domain|place_id}] for `leads batch`
   outreach status              # today's sends, the caps, replies by class, bounces, complaints
-  outreach warmup              # the provider's warm-up state, mailbox by mailbox
+  outreach warmup [start DATE] # the warm-up state and the ramp; `start` records the day warm-up began
   outreach approve             # Taylor's one command after reading templates/outreach/*.md
   outreach doctor              # keys by name, the address, the template, the caps, the provider
 
@@ -95,14 +104,80 @@ row with its real cost. Both land in ~/.local/state/claude-tools/ledger.jsonl.
 
 The pipeline is never written here: every conversation goes in through `leads log`
 and `leads sent`, so one tool owns that file.
+
+---- The batch lane (B90, plan ~/projects/plans/37-email-at-volume.md) ----------------
+
+Batches of up to fifty researched businesses from `leads batch --json`, each with an
+address and exactly two fault sentences. Taylor's `go` approves a batch (the names and
+their faults, `outreach send --batch FILE` without --go prints exactly that); --go
+queues three touches a business in state/sequences.json and the tick sends them. The
+letters are templates/outreach/batch-{first,second,third}.md, approved like the others:
+the first carries the two faults verbatim and no link at all (a reply is the
+conversation we want, and filters score every domain inside a cold first message); the
+second and third may carry one link, and only on the sending domain
+(OUTREACH_LINK_BASE), else they ask for a reply too. No letter says a site was built
+unless that business has a preview URL: `send` refuses such a letter in code.
+
+The `google` provider sends through each mailbox's own Google mail server (SMTP) and
+reads replies there (IMAP), because Instantly's Growth plan, which warms the mailboxes,
+has no API. Instantly's warm-up network writes into the same inboxes all day, so a
+message is a reply only if its In-Reply-To/References name a Message-ID we sent, or,
+failing that, it comes from an address we wrote to; everything else is never read as a
+reply, classified or answered. A reply of any kind but an automatic one stops that
+business's remaining touches. Delivery-status reports are counted per mailbox and per
+batch. Follow-ups go from the same mailbox in the same thread.
+
+Pacing, because bursts at fixed intervals are what a filter reads as a machine: one
+letter per mailbox per tick at most, the gap to the next drawn at random around the
+time left in the window divided by the letters left, never under
+OUTREACH_MIN_GAP_MINUTES, weekdays inside OUTREACH_SEND_HOURS only. Follow-ups go
+before new first letters and count toward the same cap.
+
+  OUTREACH_MAILBOXES           the sending addresses, comma-separated
+                               (e.g. taylor@trypatchlamp.com,t.remund@trypatchlamp.com,...)
+  OUTREACH_APP_PASSWORD_<ADDR> one Google app password per mailbox, the address upper-cased
+                               with every other character an underscore:
+                               OUTREACH_APP_PASSWORD_TAYLOR_TRYPATCHLAMP_COM
+  OUTREACH_MAILBOX_PER_DAY     each mailbox's daily cap. A number, or a ramp by days since
+                               the warm-up start: "14:5,21:20,28:28" = nothing before day 14,
+                               5 a day from day 14, 20 from day 21, 28 from day 28. Default 0:
+                               nothing sends. Follow-ups count toward it.
+  OUTREACH_WARMUP_START        YYYY-MM-DD the warm-up began (or `outreach warmup start DATE`,
+                               kept in the state dir; the env wins)
+  OUTREACH_SEND_HOURS          the sending window, Taylor's clock (default 8-17), weekdays only
+  OUTREACH_MIN_GAP_MINUTES     the least time between two letters from one mailbox (default 6)
+  OUTREACH_FROM_NAME           the From name (default "Taylor Remund")
+  OUTREACH_LINK_BASE           the second touch's link base, on the sending domain only
+                               (e.g. https://see.trypatchlamp.com); unset = ask for a reply
+  OUTREACH_SMTP_HOST / OUTREACH_IMAP_HOST   default smtp.gmail.com:465 / imap.gmail.com:993
+                               (tests point them at loopback servers)
+  OUTREACH_VERIFY              none | millionverifier. Every first send is checked first.
+                               With none, the first 30 days after the warm-up start send only
+                               to addresses the batch marks MX-ok on the business's own domain.
+  MILLIONVERIFIER_API_KEY      the verifier's key (about $0.004 an address); one ledger row a
+                               check. OUTREACH_VERIFY_BASE is a test stand-in for its host.
+  OUTREACH_NOW                 tests only: the clock (ISO time, Taylor's zone if naive).
+
+The stop rules (Taylor, 2026-10-01, answer 2): one angry or "this is spam" reply pauses
+that mailbox and tells Taylor; the lane stops when angry replies plus unsubscribes exceed
+OUTREACH_ANGRY_MAX_PCT (1.0) of the last OUTREACH_COMPLAINT_WINDOW (1,000) sends (the
+window counts as 1,000 until there are 1,000, so one polite "no thanks" among the first
+fifty can't stop a lane), when bounces exceed OUTREACH_BOUNCE_MAX_PCT (2.0) per mailbox or
+per batch (over at least OUTREACH_BOUNCE_MIN_SENDS, 50, sends), or when a recorded
+Postmaster spam rate is at or above OUTREACH_SPAM_RATE_MAX_PCT (0.1). A stop files a
+TAYLOR-TODO §7 entry and holds until `outreach resume --lane`; counting starts afresh then.
 """
 
 import argparse
+import contextlib
 import datetime as dt
+import fcntl
 import hashlib
 import json
 import os
+import random
 import re
+import secrets
 import subprocess
 import sys
 import time
@@ -121,10 +196,21 @@ TEMPLATES = Path(os.environ.get("OUTREACH_TEMPLATES", TOOLS / "templates" / "out
 TODO = Path(os.environ.get("TAYLOR_TODO", PROJECTS / "TAYLOR-TODO.md"))
 TZ = ZoneInfo("America/Denver")
 
+sys.path.insert(0, str(TOOLS / "lib"))
+import outreach_mail as mail  # noqa: E402  the SMTP/IMAP wire under the `google` provider
+
 LETTERS = ("first", "second", "third")
-ANSWERS = ("answer-price", "answer-how")
+BATCH_LETTERS = ("batch-first", "batch-second", "batch-third")
+ANSWERS = ("answer-price", "answer-how", "answer-yes")
+ALL_TEMPLATES = LETTERS + BATCH_LETTERS + ANSWERS
 TOUCH_TEMPLATE = {0: "first", 3: "second", 10: "third"}
-CLASSES = ("interested", "question", "not now", "no", "bounce", "out of office", "other")
+# Three touches, never a fourth: four or more "more than triples" complaints (plan 37 § 3).
+BATCH_TOUCHES = ((0, "batch-first"), (3, "batch-second"), (10, "batch-third"))
+CLASSES = ("interested", "yes", "question", "not now", "no", "angry", "bounce", "out of office",
+           "unsure", "other")
+DISCLOSURE_BATCH = "Patch, my AI operator, found this and drafted it; I approve each batch."
+OFFER_SENTENCE = ("I can build you a preview of a site for {business} from your Google listing, free, "
+                  "nothing to sign. Want to see it? Just reply.")
 
 # The only price sentences that may leave this tool. Starter, exactly as /pricing and
 # patchlamp/CLAIMS.md state it; change these only with a CLAIMS.md row in hand.
@@ -146,7 +232,14 @@ CAMPAIGN_DEFAULT = "Patchlamp — the email lane"
 DEFAULT_PER_DAY = 0                # send nothing until Taylor sets it
 DEFAULT_MAX_REPLIES = 10
 DEFAULT_AI_USD = 0.50
-DEFAULT_BOUNCE_PCT = 3.0
+DEFAULT_BOUNCE_PCT = 2.0           # Taylor, 2026-10-01 (answer 2): 2%, not 3%
+DEFAULT_BOUNCE_MIN_SENDS = 50
+DEFAULT_ANGRY_PCT = 1.0
+DEFAULT_COMPLAINT_WINDOW = 1000
+DEFAULT_SPAM_RATE_PCT = 0.1        # Gmail's own line is 0.3%; aim under 0.1% (plan 37 § 3)
+DEFAULT_SEND_HOURS = "8-17"
+DEFAULT_MIN_GAP = 6
+NEW_SENDER_DAYS = 30               # accept-all and unknown addresses wait out the first month
 DEFAULT_PREVIEW_DAYS = 14
 
 DRY = False
@@ -157,6 +250,18 @@ NO_PATTERNS = (r"\bno,?\s*thanks?\b", r"\bno\s*thank\s*you\b", r"\bunsubscribe\b
                r"\bremove\s+(?:me|us)\b", r"\btake\s+(?:me|us)\s+off\b", r"\bdo\s*n[o']?t\s+(?:contact|email|write)\b",
                r"\bstop\s+(?:emailing|contacting|writing|messaging)?\b", r"\bnot\s+interested\b",
                r"\bno\s+longer\s+interested\b", r"\bplease\s+stop\b", r"\bleave\s+(?:me|us)\s+alone\b")
+# Angry, or calling it spam: checked before "no" because the mailbox pauses on it (answer 2).
+# A polite no is not angry; these are the words of someone upset at being written to.
+ANGRY_PATTERNS = (r"\bspam(?:ming|med|mer|my)?\b", r"\breport(?:ing|ed)?\s+(?:you|this|it)\b",
+                  r"\bhow did you get (?:my|this|our) (?:e-?mail|address)\b", r"\bfuck", r"\bscam(?:mer)?\b",
+                  r"\bharass", r"\bjunk mail\b")
+# A plain yes to the preview, by rule only when the reply is short and asks nothing else.
+YES_RE = re.compile(r"^\s*(?:yes|yeah|yep|yup|sure|ok(?:ay)?|please do|go ahead|sounds good|send it|show me"
+                    r"|let'?s see it)(?:[\s,.!]+(?:please|thanks?|thank you|i'?d like (?:that|to see it)|sure"
+                    r"|go ahead|send it|please do|sounds good|let'?s see it|yes))*[\s.!]*$", re.I)
+# A letter that says a site exists. Refused in code for a pick with no preview URL.
+BUILT_RE = re.compile(r"\b(?:I(?:'ve| have)? (?:built|made|put together)|I made you|already built|is (?:ready|live) at"
+                      r"|here it is)\b", re.I)
 BOUNCE_FROM = ("mailer-daemon", "postmaster@", "no-reply@", "noreply@")
 BOUNCE_SUBJECTS = ("undeliverable", "delivery status notification", "mail delivery failed",
                    "returned mail", "delivery incomplete", "address not found")
@@ -218,12 +323,21 @@ def env_num(name, default, cast=float):
         die(f"{name} should be a number, not {raw!r}")
 
 
+def now():
+    """Taylor's clock. OUTREACH_NOW moves it (tests: a day of ticks in a few seconds)."""
+    fake = os.environ.get("OUTREACH_NOW")
+    if fake:
+        t = dt.datetime.fromisoformat(fake)
+        return t.replace(tzinfo=TZ) if t.tzinfo is None else t.astimezone(TZ)
+    return dt.datetime.now(TZ)
+
+
 def today():
-    return dt.datetime.now(TZ).date()
+    return now().date()
 
 
 def now_iso():
-    return dt.datetime.now(TZ).isoformat(timespec="seconds")
+    return now().isoformat(timespec="seconds")
 
 
 def state_dir(*parts):
@@ -353,6 +467,14 @@ class Template:
         subject = fill(self.subject_for(fault), values)
         lines = []
         for line in self.body.splitlines():
+            # `[?key] text` stays only when key has a value, `[!key] text` only when it hasn't:
+            # the second touch carries a link when OUTREACH_LINK_BASE exists, a reply ask when not.
+            cond = re.match(r"^\[([?!])([a-z_]+)\]\s?", line)
+            if cond:
+                has = bool(str(values.get(cond.group(2)) or "").strip())
+                if has != (cond.group(1) == "?"):
+                    continue
+                line = line[cond.end():]
             holes = re.findall(r"\{([a-z_]+)\}", line)
             if holes and line.strip() and all(not str(values.get(h) or "").strip() for h in holes):
                 continue                      # a line that is only an empty placeholder
@@ -439,7 +561,18 @@ def sample_values(expiry=None):
         "demo": toolbelt("PATCHLAMP_DEMO_NUMBER", DEMO_NUMBER_DEFAULT),
         "expiry": expiry or (today() + dt.timedelta(days=int(env_num("OUTREACH_PREVIEW_DAYS",
                                                                     DEFAULT_PREVIEW_DAYS, int)))).strftime("%-d %B"),
+        # the batch letters (B90): two fault sentences exactly as `leads batch` gives them
+        "fault_one": "your Google listing has no hours for Saturday",
+        "fault_two": "your website has no layout for a phone, so it shows the desktop page shrunk",
+        "fact": "",          # the fault-then-fact shape is checked too: see check_batch_template
+        "see_url": "",
+        "thread_subject": "two things I noticed about Highland Pool & Spa",
     }
+
+
+def sample_link_base():
+    """The second touch is checked both ways: with a link on the sending domain and without."""
+    return "https://see.trypatchlamp.example/k3Xq9"
 
 
 def sentences(text):
@@ -450,12 +583,76 @@ def links(text):
     return URL_RE.findall(text) + [h for h in BARE_HOST_RE.findall(text) if not URL_RE.search(h)]
 
 
+def check_batch_template(name):
+    """The batch letters' rules (plan 37 § 3), checked on a rendered sample, both with and
+    without a link base for the follow-ups. Returns [problem, ...]."""
+    t = load_template(name)
+    bad = []
+    variants = [("no link base", sample_values())]
+    if name == "batch-first":
+        v = sample_values()
+        v["fault_two"], v["fact"] = "", "more than 60 Google reviews, averaging 4.8"
+        variants = [("two faults", sample_values()), ("a fault and a fact", v)]
+    else:
+        v = sample_values()
+        v["see_url"] = sample_link_base()
+        variants.append(("with a link base", v))
+    for label, vals in variants:
+        subject, body = t.render(vals)
+        low = body.lower()
+        where = f" ({label})"
+        if DISCLOSURE_BATCH not in body:
+            bad.append(f"the disclosure isn't there exactly: \"{DISCLOSURE_BATCH}\"{where}")
+        if "no thanks" not in low:
+            bad.append(f"no opt-out line{where}")
+        if "advertisement" not in low:
+            bad.append(f"no ad identification (CAN-SPAM){where}")
+        if vals["address"] not in body:
+            bad.append(f"no postal address{where}")
+        if not subject.strip():
+            bad.append("empty subject")
+        if BUILT_RE.search(body):
+            bad.append(f"it says a site was built, and a batch pick has none yet{where}")
+        found = links(body)
+        if name == "batch-first":
+            if found:
+                bad.append(f"the first letter carries a link ({found}); it asks for a reply only")
+            for f in ("fault_one", "fault_two", "fact"):
+                if vals[f] and vals[f] not in body:
+                    bad.append(f"{{{f}}} isn't in the letter verbatim{where}")
+            if vals["fact"] and "two things stood out" in body:
+                bad.append(f"the letter calls a fact a thing that stood out as a fault{where}")
+            if fill(OFFER_SENTENCE, vals) not in body:
+                bad.append("the offer sentence isn't there exactly: " + OFFER_SENTENCE)
+            if PRICE_LINE not in body:
+                bad.append("no price sentence ({price_line})")
+            if "american fork" not in low or "taylor remund" not in low:
+                bad.append("it doesn't say who Taylor is and where")
+        else:
+            if len(found) > 1:
+                bad.append(f"{len(found)} links{where}; one at most")
+            if vals["see_url"]:
+                if len(found) != 1 or vals["see_url"] not in found[0]:
+                    bad.append(f"the one link isn't the sending domain's link{where}")
+            elif found:
+                bad.append(f"a link with no link base{where}: {found}")
+            elif "reply" not in low:
+                bad.append(f"without a link it has to ask for a reply{where}")
+    if re.search(r"\$\s?\d", t.raw.replace("{price_line}", "").replace("{prices_line}", "")):
+        bad.append("a cold letter names money that isn't {price_line}")
+    return sorted(set(bad), key=bad.index)
+
+
 def check_template(name):
     """The rules a letter has to keep, run against a rendered sample. Returns [problem, ...]."""
+    if name in BATCH_LETTERS:
+        return check_batch_template(name)
     t = load_template(name)
     subject, body = t.render(sample_values(), fault=sample_values()["fault"])
     bad = []
     low = body.lower()
+    if name == "answer-yes" and sample_values()["preview_url"] not in body:
+        bad.append("the answer to a yes doesn't carry the preview's address")
     if "no thanks" not in low:
         bad.append("no opt-out line (\"reply 'no thanks'…\")")
     if "advertisement" not in low and "this is an ad" not in low:
@@ -507,6 +704,25 @@ def suppressed():
     return vals
 
 
+def suppress_kind(value):
+    """An address has an @, a domain has a dot (a census place id never does)."""
+    v = str(value).strip()
+    if "@" in v:
+        return "email"
+    if "." in v:
+        return "domain"
+    return "place"
+
+
+def is_suppressed(email=None, place_id=None, supp=None):
+    """The address, its domain, or the place. A domain is only ever suppressed by hand."""
+    supp = suppressed() if supp is None else supp
+    e = str(email or "").strip().lower()
+    if e and (e in supp or mail.domain_of(e) in supp):
+        return True
+    return bool(place_id) and str(place_id).strip().lower() in supp
+
+
 def suppress_add(value, reason, provider=None):
     """On the list before anything else, and told to the provider too. Idempotent."""
     value = str(value).strip()
@@ -514,7 +730,7 @@ def suppress_add(value, reason, provider=None):
         return False
     if value.lower() in suppressed():
         return False
-    kind = "email" if "@" in value else "place"
+    kind = suppress_kind(value)
     if not DRY:
         append_jsonl(suppress_file(), {"ts": now_iso(), "value": value, "kind": kind, "reason": reason})
     if kind == "email" and provider is not None:
@@ -602,13 +818,16 @@ class Fake(Provider):
                                      "created": now_iso()}))
         return "fake-campaign"
 
-    def send(self, pick, subject, body):
+    def send(self, pick, subject, body, mailbox=None, thread=None):
+        mb = mailbox or self.eaccount
+        mid = mail.make_message_id(mail.domain_of(mb) or "example.invalid")
         row = {"ts": now_iso(), "id": f"fake-{int(time.time()*1000)}-{abs(hash(pick.get('email'))) % 9999}",
-               "to": pick.get("email"), "from": self.eaccount, "subject": subject, "text": body,
-               "campaign_id": self.ensure_campaign()}
+               "to": pick.get("email"), "from": mb, "subject": subject, "text": body,
+               "campaign_id": self.ensure_campaign(), "message_id": mid,
+               "in_reply_to": (thread or {}).get("in_reply_to")}
         if not DRY:
             append_jsonl(self._p("outbox.jsonl"), row)
-        return {"id": row["id"], "how": "campaign"}
+        return {"id": row["id"], "how": "campaign", "message_id": mid, "mailbox": mb}
 
     def replies(self, cursor):
         rows = read_jsonl(self._p("inbox.jsonl"))
@@ -736,7 +955,7 @@ class Instantly(Provider):
             self._remember(campaign_id=cid)
         return cid
 
-    def send(self, pick, subject, body):
+    def send(self, pick, subject, body, mailbox=None, thread=None):
         cid = self.ensure_campaign()
         lead = self._req("POST", "/api/v2/leads", body={
             "campaign": cid, "email": pick.get("email"),
@@ -812,6 +1031,291 @@ class Instantly(Provider):
         return True, f"reachable; {n} mailbox(es) visible"
 
 
+# ---- the mailboxes, their caps and the ramp (B90) -------------------------------
+
+def mailboxes():
+    """The sending addresses: OUTREACH_MAILBOXES, else the one OUTREACH_FROM."""
+    raw = toolbelt("OUTREACH_MAILBOXES") or ""
+    boxes = [b.strip().lower() for b in re.split(r"[,\s]+", raw) if b.strip()]
+    if not boxes and toolbelt("OUTREACH_FROM"):
+        boxes = [toolbelt("OUTREACH_FROM").strip().lower()]
+    return list(dict.fromkeys(boxes))
+
+
+def password_name(addr):
+    """OUTREACH_APP_PASSWORD_ + the whole address, so two domains' `taylor@` never collide."""
+    return "OUTREACH_APP_PASSWORD_" + re.sub(r"[^A-Z0-9]", "_", addr.upper())
+
+
+def warmup_start():
+    """(date or None, where it came from). The env wins over the state file."""
+    raw = toolbelt("OUTREACH_WARMUP_START")
+    src = "OUTREACH_WARMUP_START"
+    if not raw:
+        p = STATE / "warmup-start.json"
+        try:
+            raw = json.loads(p.read_text()).get("start") if p.exists() else None
+        except (OSError, json.JSONDecodeError):
+            raw = None
+        src = "state (outreach warmup start)"
+    if not raw:
+        return None, "unset"
+    try:
+        return dt.date.fromisoformat(str(raw).strip()), src
+    except ValueError:
+        die(f"the warm-up start should be YYYY-MM-DD, not {raw!r}")
+
+
+def ramp_day(day=None):
+    start, _ = warmup_start()
+    if start is None:
+        return None
+    return ((day or today()) - start).days
+
+
+def parse_cap(raw):
+    """"25" -> ("flat", 25); "14:5,21:20,28:28" -> ("ramp", [(14, 5), (21, 20), (28, 28)])."""
+    raw = str(raw if raw is not None else "0").strip()
+    if re.fullmatch(r"\d+", raw):
+        return "flat", int(raw)
+    steps = []
+    for part in re.split(r"[,\s]+", raw):
+        m = re.fullmatch(r"(\d+):(\d+)", part.strip())
+        if not m:
+            die(f"OUTREACH_MAILBOX_PER_DAY is a number or day:cap pairs like 14:5,21:20,28:28, not {raw!r}")
+        steps.append((int(m.group(1)), int(m.group(2))))
+    return "ramp", sorted(steps)
+
+
+def cap_on(day=None):
+    """One mailbox's cap on a day. A ramp with no recorded warm-up start is 0: the ramp
+    counts from that day, and sending before anyone recorded it would be a guess."""
+    kind, v = parse_cap(toolbelt("OUTREACH_MAILBOX_PER_DAY", "0"))
+    if kind == "flat":
+        return v
+    rd = ramp_day(day)
+    if rd is None:
+        return 0
+    cap = 0
+    for d, c in v:
+        if rd >= d:
+            cap = c
+    return cap
+
+
+def sends_on(mailbox, day=None):
+    stamp = (day or today()).isoformat()
+    return sum(1 for r in read_jsonl(sends_file())
+               if r.get("date") == stamp and str(r.get("mailbox") or "").lower() == mailbox)
+
+
+def send_window(day=None):
+    raw = toolbelt("OUTREACH_SEND_HOURS", DEFAULT_SEND_HOURS)
+    m = re.fullmatch(r"\s*(\d{1,2})(?::(\d\d))?\s*-\s*(\d{1,2})(?::(\d\d))?\s*", str(raw))
+    if not m:
+        die(f"OUTREACH_SEND_HOURS is like 8-17 or 8:30-16:45, not {raw!r}")
+    d = day or today()
+    start = dt.datetime.combine(d, dt.time(int(m.group(1)), int(m.group(2) or 0)), TZ)
+    end = dt.datetime.combine(d, dt.time(int(m.group(3)), int(m.group(4) or 0)), TZ)
+    return start, end
+
+
+def working_now(t=None):
+    t = t or now()
+    start, end = send_window(t.date())
+    return t.weekday() < 5 and start <= t < end
+
+
+def link_base():
+    """OUTREACH_LINK_BASE, only when its host is on a sending domain: patchlamp.com sends the
+    sign-in links and the clients' mail, and a link from the cold lane would tie its
+    standing to the cold lane's (plan 37 § 3). Anything else is treated as unset."""
+    raw = (toolbelt("OUTREACH_LINK_BASE") or "").strip().rstrip("/")
+    if not raw:
+        return ""
+    host = (urllib.parse.urlsplit(raw).hostname or "").lower()
+    domains = {mail.domain_of(b) for b in mailboxes()} - {""}
+    if not host or raw.split(":", 1)[0] != "https" or "patchlamp.com" == host or host.endswith(".patchlamp.com"):
+        return ""
+    if not any(host == d or host.endswith("." + d) for d in domains):
+        return ""
+    return raw
+
+
+# ---- the google provider (B90) ---------------------------------------------------
+
+class Google(Provider):
+    """Each mailbox's own Google mail server: SMTP to send, IMAP to read (lib/outreach_mail.py).
+    Instantly's Growth plan warms these mailboxes but has no API, so this is the sender."""
+
+    name = "google"
+
+    def __init__(self, boxes, smtp=None, imap=None, from_name=None):
+        self.boxes = boxes
+        self.smtp = smtp or toolbelt("OUTREACH_SMTP_HOST", "smtp.gmail.com:465")
+        self.imap = imap or toolbelt("OUTREACH_IMAP_HOST", "imap.gmail.com:993")
+        self.from_name = from_name or toolbelt("OUTREACH_FROM_NAME", "Taylor Remund")
+
+    def _password(self, mb):
+        pw = toolbelt(password_name(mb))
+        if not pw:
+            raise ProviderError(f"{password_name(mb)} isn't set, so {mb} can't send or read (see `outreach doctor`)")
+        return pw
+
+    def ensure_campaign(self):
+        return None
+
+    def pick_mailbox(self):
+        """For the six-a-day kit lane: the mailbox with the most room under today's cap."""
+        cap = cap_on()
+        paused = paused_boxes()
+        room = [(cap - sends_on(mb), mb) for mb in self.boxes if mb not in paused]
+        room = [x for x in room if x[0] > 0]
+        if not room:
+            raise ProviderError("every mailbox is at its cap today (OUTREACH_MAILBOX_PER_DAY) or paused")
+        return max(room)[1]
+
+    def send(self, pick, subject, body, mailbox=None, thread=None):
+        mb = (mailbox or self.pick_mailbox()).lower()
+        pw = self._password(mb)
+        mid = mail.make_message_id(mail.domain_of(mb))
+        thread = thread or {}
+        msg = mail.build_message(mb, self.from_name, pick.get("email"), subject, body, mid,
+                                 in_reply_to=thread.get("in_reply_to"), references=thread.get("references"),
+                                 unsubscribe_mailto=mb, when=now())
+        if DRY:
+            say(f"  [dry-run] SMTP {mb} -> {pick.get('email')}")
+            return {"id": mid, "message_id": mid, "mailbox": mb, "how": "smtp"}
+        try:
+            mail.smtp_send(self.smtp, mb, pw, msg)
+        except mail.MailError as exc:
+            raise ProviderError(str(exc)) from None
+        return {"id": mid, "message_id": mid, "mailbox": mb, "how": "smtp"}
+
+    def replies(self, cursor):
+        """New mail in every mailbox, kept only when it answers something we sent.
+
+        Instantly's warm-up network writes into these inboxes all day. A message is ours
+        only if its In-Reply-To/References name a Message-ID we sent, or failing that it
+        comes from an address we wrote to; anything else is counted as ignored and never
+        read further. A delivery-status report counts when it names a message or an
+        address of ours."""
+        sends = read_jsonl(sends_file())
+        by_mid = {r["message_id"]: r for r in sends if r.get("message_id")}
+        by_addr = {}
+        for r in sends:
+            if r.get("email"):
+                by_addr[str(r["email"]).lower()] = r
+        ours = set(self.boxes)
+        imap_state = dict(cursor.get("imap") or {})
+        seen = set(cursor.get("ids") or [])
+        out, ignored, problems = [], 0, []
+        for mb in self.boxes:
+            try:
+                pw = self._password(mb)
+            except ProviderError as exc:
+                problems.append(str(exc))
+                continue
+            st = imap_state.get(mb) or {}
+            first = min((r.get("date") for r in sends if str(r.get("mailbox") or "").lower() == mb and r.get("date")),
+                        default=today().isoformat())
+            try:
+                uv, msgs = mail.imap_fetch_new(self.imap, mb, pw, last_uid=st.get("last_uid"),
+                                               uidvalidity=st.get("uidvalidity"),
+                                               since=dt.date.fromisoformat(first))
+            except mail.MailError as exc:
+                problems.append(str(exc))
+                continue
+            top = st.get("last_uid")
+            for uid, raw in msgs:
+                top = max(uid, top or 0)
+                rid = f"{mb}:{uv}:{uid}"
+                if rid in seen:
+                    continue
+                p = mail.parse_incoming(raw)
+                frm = (p.get("from") or "").lower()
+                if frm in ours:
+                    ignored += 1
+                    continue
+                dsn = p.get("dsn")
+                if dsn is not None:
+                    row = by_mid.get(dsn.get("original_message_id") or "")
+                    if not row:
+                        row = next((by_addr[a] for a in dsn.get("recipients") or [] if a in by_addr), None)
+                    if not row or not dsn.get("failed"):
+                        ignored += 1           # a warm-up bounce, or only a delay notice
+                        continue
+                    to = (dsn.get("recipients") or [row.get("email")])[0]
+                    out.append({"id": rid, "thread_id": row.get("thread_root") or row.get("message_id"),
+                                "from": p.get("from"), "subject": p.get("subject") or "",
+                                "text": f"Delivery to {to} failed ({dsn.get('status')}).",
+                                "ts": p.get("date") or now_iso(), "auto_reply": True, "campaign_id": None,
+                                "mailbox": mb, "message_id": p.get("message_id"), "references": [],
+                                "our_message_id": row.get("message_id"), "bounce": True, "bounced_to": to,
+                                "matched_by": "dsn"})
+                    continue
+                refs = list(p.get("in_reply_to") or []) + list(p.get("references") or [])
+                row = next((by_mid[x] for x in refs if x in by_mid), None)
+                how = "thread"
+                if row is None:
+                    row, how = by_addr.get(frm), "address"
+                if row is None:
+                    ignored += 1               # warm-up traffic or anything else: never a reply
+                    continue
+                out.append({"id": rid, "thread_id": row.get("thread_root") or row.get("message_id"),
+                            "from": p.get("from"), "subject": p.get("subject") or "", "text": p.get("text") or "",
+                            "ts": p.get("date") or now_iso(), "auto_reply": bool(p.get("auto_reply")),
+                            "campaign_id": None, "mailbox": mb, "message_id": p.get("message_id"),
+                            "references": refs, "our_message_id": row.get("message_id"), "matched_by": how})
+            imap_state[mb] = {"uidvalidity": uv, "last_uid": top}
+        for msg in problems:
+            print(f"outreach: {msg}", file=sys.stderr)
+        out.sort(key=lambda r: r["ts"])
+        new = advance(cursor, out)
+        new["imap"] = imap_state
+        new["ignored"] = int(cursor.get("ignored") or 0) + ignored
+        self.last_ignored = ignored
+        return out, new
+
+    def reply_to(self, reply, subject, body):
+        mb = (reply.get("mailbox") or self.boxes[0]).lower()
+        theirs = reply.get("message_id")
+        refs = [r for r in (reply.get("references") or []) if r] + ([theirs] if theirs else [])
+        return self.send({"email": reply.get("from")}, subject, body, mailbox=mb,
+                         thread={"in_reply_to": theirs, "references": list(dict.fromkeys(refs))})
+
+    def suppress(self, value):
+        return {"ok": True}            # our list is the list; Google has none to tell
+
+    def analytics(self):
+        # counted since Taylor's last `outreach resume --lane`, as the stop rules are: a resume
+        # starts the counting afresh, or the old bounces would stop the lane again at once
+        since = resumed_at()
+        sends = [r for r in read_jsonl(sends_file()) if r.get("provider") == "google" and str(r.get("ts") or "") >= since]
+        bounced = [b for b in read_jsonl(bounces_file()) if str(b.get("ts") or "") >= since]
+        return {"sent": len(sends), "bounced": len(bounced), "replies": 0, "unsubscribed": 0, "complaints": None}
+
+    def warmup(self):
+        cap = cap_on()
+        return {mb: {"state": f"cap today {cap}, sent today {sends_on(mb)}"
+                     + (" — PAUSED" if mb in paused_boxes() else "")} for mb in self.boxes}
+
+    def ping(self):
+        if not self.boxes:
+            return False, "no mailboxes: set OUTREACH_MAILBOXES"
+        good, lines = True, []
+        for mb in self.boxes:
+            try:
+                pw = self._password(mb)
+                mail.smtp_check(self.smtp, mb, pw)
+                mail.imap_check(self.imap, mb, pw)
+                lines.append(f"{mb} logs in to SMTP and IMAP")
+            except (ProviderError, mail.MailError) as exc:
+                good = False
+                lines.append(f"{mb}: {exc}")
+        return good, "; ".join(lines)
+
+
 def html_lines(text):
     esc = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     return esc.replace("\n", "<br/>\n")
@@ -823,14 +1327,24 @@ def strip_html(html):
     return (t.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&nbsp;", " ")).strip()
 
 
+def provider_wanted(want=None):
+    key = toolbelt("INSTANTLY_API_KEY")
+    return (want or toolbelt("OUTREACH_PROVIDER") or ("instantly" if key else "fake")).lower()
+
+
 def pick_provider(want=None):
     eaccount = toolbelt("OUTREACH_FROM") or "outreach@example.invalid"
     key = toolbelt("INSTANTLY_API_KEY")
-    want = (want or toolbelt("OUTREACH_PROVIDER") or ("instantly" if key else "fake")).lower()
+    want = provider_wanted(want)
     if DRY or want == "fake":
         return Fake(eaccount)
+    if want == "google":
+        boxes = mailboxes()
+        if not boxes:
+            die("OUTREACH_MAILBOXES isn't set, so the google provider has nobody to send as (see `outreach doctor`)")
+        return Google(boxes)
     if want != "instantly":
-        die(f"provider is instantly or fake, not {want!r}")
+        die(f"provider is google, instantly or fake, not {want!r}")
     if not key:
         die("INSTANTLY_API_KEY isn't set (see `outreach doctor`); nothing sends without the mailbox")
     per_day = int(env_num("OUTREACH_PER_DAY", DEFAULT_PER_DAY, int))
@@ -978,7 +1492,10 @@ def deliverability(provider):
     except (Unreachable, ProviderError) as exc:
         return None, None, None, f"the provider's analytics wouldn't answer ({exc})"
     sent, bounced = int(a.get("sent") or 0), int(a.get("bounced") or 0)
-    rate = (bounced / sent * 100) if sent else 0.0
+    # counted over at least OUTREACH_BOUNCE_MIN_SENDS, so one bounce in a new mailbox's first
+    # ten letters reads as what it is and doesn't stop the lane on its own
+    floor = int(env_num("OUTREACH_BOUNCE_MIN_SENDS", DEFAULT_BOUNCE_MIN_SENDS, int))
+    rate = (bounced / max(sent, floor) * 100) if bounced else 0.0
     complaints = a.get("complaints")
     if complaints is None:
         complaints = int(env_num("OUTREACH_COMPLAINTS", 0, int))
@@ -1019,31 +1536,344 @@ def file_todo_entry(title, one_line, steps, then, details):
 
 
 def trip_switch(line):
-    """Stop the lane, tell Taylor once, file it once."""
+    """Stop the lane, tell Taylor once, file it once, and hold it stopped until he resumes it."""
     marker = state_dir("killswitch", f"{today().isoformat()}.txt")
-    already = marker.exists()
+    already = marker.exists() or latch() is not None
     say(f"outreach: the lane is stopped — {line}")
     if already:
-        say("  (already reported today)")
+        say("  (already reported; `outreach resume --lane` once the cause is fixed)")
         return
     notify(f"Email lane stopped: {line}. Nothing else goes out until you say so.")
     file_todo_entry(
         "The email lane stopped itself: bounces or a spam complaint.",
-        f"`outreach send` refuses until this is cleared. {line}",
+        f"`outreach send` and `outreach tick` refuse until this is cleared. {line}",
         ["Open Google Postmaster Tools for the outreach domain and read the spam rate and the delivery errors.",
-         "Open Instantly → the campaign → Analytics and read which addresses bounced; they are already on our "
-         "suppression list (`outreach suppress ls`).",
-         "Fix the cause (a bad address source, a warm-up that ramped too fast, or the copy), then clear "
-         "`~/.local/state/claude-tools/outreach/killswitch/` and reply `go` to the morning message."],
-        "`outreach status` should show the bounce rate back under the cap before the next `send`.",
-        f"Filed by `outreach send` on {today().isoformat()}. The cap is OUTREACH_BOUNCE_MAX_PCT "
-        f"(default {DEFAULT_BOUNCE_PCT}%) and any complaint at all stops the lane; Google's own line is 0.3%, "
-        "aim 0.1% (research/2026-09-28-growth/channels-and-law.md § 2).")
+         "Run `outreach status` for the bounces by mailbox and by batch, and the angry replies; bounced and "
+         "angry addresses are already on our suppression list (`outreach suppress ls`).",
+         "Fix the cause (a bad address source, a warm-up that ramped too fast, or the copy), then run "
+         "`outreach resume --lane`; the counting starts afresh from that moment."],
+        "`outreach status` should show no stop rule crossed before the next `send`.",
+        f"Filed by `outreach` on {today().isoformat()}. The rules (Taylor, 2026-10-01, answer 2): bounces over "
+        f"OUTREACH_BOUNCE_MAX_PCT (default {DEFAULT_BOUNCE_PCT}%) per mailbox or per batch; angry replies plus "
+        f"unsubscribes over {DEFAULT_ANGRY_PCT}% of the last {DEFAULT_COMPLAINT_WINDOW} sends; a Postmaster spam "
+        f"rate at or over {DEFAULT_SPAM_RATE_PCT}%; any complaint a provider counts. Gmail's own line is 0.3% "
+        "(plan 37 § 3).")
     if not DRY:
         try:
             marker.write_text(line + "\n")
+            write_json(state_dir("stopped.json"), {"ts": now_iso(), "why": line})
         except OSError:
             pass
+
+
+def lane_blocked(provider):
+    """(blocked, line). The latch, our own stop rules, then the provider's numbers."""
+    held = latch()
+    if held:
+        say(f"outreach: the lane is stopped since {held.get('ts')} — {held.get('why')}. "
+            "`outreach resume --lane` is Taylor's, once the cause is fixed.")
+        return True, held.get("why")
+    reasons = stop_reasons()
+    if reasons:
+        trip_switch("; ".join(reasons))
+        return True, "; ".join(reasons)
+    ok, _, _, dline = deliverability(provider)
+    if ok is False:
+        trip_switch(dline)
+        return True, dline
+    if ok is None:
+        say(f"outreach: can't read the bounce rate, so nothing goes out — {dline}")
+        return True, dline
+    return False, dline
+
+
+# ---- the batch lane's state (B90) ------------------------------------------------
+
+_LOCK_DEPTH = [0, None]
+
+
+@contextlib.contextmanager
+def state_lock():
+    """One writer at a time: the tick timer and `outreach inbox` both change sequences.json."""
+    if DRY:
+        yield
+        return
+    if _LOCK_DEPTH[0]:
+        _LOCK_DEPTH[0] += 1
+        try:
+            yield
+        finally:
+            _LOCK_DEPTH[0] -= 1
+        return
+    p = state_dir(".lock")
+    f = open(p, "a")
+    fcntl.flock(f, fcntl.LOCK_EX)
+    _LOCK_DEPTH[0], _LOCK_DEPTH[1] = 1, f
+    try:
+        yield
+    finally:
+        _LOCK_DEPTH[0], _LOCK_DEPTH[1] = 0, None
+        fcntl.flock(f, fcntl.LOCK_UN)
+        f.close()
+
+
+def read_json(path, default):
+    try:
+        return json.loads(Path(path).read_text()) if Path(path).exists() else default
+    except (OSError, json.JSONDecodeError):
+        return default
+
+
+def write_json(path, data):
+    if DRY:
+        return
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=1))
+    os.replace(tmp, path)
+
+
+def seqs_load():
+    return read_json(state_dir("sequences.json"), [])
+
+
+def seqs_save(seqs):
+    write_json(state_dir("sequences.json"), seqs)
+
+
+def bounces_file():
+    return state_dir("bounces.jsonl")
+
+
+def paused_boxes():
+    return read_json(state_dir("paused.json"), {})
+
+
+def pause_box(mb, why):
+    d = paused_boxes()
+    if mb in d:
+        return False
+    d[mb] = {"ts": now_iso(), "why": why}
+    write_json(state_dir("paused.json"), d)
+    return True
+
+
+def latch():
+    return read_json(state_dir("stopped.json"), None)
+
+
+def resumed_at():
+    return (read_json(state_dir("resume.json"), {}) or {}).get("lane") or ""
+
+
+def fault_sentence(f):
+    return str(f.get("sentence") if isinstance(f, dict) else f or "").strip()
+
+
+def details_of(pick):
+    """A pick's two sentences as [{sentence, kind}], faults first (plan 37 § Contract, revised
+    2026-10-01: the second may be a plain true fact in their favour). No kind means fault."""
+    out = []
+    for f in pick.get("faults") or []:
+        sent = fault_sentence(f)
+        if not sent:
+            continue
+        kind = str(f.get("kind") or "fault").strip().lower() if isinstance(f, dict) else "fault"
+        # an entry whose kind is neither is kept as "bad", so screen_batch refuses the pick with
+        # that reason rather than guessing which sentence the letter should call a fault
+        out.append({"sentence": sent, "kind": kind if kind in ("fault", "fact") else "bad"})
+    return sorted(out, key=lambda d: d["kind"] != "fault")
+
+
+def next_touch(seq):
+    for i, t in enumerate(seq.get("touches") or []):
+        if not t.get("sent_ts"):
+            return i, t
+    return None, None
+
+
+def touch_due(seq, t):
+    """Day 0 is the day it was queued; day 3 and 10 count from the first letter's send."""
+    if int(t["touch"]) == 0:
+        return dt.date.fromisoformat(seq["queued"])
+    first = (seq.get("touches") or [{}])[0].get("sent_ts")
+    if not first:
+        return None
+    return dt.datetime.fromisoformat(first).date() + dt.timedelta(days=int(t["touch"]))
+
+
+def seq_for(email=None, our_message_id=None, seqs=None):
+    seqs = seqs_load() if seqs is None else seqs
+    if our_message_id:
+        for s in seqs:
+            if any(t.get("message_id") == our_message_id for t in s.get("touches") or []):
+                return s
+    e = str(email or "").lower()
+    if e:
+        for s in seqs:
+            if str(s.get("email") or "").lower() == e:
+                return s
+    return None
+
+
+def stop_sequence(email=None, our_message_id=None, why="replied"):
+    """A reply ends that business's remaining touches. Returns how many touches it stopped."""
+    with state_lock():
+        seqs = seqs_load()
+        s = seq_for(email, our_message_id, seqs)
+        if not s or s.get("status") in ("stopped", "done"):
+            return 0
+        left = sum(1 for t in s.get("touches") or [] if not t.get("sent_ts"))
+        s.update(status="stopped", why=why, stopped_ts=now_iso())
+        seqs_save(seqs)
+        return left
+
+
+def postmaster_file():
+    return state_dir("postmaster.jsonl")
+
+
+def stop_reasons():
+    """The lane's stop rules (Taylor, answer 2), counted from our own records since the last
+    `outreach resume --lane`. Returns [reason, ...]; empty means the lane may run."""
+    since = resumed_at()
+    sends = [r for r in read_jsonl(sends_file()) if str(r.get("ts") or "") >= since]
+    bounces = [b for b in read_jsonl(bounces_file()) if str(b.get("ts") or "") >= since]
+    cap = env_num("OUTREACH_BOUNCE_MAX_PCT", DEFAULT_BOUNCE_PCT)
+    floor = int(env_num("OUTREACH_BOUNCE_MIN_SENDS", DEFAULT_BOUNCE_MIN_SENDS, int))
+    out = []
+    for field, label in (("mailbox", "mailbox"), ("batch_id", "batch")):
+        n, b = {}, {}
+        for r in sends:
+            if r.get(field):
+                n[r[field]] = n.get(r[field], 0) + 1
+        for r in bounces:
+            if r.get(field):
+                b[r[field]] = b.get(r[field], 0) + 1
+        for k, nb in sorted(b.items()):
+            rate = nb / max(n.get(k, 0), floor) * 100
+            if rate > cap:
+                out.append(f"bounces on {label} {k}: {nb} of {n.get(k, 0)} sent ({rate:.1f}% counted over at least "
+                           f"{floor}, cap {cap:.1f}%)")
+    window = int(env_num("OUTREACH_COMPLAINT_WINDOW", DEFAULT_COMPLAINT_WINDOW, int))
+    last = sends[-window:]
+    addrs = {str(r.get("email") or "").lower() for r in last}
+    events = [r for r in read_jsonl(replies_file()) if str(r.get("ts") or "") >= since
+              and r.get("class") in ("angry", "no") and str(r.get("email") or r.get("from") or "").lower() in addrs]
+    acap = env_num("OUTREACH_ANGRY_MAX_PCT", DEFAULT_ANGRY_PCT)
+    arate = len(events) / max(len(last), window) * 100 if window else 0.0
+    if arate > acap:
+        out.append(f"angry replies plus unsubscribes: {len(events)} over the last {len(last)} sends "
+                   f"({arate:.2f}% of {max(len(last), window)}, cap {acap:.1f}%)")
+    scap = env_num("OUTREACH_SPAM_RATE_MAX_PCT", DEFAULT_SPAM_RATE_PCT)
+    latest = {}
+    for r in read_jsonl(postmaster_file()):
+        if str(r.get("ts") or "") >= since:
+            latest[r.get("domain") or "?"] = r
+    for d, r in sorted(latest.items()):
+        if float(r.get("rate") or 0) >= scap:
+            out.append(f"Postmaster spam rate on {d}: {float(r['rate']):.2f}% (stops at {scap:.2f}%)")
+    return out
+
+
+def stop_numbers():
+    """The figures behind the stop rules, for `status` and `doctor`."""
+    since = resumed_at()
+    sends = [r for r in read_jsonl(sends_file()) if str(r.get("ts") or "") >= since]
+    bounces = [b for b in read_jsonl(bounces_file()) if str(b.get("ts") or "") >= since]
+    window = int(env_num("OUTREACH_COMPLAINT_WINDOW", DEFAULT_COMPLAINT_WINDOW, int))
+    last = sends[-window:]
+    addrs = {str(r.get("email") or "").lower() for r in last}
+    reps = [r for r in read_jsonl(replies_file()) if str(r.get("ts") or "") >= since]
+    angry = [r for r in reps if r.get("class") == "angry" and str(r.get("email") or r.get("from") or "").lower() in addrs]
+    nos = [r for r in reps if r.get("class") == "no" and str(r.get("email") or r.get("from") or "").lower() in addrs]
+    pm = read_jsonl(postmaster_file())
+    return {"sends": len(sends), "bounces": len(bounces), "window": len(last), "angry": len(angry), "no": len(nos),
+            "postmaster": pm[-1] if pm else None, "since": since or "the beginning"}
+
+
+# ---- verification before a first send (B90) --------------------------------------
+
+VERIFY_RESULTS = ("ok", "catch_all", "unknown", "invalid", "disposable", "error")
+VERIFY_USD_EACH = 0.004
+
+
+def verify_kind():
+    return (toolbelt("OUTREACH_VERIFY") or "none").strip().lower()
+
+
+def verify_address(email):
+    """One address through the verifier, cached for good in state/verify.jsonl, one ledger
+    row a paid check. -> one of VERIFY_RESULTS. Never raises: a fault is "error"."""
+    e = str(email).strip().lower()
+    for row in reversed(read_jsonl(state_dir("verify.jsonl"))):
+        if row.get("email") == e and row.get("result") != "error":
+            return row["result"]
+    kind = verify_kind()
+    if kind != "millionverifier":
+        return "error"
+    key = toolbelt("MILLIONVERIFIER_API_KEY")
+    if not key:
+        return "error"
+    if DRY:
+        say(f"  [dry-run] would verify {e} (about ${VERIFY_USD_EACH})")
+        return "error"
+    base = (toolbelt("OUTREACH_VERIFY_BASE") or "https://api.millionverifier.com").rstrip("/")
+    url = f"{base}/api/v3/?" + urllib.parse.urlencode({"api": key, "email": e, "timeout": 10})
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "claude-tools/outreach", "Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            data = json.loads(resp.read().decode(errors="replace"))
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        # the URL carries the key, so the fault is reported by its type alone
+        print(f"outreach: the verifier didn't answer for {e} ({type(exc).__name__}); it waits", file=sys.stderr)
+        return "error"
+    result = str(data.get("result") or "").strip().lower().replace("-", "_")
+    if result not in VERIFY_RESULTS:
+        result = "error"
+    append_jsonl(state_dir("verify.jsonl"), {"ts": now_iso(), "email": e, "result": result, "by": kind})
+    ledger_append({"ts": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()), "kind": "email_verify",
+                   "tool": "outreach", "calls": 1, "cost_usd": VERIFY_USD_EACH, "project": "global",
+                   "billed_to": f"{kind}:MILLIONVERIFIER_API_KEY", "for": f"verify {e}: {result}"})
+    return result
+
+
+def mx_ok(seq):
+    return str(seq.get("email_mx") or "").strip().lower() in ("ok", "true", "yes", "1") or seq.get("mx_ok") is True
+
+
+def first_send_gate(seq):
+    """Before a business's first letter: ("send", why) | ("hold", until, why) | ("drop", why).
+
+    The first month after the warm-up start is when a bounce costs the most, so in it
+    accept-all and unknown addresses wait; with no verifier, only addresses the batch
+    marked MX-ok on the business's own domain go (plan 37 § 3)."""
+    start, _ = warmup_start()
+    first_month_ends = (start + dt.timedelta(days=NEW_SENDER_DAYS)) if start else None
+    young = first_month_ends is None or today() < first_month_ends
+    hold_until = first_month_ends if first_month_ends else today() + dt.timedelta(days=1)
+    kind = verify_kind()
+    if kind == "none":
+        own = seq.get("email_kind") == "own-domain"
+        if young:
+            if own and mx_ok(seq):
+                return "send", "own domain, MX ok"
+            return "hold", hold_until, ("no verifier, so only own-domain MX-ok addresses go in the first "
+                                        f"{NEW_SENDER_DAYS} days")
+        if str(seq.get("email_mx") or "").strip().lower() in ("none", "no", "false"):
+            return "drop", "no mail server for that domain"
+        return "send", "past the first month"
+    res = verify_address(seq.get("email"))
+    if res == "ok":
+        return "send", "verified"
+    if res in ("invalid", "disposable"):
+        return "drop", f"the verifier says {res}"
+    if res == "error":
+        return "hold", today() + dt.timedelta(days=1), "the verifier couldn't check it today"
+    if young:
+        return "hold", hold_until, f"the verifier says {res}; those wait out the first {NEW_SENDER_DAYS} days"
+    return "send", f"verifier {res}, past the first month"
 
 
 # ---- the classifier -------------------------------------------------------------
@@ -1064,8 +1894,11 @@ def rule_class(reply):
     body = quoted_off(reply.get("text") or "")
     low = (body + " " + (reply.get("subject") or "")).lower()
     frm = (reply.get("from") or "").lower()
-    if any(b in frm for b in BOUNCE_FROM) or any(s in (reply.get("subject") or "").lower() for s in BOUNCE_SUBJECTS):
+    if reply.get("bounce") or any(b in frm for b in BOUNCE_FROM) or any(
+            s in (reply.get("subject") or "").lower() for s in BOUNCE_SUBJECTS):
         return "bounce", "the sender or subject is a delivery notification"
+    if any(re.search(p, low) for p in ANGRY_PATTERNS):
+        return "angry", "upset at being written to, or calls it spam"
     if any(re.search(p, low) for p in NO_PATTERNS):
         return "no", "the reply asks to be left alone"
     if reply.get("auto_reply") or any(re.search(p, low) for p in OOF_PATTERNS):
@@ -1075,9 +1908,12 @@ def rule_class(reply):
 
 def guess_class(reply):
     """The fallback when there is no classifier: nothing is machine-answered."""
-    low = quoted_off(reply.get("text") or "").lower()
+    words = quoted_off(reply.get("text") or "")
+    low = words.lower()
     if any(re.search(p, low) for p in CALLME_PATTERNS):
         return "interested", "asks to talk"
+    if "?" not in words and len(words.split()) <= 8 and YES_RE.match(words.strip()):
+        return "yes", "a short yes and nothing else"
     return "other", "no classifier available, so a person reads it"
 
 
@@ -1107,16 +1943,30 @@ def ai_classify(reply):
     base = (toolbelt("ANTHROPIC_API_BASE") or "https://api.anthropic.com").rstrip("/")
     body = quoted_off(reply.get("text") or "")[:4000]
     system = (
-        "You sort replies to a cold email a one-man web shop in American Fork, Utah sent a local "
-        "business. Answer with one JSON object and nothing else:\n"
-        '{"class": one of ["interested","question","not now","no","bounce","out of office","other"], '
-        '"topic": "price" | "how" | null, "when": a time they named, verbatim, or null, '
-        '"why": one short clause}\n'
-        "Rules: anything asking to stop, unsubscribe, or saying not interested is \"no\". A bounce or "
-        "delivery failure is \"bounce\". A question purely about what it costs is class \"question\", "
-        "topic \"price\"; a question purely about what the thing is or how it works is class \"question\", "
-        "topic \"how\". Wanting a call, naming a time, or saying yes is \"interested\". Anything you are "
-        "not sure about is \"other\" — a person will read those, so never stretch."
+        "You read one reply to a cold email. Taylor Remund builds and looks after websites for local "
+        "businesses from American Fork, Utah; his letter named two things about the business's Google "
+        "listing or website and offered to build a free preview of a site. Your answer decides what "
+        "happens next, so here is what each class sets in motion:\n"
+        "- \"yes\": they simply accept the free preview and ask nothing else. A preview is built and its "
+        "link goes back to them automatically.\n"
+        "- \"interested\": they want to talk, name a time, ask for a call, or say yes with a question or a "
+        "condition attached. Taylor answers these himself.\n"
+        "- \"question\": only a question about the price (topic \"price\") or only about what this is or "
+        "how it works (topic \"how\"). A short answer Taylor approved goes back.\n"
+        "- \"not now\": maybe later.\n"
+        "- \"no\": they ask to stop, to unsubscribe, or say they are not interested. They are taken off "
+        "the list for good.\n"
+        "- \"angry\": they are upset at being written to, call it spam, or say they will report it. The "
+        "mailbox that wrote to them pauses and Taylor is told. A polite no is \"no\", not \"angry\".\n"
+        "- \"bounce\" and \"out of office\": delivery failures and automatic replies.\n"
+        "- \"unsure\": you can't tell which of these it is. That is a good answer, not a failure: Taylor "
+        "reads every unsure reply himself, so a guess costs more than an unsure.\n"
+        "- \"other\": clearly none of these, such as an unrelated message.\n"
+        "If you couldn't read the message (garbled, or a language you can't follow), answer \"unsure\" "
+        "and say why in \"why\"; the reason is passed to Taylor.\n"
+        "You have about 300 tokens. Reply with one JSON object and nothing else, with these keys: "
+        "class (one of the ten above), topic (\"price\", \"how\" or null), when (a time they named, "
+        "copied exactly, or null), why (one short clause)."
     )
     try:
         status, data = http("POST", f"{base}/v1/messages",
@@ -1171,7 +2021,7 @@ def classify(reply):
             got["when"] = named_time(reply)
         # A rule, not a judgement: somebody asking to be called gets a person, whatever
         # else the classifier read in the message.
-        if got["class"] not in ("no", "bounce") and wants_a_person(reply):
+        if got["class"] not in ("no", "bounce", "angry") and wants_a_person(reply):
             got.update({"class": "interested", "topic": None,
                         "why": (got.get("why") or "") + "; asks to talk, so it is Taylor's"})
         return got
@@ -1207,8 +2057,23 @@ def address_we_sent_to(reply):
     return frm
 
 
+def send_row_for(reply):
+    """The send a reply answers: by the Message-ID it names (B90), else by the address."""
+    mid = reply.get("our_message_id")
+    if mid:
+        for r in read_jsonl(sends_file()):
+            if r.get("message_id") == mid:
+                return r
+    if reply.get("bounced_to"):
+        return sent_rows_by_email().get(str(reply["bounced_to"]).lower())
+    return sent_rows_by_email().get(address_we_sent_to(reply).lower())
+
+
 def who_replied(reply):
     """The send this reply belongs to: (name, place_id, email, first)."""
+    row = send_row_for(reply)
+    if row:
+        return row.get("name"), row.get("place_id"), row.get("email"), (row.get("first") or "")
     addr = address_we_sent_to(reply)
     row = sent_rows_by_email().get(addr.lower())
     if row:
@@ -1291,6 +2156,8 @@ def greeting_name(first, business):
 
 def cmd_send(args):
     global DRY
+    if getattr(args, "batch", None):
+        return cmd_send_batch(args, provider_wanted(args.provider))
     per_day = int(env_num("OUTREACH_PER_DAY", DEFAULT_PER_DAY, int))
     touch = int(args.touch)
     if touch not in TOUCH_TEMPLATE:
@@ -1310,6 +2177,15 @@ def cmd_send(args):
         die(f"{tname}.md breaks its own rules: " + "; ".join(checks) + ". Nothing sent.")
 
     provider = pick_provider(args.provider)
+    held = latch()
+    if held:
+        say(f"outreach: the lane is stopped since {held.get('ts')} — {held.get('why')}. "
+            "`outreach resume --lane` is Taylor's, once the cause is fixed.")
+        sys.exit(1)
+    reasons = stop_reasons()
+    if reasons:
+        trip_switch("; ".join(reasons))
+        sys.exit(1)
     ok, _, _, dline = deliverability(provider)
     if ok is False:
         trip_switch(dline)
@@ -1343,7 +2219,7 @@ def cmd_send(args):
         if not email:
             skipped.append((i, p.get("name"), "no address on the listing"))
             continue
-        if email.lower() in supp or str(p.get("place_id") or "").lower() in supp:
+        if is_suppressed(email, p.get("place_id"), supp):
             skipped.append((i, p.get("name"), "suppressed"))
             continue
         if email.lower() in already:
@@ -1390,6 +2266,9 @@ def cmd_send(args):
         say(f"{i}. {p.get('name')} <{p.get('email')}> — \"{subject}\"")
         if DRY or args.show:
             say("".join(f"   | {l}\n" for l in letter.splitlines()))
+        if claims_a_site(letter, p.get("preview_url")):
+            say("   REFUSED: the letter says a site was built, and this pick has no preview")
+            continue
         try:
             res = provider.send(p, subject, letter)
         except (Unreachable, ProviderError) as exc:
@@ -1399,7 +2278,9 @@ def cmd_send(args):
         row = {"ts": now_iso(), "date": today().isoformat(), "touch": touch, "template": tname,
                "place_id": p.get("place_id"), "name": p.get("name"), "first": p.get("first") or "",
                "email": p.get("email"), "subject": subject, "provider": provider.name,
-               "provider_id": (res or {}).get("id"), "preview_url": p.get("preview_url"), "kit_index": i}
+               "provider_id": (res or {}).get("id"), "preview_url": p.get("preview_url"), "kit_index": i,
+               "mailbox": str((res or {}).get("mailbox") or getattr(provider, "eaccount", "") or "").lower() or None,
+               "message_id": (res or {}).get("message_id")}
         if not DRY:
             append_jsonl(sends_file(), row)
         ledger_append({"ts": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()), "kind": "outreach_email",
@@ -1427,7 +2308,428 @@ def cmd_send(args):
         die(f"every send failed ({failed}); the provider is the problem, not the picks")
 
 
+# ---- the batch lane: send --batch and the tick (B90) ------------------------------
+
+def load_batch(src):
+    """The plan's § Contract shape from `leads batch --json`, a file or stdin."""
+    try:
+        raw = sys.stdin.read() if src == "-" else Path(src).expanduser().read_text()
+    except OSError as exc:
+        die(f"can't read the batch ({exc})")
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        die(f"the batch isn't JSON ({exc})")
+    if not isinstance(data, dict) or not isinstance(data.get("picks"), list):
+        die("the batch isn't the {batch_id, picks: [...]} shape of `leads batch --json` (plan 37 § Contract)")
+    if not data.get("batch_id"):
+        die("the batch has no batch_id; `leads batch --json` gives one, and every send is counted by it")
+    return data
+
+
+def screen_batch(batch):
+    """-> (plan, skipped). Never twice to an address or a place, never a suppressed one,
+    and only picks with exactly two fault sentences (a business with fewer isn't written to)."""
+    supp = suppressed()
+    seqs = seqs_load()
+    in_seq = {str(s.get("email") or "").lower() for s in seqs} | {str(s.get("place_id") or "") for s in seqs}
+    written = {str(r.get("email") or "").lower() for r in read_jsonl(sends_file())}
+    plan, skipped, seen = [], [], set()
+    for i, p in enumerate(batch.get("picks") or [], 1):
+        if not isinstance(p, dict):
+            continue
+        name, email = p.get("name") or "?", str(p.get("email") or "").strip()
+        faults = details_of(p)
+        why = None
+        if not email or "@" not in email:
+            why = "no address"
+        elif is_suppressed(email, p.get("place_id"), supp):
+            why = "suppressed"
+        elif len(faults) != 2:
+            why = f"{len(faults)} sentence(s), not two"
+        elif any(f["kind"] == "bad" for f in faults):
+            why = "an entry's kind is neither fault nor fact (plan 37 § Contract)"
+        elif faults[0]["kind"] != "fault":
+            why = "no fault worth naming, only facts"
+        elif email.lower() in in_seq or str(p.get("place_id") or "") in in_seq:
+            why = "already in a sequence"
+        elif email.lower() in written:
+            why = "already written to"
+        elif email.lower() in seen:
+            why = "twice in this batch"
+        if why:
+            skipped.append((i, name, why))
+            continue
+        seen.add(email.lower())
+        plan.append((i, p, faults))
+    return plan, skipped
+
+
+def new_sequence(batch, p, faults):
+    return {"id": f"{batch['batch_id']}/{p.get('place_id') or p.get('email')}", "batch_id": batch["batch_id"],
+            "place_id": p.get("place_id"), "name": p.get("name"), "first": p.get("first") or "",
+            "email": str(p.get("email")).strip(), "email_kind": p.get("email_kind"),
+            "email_mx": p.get("email_mx"), "mx_ok": p.get("mx_ok"), "city": p.get("city"),
+            "category": p.get("category"), "faults": [d["sentence"] for d in faults],
+            "kinds": [d["kind"] for d in faults], "preview_url": p.get("preview_url") or "",
+            "token": secrets.token_urlsafe(9), "mailbox": None, "status": "active", "why": "",
+            "queued": today().isoformat(), "queued_ts": now_iso(),
+            "touches": [{"touch": d, "template": t, "sent_ts": None, "message_id": None, "subject": None}
+                        for d, t in BATCH_TOUCHES]}
+
+
+def see_url(seq):
+    base = link_base()
+    return f"{base}/{seq['token']}" if base and seq.get("token") else ""
+
+
+def batch_values(seq, touch):
+    name = seq.get("name") or ""
+    second_kind = ((seq.get("kinds") or ["fault", "fault"]) + ["fault", "fault"])[1]
+    first_subject = ((seq.get("touches") or [{}])[0].get("subject")
+                     or f"two things I noticed about {name}")
+    return {
+        "first": greeting_name(seq.get("first"), name), "business": name,
+        "fault_one": seq["faults"][0],
+        "fault_two": seq["faults"][1] if second_kind != "fact" else "",
+        "fact": seq["faults"][1] if second_kind == "fact" else "",
+        "price_line": PRICE_LINE, "prices_line": PRICES_LINE,
+        "phone": toolbelt("PATCHLAMP_VOICE_NUMBER") or "",
+        "address": toolbelt("LEADS_MAIL_ADDRESS") or "",
+        "see_url": see_url(seq) if touch > 0 else "",
+        "thread_subject": re.sub(r"^(?:re:\s*)+", "", first_subject, flags=re.I),
+        "preview_url": seq.get("preview_url") or "",
+    }
+
+
+def claims_a_site(letter, preview_url):
+    """True when the letter says a site exists and none does: never sent (plan 37 § 3)."""
+    return bool(BUILT_RE.search(letter)) and not str(preview_url or "").strip()
+
+
+def batch_problems():
+    """What must hold before any batch letter leaves."""
+    bad = []
+    if not toolbelt("LEADS_MAIL_ADDRESS"):
+        bad.append("LEADS_MAIL_ADDRESS isn't set (US law wants a postal address on every commercial email)")
+    bad += approval_problems(BATCH_LETTERS)
+    for n in BATCH_LETTERS:
+        bad += [f"{n}: {b}" for b in check_template(n)]
+    return bad
+
+
+def cmd_send_batch(args, provider_name):
+    batch = load_batch(args.batch)
+    plan, skipped = screen_batch(batch)
+    problems = batch_problems()
+    city = batch.get("city")
+    where = "across the corridor" if not city or str(city).lower() == "any" else f"in {city}"
+    say(f"Batch {batch['batch_id']} · {batch.get('category') or '?'} {where} · "
+        f"{len(batch.get('picks') or [])} picks, {len(plan)} to write to · three touches each (day 0, 3, 10)"
+        f"{' · DRY RUN' if DRY else ''}")
+    if DRY:
+        tpl = load_template("batch-first")
+        for i, p, faults in plan:
+            seq = new_sequence(batch, p, faults)
+            subject, letter = tpl.render(batch_values(seq, 0))
+            say(f"\n{i}. {p.get('name')} <{p.get('email')}> — \"{subject}\"")
+            say("".join(f"   | {l}\n" for l in letter.splitlines()), )
+        for i, name, why in skipped:
+            say(f"  {i}. {name} — skipped: {why}")
+        say(f"\nDry run: {len(plan)} first letters rendered; nothing queued, nothing sent.")
+        if problems:
+            say("Before `go` can send: " + "; ".join(problems))
+        return
+    if not args.go and str(toolbelt("OUTREACH_AUTO") or "") != "1":
+        say(f"\nWaiting on `go` for this batch — {len(plan)} businesses, each with the two facts its letter "
+            "will carry:")
+        for i, p, faults in plan:
+            say(f"  {i}. {p.get('name')} <{p.get('email')}>")
+            for f in faults:
+                say(f"       - {f['sentence']}" + ("  (a fact in their favour)" if f["kind"] == "fact" else ""))
+        for i, name, why in skipped:
+            say(f"  {i}. {name} — skipped: {why}")
+        if problems:
+            say("Before `go` can send: " + "; ".join(problems))
+        sys.exit(0)
+    if problems:
+        die("nothing queued — " + "; ".join(problems))
+    if provider_name == "instantly":
+        die("the batch lane sends through the google provider (or fake); Instantly's campaign path is the six-a-day "
+            "kit lane only. Set OUTREACH_PROVIDER=google. Nothing queued.")
+    provider = pick_provider(args.provider)
+    with state_lock():
+        blocked, _ = lane_blocked(provider)
+        if blocked:
+            sys.exit(1)
+        seqs = seqs_load()
+        for i, p, faults in plan:
+            seqs.append(new_sequence(batch, p, faults))
+        seqs_save(seqs)
+        append_jsonl(state_dir("batches.jsonl"), {"ts": now_iso(), "batch_id": batch["batch_id"], "queued": len(plan),
+                                                  "skipped": len(skipped), "approved": "go"})
+        say(f"Queued {len(plan)} businesses, three touches each; the tick sends them across working hours.")
+        for i, name, why in skipped:
+            say(f"  {i}. {name} — skipped: {why}")
+        run_tick(provider)
+
+
+def next_gap(t, remaining, rng, end):
+    """The wait before a mailbox's next letter: the time left in the window shared over the
+    letters left, drawn at random between about half and one and a half of that, never
+    under the minimum. Irregular on purpose: a fixed interval reads as a machine."""
+    if remaining <= 0:
+        return end
+    left = max((end - t).total_seconds() / 60, 0)
+    base = left / (remaining + 0.5)
+    gap = max(env_num("OUTREACH_MIN_GAP_MINUTES", DEFAULT_MIN_GAP), base * rng.uniform(0.55, 1.45))
+    return t + dt.timedelta(minutes=gap)
+
+
+def send_touch(provider, seq, mb):
+    """One letter of one sequence from one mailbox. -> True when it left."""
+    i, t = next_touch(seq)
+    if t is None:
+        return False
+    tname, touch = t["template"], int(t["touch"])
+    vals = batch_values(seq, touch)
+    subject, letter = load_template(tname).render(vals)
+    if claims_a_site(letter, seq.get("preview_url")):
+        seq.update(status="stopped", why=f"{tname} says a site was built and none exists; fix the letter")
+        say(f"  REFUSED {seq.get('name')}: {tname} says a site was built, and there is no preview for it")
+        return False
+    thread = None
+    if touch > 0:
+        ids = [x.get("message_id") for x in seq["touches"] if x.get("message_id")]
+        thread = {"in_reply_to": ids[-1] if ids else None, "references": ids}
+    pick = {"email": seq["email"], "name": seq.get("name"), "place_id": seq.get("place_id")}
+    try:
+        res = provider.send(pick, subject, letter, mailbox=mb, thread=thread) or {}
+    except (Unreachable, ProviderError) as exc:
+        say(f"  FAILED {seq.get('name')} from {mb}: {exc}")
+        seq["failures"] = int(seq.get("failures") or 0) + 1
+        return False
+    mid = res.get("message_id") or res.get("id")
+    t.update(sent_ts=now_iso(), message_id=mid, subject=subject, mailbox=mb)
+    seq["mailbox"] = mb
+    if next_touch(seq)[1] is None:
+        seq["status"] = "done"
+    row = {"ts": now_iso(), "date": today().isoformat(), "touch": touch, "template": tname,
+           "place_id": seq.get("place_id"), "name": seq.get("name"), "first": seq.get("first") or "",
+           "email": seq["email"], "subject": subject, "provider": provider.name, "provider_id": res.get("id"),
+           "mailbox": mb, "message_id": mid, "thread_root": seq["touches"][0].get("message_id"),
+           "batch_id": seq.get("batch_id"), "seq_id": seq.get("id")}
+    if not DRY:
+        append_jsonl(sends_file(), row)
+    ledger_append({"ts": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()), "kind": "outreach_email",
+                   "tool": "outreach", "calls": 1, "cost_usd": 0, "project": "global",
+                   "billed_to": f"{provider.name}:{mb}",
+                   "for": f"{tname} day{touch} -> {seq.get('name')} <{seq['email']}>"})
+    say(f"  {now().strftime('%H:%M')} {mb} -> {seq.get('name')} <{seq['email']}> day {touch}: \"{subject}\"")
+    leads_log(seq.get("name") or seq["email"], "messaged", f"email day {touch}: {subject}",
+              place_id=seq.get("place_id"), email=seq["email"])
+    return True
+
+
+def cmd_tick(args):
+    provider = pick_provider(args.provider)
+    if not getattr(args, "until", None):
+        with state_lock():
+            code = run_tick(provider)
+        sys.exit(code or 0)
+    # A run of ticks in one process, for the tests: a working day of five-minute ticks as
+    # separate processes took about twenty seconds, so a week of them made the suite crawl.
+    # Only on the test clock: on the real one there is nothing to step through.
+    if not os.environ.get("OUTREACH_NOW"):
+        die("--until steps the test clock (OUTREACH_NOW) and means nothing without it; the timer runs plain `tick`")
+    t = now()
+    try:
+        stop = dt.datetime.fromisoformat(args.until)
+    except ValueError:
+        die(f"--until is an ISO time like 2026-10-19T17:05, not {args.until!r}")
+    stop = stop.replace(tzinfo=TZ) if stop.tzinfo is None else stop.astimezone(TZ)
+    step = dt.timedelta(minutes=max(int(args.every or 5), 1))
+    worst = 0
+    while t <= stop:
+        os.environ["OUTREACH_NOW"] = t.isoformat()
+        with state_lock():
+            worst = max(worst, run_tick(provider) or 0)
+        t += step
+    sys.exit(worst)
+
+
+def run_tick(provider):
+    """Send what is due now: at most one letter a mailbox, follow-ups before new first
+    letters, each mailbox under today's cap, at irregular gaps inside working hours."""
+    t = now()
+    day = t.date()
+    seqs = seqs_load()
+    for s in seqs:                          # a hold ends on its day
+        if s.get("status") == "held" and s.get("hold_until") and dt.date.fromisoformat(s["hold_until"]) <= day:
+            s.update(status="active", hold_until=None)
+    live = [s for s in seqs if s.get("status") == "active"]
+    if not live:
+        say("Nothing queued.")
+        seqs_save(seqs)
+        return 0
+    blocked, _ = lane_blocked(provider)
+    if blocked:
+        return 1
+    problems = batch_problems()
+    if problems:
+        say("Nothing sends: " + "; ".join(problems))
+        return 1
+    if not working_now(t):
+        start, end = send_window(day)
+        say(f"Outside the sending window ({start:%H:%M}–{end:%H:%M} weekdays); {len(live)} sequences wait.")
+        seqs_save(seqs)
+        return 0
+    boxes, paused = mailboxes(), paused_boxes()
+    if not boxes:
+        say("No mailboxes (OUTREACH_MAILBOXES); nothing sends.")
+        return 1
+    cap = cap_on(day)
+    if cap <= 0:
+        rd = ramp_day(day)
+        say(f"Each mailbox's cap today is 0 (OUTREACH_MAILBOX_PER_DAY"
+            + (f", ramp day {rd}" if rd is not None else ", no warm-up start recorded") + "); nothing sends.")
+        seqs_save(seqs)
+        return 0
+    _, end = send_window(day)
+    ticks = read_json(state_dir("tick.json"), {})
+    k = (t.hour * 60 + t.minute) // 5
+    order = boxes[k % len(boxes):] + boxes[:k % len(boxes)]
+    sent = 0
+    for mb in order:
+        if mb in paused:
+            continue
+        used = sends_on(mb, day)
+        if used >= cap:
+            continue
+        st = ticks.get(mb) or {}
+        if st.get("date") != day.isoformat():
+            r0 = random.Random(f"{mb}|{day.isoformat()}")
+            start, _ = send_window(day)
+            st = {"date": day.isoformat(), "next_at": (start + dt.timedelta(minutes=r0.uniform(0, 40))).isoformat()}
+        if t < dt.datetime.fromisoformat(st["next_at"]):
+            ticks[mb] = st
+            continue
+        follow = []
+        for s in seqs:
+            if s.get("status") != "active" or s.get("mailbox") != mb:
+                continue
+            _, nt = next_touch(s)
+            due = touch_due(s, nt) if nt else None
+            if nt and int(nt["touch"]) > 0 and due and due <= day:
+                follow.append((due, s))
+        follow.sort(key=lambda x: x[0])
+        fresh = [s for s in seqs if s.get("status") == "active" and not s.get("mailbox")
+                 and next_touch(s)[1] is not None and int(next_touch(s)[1]["touch"]) == 0
+                 and touch_due(s, next_touch(s)[1]) <= day]
+        chosen = follow[0][1] if follow else None
+        while chosen is None and fresh:
+            s = fresh.pop(0)
+            gate = first_send_gate(s)
+            if gate[0] == "send":
+                chosen = s
+            elif gate[0] == "hold":
+                s.update(status="held", hold_until=gate[1].isoformat(), why=gate[2])
+            else:
+                s.update(status="stopped", why=gate[1])
+                suppress_add(s["email"], f"not sent: {gate[1]}")
+        if chosen is None:
+            ticks[mb] = st
+            continue
+        if send_touch(provider, chosen, mb):
+            sent += 1
+            used += 1
+        others = sum(1 for b in boxes if b not in paused) or 1
+        remaining = min(cap - used, max(len(follow) - 1, 0) + -(-len(fresh) // others))
+        rng = random.Random(f"{mb}|{t.isoformat()}")
+        st["next_at"] = next_gap(t, remaining, rng, end).isoformat()
+        ticks[mb] = st
+    seqs_save(seqs)
+    write_json(state_dir("tick.json"), ticks)
+    waiting = sum(1 for s in seqs if s.get("status") == "active")
+    say(f"Tick {t:%Y-%m-%d %H:%M}: {sent} sent; {waiting} sequences still running"
+        f"{' · DRY RUN' if DRY else ''}.")
+    return 0
+
+
 # ---- inbox ----------------------------------------------------------------------
+
+def preview_for(place_id):
+    """`leads preview --place ID --json` (wick, B90) -> (url, why-not)."""
+    ok, out = run_tool([tool_path("leads"), "preview", "--place", place_id, "--json"], f"leads preview {place_id}")
+    if DRY:
+        return None, "a dry run builds nothing"
+    if not ok:
+        return None, "`leads preview --place` failed or isn't there yet"
+    try:
+        data = json.loads(out)
+    except json.JSONDecodeError:
+        return None, "`leads preview --place --json` didn't print JSON"
+    if not isinstance(data, dict) or data.get("ok") is False:
+        return None, "`leads preview` said it couldn't build one"
+    url = data.get("url")
+    return (url, None) if url else (None, "`leads preview` returned no URL")
+
+
+def answer_yes(provider, r, row, name, pid, email, first, first200, room):
+    """A plain yes to the batch letter's offer: build the preview and answer with its address
+    (plan 37 § 4). Anything that stops that hands the reply to Taylor as interested, which
+    is what happened before there was a yes path. -> True when the machine answered."""
+    def hand_over(why):
+        notify(f"{name} said yes to the preview, and it couldn't go back automatically ({why}): {first200} — "
+               f"`leads brief {name}` before you answer.")
+        leads_log(name, "interested", f"said yes to the preview: {first200[:120]}", place_id=pid, email=email,
+                  next_when="tomorrow")
+        say(f"  handed to Taylor: {why}")
+        return False
+
+    seq = seq_for(email, r.get("our_message_id"))
+    if not pid or seq is None:
+        return hand_over("it isn't a batch letter's thread")
+    bad = approval_problems(["answer-yes"])
+    if bad:
+        return hand_over("; ".join(bad))
+    if answered_thread_today(r.get("thread_id")):
+        return hand_over("this thread already had a machine reply today")
+    if room <= 0:
+        return hand_over("the day's machine-reply cap is spent")
+    url, why = preview_for(pid)
+    if not url:
+        return hand_over(why)
+    with state_lock():
+        seqs = seqs_load()
+        s = seq_for(email, r.get("our_message_id"), seqs)
+        if s is not None:
+            s["preview_url"] = url
+            seqs_save(seqs)
+            seq = s
+    link = see_url(seq)
+    if not link:
+        # The answer's link lives on the sending domain, never previews.patchlamp.com: a link
+        # from the cold lane would tie patchlamp.com's standing to it (plan 37 § 3). Until
+        # OUTREACH_LINK_BASE is set (the see page, B91), Taylor sends this one himself.
+        return hand_over(f"there's no link on the sending domain yet (OUTREACH_LINK_BASE); the preview is "
+                         f"built at {url} for you to send")
+    vals = values_for({"name": name, "first": first, "faults": []}, 0)
+    vals["preview_url"] = link
+    subject, letter = load_template("answer-yes").render(vals)
+    theirs = (r.get("subject") or "").strip()
+    if theirs:
+        subject = theirs if theirs.lower().startswith("re:") else f"Re: {theirs}"
+    say(f"  answering with the preview: \"{subject}\" ({link})")
+    try:
+        provider.reply_to(r, subject, letter)
+    except (Unreachable, ProviderError) as exc:
+        return hand_over(f"the reply didn't go: {exc}")
+    row.update(answered=True, answer_template="answer-yes", preview_url=url)
+    notify(f"{name} said yes; their preview went back: {url}. `leads brief {name}` before a call.")
+    leads_log(name, "interested", f"said yes; preview sent: {url}", place_id=pid, email=email, next_when="tomorrow")
+    return True
+
 
 def answer_for(topic):
     return {"price": "answer-price", "how": "answer-how"}.get(topic)
@@ -1449,15 +2751,42 @@ def cmd_inbox(args):
     for r in replies:
         name, pid, email, first = who_replied(r)
         got = classify(r)
+        if got["class"] == "yes" and seq_for(email, r.get("our_message_id")) is None:
+            # A yes outside a batch letter's thread (the kit lane already sent a preview): Taylor's.
+            got.update({"class": "interested", "why": (got.get("why") or "") + "; not a batch thread"})
         cls, why = got["class"], got.get("why") or ""
         first200 = " ".join(quoted_off(r.get("text") or "").split())[:200]
         say(f"\n{name} <{r.get('from')}> — {cls}{'' if got.get('ai') else ' (by rule)'}{': ' + why if why else ''}")
         row = {"ts": now_iso(), "date": today().isoformat(), "email_id": r.get("id"),
                "thread_id": r.get("thread_id"), "from": r.get("from"), "name": name, "place_id": pid,
                "class": cls, "topic": got.get("topic"), "when": got.get("when"), "ai": bool(got.get("ai")),
-               "answered": False, "text": first200}
+               "answered": False, "text": first200, "email": email}
+        sent_row = send_row_for(r) or {}
+        mb = str(r.get("mailbox") or sent_row.get("mailbox") or "").lower() or None
+        row["mailbox"], row["batch_id"] = mb, sent_row.get("batch_id")
+        if cls not in ("out of office",):
+            # Any answer from a person ends that business's remaining touches (a bounce too).
+            left = stop_sequence(email, r.get("our_message_id") or sent_row.get("message_id"),
+                                 why="bounced" if cls == "bounce" else f"replied ({cls})")
+            if left:
+                say(f"  the sequence stopped: {left} touch(es) won't go")
+        if cls == "bounce" and not DRY:
+            append_jsonl(bounces_file(), {"ts": now_iso(), "email": email, "mailbox": mb,
+                                          "batch_id": sent_row.get("batch_id"), "reply_id": r.get("id")})
 
-        if cls == "no":
+        if cls == "angry":
+            # As a no, and the mailbox that wrote to them pauses until Taylor says (answer 2).
+            suppress_add(email, "angry reply", provider)
+            if pid:
+                suppress_add(pid, "angry reply", provider)
+            paused_now = bool(mb) and (DRY or pause_box(mb, f"angry reply from {email}"))
+            notify(f"Angry reply from {name} <{r.get('from')}>: {first200}"
+                   + (f" — {mb} is paused; `outreach resume {mb}` when you're ready." if paused_now else ""))
+            leads_log(name, "lost", "replied angry to the email", place_id=pid, email=email, next_when="none")
+            say(f"  suppressed; {'mailbox ' + mb + ' paused; ' if paused_now else ''}Taylor told; no reply sent")
+        elif cls == "yes" and answer_yes(provider, r, row, name, pid, email, first, first200, room):
+            room -= 1
+        elif cls == "no":
             # Before anything else, and before any reply: the address and the place both go.
             if suppress_add(email, "replied no thanks", provider):
                 say("  suppressed: the address is off the list for good")
@@ -1502,8 +2831,10 @@ def cmd_inbox(args):
                     say(f"  the reply didn't go ({exc}); handing it to Taylor")
                     notify(f"{name} asked about {got['topic']} and the reply failed: {first200}")
                 leads_log(name, "talked", f"asked: {first200[:120]}", place_id=pid, email=email)
+        elif cls == "yes":
+            pass                                # answer_yes handed it to Taylor and said why
         else:
-            # interested, a named time, a question we won't answer, anything unclear: Taylor's.
+            # interested, a named time, a question we won't answer, unsure, anything unclear: Taylor's.
             when = got.get("when")
             book = toolbelt("LEADS_BOOKING_URL") or "the booking link (LEADS_BOOKING_URL isn't set)"
             tail = f"reply yes to book {when}" if when else f"reply yes to send the booking link ({book})"
@@ -1526,6 +2857,18 @@ def cmd_suppress(args):
     provider = pick_provider(args.provider) if args.action == "add" else None
     if args.action == "ls":
         rows = read_jsonl(suppress_file())
+        if getattr(args, "json", False):
+            # the seam `leads batch` reads (plan 37 § Contract): addresses and domains, places too
+            out, seen = [], set()
+            for r in rows:
+                v = str(r.get("value") or "").strip()
+                if v and v.lower() not in seen:
+                    seen.add(v.lower())
+                    k = suppress_kind(v)
+                    out.append({"value": v.lower() if k != "place" else v,
+                                "kind": {"email": "address", "domain": "domain"}.get(k, "place_id")})
+            print(json.dumps(out))
+            return
         if not rows:
             say("Nobody is suppressed yet.")
             return
@@ -1574,11 +2917,65 @@ def cmd_status(args):
     if marker.exists():
         say(f"  kill switch tripped today: {marker.read_text().strip()}")
     say(f"  suppressed: {len(suppressed())}")
-    bad = approval_problems(LETTERS + ANSWERS)
+    bad = approval_problems(ALL_TEMPLATES)
     say("  templates: " + ("all approved" if not bad else "; ".join(bad)))
+    batch_status()
+
+
+def batch_status():
+    """The batch lane: the mailboxes, the ramp, the queue and the stop-rule numbers."""
+    seqs = seqs_load()
+    boxes = mailboxes()
+    start, src = warmup_start()
+    rd = ramp_day()
+    cap = cap_on()
+    say("\nBatch lane (B90)")
+    say(f"  warm-up start: {start or 'not recorded'} ({src})" + (f" · ramp day {rd}" if rd is not None else ""))
+    say(f"  OUTREACH_MAILBOX_PER_DAY: {toolbelt('OUTREACH_MAILBOX_PER_DAY', '0')} -> cap today {cap} a mailbox"
+        + ("  (0: nothing sends)" if cap <= 0 else ""))
+    paused = paused_boxes()
+    for mb in boxes:
+        say(f"  {mb}: {sends_on(mb)} of {cap} today" + (f" — PAUSED ({paused[mb].get('why')})" if mb in paused else ""))
+    if not boxes:
+        say("  no mailboxes (OUTREACH_MAILBOXES)")
+    by = {}
+    for x in seqs:
+        by[x.get("status")] = by.get(x.get("status"), 0) + 1
+    say("  sequences: " + (", ".join(f"{k} {v}" for k, v in sorted(by.items())) if by else "none"))
+    n = stop_numbers()
+    pm = n["postmaster"]
+    say(f"  since {n['since']}: {n['sends']} sent, {n['bounces']} bounced; angry {n['angry']} + no {n['no']} over "
+        f"the last {n['window']} sends; Postmaster "
+        + (f"{float(pm['rate']):.2f}% on {pm.get('domain')} ({str(pm.get('ts'))[:10]})" if pm else "no reading"))
+    held = latch()
+    reasons = stop_reasons()
+    if held:
+        say(f"  THE LANE IS STOPPED since {held.get('ts')}: {held.get('why')} (`outreach resume --lane`)")
+    elif reasons:
+        say("  a stop rule is crossed: " + "; ".join(reasons))
+    else:
+        say("  stop rules: none crossed")
 
 
 def cmd_warmup(args):
+    if getattr(args, "action", None) == "start":
+        if not args.date:
+            die("say the day: outreach warmup start 2026-10-02")
+        try:
+            d = dt.date.fromisoformat(args.date)
+        except ValueError:
+            die(f"the date is YYYY-MM-DD, not {args.date!r}")
+        write_json(state_dir("warmup-start.json"), {"start": d.isoformat(), "ts": now_iso()})
+        say(f"Warm-up start recorded: {d.isoformat()}" + (" (dry run, not written)" if DRY else "")
+            + ("; OUTREACH_WARMUP_START is set and wins over it" if os.environ.get("OUTREACH_WARMUP_START")
+               or read_env().get("OUTREACH_WARMUP_START") else ""))
+        return
+    start, src = warmup_start()
+    kind, steps = parse_cap(toolbelt("OUTREACH_MAILBOX_PER_DAY", "0"))
+    say(f"Ramp — warm-up start {start or 'not recorded'} ({src})"
+        + (f", day {ramp_day()}" if start else "") + f"; cap today {cap_on()} a mailbox")
+    if kind == "ramp":
+        say("  " + ", ".join(f"from day {d}: {c} a day" for d, c in steps) + "; before that, nothing")
     provider = pick_provider(args.provider)
     try:
         data = provider.warmup()
@@ -1596,17 +2993,66 @@ def cmd_warmup(args):
                 + (f" — {d['state']}" if d.get("state") else ""))
         else:
             say(f"  {who}: {d}")
-    say("  The plan: fourteen days of a handful a day, then 20, then 40; two mailboxes to reach 80 "
-        "(GROWTH § 5.3). OUTREACH_PER_DAY is the number that actually governs.")
+    say("  The plan (37 § 3): fourteen days of warm-up, a handful a day, then 20, then 25–30 a mailbox; full "
+        "volume in weeks four to six. OUTREACH_MAILBOX_PER_DAY governs the batch lane, OUTREACH_PER_DAY the kit lane.")
+
+
+def cmd_postmaster(args):
+    """A Google Postmaster Tools spam-rate reading, entered by hand: there is no API for it
+    today. A reading at or over OUTREACH_SPAM_RATE_MAX_PCT stops the lane."""
+    if args.rate is None:
+        rows = read_jsonl(postmaster_file())
+        if not rows:
+            say("No Postmaster readings yet. `outreach postmaster 0.05` records one (percent).")
+        for r in rows[-10:]:
+            say(f"  {str(r.get('ts'))[:16]}  {r.get('domain')}: {float(r.get('rate')):.2f}%")
+        return
+    try:
+        rate = float(str(args.rate).rstrip("%"))
+    except ValueError:
+        die(f"the reading is a percent like 0.08, not {args.rate!r}")
+    domain = (args.domain or (mail.domain_of(mailboxes()[0]) if mailboxes() else "") or "?").lower()
+    if not DRY:
+        append_jsonl(postmaster_file(), {"ts": now_iso(), "domain": domain, "rate": rate})
+    scap = env_num("OUTREACH_SPAM_RATE_MAX_PCT", DEFAULT_SPAM_RATE_PCT)
+    say(f"Recorded {rate:.2f}% for {domain}" + (" (dry run)" if DRY else "") + ".")
+    if rate >= scap:
+        trip_switch(f"Postmaster spam rate on {domain}: {rate:.2f}% (stops at {scap:.2f}%)")
+        sys.exit(1)
+
+
+def cmd_resume(args):
+    """Taylor's word: a paused mailbox back on, or the stopped lane back on with the counts
+    starting afresh."""
+    if args.lane:
+        write_json(state_dir("resume.json"), {"lane": now_iso()})
+        for p in (STATE / "stopped.json", STATE / "killswitch" / f"{today().isoformat()}.txt"):
+            if not DRY:
+                p.unlink(missing_ok=True)
+        say("The lane is back on; the stop rules count from now.")
+        return
+    if not args.mailbox:
+        die("say which: outreach resume taylor@trypatchlamp.com | --lane")
+    d = paused_boxes()
+    mb = args.mailbox.strip().lower()
+    if mb not in d:
+        say(f"{mb} isn't paused.")
+        return
+    d.pop(mb)
+    write_json(state_dir("paused.json"), d)
+    say(f"{mb} is back on.")
 
 
 def cmd_approve(args):
-    names = list(args.template) if args.template else list(LETTERS + ANSWERS)
+    names = list(args.template) if args.template else list(ALL_TEMPLATES)
     say("The text as it will go out (one rendered sample each):\n")
     problems = []
     for n in names:
         t = load_template(n)
-        subject, body = t.render(sample_values(), fault=sample_values()["fault"])
+        vals = sample_values()
+        if n in ("batch-second", "batch-third"):
+            vals["see_url"] = sample_link_base()     # shown with the link; checked both ways
+        subject, body = t.render(vals, fault=vals["fault"])
         say(f"───── {n}.md ─────")
         say(f"Subject: {subject}")
         say(body)
@@ -1627,9 +3073,9 @@ def cmd_approve(args):
              "# while a hash here is missing or stale, so editing a letter un-approves it.",
              f"# Written by `outreach approve` on {today().isoformat()}.", ""]
     keep = approved()
-    for n in LETTERS + ANSWERS:
+    for n in ALL_TEMPLATES:
         keep[n] = load_template(n).sha if n in names else keep.get(n, "")
-    for n in LETTERS + ANSWERS:
+    for n in ALL_TEMPLATES:
         if keep.get(n):
             lines.append(f"{n:14s} {keep[n]}")
     (TEMPLATES / "APPROVED").write_text("\n".join(lines) + "\n")
@@ -1641,8 +3087,9 @@ def cmd_doctor(args):
     ok = True
     keys = read_env()
     say("Keys and settings (by name; no value is ever printed)")
-    for k, need in (("INSTANTLY_API_KEY", True), ("ANTHROPIC_KEY_OUTREACH", False),
-                    ("ANTHROPIC_KEY_RELAY", False), ("OUTREACH_FROM", True),
+    google = provider_wanted(args.provider) == "google"
+    for k, need in (("INSTANTLY_API_KEY", not google), ("ANTHROPIC_KEY_OUTREACH", False),
+                    ("ANTHROPIC_KEY_RELAY", False), ("OUTREACH_FROM", not google),
                     ("LEADS_MAIL_ADDRESS", True), ("LEADS_BOOKING_URL", True),
                     ("PATCHLAMP_VOICE_NUMBER", False)):
         set_ = bool(os.environ.get(k) or keys.get(k))
@@ -1667,7 +3114,7 @@ def cmd_doctor(args):
 
     say(f"\nTemplates ({TEMPLATES})")
     appr = approved()
-    for n in LETTERS + ANSWERS:
+    for n in ALL_TEMPLATES:
         p = TEMPLATES / f"{n}.md"
         if not p.exists():
             say(f"  {n}: MISSING")
@@ -1697,18 +3144,28 @@ def cmd_doctor(args):
             f"segment {payload.get('segment') or '?'}")
 
     say("\nProvider")
-    provider = pick_provider(args.provider)
-    try:
-        good, detail = provider.ping()
-        say(f"  {provider.name}: {detail}")
-        if not good:
-            ok = False
-    except (Unreachable, ProviderError) as exc:
-        say(f"  {provider.name}: FAIL {exc}")
+    if provider_wanted(args.provider) == "google" and not mailboxes():
+        say("  google: no mailboxes (OUTREACH_MAILBOXES), so there is nothing to log in to")
         ok = False
-    _, _, _, dline = deliverability(provider)
-    say(f"  deliverability: {dline}")
+    else:
+        provider = pick_provider(args.provider)
+        if provider.name == "google":
+            say("  google: each mailbox's login is checked under Batch lane below")
+        else:
+            try:
+                good, detail = provider.ping()
+                say(f"  {provider.name}: {detail}")
+                if not good:
+                    ok = False
+            except (Unreachable, ProviderError) as exc:
+                say(f"  {provider.name}: FAIL {exc}")
+                ok = False
+        _, _, _, dline = deliverability(provider)
+        say(f"  deliverability: {dline}")
     say("  never Resend (its terms forbid cold mail) and never patchlamp.com's domain")
+
+    if not doctor_batch():
+        ok = False
 
     say("\nState and neighbours")
     say(f"  state: {STATE}  ({len(read_jsonl(sends_file()))} sends, {len(read_jsonl(replies_file()))} replies, "
@@ -1720,6 +3177,76 @@ def cmd_doctor(args):
         if not Path(p).exists():
             ok = False
     sys.exit(0 if ok else 1)
+
+
+def doctor_batch():
+    """The batch lane's half of the doctor. Plain about what's missing; True when it could send."""
+    ok = True
+    want = provider_wanted()
+    boxes = mailboxes()
+    say("\nBatch lane (B90)")
+    say(f"  provider: {want}" + ("" if want == "google" else
+                                 "  (the batch lane sends through google; set OUTREACH_PROVIDER=google)"))
+    if not toolbelt("OUTREACH_MAILBOXES"):
+        say("  OUTREACH_MAILBOXES: MISSING  (the sending addresses, comma-separated)")
+        if want == "google":
+            ok = False
+    for mb in boxes:
+        has = bool(toolbelt(password_name(mb)))
+        say(f"  {password_name(mb)}: {'set' if has else 'MISSING'}")
+        if want == "google" and not has:
+            ok = False
+    start, src = warmup_start()
+    kind, _ = parse_cap(toolbelt("OUTREACH_MAILBOX_PER_DAY", "0"))
+    cap = cap_on()
+    say(f"  OUTREACH_MAILBOX_PER_DAY: {toolbelt('OUTREACH_MAILBOX_PER_DAY', '0')} ({kind}) -> {cap} a mailbox today"
+        + ("  (0: nothing sends)" if cap <= 0 else ""))
+    say(f"  warm-up start: {start or 'not recorded (OUTREACH_WARMUP_START or `outreach warmup start DATE`)'}"
+        + (f" ({src}, day {ramp_day()})" if start else ""))
+    if kind == "ramp" and not start:
+        say("  the cap is a ramp and no warm-up start is recorded, so the cap is 0")
+    s0, e0 = send_window()
+    say(f"  sending window: {s0:%H:%M}–{e0:%H:%M} weekdays (OUTREACH_SEND_HOURS) · least gap "
+        f"{env_num('OUTREACH_MIN_GAP_MINUTES', DEFAULT_MIN_GAP):g} min")
+    raw = toolbelt("OUTREACH_LINK_BASE")
+    if raw and not link_base():
+        say("  OUTREACH_LINK_BASE is set but not an https address on a sending domain, so it is ignored: the "
+            "second touch asks for a reply instead")
+    else:
+        say(f"  link base: {link_base() or 'unset — the second and third touches ask for a reply'}")
+    v = verify_kind()
+    if v == "none":
+        ends = (start + dt.timedelta(days=NEW_SENDER_DAYS)) if start else None
+        say(f"  verification: none. Until {ends or 'thirty days after a warm-up start is recorded'}, only addresses "
+            "the batch marks MX-ok on the business's own domain are sent; the rest wait.")
+    elif v == "millionverifier":
+        has = bool(toolbelt("MILLIONVERIFIER_API_KEY"))
+        say(f"  verification: millionverifier (about ${VERIFY_USD_EACH} an address); MILLIONVERIFIER_API_KEY: "
+            f"{'set' if has else 'MISSING'}")
+        if not has:
+            ok = False
+    else:
+        say(f"  verification: {v!r} isn't a verifier this tool knows (none | millionverifier)")
+        ok = False
+    if want == "google" and boxes:
+        try:
+            good, detail = Google(boxes).ping()
+        except (ProviderError, mail.MailError) as exc:
+            good, detail = False, str(exc)
+        say(f"  mailboxes: {detail}")
+        ok = ok and good
+    n = stop_numbers()
+    say(f"  stop rules: bounces > {env_num('OUTREACH_BOUNCE_MAX_PCT', DEFAULT_BOUNCE_PCT):g}% a mailbox or a batch; "
+        f"angry + unsubscribes > {env_num('OUTREACH_ANGRY_MAX_PCT', DEFAULT_ANGRY_PCT):g}% of the last "
+        f"{int(env_num('OUTREACH_COMPLAINT_WINDOW', DEFAULT_COMPLAINT_WINDOW, int))}; Postmaster ≥ "
+        f"{env_num('OUTREACH_SPAM_RATE_MAX_PCT', DEFAULT_SPAM_RATE_PCT):g}% "
+        f"(now: {n['bounces']} bounces, {n['angry']} angry, {n['no']} no, "
+        + (f"Postmaster {float(n['postmaster']['rate']):.2f}%" if n["postmaster"] else "no Postmaster reading") + ")")
+    if latch():
+        say(f"  THE LANE IS STOPPED: {latch().get('why')}")
+    for mb, d in paused_boxes().items():
+        say(f"  {mb} is PAUSED: {d.get('why')}")
+    return ok
 
 
 # ---- main ----------------------------------------------------------------------
@@ -1740,7 +3267,23 @@ def main():
     s.add_argument("--touch", type=int, default=0, choices=(0, 3, 10), help="day 0, 3 or 10 (GROWTH § 5.5)")
     s.add_argument("--kit", help="a kit JSON file instead of running `leads kit --remote --json` (tests)")
     s.add_argument("--show", action="store_true", help="print each letter as it goes")
+    s.add_argument("--batch", help="a batch from `leads batch --json` (a file, or - for stdin)")
     s.set_defaults(fn=cmd_send)
+
+    s = sub.add_parser("tick", parents=[common], help="send what is due now (the timer runs it)")
+    s.add_argument("--until", help="tests only: tick from OUTREACH_NOW to this ISO time")
+    s.add_argument("--every", type=int, default=5, help="tests only: minutes between those ticks (default 5)")
+    s.set_defaults(fn=cmd_tick)
+
+    s = sub.add_parser("postmaster", parents=[common], help="record a Postmaster spam-rate reading (percent)")
+    s.add_argument("rate", nargs="?")
+    s.add_argument("--domain")
+    s.set_defaults(fn=cmd_postmaster)
+
+    s = sub.add_parser("resume", parents=[common], help="a paused mailbox, or the stopped lane, back on")
+    s.add_argument("mailbox", nargs="?")
+    s.add_argument("--lane", action="store_true")
+    s.set_defaults(fn=cmd_resume)
 
     s = sub.add_parser("inbox", parents=[common], help="replies: classified, the routine ones answered")
     s.add_argument("--limit", type=int, help="only the first N new replies")
@@ -1750,12 +3293,15 @@ def main():
     s.add_argument("action", choices=("add", "ls"))
     s.add_argument("value", nargs="*", help="an email address or a census place id")
     s.add_argument("--reason")
+    s.add_argument("--json", action="store_true", help="ls: [{value, kind}] as JSON (kind address|domain|place_id)")
     s.set_defaults(fn=cmd_suppress)
 
     s = sub.add_parser("status", parents=[common], help="today's sends, the caps, the replies, the bounce rate")
     s.set_defaults(fn=cmd_status)
 
-    s = sub.add_parser("warmup", parents=[common], help="the provider's warm-up state")
+    s = sub.add_parser("warmup", parents=[common], help="the warm-up state and the ramp")
+    s.add_argument("action", nargs="?", choices=("start",))
+    s.add_argument("date", nargs="?")
     s.set_defaults(fn=cmd_warmup)
 
     s = sub.add_parser("approve", parents=[common], help="print each letter, then record Taylor's approval")

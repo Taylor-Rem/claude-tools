@@ -522,6 +522,16 @@ def sandbox_doctor(a):
         print(f"  FAIL sandbox/bin shims missing or not linked to tb: {', '.join(missing) or 'tb'}"); ok = False
     else:
         print(f"  bwrap present; {len(sandbox_tools.SHIMS)} shims in sandbox/bin (mounted by the relay, never in ~/.local/bin)")
+    # B100: tools that run inside the wall are real files there, and bin/<name> links to them.
+    bad = [t for t in sandbox_tools.IN_WALL
+           if (shims / t).is_symlink() or not (shims / t).is_file() or not os.access(shims / t, os.X_OK)
+           or not (HERE / "bin" / t).resolve() == (shims / t).resolve()]
+    if bad:
+        print(f"  FAIL sandbox/bin should hold {', '.join(bad)} as a real file with bin/ linking to it, "
+              f"so a walled run can read the files people send"); ok = False
+    else:
+        print(f"  {len(sandbox_tools.IN_WALL)} tool runs inside the wall ({', '.join(sandbox_tools.IN_WALL)}: "
+              f"no key, workspace files only)")
     if not getattr(a, "all", False):
         return ok
     relay = RELAY_CONFIG.parent / "relay.py"

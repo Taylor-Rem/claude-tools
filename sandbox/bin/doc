@@ -1,0 +1,692 @@
+#!/usr/bin/env python3
+"""doc — read the files people send Patch, and write one back. ROADMAP B35,
+plan ~/projects/sms-relay/plans/17-documents.md.
+
+  doc text FILE [--sheet NAME] [--max-rows N]
+        the file as text. PDF through `pdftotext -layout` (pages marked);
+        Excel (.xlsx, .xls) sheet by sheet, every sheet under a "## <name>"
+        heading, rows as CSV, each cell's value (11.5 not $11.50, a date as
+        a plain date, a formula's last result); Word (.docx) as its paragraphs; CSV and TXT
+        as they are (UTF-8, else Windows/Latin-1). --sheet picks one sheet.
+        Capped at --max-rows rows or lines in all (default 2,000); a cut
+        says "… N more rows". A PDF with no text layer (a scan) says so in
+        one line and exits 1.
+  doc sheets FILE
+        each sheet's name and how many rows it has.
+  doc write OUT.csv|OUT.xlsx [--from FILE.csv] [--sheet NAME] [--force]
+        a CSV on stdin (or --from a CSV file) written as that file (an .xlsx
+        gets one sheet, NAME or "Sheet1"); the absolute path is the last line printed, ready for
+        `SEND-FILE: <path> | caption`. Won't replace a file without --force.
+  doc doctor
+        pdftotext, LibreOffice (or which fallbacks are in use), and a round
+        trip through a temporary .xlsx.
+
+It reads six kinds of file and says so for anything else: pdf, csv, txt,
+xlsx, xls, docx — the same list the relay accepts (plan 17 § Contract).
+
+LibreOffice (headless) does the Excel and Word conversions, each run with its
+own throwaway profile (-env:UserInstallation) and a timeout, so the relay's
+concurrent client sessions never fight over a profile lock. Without it (or
+with DOC_NO_LIBREOFFICE=1) the fallbacks are pure stdlib: .xlsx read from its
+XML (shared strings, inline strings, cached formula values, dates by their
+number format) and .docx from word/document.xml. An .xls needs LibreOffice.
+`doc write` never needs it: the .xlsx is a minimal workbook built here, numbers
+as numbers but a leading zero kept as text (08401 stays 08401, which
+LibreOffice's CSV import would turn into 8401). No keys, no network, spends
+nothing.
+
+Where it lives (B100): this file is sandbox/bin/doc and bin/doc links to it,
+so the relay's wall mounts it at /opt/patchlamp/bin with the shims and a walled
+client run (a mail run too) runs it in there, on /usr's python3, pdftotext and
+LibreOffice. It holds no key, so it is never brokered: a stranger's file is
+parsed inside the wall, not outside it. In a relay run (RELAY_SANDBOX or
+RELAY_PROJECT set) every path it reads or writes must resolve inside the client
+workspace (the directory holding .client.json); anything else is refused with
+the reason. Stdlib only, nothing from lib/: the wall mounts sandbox/bin alone.
+
+Env: DOC_NO_LIBREOFFICE=1 (use the fallbacks), DOC_TIMEOUT (seconds a
+LibreOffice run may take, default 90).
+"""
+
+import argparse
+import csv
+import datetime as dt
+import io
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import zipfile
+from pathlib import Path
+from xml.etree import ElementTree as ET
+from xml.sax.saxutils import escape
+
+KINDS = {"pdf": "PDF", "csv": "CSV", "txt": "text", "xlsx": "Excel", "xls": "Excel", "docx": "Word"}
+DEFAULT_MAX_ROWS = 2000
+MAX_LINE = 4000                      # characters; a longer line is cut with "…"
+TIMEOUT = int(os.environ.get("DOC_TIMEOUT") or 90)
+
+NS = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+      "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+      "pr": "http://schemas.openxmlformats.org/package/2006/relationships",
+      "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+M = "{%s}" % NS["m"]
+W = "{%s}" % NS["w"]
+
+
+def die(msg, code=1):
+    print(f"doc: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+# ---- what a file is ----------------------------------------------------------
+
+def kind_of(path):
+    """pdf/csv/txt/xlsx/xls/docx by extension, else by its first bytes (a
+    transport that saved it as octet-stream may have lost the extension)."""
+    ext = path.suffix.lower().lstrip(".")
+    if ext in KINDS:
+        return ext
+    try:
+        head = path.read_bytes()[:8]
+    except OSError:
+        return None
+    if head.startswith(b"%PDF"):
+        return "pdf"
+    if head.startswith(b"\xd0\xcf\x11\xe0"):
+        return "xls"
+    if head.startswith(b"PK"):
+        try:
+            with zipfile.ZipFile(path) as z:
+                names = set(z.namelist())
+        except zipfile.BadZipFile:
+            return None
+        if "xl/workbook.xml" in names:
+            return "xlsx"
+        if "word/document.xml" in names:
+            return "docx"
+    return None
+
+
+def workspace_root():
+    """In a relay run (walled, RELAY_SANDBOX=1, or not, RELAY_PROJECT set), the client
+    workspace it works in: the nearest directory above the cwd holding .client.json.
+    None for Taylor's own terminal, where doc reads anything he names."""
+    if not (os.environ.get("RELAY_SANDBOX") or os.environ.get("RELAY_PROJECT")):
+        return None
+    try:
+        d = Path.cwd().resolve()
+    except OSError:
+        d = None
+    while d is not None:
+        if (d / ".client.json").is_file():
+            return d
+        d = d.parent if d.parent != d else None
+    # Every walled workspace has one; a walled run outside it is somewhere doc has no business.
+    return False if os.environ.get("RELAY_SANDBOX") else None
+
+
+def confine(name):
+    """In a client run, a path that resolves (links followed) outside the workspace is
+    refused, so a link left in incoming/ can't point doc at another file, and what doc
+    writes lands where the relay can send it back from."""
+    root = workspace_root()
+    if root is None:
+        return Path(name)
+    path = Path(name)
+    if root is not False:
+        real = path.resolve()
+        if real == root or root in real.parents:
+            return path
+    where = f" ({root})" if root else ""
+    die(f"{name} is outside this workspace{where}. doc reads and writes files in the workspace only: "
+        "that's where the relay saves what people send (incoming/) and the only place SEND-FILE can "
+        "send a file back from. Name a file inside it, e.g. incoming/<file> or exports/<name>.xlsx.", 2)
+
+
+def open_file(name):
+    path = confine(name)
+    if not path.is_file():
+        die(f"no such file: {name}")
+    kind = kind_of(path)
+    if not kind:
+        die(f"{path.name} isn't a file doc can read; it reads PDF, CSV, TXT, Excel (.xlsx, .xls) and Word (.docx)", 2)
+    return path, kind
+
+
+def decode(raw):
+    for enc in ("utf-8-sig", "cp1252"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("latin-1")
+
+
+# ---- LibreOffice -------------------------------------------------------------
+
+def soffice():
+    if os.environ.get("DOC_NO_LIBREOFFICE"):
+        return None
+    return shutil.which("libreoffice") or shutil.which("soffice")
+
+
+def lo_convert(src, to, outdir):
+    """One headless conversion with a throwaway profile. Returns stdout, or
+    None when LibreOffice is missing, fails or runs past the timeout."""
+    exe = soffice()
+    if not exe:
+        return None
+    with tempfile.TemporaryDirectory(prefix="doc-lo-profile-") as prof:
+        cmd = [exe, f"-env:UserInstallation={Path(prof).as_uri()}", "--headless", "--norestore",
+               "--convert-to", to, "--outdir", str(outdir)]
+        cmd.append(str(src))
+        try:
+            p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                 start_new_session=True)
+        except OSError:
+            return None
+        try:
+            out, _ = p.communicate(timeout=TIMEOUT)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(p.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            p.communicate()
+            print(f"doc: LibreOffice took over {TIMEOUT}s; using the fallback", file=sys.stderr)
+            return None
+        return out if p.returncode == 0 else None
+
+
+# sheet-per-file CSV export: sep ',', quote '"', UTF-8, ..., token 9 "save as
+# shown" off (the value, not its display: 11.5 not $11.50, dates ISO), the last
+# token -1 = every sheet to its own file. The built-in reader matches it.
+CSV_EXPORT = "csv:Text - txt - csv (StarCalc):44,34,76,1,,0,false,true,false,false,false,-1"
+
+
+def lo_sheets(path, kind):
+    """[(name, rows)] via LibreOffice, every sheet, or None."""
+    with tempfile.TemporaryDirectory(prefix="doc-") as tmp:
+        src = Path(tmp) / f"in.{kind}"
+        shutil.copyfile(path, src)
+        out = Path(tmp) / "out"
+        out.mkdir()
+        log = lo_convert(src, CSV_EXPORT, out)
+        if log is None:
+            return None
+        sheets = []
+        for m in re.finditer(r"^Writing sheet (.*?) -> (.*\.csv)\s*$", log, re.M):
+            f = Path(m.group(2))
+            if f.is_file():
+                sheets.append((m.group(1), list(csv.reader(io.StringIO(decode(f.read_bytes()))))))
+        if not sheets:                       # an older LibreOffice: one file, the first sheet
+            files = sorted(out.glob("*.csv"))
+            if not files:
+                return None
+            for f in files:
+                name = f.stem[len("in-"):] if f.stem.startswith("in-") else "Sheet1"
+                sheets.append((name, list(csv.reader(io.StringIO(decode(f.read_bytes()))))))
+        return [(n, tidy(rows)) for n, rows in sheets]
+
+
+# ---- xlsx without LibreOffice ------------------------------------------------
+
+DATE_FMT_IDS = set(range(14, 23)) | set(range(45, 48)) | set(range(27, 37)) | set(range(50, 59))
+
+
+def _is_date_format(code):
+    code = re.sub(r'"[^"]*"|\[[^\]]*\]|\\.', "", code or "").lower()
+    return bool(re.search(r"[yd]|h.*m|m.*s", code))
+
+
+def _text(el):
+    """Text of a shared/inline string: its <t>, or its rich-text runs' <t>s
+    (phonetic <rPh> runs left out)."""
+    if el is None:
+        return ""
+    parts = []
+    for child in el:
+        if child.tag == M + "t":
+            parts.append(child.text or "")
+        elif child.tag == M + "r":
+            parts.append(child.findtext(M + "t") or "")
+    return "".join(parts)
+
+
+def _col(ref):
+    n = 0
+    for ch in re.match(r"[A-Z]+", ref).group(0):
+        n = n * 26 + ord(ch) - 64
+    return n - 1
+
+
+def _number(v):
+    try:
+        f = float(v)
+    except ValueError:
+        return v
+    return f"{f:.15g}" if "e" not in f"{f:.15g}" else v
+
+
+def _date(v, date1904):
+    try:
+        f = float(v)
+    except ValueError:
+        return v
+    base = dt.datetime(1904, 1, 1) if date1904 else dt.datetime(1899, 12, 30)
+    when = base + dt.timedelta(days=f)
+    when = when.replace(microsecond=0) + dt.timedelta(seconds=round(when.microsecond / 1e6))
+    if f < 1 and not date1904:
+        return when.strftime("%H:%M:%S" if when.second else "%H:%M")
+    if when.time() == dt.time(0):
+        return when.strftime("%Y-%m-%d")
+    return when.strftime("%Y-%m-%d %H:%M:%S" if when.second else "%Y-%m-%d %H:%M")
+
+
+def xlsx_sheets(path):
+    """[(name, rows)] read straight from the xlsx XML."""
+    try:
+        z = zipfile.ZipFile(path)
+    except zipfile.BadZipFile:
+        die(f"{path.name} isn't a readable .xlsx (not a zip); if it's an old .xls, rename it .xls")
+    with z:
+        names = set(z.namelist())
+        wb = ET.fromstring(z.read("xl/workbook.xml"))
+        pr = wb.find("m:workbookPr", NS)
+        date1904 = pr is not None and pr.get("date1904") in ("1", "true")
+        rels = {}
+        if "xl/_rels/workbook.xml.rels" in names:
+            for r in ET.fromstring(z.read("xl/_rels/workbook.xml.rels")).findall("pr:Relationship", NS):
+                t = r.get("Target", "")
+                rels[r.get("Id")] = t.lstrip("/") if t.startswith("/") else "xl/" + t
+        strings = []
+        if "xl/sharedStrings.xml" in names:
+            strings = [_text(si) for si in ET.fromstring(z.read("xl/sharedStrings.xml")).findall("m:si", NS)]
+        date_styles = set()
+        if "xl/styles.xml" in names:
+            st = ET.fromstring(z.read("xl/styles.xml"))
+            custom = {int(n.get("numFmtId")): n.get("formatCode") for n in st.iter(M + "numFmt")}
+            xfs = st.find("m:cellXfs", NS)
+            for i, xf in enumerate(xfs.findall("m:xf", NS) if xfs is not None else []):
+                fid = int(xf.get("numFmtId") or 0)
+                if fid in DATE_FMT_IDS or (fid in custom and _is_date_format(custom[fid])):
+                    date_styles.add(i)
+        out = []
+        for i, sh in enumerate(wb.iter(M + "sheet"), start=1):
+            target = rels.get(sh.get("{%s}id" % NS["r"])) or f"xl/worksheets/sheet{i}.xml"
+            if target not in names:
+                out.append((sh.get("name"), []))
+                continue
+            rows = {}
+            for row in ET.fromstring(z.read(target)).iter(M + "row"):
+                rnum = int(row.get("r") or (max(rows) + 2 if rows else 1)) - 1
+                cells = {}
+                for j, c in enumerate(row.findall("m:c", NS)):
+                    col = _col(c.get("r")) if c.get("r") else (max(cells) + 1 if cells else j)
+                    t = c.get("t", "n")
+                    v = c.findtext("m:v", default=None, namespaces=NS)
+                    if t == "s":
+                        val = strings[int(v)] if v is not None and v.isdigit() and int(v) < len(strings) else ""
+                    elif t == "inlineStr":
+                        val = _text(c.find("m:is", NS))
+                    elif t == "b":
+                        val = "TRUE" if v == "1" else "FALSE"
+                    elif t in ("str", "e"):
+                        val = v or ""
+                    elif v is None:
+                        val = ""
+                    elif int(c.get("s") or 0) in date_styles:
+                        val = _date(v, date1904)
+                    else:
+                        val = _number(v)
+                    cells[col] = val
+                if cells:
+                    width = max(cells) + 1
+                    rows[rnum] = [cells.get(k, "") for k in range(width)]
+            grid = [rows.get(k, []) for k in range(max(rows) + 1)] if rows else []
+            out.append((sh.get("name"), tidy(grid)))
+        return out
+
+
+def tidy(rows):
+    """Trailing empty cells and trailing empty rows off; the same shape whichever
+    reader made it."""
+    rows = [list(r) for r in rows]
+    for r in rows:
+        while r and not str(r[-1]).strip():
+            r.pop()
+    while rows and not rows[-1]:
+        rows.pop()
+    return rows
+
+
+def sheets_of(path, kind):
+    if kind == "xls":
+        got = lo_sheets(path, kind)
+        if got is None:
+            die("an .xls needs LibreOffice (not found or it failed); ask for .xlsx or CSV, "
+                "or install libreoffice-calc")
+        return got
+    return lo_sheets(path, kind) or xlsx_sheets(path)
+
+
+# ---- docx without LibreOffice ------------------------------------------------
+
+def docx_fallback(path):
+    try:
+        with zipfile.ZipFile(path) as z:
+            root = ET.fromstring(z.read("word/document.xml"))
+    except (zipfile.BadZipFile, KeyError):
+        die(f"{path.name} isn't a readable .docx")
+    body = root.find("w:body", NS)
+    lines = []
+
+    def para(p):
+        bits = []
+        for node in p.iter():
+            if node.tag == W + "t" and node.text:
+                bits.append(node.text)
+            elif node.tag == W + "tab":
+                bits.append("\t")
+            elif node.tag in (W + "br", W + "cr"):
+                bits.append("\n")
+        text = "".join(bits)
+        if p.find("w:pPr/w:numPr", NS) is not None:
+            text = "- " + text.lstrip()
+        return text
+
+    for el in (body if body is not None else []):
+        if el.tag == W + "p":
+            lines.extend(para(el).split("\n"))
+        elif el.tag == W + "tbl":
+            for tr in el.iter(W + "tr"):
+                cells = [" ".join(para(p) for p in tc.iter(W + "p")).strip() for tc in tr.findall("w:tc", NS)]
+                lines.append(" | ".join(cells))
+    return "\n".join(lines)
+
+
+def docx_text(path):
+    with tempfile.TemporaryDirectory(prefix="doc-") as tmp:
+        src = Path(tmp) / "in.docx"
+        shutil.copyfile(path, src)
+        if lo_convert(src, "txt:Text (encoded):UTF8", tmp) is not None and (Path(tmp) / "in.txt").is_file():
+            return decode((Path(tmp) / "in.txt").read_bytes())
+    return docx_fallback(path)
+
+
+# ---- text out, capped --------------------------------------------------------
+
+def clip(line):
+    return line if len(line) <= MAX_LINE else line[:MAX_LINE] + " …"
+
+
+def csv_line(row):
+    buf = io.StringIO()
+    csv.writer(buf, lineterminator="").writerow(row)
+    return buf.getvalue()
+
+
+def emit_lines(lines, budget):
+    """Print up to budget lines; returns what's left of the budget."""
+    shown = lines[:max(budget, 0)]
+    for line in shown:
+        print(clip(line))
+    more = len(lines) - len(shown)
+    if more:
+        print(f"… {more} more row{'s' if more != 1 else ''} (--max-rows to see more)")
+    return budget - len(shown)
+
+
+def pdf_text(path):
+    if not shutil.which("pdftotext"):
+        die("pdftotext isn't installed (poppler-utils); open the PDF with the Read tool instead")
+    try:
+        r = subprocess.run(["pdftotext", "-layout", str(path), "-"], capture_output=True, timeout=TIMEOUT)
+    except subprocess.TimeoutExpired:
+        die(f"pdftotext took over {TIMEOUT}s on {path.name}")
+    if r.returncode != 0:
+        err = r.stderr.decode(errors="replace").strip().splitlines()
+        why = "it's password-protected" if any("assword" in e for e in err) else (err[-1] if err else "unreadable")
+        die(f"can't read {path.name}: {why}")
+    text = r.stdout.decode("utf-8", errors="replace")
+    if not text.replace("\f", "").strip():
+        die(f"{path.name} has no text layer (a scan or a picture of a page); "
+            "open it with the Read tool to look at the pages instead")
+    pages = text.rstrip("\f").split("\f")
+    out = []
+    for n, page in enumerate(pages, start=1):
+        if len(pages) > 1:
+            out.append(f"--- page {n} ---")
+        out.extend(page.rstrip("\n").split("\n"))
+    return out
+
+
+def cmd_text(a):
+    path, kind = open_file(a.file)
+    budget = a.max_rows
+    if a.sheet and kind not in ("xlsx", "xls"):
+        die(f"--sheet is for Excel files; {path.name} is {KINDS[kind]}", 2)
+    if kind in ("xlsx", "xls"):
+        sheets = sheets_of(path, kind)
+        if a.sheet:
+            pick = [s for s in sheets if s[0] == a.sheet] or [s for s in sheets if s[0].lower() == a.sheet.lower()]
+            if not pick:
+                die(f"no sheet {a.sheet!r} in {path.name}; it has: " + ", ".join(n for n, _ in sheets), 2)
+            sheets = pick
+        for i, (name, rows) in enumerate(sheets):
+            if i:
+                print()
+            print(f"## {name}")
+            if not rows:
+                print("(empty)")
+                continue
+            budget = emit_lines([csv_line(r) for r in rows], budget)
+        return 0
+    if kind == "pdf":
+        lines = pdf_text(path)
+    elif kind == "docx":
+        lines = docx_text(path).replace("\r\n", "\n").split("\n")
+    else:
+        lines = decode(path.read_bytes()).replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    if kind in ("pdf", "docx"):              # a layout's run of blank lines is one blank line here
+        lines = [ln.rstrip() for i, ln in enumerate(lines)
+                 if ln.strip() or (i and lines[i - 1].strip())]
+    while lines and not lines[-1].strip():
+        lines.pop()
+    emit_lines(lines, budget)
+    return 0
+
+
+def cmd_sheets(a):
+    path, kind = open_file(a.file)
+    if kind not in ("xlsx", "xls"):
+        print(f"{path.name} is {KINDS[kind]}, not a spreadsheet: one sheet, no names")
+        return 0
+    sheets = sheets_of(path, kind)
+    w = max((len(n) for n, _ in sheets), default=0)
+    for name, rows in sheets:
+        print(f"{name.ljust(w)}  {len(rows)} row{'s' if len(rows) != 1 else ''}")
+    return 0
+
+
+# ---- writing -----------------------------------------------------------------
+
+NUMBER = re.compile(r"^-?(0|[1-9]\d{0,14})(\.\d{1,15})?$")
+
+
+def _cell_ref(r, c):
+    s = ""
+    c += 1
+    while c:
+        c, rem = divmod(c - 1, 26)
+        s = chr(65 + rem) + s
+    return f"{s}{r + 1}"
+
+
+def write_xlsx(rows, out, sheet):
+    """A minimal, valid workbook: one sheet, numbers as numbers (but not ones
+    with leading zeros, like ZIP codes), everything else an inline string."""
+    xml_rows = []
+    for i, row in enumerate(rows):
+        cells = []
+        for j, v in enumerate(row):
+            if v == "":
+                continue
+            ref = _cell_ref(i, j)
+            if NUMBER.match(v):
+                money = ' s="1"' if re.search(r"\.\d\d$", v) else ""      # 11.50 shows as 11.50
+                cells.append(f'<c r="{ref}"{money}><v>{v}</v></c>')
+            else:
+                cells.append(f'<c r="{ref}" t="inlineStr"><is><t xml:space="preserve">{escape(v)}</t></is></c>')
+        xml_rows.append(f'<row r="{i + 1}">{"".join(cells)}</row>')
+    main = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+    rel = 'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
+    ct = "application/vnd.openxmlformats-officedocument"
+    files = {
+        "[Content_Types].xml":
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            f'<Override PartName="/xl/workbook.xml" ContentType="{ct}.spreadsheetml.sheet.main+xml"/>'
+            f'<Override PartName="/xl/worksheets/sheet1.xml" ContentType="{ct}.spreadsheetml.worksheet+xml"/>'
+            f'<Override PartName="/xl/styles.xml" ContentType="{ct}.spreadsheetml.styles+xml"/>'
+            '</Types>',
+        "_rels/.rels":
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+            '</Relationships>',
+        "xl/workbook.xml":
+            f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook {main} {rel}>'
+            f'<sheets><sheet name="{escape(sheet, {chr(34): "&quot;"})}" sheetId="1" r:id="rId1"/></sheets></workbook>',
+        "xl/_rels/workbook.xml.rels":
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+            '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+            '</Relationships>',
+        "xl/styles.xml":
+            f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet {main}>'
+            '<numFmts count="1"><numFmt numFmtId="164" formatCode="0.00"/></numFmts>'
+            '<fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>'
+            '<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>'
+            '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
+            '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+            '<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
+            '<xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/></cellXfs>'
+            '</styleSheet>',
+        "xl/worksheets/sheet1.xml":
+            f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet {main}>'
+            f'<sheetData>{"".join(xml_rows)}</sheetData></worksheet>',
+    }
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, body in files.items():
+            z.writestr(name, body)
+
+
+def cmd_write(a):
+    out = confine(a.out)
+    ext = out.suffix.lower()
+    if ext not in (".csv", ".xlsx"):
+        die("doc write makes a .csv or an .xlsx: `doc write exports/audit.xlsx < audit.csv`", 2)
+    if out.exists() and not a.force:
+        die(f"{out} already exists; pick another name or add --force")
+    if a.src:
+        src = confine(a.src)
+        if not src.is_file():
+            die(f"no such file: {a.src}")
+        if src.resolve() == out.resolve():
+            die("--from and OUT are the same file", 2)
+        raw = src.read_bytes()
+    elif sys.stdin.isatty():
+        die("doc write takes the CSV on stdin or --from: `doc write OUT.xlsx --from rows.csv`", 2)
+    else:
+        raw = sys.stdin.buffer.read()
+    text = decode(raw).replace("\r\n", "\n").replace("\r", "\n")
+    rows = tidy(csv.reader(io.StringIO(text)))
+    if not rows:
+        die("nothing on stdin to write")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if ext == ".csv":
+        with open(out, "w", newline="", encoding="utf-8") as f:
+            csv.writer(f, lineterminator="\r\n").writerows(rows)
+    else:
+        write_xlsx(rows, out, a.sheet)
+    cols = max(len(r) for r in rows)
+    print(f"{len(rows)} row{'s' if len(rows) != 1 else ''}, {cols} column{'s' if cols != 1 else ''}")
+    print(out.resolve())
+    return 0
+
+
+# ---- doctor ------------------------------------------------------------------
+
+def cmd_doctor(a):
+    ok = True
+
+    def say(good, msg, warn=False):
+        nonlocal ok
+        if not warn:
+            ok &= good
+        print(("ok   " if good else ("note " if warn else "FAIL ")) + msg)
+
+    pt = shutil.which("pdftotext")
+    say(bool(pt), f"pdftotext ({pt or 'missing: apt install poppler-utils'}) reads PDFs")
+    lo = soffice()
+    if lo:
+        say(True, f"LibreOffice ({lo}) reads .xlsx, .xls and .docx")
+    elif os.environ.get("DOC_NO_LIBREOFFICE"):
+        say(False, "LibreOffice off (DOC_NO_LIBREOFFICE): the built-in .xlsx/.docx readers are in use; .xls unreadable",
+            warn=True)
+    else:
+        say(False, "LibreOffice missing: the built-in .xlsx/.docx readers are in use; "
+                   ".xls unreadable (apt install libreoffice-calc libreoffice-writer)", warn=True)
+    sample = [["Item", "Price", "Stock", "ZIP"], ["Chips & salsa", "4.5", "12", "08401"],
+              ["Horchata, large", "3.75", "", "84003"]]
+    with tempfile.TemporaryDirectory(prefix="doc-doctor-") as tmp:
+        x = Path(tmp) / "round-trip.xlsx"
+        write_xlsx(sample, x, "Doctor")
+        for label, read in (("the built-in reader", xlsx_sheets), ("LibreOffice", lambda p: lo_sheets(p, "xlsx"))):
+            if label == "LibreOffice" and not lo:
+                continue
+            back = read(x)
+            got = back[0] if back else None
+            say(got == ("Doctor", sample), f"round trip: `doc write` .xlsx read back by {label}"
+                + ("" if got == ("Doctor", sample) else f" differs: {got!r}"))
+    first = shutil.which("doc")
+    mine = first and Path(first).resolve() == Path(__file__).resolve()
+    say(bool(mine), f"`doc` on PATH is this tool ({first or 'not on PATH: run claude-tools/install.sh'})")
+    print("doctor: all good" if ok else "doctor: something above needs fixing")
+    return 0 if ok else 1
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="doc", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    t = sub.add_parser("text", help="the file as text (PDF, CSV, TXT, Excel, Word), capped")
+    t.add_argument("file")
+    t.add_argument("--sheet", help="just this sheet (Excel)")
+    t.add_argument("--max-rows", type=int, default=DEFAULT_MAX_ROWS,
+                   help=f"rows or lines to print in all (default {DEFAULT_MAX_ROWS:,})")
+    s = sub.add_parser("sheets", help="the sheet names and each one's row count")
+    s.add_argument("file")
+    w = sub.add_parser("write", help="CSV on stdin -> OUT.csv or OUT.xlsx")
+    w.add_argument("out")
+    w.add_argument("--from", dest="src", metavar="FILE.csv", help="read the CSV from this file, not stdin")
+    w.add_argument("--sheet", default="Sheet1", help="the sheet's name in an .xlsx (default Sheet1)")
+    w.add_argument("--force", action="store_true", help="replace OUT if it exists")
+    sub.add_parser("doctor", help="pdftotext, LibreOffice or the fallbacks, a round trip")
+    a = ap.parse_args(argv)
+    return {"text": cmd_text, "sheets": cmd_sheets, "write": cmd_write, "doctor": cmd_doctor}[a.cmd](a)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except BrokenPipeError:                       # `doc text big.xlsx | head`
+        sys.exit(0)

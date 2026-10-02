@@ -120,6 +120,11 @@ TOOLS = {
 TAYLOR_ONLY = {"connections": {"grant", "revoke"}}
 ROLES = ("client", "demo", "owner")
 SHIMS = tuple(TOOLS)                       # what sandbox/bin/ links to tb
+# Tools that run inside the wall itself, as real files in sandbox/bin (bin/<name> links to
+# them): no key and only the workspace's files, so nothing to broker, and brokering would
+# parse a stranger's file outside the wall instead (B100). Stdlib only: the wall mounts
+# sandbox/bin alone, not lib/. Never in TOOLS, so the broker refuses them by name.
+IN_WALL = ("doc",)
 
 # `img video` caps by role (the same numbers the relay's agents.py sets for a run today:
 # a stranger on a demo makes no videos; a client's clip is about 8s at 720p). The run's

@@ -64,6 +64,12 @@ class ClientTiers(unittest.TestCase):
         self.assertIn("relay: on Hosting;", out)
         self.assertIn("plan: Hosting $10/mo", out)
 
+    def test_doctor_counts_doc_inside_the_wall(self):
+        out = self.run_client("doctor", "hostco").stdout
+        self.assertIn("12 shims in sandbox/bin", out)
+        self.assertIn("1 tool runs inside the wall (doc:", out)
+        self.assertNotIn("FAIL sandbox/bin", out)
+
     def test_new_takes_every_tier(self):
         r = self.run_client("new", "newco", "--name", "New Co", "--tier", "light", "--shared-key")
         self.assertEqual(r.returncode, 0, r.stderr)

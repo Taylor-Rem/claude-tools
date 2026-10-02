@@ -31,9 +31,12 @@ HAVE_LO = bool(shutil.which("libreoffice") or shutil.which("soffice"))
 HAVE_PDFTOTEXT = bool(shutil.which("pdftotext"))
 
 
-def run(*args, stdin=None, fallback=False, cwd=None):
+def run(*args, stdin=None, fallback=False, cwd=None, relay=None):
     env = dict(os.environ)
     env.pop("DOC_NO_LIBREOFFICE", None)
+    for k in ("RELAY_SANDBOX", "RELAY_PROJECT"):      # a relay run confines doc to its workspace
+        env.pop(k, None)
+    env.update(relay or {})
     if fallback:
         env["DOC_NO_LIBREOFFICE"] = "1"
     return subprocess.run([sys.executable, str(DOC), *map(str, args)], input=stdin, capture_output=True,
@@ -251,8 +254,75 @@ class DocDoctorTest(unittest.TestCase):
             r = run("doctor", fallback=fb)
             self.assertIn("round trip", r.stdout)
             self.assertNotIn("FAIL round trip", r.stdout)
-            if HAVE_PDFTOTEXT and shutil.which("doc") and Path(shutil.which("doc")).resolve() == DOC:
+            if HAVE_PDFTOTEXT and shutil.which("doc") and Path(shutil.which("doc")).resolve() == DOC.resolve():
                 self.assertEqual(r.returncode, 0, r.stdout)
+
+
+class DocLivesInTheWallTest(unittest.TestCase):
+    """B100: doc is a real file in sandbox/bin (what the relay mounts in a walled run) and
+    bin/doc links to it; stdlib only, since the wall doesn't mount lib/."""
+
+    def test_layout(self):
+        real = ROOT / "sandbox" / "bin" / "doc"
+        self.assertTrue(real.is_file() and not real.is_symlink())
+        self.assertTrue(os.access(real, os.X_OK))
+        self.assertEqual(os.readlink(DOC), "../sandbox/bin/doc")
+        src = real.read_text()
+        self.assertNotIn("sys.path", src)
+        self.assertNotRegex(src, r"(?m)^\s*(from|import) (lib|sandbox_tools|_common)")
+
+
+class DocConfinedInARelayRunTest(unittest.TestCase):
+    """In a relay run (RELAY_SANDBOX or RELAY_PROJECT) every path doc reads or writes must
+    resolve inside the workspace (the directory holding .client.json)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.t = Path(self.tmp.name)
+        self.ws = self.t / "ws"
+        (self.ws / "incoming").mkdir(parents=True)
+        (self.ws / ".client.json").write_text("{}")
+        shutil.copy(FX / "items.csv", self.ws / "incoming" / "items.csv")
+        (self.t / "outside.csv").write_text("secret,1\n")
+        (self.ws / "incoming" / "link.csv").symlink_to(self.t / "outside.csv")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_inside_reads_and_writes(self):
+        for relay in ({"RELAY_SANDBOX": "1"}, {"RELAY_PROJECT": "demo-service"}):
+            r = run("text", "incoming/items.csv", cwd=self.ws / "incoming" / "..", relay=relay)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            r = run("write", "exports/out.xlsx", "--force", stdin="a,b\n1,2\n", cwd=self.ws, relay=relay)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(r.stdout.strip().splitlines()[-1], str((self.ws / "exports" / "out.xlsx").resolve()))
+            r = run("text", "items.csv", cwd=self.ws / "incoming", relay=relay)   # from a subdirectory
+            self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_outside_refused_with_the_reason(self):
+        relay = {"RELAY_PROJECT": "demo-service"}
+        for args in (("text", str(self.t / "outside.csv")), ("text", "incoming/link.csv"),
+                     ("text", "../outside.csv"), ("sheets", str(self.t / "outside.csv")),
+                     ("write", "--from", str(self.t / "outside.csv"), "exports/x.csv")):
+            r = run(*args, cwd=self.ws, relay=relay)
+            self.assertEqual(r.returncode, 2, args)
+            self.assertIn("outside this workspace", r.stderr)
+            self.assertIn("SEND-FILE", r.stderr)
+            self.assertNotIn("secret", r.stdout)
+        r = run("write", str(self.t / "made.csv"), stdin="a,b\n", cwd=self.ws, relay=relay)
+        self.assertEqual(r.returncode, 2)
+        self.assertFalse((self.t / "made.csv").exists())
+
+    def test_walled_run_outside_any_workspace_is_refused(self):
+        r = run("text", FX / "items.csv", cwd=self.t, relay={"RELAY_SANDBOX": "1"})
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("outside this workspace", r.stderr)
+
+    def test_taylors_terminal_is_not_confined(self):
+        self.assertEqual(run("text", self.t / "outside.csv", cwd=self.ws).returncode, 0)
+        self.assertEqual(run("text", FX / "items.csv", cwd=self.t).returncode, 0)
+        # nor the global project's runs, which aren't in a client workspace
+        self.assertEqual(run("text", self.t / "outside.csv", cwd=self.t, relay={"RELAY_PROJECT": "global"}).returncode, 0)
 
 
 def blank_pdf():

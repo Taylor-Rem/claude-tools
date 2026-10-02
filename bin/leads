@@ -47,6 +47,11 @@ B25 (the remote lane), B7 (the pipeline: log, follow-ups, the week).
   leads preview sweep          # the expired ones come down (LEADS_NOW moves the clock)
   leads preview --remove NAME  # a takedown, now
   leads preview --claim NAME --slug mikes-pool-care   # client new + site new from the same files
+  leads batch --segment services [--category plumber] [--city Lehi] [--n 50] [--json]
+                               # the email lane's batch (B90): one trade across the corridor, each with its address
+                               # and two true specifics, a fault first; held 56 days once printed. --stats sizes it,
+                               # --last reprints, --live reads a listing one fault short (capped a day)
+  leads preview --place PLACE_ID --json   # one business's preview as one JSON object with its url (B90)
   leads doctor
 
 Preview sites (B45, plan ~/projects/plans/19-preview-sites.md): the segment's
@@ -133,6 +138,11 @@ Config, by name, never printed:
   LEADS_BOOKING_URL     the booking link `leads brief` ends on (Cal.com); shared with `outreach`
   OUTREACH_STATE        read-only here: `leads today` reads the email lane's replies.jsonl for
                         "yesterday's replies", and never writes anything under it
+  LEADS_LIVE_READS_PER_DAY  listing reads `leads batch --live` may make a day (default 100, ~$0.025 each)
+  LEADS_CLIENTS_DIR     the client workspaces whose addresses, domains and phones a batch keeps out (~/projects/clients)
+  LEADS_OUTREACH_BIN    the `outreach` a batch asks for the suppression list (beside this file)
+  LEADS_PAGE_CHECK      =0: a batch doesn't re-read a pick's page, so an old copyright year is never said;
+                        LEADS_PAGE_FIXTURE a JSON {url: html} (tests)
   LEADS_PIPELINE        the pipeline, one event per line (default
                         ~/projects/private-docs/leads/pipeline.jsonl: backed up
                         nightly, in no repo — it holds names and numbers). The
@@ -1611,10 +1621,10 @@ def email_footer():
 
 
 def contacted(days=REPEAT_WEEKS * 7):
-    """place_id -> date for leads messaged (remote kits) or kitted (Saturday) recently."""
+    """place_id -> date for leads messaged (remote kits), kitted (Saturday) or put in an email batch (B90) recently."""
     since = dt.datetime.now(TZ).date() - dt.timedelta(days=days)
     seen = {}
-    for name in ("remote.jsonl", "kits.jsonl"):
+    for name in ("remote.jsonl", "kits.jsonl", "batches.jsonl"):
         p = STATE / name
         if not p.exists():
             continue
@@ -3255,7 +3265,14 @@ def preview_rows_for(args):
     places = Places(key, where, fixture=args.fixture, refresh=args.refresh)
     rows, cands = [], candidates_for(segment, args.min_reviews)
     by_id = {c["place_id"]: c for c in cands}
-    if args.name:
+    if getattr(args, "place", None):
+        # B90: the email lane's businesses mostly have a site of their own, so they are not in the kit's pool;
+        # the census row by id is enough for the template fill.
+        c = by_id.get(args.place) or next(iter(_census_by_id(args.place)), None)
+        if not c:
+            die(f"no place {args.place} in the census")
+        rows.append(c)
+    elif args.name:
         for raw in args.name:
             nm, _, city = raw.partition(",")
             hits = census_lookup(nm.strip(), city.strip() or None)
@@ -3331,6 +3348,8 @@ def make_previews(rows, hero="stock", days=PREVIEW_DAYS, publish=True, dry=False
 
 
 def previews_build(args):
+    if getattr(args, "place", None) and args.json:
+        return preview_place_json(args)
     rows = preview_rows_for(args)
     made, ok = make_previews(rows, hero=args.hero, days=args.days,
                              publish=not args.no_publish, dry=args.dry_run, look=args.look)
@@ -3347,6 +3366,30 @@ def previews_build(args):
               + ("" if m["hours"] else "  [no hours on Google]"))
     print(f"{len(made)} preview(s); each comes down {made[0]['expires'] if made else '-'} unless claimed "
           f"(`leads preview sweep`, or `leads preview --remove NAME` now).")
+
+
+def preview_place_json(args):
+    """`leads preview --place PLACE_ID --json` (B90, plan 37 § Contract): one business's preview, built (or rebuilt
+    on its old slug) and published, as one JSON object on stdout — `url` is what the reply carries. The publish's own
+    talk goes to stderr so stdout stays one object; a failure is still one object, with ok false and why, exit 2."""
+    try:
+        with contextlib.redirect_stdout(sys.stderr):
+            rows = preview_rows_for(args)
+            made, ok = make_previews(rows, hero=args.hero, days=args.days, publish=not args.no_publish,
+                                     dry=args.dry_run, look=args.look)
+    except SystemExit as exc:
+        print(json.dumps({"ok": False, "place_id": args.place, "url": None,
+                          "why": f"leads stopped (exit {exc.code}); its reason is on stderr"}))
+        sys.exit(2)
+    m = made[0] if made else {}
+    out = {"ok": bool(made) and ok, "place_id": args.place, "url": m.get("url"), "slug": m.get("slug"),
+           "name": m.get("name"), "category": m.get("category"), "city": m.get("city"),
+           "expires": m.get("expires"), "published": bool(made) and ok and not args.no_publish and not args.dry_run}
+    if not out["ok"]:
+        out["why"] = "the publish failed; the filled pages are under " + str(preview_site_dir())
+    print(json.dumps(out, indent=1))
+    if not out["ok"]:
+        sys.exit(2)
 
 
 def kit_previews(picks, build=False, publish=True):
@@ -5143,6 +5186,776 @@ def cmd_pipeline_strong(state):
 
 # ---- commands -------------------------------------------------------------------
 
+# ---- the email batch (B90, plan ~/projects/plans/37-email-at-volume.md § Contract) ----------------------
+# B89's pass (client-leads/scripts/emails.py) stored, per business with a site of its own, the addresses its site
+# publishes (`emails`) and the plain facts of the site (`site_facts`). Here those become a facts packet — the faults
+# that are true of the business, each {key, sentence, evidence}, computed in code and never written by a model — and
+# a batch: fifty or fewer in one trade across the corridor (--city narrows), each with its address and exactly two
+# true specifics, at least one a fault and faults first; the second may be a plain fact (their Google standing).
+# A business with no fault, or one fault and nothing true to say beside it, is left out: padding a letter with a
+# weak fault is how a cold email reads as spam (plan 37 § What the first build found).
+
+BATCH_MAX = 50
+FACT_MAX_AGE_DAYS = 90         # a census read older than this isn't quoted back to them
+FACT_MIN_REVIEWS, FACT_MIN_RATING = 21, 4.5   # "more than 20 reviews, averaging 4.5" or better: a compliment
+CHAIN_SITE_LISTINGS = 3        # a website on this many listings is a franchise or a multi-site organisation
+LOW_REVIEW_MAX_REVIEWS = 100     # past this many reviews, one low one isn't a fault worth a letter
+OLD_YEAR_GAP = 3                  # a copyright line three or more years behind the calendar is worth naming
+BATCH_LIVE_CAP_DEFAULT = 100      # listing reads a day for `leads batch --live` (LEADS_LIVE_READS_PER_DAY)
+FREE_MAIL = {"gmail.com", "googlemail.com", "yahoo.com", "ymail.com", "hotmail.com", "outlook.com", "live.com",
+             "msn.com", "aol.com", "icloud.com", "me.com", "mac.com", "comcast.net", "protonmail.com", "proton.me",
+             "gmx.com", "mail.com", "zoho.com", "xmission.com", "juno.com", "att.net", "sbcglobal.net"}
+# B89 keeps a free-mail address whose only tie to the business is the page's title; it flagged those as weak, and a
+# letter to the wrong person's Gmail is the complaint we can least afford (plan 37 § 3, Gmail's 0.1% line).
+WEAK_EMAIL_WHY = "titled with"
+CLIENTS_DIR = Path(os.environ.get("LEADS_CLIENTS_DIR", PROJECTS / "clients"))
+OUTREACH_BIN = Path(os.environ.get("LEADS_OUTREACH_BIN", Path(__file__).resolve().parent / "outreach"))
+
+# key -> rank: lower is said first. The surest site facts first — the copyright year (their own words, with a
+# number), no viewport tag (absent from the page we read) — then the listing (true as of the read).
+FAULT_RANK = {"old_copyright": 10, "no_viewport": 20, "website_link": 40,
+              "no_hours": 50, "closed_saturday": 52, "no_photos": 55, "few_photos": 56, "no_phone": 60,
+              "menu_page": 70, "low_review": 85, "listing": 88}
+
+
+def email_tables():
+    """True when B89's tables are in the census (emails + site_facts)."""
+    if not CENSUS.exists():
+        return False
+    conn = sqlite3.connect(f"file:{CENSUS}?mode=ro", uri=True)
+    try:
+        have = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    finally:
+        conn.close()
+    return {"emails", "site_facts"} <= have
+
+
+def fmt_phone(digits):
+    d = re.sub(r"\D", "", str(digits or ""))[-10:]
+    return f"({d[:3]}) {d[3:6]}-{d[6:]}" if len(d) == 10 else str(digits or "")
+
+
+def strip_tracking(url):
+    """A site URL as a person would type it: Google's utm_* tags off, nothing else touched."""
+    p = urllib.parse.urlsplit(url or "")
+    if not p.query:
+        return url or ""
+    q = [(k, v) for k, v in urllib.parse.parse_qsl(p.query, keep_blank_values=True) if not k.lower().startswith("utm_")]
+    return urllib.parse.urlunsplit((p.scheme, p.netloc, p.path, urllib.parse.urlencode(q), p.fragment))
+
+
+def best_email(rows):
+    """The address a letter goes to, or None: MX ok and syntax ok only; own-domain over free-mail; never a free-mail
+    address B89 tied to the business by the page title alone."""
+    ok = [r for r in rows if r.get("mx") == "ok" and (r.get("syntax_ok") in (1, None))
+          and r.get("kind") in ("own-domain", "free-mail")
+          and not (r.get("kind") == "free-mail" and WEAK_EMAIL_WHY in (r.get("why") or ""))]
+    ok.sort(key=lambda r: (r.get("kind") != "own-domain", r.get("source") != "site", r.get("address") or ""))
+    return ok[0] if ok else None
+
+
+def batch_rows(segments):
+    """Every business in these segments with a usable address: the census row joined to its best address, its site
+    facts and the pages the crawl read. Operational only; chains are dropped later with the other exclusions."""
+    if not email_tables():
+        return []
+    conn = sqlite3.connect(f"file:{CENSUS}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    try:
+        mail = {}
+        for r in conn.execute("SELECT * FROM emails"):
+            mail.setdefault(r["place_id"], []).append(dict(r))
+        facts = {r["place_id"]: dict(r) for r in conn.execute("SELECT * FROM site_facts")}
+        pages = {}
+        if "email_pass" in tables:
+            for r in conn.execute("SELECT place_id, pages FROM email_pass"):
+                try:
+                    pages[r["place_id"]] = json.loads(r["pages"] or "[]")
+                except ValueError:
+                    pages[r["place_id"]] = []
+        rows = []
+        biz = [s for s in segments if s in BUSINESS_SEGMENTS]
+        if biz and "businesses" in tables:
+            marks = ",".join("?" * len(biz))
+            rows += [dict(r) for r in conn.execute(f"""
+                SELECT b.place_id, b.segment, b.category, b.presence_class, b.presence_url, b.city,
+                       p.name, p.address, p.locality, p.phone, p.website, p.has_website, p.rating, p.reviews,
+                       p.lat, p.lng, p.primary_type, p.google_maps_uri, p.business_status, p.refreshed_at
+                FROM businesses b JOIN place_cache p ON p.place_id = b.place_id
+                WHERE b.segment IN ({marks})
+                  AND (p.business_status IS NULL OR p.business_status = 'OPERATIONAL')""", biz)]
+        if "restaurant" in segments and "restaurants" in tables:
+            rows += [dict(r, segment="restaurant", category=(r["primary_type"] or "restaurant").replace("_", " "))
+                     for r in conn.execute("""
+                SELECT r.place_id, r.city, r.parasite_url, r.on_doordash, r.on_uber, r.on_grubhub,
+                       p.name, p.address, p.locality, p.phone, p.website, p.has_website, p.rating, p.reviews,
+                       p.lat, p.lng, p.primary_type, p.google_maps_uri, p.business_status, p.refreshed_at
+                FROM restaurants r JOIN place_cache p ON p.place_id = r.place_id
+                WHERE (p.business_status IS NULL OR p.business_status = 'OPERATIONAL')
+                  AND COALESCE(r.status, 'Open') = 'Open'""")]
+    finally:
+        conn.close()
+    out = []
+    for d in rows:
+        e = best_email(mail.get(d["place_id"]) or [])
+        if not e:
+            continue
+        d["mail"], d["facts"], d["pages"] = e, facts.get(d["place_id"]), pages.get(d["place_id"]) or []
+        d["town"] = (d.get("locality") or (d.get("city") or "").replace(", Utah", "")).strip()
+        out.append(d)
+    return out
+
+
+# The copyright year is read again from the page before a letter says it (B90's spot check: Bullett Electric's
+# "© 2019-26" was stored as 2019, because B89's pattern takes a range's end only when it has four digits, and a page
+# changes after a crawl). Only the picks a batch keeps are read, one request each, cached a week.
+COPY_LINE_RE = re.compile(r"(?:©|&copy;|&#169;|\(c\)|copyright)\s*(?:by\s*)?((?:19|20)\d{2})"
+                          r"(?:\s*(?:[-–—/]|&ndash;|&mdash;|&#8211;|to|through)\s*(\d{4}|\d{2})(?!\d))?", re.I)
+_COPY = None
+
+
+def copyright_now(url, today):
+    """(latest year the page's copyright lines show, why) or (None, why) when unsure: the page didn't answer, no
+    copyright line on it now, or a script writes the year (what the visitor sees is then the current one).
+    LEADS_PAGE_FIXTURE is a JSON {url: html} for tests; LEADS_PAGE_CHECK=0 turns the reads off (nothing is said)."""
+    global _COPY
+    if not url:
+        return None, "no url"
+    fx = os.environ.get("LEADS_PAGE_FIXTURE")
+    html = None
+    if fx:
+        try:
+            html = json.loads(Path(fx).read_text()).get(url)
+        except (OSError, ValueError):
+            html = None
+        if html is None:
+            return None, "fixture: no page"
+    elif os.environ.get("LEADS_PAGE_CHECK") == "0":
+        return None, "page reads off"
+    else:
+        path = STATE / "copyright.json"
+        if _COPY is None:
+            try:
+                _COPY = json.loads(path.read_text())
+            except (OSError, ValueError):
+                _COPY = {}
+        row = _COPY.get(url)
+        if row and row.get("checked", "") >= (today - dt.timedelta(days=CACHE_DAYS)).isoformat():
+            return row.get("year"), row.get("why") or ""
+        try:
+            req = urllib.request.Request(url, headers={
+                "User-Agent": "claude-tools/leads (Patchlamp; one page read to confirm a fact before it is said)"})
+            with urllib.request.urlopen(req, timeout=12) as r:
+                html = r.read(3_000_000).decode("utf-8", "replace")
+        except Exception as exc:          # noqa: BLE001 — any failure is "unsure", and unsure is never said
+            html, why = None, f"unsure ({type(exc).__name__})"
+        if html is not None:
+            year, why = _copyright_in(html)
+        else:
+            year = None
+        _COPY[url] = {"year": year, "why": why, "checked": today.isoformat()}
+        try:
+            STATE.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(_COPY, indent=0, sort_keys=True) + "\n")
+        except OSError:
+            pass
+        return year, why
+    return _copyright_in(html)
+
+
+def _copyright_in(html):
+    if re.search(r"getFullYear|getUTCFullYear", html):
+        return None, "a script writes a year on the page"
+    latest = None
+    for a, b in COPY_LINE_RE.findall(html):
+        y = int(a)
+        if b:
+            e = int(b) if len(b) == 4 else y // 100 * 100 + int(b)
+            y = max(y, e) if e <= y + 60 else y
+        latest = y if latest is None else max(latest, y)
+    return (latest, f"the page shows © {latest}") if latest else (None, "no copyright line on the page now")
+
+
+def confirm_packet(c, today):
+    """Re-read what the stored facts said and could have changed (the copyright year); drop a fault the page no
+    longer bears out and recompute the two specifics. True when the business still qualifies."""
+    items = []
+    for f in c["all_faults"]:
+        if f["key"] == "old_copyright":
+            y, why = copyright_now(f["evidence"], today)
+            if not y or y > today.year - OLD_YEAR_GAP:
+                c.setdefault("dropped", []).append(f"old_copyright ({why})")
+                continue
+            f = dict(f, sentence=f"the copyright line on your site says © {y}", year=y)
+        items.append(f)
+    c["all_faults"] = items
+    c["packet"] = specifics(c, today, items)
+    return bool(c["packet"])
+
+
+HOME_PATHS = {"", "/", "/home", "/home/", "/index.html", "/index.htm", "/index.php", "/en", "/en/"}
+
+
+def own_home_page(listed, landed):
+    """True when the page the crawl read is this business's own home page: the listing links a home path and the
+    link lands on the same host. A location page on a bigger site (planetbeach.com/spa/layton, a franchise's
+    /draper) or a link that lands on another domain is the organisation's page, not theirs, so its copyright line
+    and layout aren't said as "your site" (B90's spot check: Planet Beach Layton landed on sol-spa.net)."""
+    if not listed:
+        return False
+    path = urllib.parse.urlsplit(listed if "://" in listed else "http://" + listed).path.lower()
+    return path in HOME_PATHS and (not landed or host_of(landed) == host_of(listed))
+
+
+def site_fault_items(c, today):
+    """The faults the stored site facts make true, each {key, sentence, evidence}."""
+    f = c.get("facts")
+    if not f:
+        return []
+    if not own_home_page(c.get("website") or f.get("url"), f.get("final_url")):
+        return []
+    out = []
+    home_url = strip_tracking(f.get("final_url") or f.get("url") or "")
+    yr = f.get("copyright_year")
+    if yr and int(yr) <= today.year - OLD_YEAR_GAP:
+        out.append({"key": "old_copyright", "sentence": f"the copyright line on your site says © {int(yr)}",
+                    "evidence": home_url, "year": int(yr)})
+    if f.get("viewport") == 0:
+        out.append({"key": "no_viewport",
+                    "sentence": "your site has no phone-sized layout, so phones get the desktop page shrunk to fit",
+                    "evidence": home_url + " (no viewport tag on the home page)"})
+    # Not said (B90's spot checks proved each false at least once; B99 grows the list with checks that hold):
+    # "not secure" — Chrome upgrades an http link to https when the site serves it, and B89 stored only where the
+    # link landed; a phone that differs from the listing — often a call-tracking number put there on purpose.
+    # Not said: "no contact form". B89's `contact_form` looks for a <form> element, and builder sites draw theirs
+    # without one (GoDaddy, a bare <textarea>) or by script (Wix, Squarespace): B90's spot check found three false of
+    # thirty-six read. It becomes a fault once the crawl stores "a message box anywhere on the contact page".
+    return out
+
+
+def listing_fault_item(fault, c, read_on):
+    """One of the kit's listing faults (business_faults / faults, the same rules and words), as an item for a
+    letter: said to the owner, standing on its own, with the listing as the evidence."""
+    ev = clean_maps(c.get("google_maps_uri")) + (f" (listing read {read_on})" if read_on else " (census)")
+    m = re.match(r"^only (\d+) photos$", fault)
+    if fault == "no hours on Google":
+        k, s = "no_hours", "your Google listing shows no hours"
+    elif fault == "Google says closed Saturdays":
+        k, s = "closed_saturday", "Google says you're closed on Saturdays"
+    elif fault == "no photos":
+        k, s = "no_photos", "your Google listing has no photos"
+    elif m:
+        k, s = "few_photos", f"your Google listing has only {m.group(1)} photos"
+    elif fault == "no phone on Google":
+        k, s = "no_phone", "there's no phone number on your Google listing"
+    elif fault.startswith("newest review is "):
+        return None                       # Places returns the five "most relevant" reviews, not the newest five
+    elif fault.startswith("Google shows a street address"):
+        return None                       # a shop with a real address is not wrong; the kit's opener, not a letter's fact
+    elif re.match(r"^a \d★ review", fault):
+        said = to_you(fault)
+        k, s = "low_review", (said.replace(" on it ", " on your Google listing ", 1) if " on it " in said
+                              else f"there's {fault} on your Google listing")
+    elif fault.startswith("searching the name"):
+        k, s = "menu_page", "searching your name on Google " + to_them(fault)[len("searching the name "):]
+    elif fault.startswith(("special hours",)):
+        return None                       # "check they're right" is a question, not a fact
+    elif fault.startswith(("no website", "the website")):
+        k, s = "website_link", site_fault_words(c, fault)[0]
+    else:
+        k, s = "listing", to_you(fault)
+    return {"key": k, "sentence": s, "evidence": ev}
+
+
+def listing_fault_items(c, details, today):
+    """The kit's own listing rules (business_faults for a business, faults for a restaurant), minus the review count
+    and the rating — the same line `lead_faults` draws for a DM. Census-only when details is None."""
+    probe = dict(c)
+    fs, _ = (faults if c.get("segment") == "restaurant" else business_faults)(probe, details, today)
+    fs = [f for f in fs if not re.match(r"^(only \d+ reviews|rating )", f)]
+    if probe.get("presence") == "own" or c.get("segment") == "restaurant":
+        fs = [f for f in fs if not f.startswith(("no website", "the website"))]   # they have one: we read it
+    read_on = None
+    if details:
+        cache = STATE / "details" / f"{c['place_id']}.json"
+        read_on = (dt.datetime.fromtimestamp(cache.stat().st_mtime, TZ).date().isoformat()
+                   if cache.exists() else today.isoformat())
+    items = [i for i in (listing_fault_item(f, c, read_on) for f in fs) if i]
+    # One low review among hundreds says nothing about the business, and naming it to them reads as a dare.
+    n_rev = ((details or {}).get("userRatingCount") if details else None) or c.get("reviews") or 0
+    return [i for i in items if not (i["key"] == "low_review" and n_rev > LOW_REVIEW_MAX_REVIEWS)]
+
+
+def facts_packet(c, details, today):
+    """Every fault true of this business, most specific and surest first: [{key, sentence, evidence}]. One per key."""
+    items, seen = [], set()
+    for it in sorted(site_fault_items(c, today) + listing_fault_items(c, details, today),
+                     key=lambda i: FAULT_RANK.get(i["key"], 90)):
+        if it["key"] in seen:
+            continue
+        seen.add(it["key"])
+        items.append(it)
+    return items
+
+
+def fact_items(c, today):
+    """Plain true facts about them, worth saying to an owner (B90, Flint 2026-10-01: the research is two true
+    specifics, at least one a fault). Their Google standing from the census row, said so it stays true if they've
+    gained reviews since ("more than 60", rounded down to a ten below the count) and only when it is a compliment and
+    the read is under FACT_MAX_AGE_DAYS old. Never a judgement, never a number we didn't read."""
+    out = []
+    n, r = c.get("reviews"), c.get("rating")
+    try:
+        read = dt.date.fromisoformat((c.get("refreshed_at") or "")[:10])
+    except ValueError:
+        read = None
+    if n and r and read and (today - read).days <= FACT_MAX_AGE_DAYS and n >= FACT_MIN_REVIEWS \
+            and float(r) >= FACT_MIN_RATING:
+        floor = (int(n) - 1) // 10 * 10
+        out.append({"key": "google_standing", "kind": "fact",
+                    "sentence": f"you have more than {floor:,} Google reviews, averaging {float(r):.1f} stars",
+                    "evidence": clean_maps(c.get("google_maps_uri")) + f" (census read {read.isoformat()}: "
+                                                                       f"{n} reviews, {r})"})
+    return out
+
+
+def specifics(c, today, faults_):
+    """The two things a letter says: two faults, or one fault and one fact; [] when there aren't two (no fault at
+    all, or one fault and nothing true to say beside it)."""
+    fs = [dict(f, kind="fault") for f in faults_]
+    if len(fs) >= 2:
+        return fs[:2]
+    if fs:
+        facts = fact_items(c, today)
+        if facts:
+            return [fs[0], facts[0]]
+    return []
+
+
+def client_marks():
+    """What identifies a paying client (or a gift one): every address, domain and ten-digit phone in each
+    clients/<slug>/NOTES.md and CLAUDE.md. The workspaces carry no place id, so these are the match."""
+    emails, domains, phones = set(), set(), set()
+    if CLIENTS_DIR.exists():
+        for ws in CLIENTS_DIR.iterdir():
+            for name in ("NOTES.md", "CLAUDE.md"):
+                p = ws / name
+                try:
+                    text = p.read_text(errors="replace") if p.is_file() else ""
+                except OSError:
+                    continue
+                for a in re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", text):
+                    a = a.lower()
+                    emails.add(a)
+                    dom = a.split("@", 1)[1]
+                    if dom not in FREE_MAIL and dom != "patchlamp.com":
+                        domains.add(dom)
+                for u in re.findall(r"https?://([A-Za-z0-9.-]+\.[A-Za-z]{2,})", text):
+                    u = u.lower().removeprefix("www.")
+                    if not u.endswith(("patchlamp.com", "pages.dev", "github.com", "google.com", "stripe.com")):
+                        domains.add(u)
+                for a, b, cc in re.findall(r"\(?(\d{3})\)?[\s.\-]?(\d{3})[\s.\-](\d{4})", text):
+                    phones.add(a + b + cc)
+    return emails, domains, phones
+
+
+def suppressed():
+    """(values lowercased, where from) — or (None, why) when the list can't be read. `outreach suppress ls --json` is
+    the one source (plan 37 § Contract: [{value, kind: address|domain|place_id}]); a batch made without knowing who
+    said no could write to them again, so a missing or failing command is a refusal upstream, never an empty set."""
+    vals = set()
+    try:
+        r = subprocess.run([str(OUTREACH_BIN), "suppress", "ls", "--json"], capture_output=True, text=True, timeout=30)
+        if r.returncode == 0:
+            data = json.loads(r.stdout or "null")
+            if isinstance(data, dict):
+                data = data.get("suppressed") or (data.get("addresses") or []) + (data.get("domains") or []) + \
+                    (data.get("place_ids") or [])
+            if isinstance(data, list):
+                for x in data:
+                    v = x.get("value") if isinstance(x, dict) else x
+                    if v:
+                        vals.add(str(v).strip().lower())
+                return vals, "outreach suppress ls --json"
+            why = "its output isn't a list"
+        else:
+            why = ((r.stderr or r.stdout or "").strip().splitlines()[-1:] or [f"exit {r.returncode}"])[0][:120]
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        why = f"{type(exc).__name__}: {exc}"[:120]
+    return None, f"`{OUTREACH_BIN} suppress ls --json` failed ({why})"
+
+
+def is_suppressed(c, supp):
+    addr = (c["mail"]["address"] or "").lower()
+    dom = addr.split("@", 1)[-1]
+    site = host_of(c.get("website") or "")
+    return bool(supp & {addr, dom, "@" + dom, (c.get("place_id") or "").lower()}) or bool(site and site in supp)
+
+
+def batches_log():
+    p = STATE / "batches.jsonl"
+    out = []
+    if p.exists():
+        for line in p.read_text().splitlines():
+            try:
+                out.append(json.loads(line))
+            except ValueError:
+                continue
+    return out
+
+
+def batch_exclusions():
+    """place_id -> why, for everything a batch must never offer, plus the addresses already batched or in the
+    pipeline (a business can sit under two listings with one inbox). Never raises on a missing file."""
+    why = {pid: "held (a kit or a batch in the last 56 days)" for pid in contacted()}
+    pipe_mail = set()
+    try:
+        for lead in pipeline_state().values():
+            if lead.get("place_id"):
+                why.setdefault(lead["place_id"], "in the pipeline")
+            if lead.get("email"):
+                pipe_mail.add(lead["email"].lower())
+    except (OSError, KeyError):
+        pass
+    for pid in claimed_places():
+        why.setdefault(pid, "a client (claimed their preview)")
+    ids, names = _chains()
+    for pid in ids:
+        why.setdefault(pid, "a chain")
+    batched = {(a or "").lower() for b in batches_log() for a in (b.get("emails") or [])}
+    for pid in shared_site_places():
+        why.setdefault(pid, f"a chain by its website ({CHAIN_SITE_LISTINGS}+ listings share it)")
+    return why, names, pipe_mail | batched
+
+
+def shared_site_places():
+    """Place ids whose website domain is on CHAIN_SITE_LISTINGS or more listings in the census: franchises
+    (Hotworx, Kid to Kid, Deseret Book) and multi-site organisations the name filter misses."""
+    conn = sqlite3.connect(f"file:{CENSUS}?mode=ro", uri=True)
+    try:
+        rows = conn.execute("SELECT place_id, website FROM place_cache WHERE COALESCE(website, '') != ''").fetchall()
+    finally:
+        conn.close()
+    by = {}
+    for pid, w in rows:
+        h = host_of(w).split(":")[0]
+        if h:
+            by.setdefault(h, []).append(pid)
+    return {pid for h, ids in by.items() if len(ids) >= CHAIN_SITE_LISTINGS for pid in ids}
+
+
+def batch_pool(segments, today, live=False, places=None, want=None):
+    """(eligible picks with their packets, skipped counts, live reads made). `want(c)` narrows the rows a live read
+    may be spent on (the chosen trade and city)."""
+    rows = batch_rows(segments)
+    why, chain_names_, mail_seen = batch_exclusions()
+    supp, src = suppressed()
+    if supp is None:
+        die(f"no batch: the suppression list can't be read, and a batch made without it could write to someone who "
+            f"said no. {src}. `outreach doctor` says why; `leads batch --stats` still works.")
+    c_emails, c_domains, c_phones = client_marks()
+    cache_only = Places(None, None)
+    skipped, out, run_seen = {}, [], set()
+
+    def skip(w):
+        skipped[w] = skipped.get(w, 0) + 1
+    for c in sorted(rows, key=lambda r: (r["mail"]["kind"] != "own-domain", -(r.get("reviews") or 0), r["name"] or "")):
+        addr = c["mail"]["address"].lower()
+        if c["place_id"] in why:
+            skip(why[c["place_id"]])
+            continue
+        if (c.get("name") or "").lower() in chain_names_:
+            skip("a chain")
+            continue
+        if addr in mail_seen:
+            skip("address already batched or in the pipeline")
+            continue
+        if addr in run_seen:
+            skip("the same address as another listing (one inbox, written to once)")
+            continue
+        if is_suppressed(c, supp):
+            skip("suppressed")
+            continue
+        dom = addr.split("@", 1)[1]
+        if addr in c_emails or dom in c_domains or host_of(c.get("website") or "") in c_domains or \
+                re.sub(r"\D", "", c.get("phone") or "")[-10:] in c_phones:
+            skip("a client")
+            continue
+        run_seen.add(addr)             # two listings, one inbox: the first one only
+        details = places.get(c["place_id"]) if places and places.fixture else cache_only.get(c["place_id"])
+        c["all_faults"] = facts_packet(c, details, today)
+        c["packet"] = specifics(c, today, c["all_faults"])
+        if len(c["all_faults"]) == 1 and not c["packet"] and live and places and not places.fixture \
+                and details is None and (want is None or want(c)):
+            details = places.get(c["place_id"])
+            if details and details.get("businessStatus") not in (None, "OPERATIONAL"):
+                skip("closed on Google")
+                continue
+            c["all_faults"] = facts_packet(c, details, today)
+            c["packet"] = specifics(c, today, c["all_faults"])
+        if not c["all_faults"]:
+            skip("no fault to name")
+            continue
+        if not c["packet"]:
+            skip("one fault and nothing else true to say")
+            continue
+        out.append(c)
+    return out, skipped
+
+
+def live_reads_today(today):
+    """Listing reads `leads batch` has made today, from the ledger (the cap's count)."""
+    n = 0
+    try:
+        for line in LEDGER.read_text().splitlines():
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            if e.get("tool") == "leads" and e.get("kind") == "places_details" and \
+                    str(e.get("for") or "").startswith(f"batch {today.isoformat()}"):
+                n += int(e.get("calls") or 0)
+    except OSError:
+        pass
+    return n
+
+
+class CappedPlaces(Places):
+    """Places with a daily ceiling: past it, a read returns None and the business is judged on what is stored."""
+
+    def __init__(self, key, where, cap, fixture=None):
+        super().__init__(key, where, fixture=fixture)
+        self.cap = cap
+
+    def get(self, place_id):
+        if not self.fixture and self.calls >= self.cap:
+            cache = STATE / "details" / f"{place_id}.json"
+            if not (cache.exists() and time.time() - cache.stat().st_mtime < CACHE_DAYS * 86400):
+                self.capped = True
+                return None
+        return super().get(place_id)
+
+
+def town_match(c, city):
+    """The listing's own locality when it has one (the scan's search city only when it hasn't): Saratoga Springs
+    found by the Lehi search is Saratoga Springs."""
+    w = (city or "").strip().lower()
+    return not w or (c.get("town") or "").lower() == w
+
+
+def pick_json(c):
+    two = c["packet"][:2]
+    return {"place_id": c["place_id"], "name": clean_name(c["name"]), "category": c.get("category") or "",
+            "segment": c.get("segment") or "", "city": c.get("town") or "", "phone": c.get("phone") or "",
+            "site_url": strip_tracking((c.get("facts") or {}).get("url") or c.get("website") or ""),
+            "maps_url": clean_maps(c.get("google_maps_uri")), "rating": c.get("rating"), "reviews": c.get("reviews"),
+            "email": c["mail"]["address"], "email_kind": c["mail"]["kind"],
+            "email_evidence": c["mail"].get("evidence_url") or "", "email_why": c["mail"].get("why") or "",
+            "faults": [{"key": f["key"], "kind": f["kind"], "sentence": f["sentence"], "evidence": f["evidence"]}
+                       for f in two]}
+
+
+def batch_page(b, notes):
+    lines = [f"Batch {b['batch_id']} · {b['category']} · {b['city']} · {len(b['picks'])} "
+             f"business{'es' if len(b['picks']) != 1 else ''}, two true specifics each (a fault first)"]
+    lines += [f"({n})" for n in notes if n]
+    lines.append("")
+    for i, p in enumerate(b["picks"], 1):
+        lines.append(f"{i}. {p['name']} — {p['faults'][0]['sentence']}; {p['faults'][1]['sentence']}")
+    lines.append("")
+    lines.append("Addresses, evidence and the JSON: `leads batch --last --json`. "
+                 "Approve with `go` (outreach send --batch); `hold 4` keeps one back.")
+    return "\n".join(lines) + "\n"
+
+
+def cmd_batch(args):
+    today = now_date()
+    if args.last:
+        logs = batches_log()
+        if not logs:
+            die("no batch yet; run `leads batch`")
+        bid = logs[-1]["batch_id"]
+        f = STATE / "batches" / (f"{bid}.json" if args.json else f"{bid}.md")
+        if not f.exists():
+            die(f"{f} is gone")
+        print(f.read_text(), end="")
+        return
+    if not email_tables():
+        die("no address pass yet — the census has no `emails`/`site_facts` tables (B89, client-leads/scripts/emails.py)")
+    if args.stats:
+        return batch_stats(args, today)
+    seg = (args.segment or "services").lower()
+    if seg not in SEGMENTS:
+        die(f"--segment is one of {', '.join(SEGMENTS)}")
+    n = max(1, min(args.n, BATCH_MAX))
+    places, notes = None, []
+    if args.fixture:
+        places = Places(None, None, fixture=args.fixture)
+    elif args.live:
+        key, where = places_key()
+        cap = int(os.environ.get("LEADS_LIVE_READS_PER_DAY") or _env_file(ENV_FILE).get("LEADS_LIVE_READS_PER_DAY")
+                  or BATCH_LIVE_CAP_DEFAULT)
+        left = max(0, cap - live_reads_today(today))
+        if not key:
+            notes.append("--live: no GOOGLE_MAPS_API_KEY, so stored facts only")
+        elif not left:
+            notes.append(f"--live: today's {cap} listing reads are spent (LEADS_LIVE_READS_PER_DAY), stored facts only")
+        else:
+            places = CappedPlaces(key, where, left)
+    # `any` widens one axis on purpose (a trade across every city, or every trade in a city): the research's
+    # 6.2% reply rate is for one trade in one city, so the default stays that, and `any` is Taylor's call.
+    city = None if (args.city or "").lower() == "any" else args.city
+    category = None if (args.category or "").lower() == "any" else args.category
+
+    def want(c):
+        return town_match(c, city) and (not category or (c.get("category") or "").lower() == category.lower())
+    picks, skipped = batch_pool([seg], today, live=bool(places), places=places,
+                                want=want if (city or category) else None)
+    if places and places.calls and not places.fixture:
+        ledger_append({"ts": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()), "kind": "places_details",
+                       "tool": "leads", "calls": places.calls, "cost_usd": round(places.calls * DETAILS_COST_USD, 3),
+                       "billed_to": f"google:GOOGLE_MAPS_API_KEY({places.where})", "project": "global",
+                       "for": f"batch {today.isoformat()} {seg}"})
+    if places and getattr(places, "capped", False):
+        notes.append(f"the daily cap on listing reads stopped the live reads after {places.calls}")
+    picks = [c for c in picks if want(c)]
+    if not picks:
+        die(f"no {seg} business{' in ' + args.city if args.city else ''}"
+            f"{' (' + args.category + ')' if args.category else ''} with an address and two true specifics is left "
+            f"({', '.join(f'{v} {k}' for k, v in sorted(skipped.items(), key=lambda kv: -kv[1])) or 'none with an address'})")
+    groups = {}
+    # One trade across the corridor (Flint 2026-10-01: the research is about the batch size and the specifics, not
+    # the city); --city narrows to one, --category any mixes trades.
+    any_cat = (args.category or "").lower() == "any"
+    for c in picks:
+        groups.setdefault(((c.get("town") or "?") if city else "corridor",
+                           "any" if any_cat else (c.get("category") or "?")), []).append(c)
+    (town, cat), group = max(groups.items(), key=lambda kv: (len(kv[1]), kv[0][0] != "?"))
+    chosen, second_look = [], 0
+    for c in group:                     # the stored facts, read again from the page before a letter says them
+        if len(chosen) >= n:
+            break
+        if confirm_packet(c, today):
+            chosen.append(c)
+        else:
+            second_look += 1
+    if not chosen:
+        die(f"no {seg} {cat} is left once the pages are read again ({second_look} of them no longer bear the fault "
+            f"out; also {', '.join(f'{v} {k}' for k, v in sorted(skipped.items(), key=lambda kv: -kv[1])) or 'nothing else'}"
+            f"); try another --category")
+    prefix = f"{today.isoformat()}-{seg}-{slugify(town)}-{slugify(cat)}"
+    seq = 1 + sum(1 for b in batches_log() if str(b.get("batch_id") or "").startswith(prefix + "-"))
+    bid = f"{prefix}-{seq}"
+    b = {"batch_id": bid, "date": today.isoformat(), "segment": seg, "category": cat, "city": town,
+         "picks": [pick_json(c) for c in chosen]}
+    mode = "fixture listings (a test)" if args.fixture else (
+        f"{places.calls} listing{'s' if places.calls != 1 else ''} read live" if places else
+        "stored site facts, listings read in the last week, the census's Google standing; no live reads")
+    notes.insert(0, mode)
+    others = sorted(((len(v), k) for k, v in groups.items() if k != (town, cat)), reverse=True)[:3]
+    if others:
+        notes.append("next biggest: " + ", ".join(f"{k[1]}" + (f" in {k[0]}" if city else "") + f" ({m})"
+                                                  for m, k in others))
+    if second_look:
+        notes.append(f"{second_look} left out on a second look: the page no longer shows the old copyright year "
+                     f"(a range to this year, a script-written year, or changed since the crawl)")
+    left_out = {k: v for k, v in skipped.items()}
+    if left_out:
+        notes.append("left out: " + ", ".join(f"{v} {k}" for k, v in sorted(left_out.items(), key=lambda kv: -kv[1])))
+    page = batch_page(b, notes)
+    if not args.no_save:
+        (STATE / "batches").mkdir(parents=True, exist_ok=True)
+        (STATE / "batches" / f"{bid}.json").write_text(json.dumps(b, indent=1, ensure_ascii=False) + "\n")
+        (STATE / "batches" / f"{bid}.md").write_text(page)
+        with open(STATE / "batches.jsonl", "a") as f:     # the hold: contacted() reads this beside the kits' logs
+            f.write(json.dumps({"ts": dt.datetime.now(TZ).isoformat(timespec="seconds"), "for": today.isoformat(),
+                                "batch_id": bid, "segment": seg, "category": cat, "city": town,
+                                "place_ids": [p["place_id"] for p in b["picks"]],
+                                "names": [p["name"] for p in b["picks"]],
+                                "emails": [p["email"] for p in b["picks"]], "mode": "batch"}) + "\n")
+    if args.json:
+        print(json.dumps(b, indent=1, ensure_ascii=False))
+        return
+    print(page, end="")
+    if not args.no_save:
+        print(f"(saved: {STATE / 'batches' / (bid + '.json')}; these {len(b['picks'])} are held out of the kits and "
+              f"later batches for 56 days)")
+
+
+def batch_stats(args, today):
+    """How big the lane really is under the rule (two true specifics, at least one a fault), beside the old rule
+    (two faults): by segment, by trade across the corridor, by city, and how often each fault and fact is true.
+    Stored facts and the week's cached listings only; it spends nothing and holds nothing."""
+    segs = [args.segment] if args.segment else list(BUSINESS_SEGMENTS) + ["restaurant"]
+    rows = batch_rows(segs)
+    why, chain_names_, _ = batch_exclusions()
+    supp, supp_src = suppressed()
+    c_emails, c_domains, c_phones = client_marks()
+    cache_only = Places(None, None)
+    by_seg, by_city, by_trade, keys, excl = {}, {}, {}, {}, {}
+    total = qual = two = faulted = 0
+    seen_mail = set()
+    for c in rows:
+        reason = why.get(c["place_id"]) or ("a chain" if (c.get("name") or "").lower() in chain_names_ else None)
+        addr = c["mail"]["address"].lower()
+        if not reason and addr in seen_mail:
+            reason = "the same address as another listing"
+        if not reason and supp and is_suppressed(c, supp):
+            reason = "suppressed"
+        if not reason and (addr in c_emails or addr.split("@")[-1] in c_domains
+                           or host_of(c.get("website") or "") in c_domains
+                           or re.sub(r"\D", "", c.get("phone") or "")[-10:] in c_phones):
+            reason = "a client"
+        seen_mail.add(addr)
+        fs = facts_packet(c, cache_only.get(c["place_id"]), today)
+        sp = specifics(c, today, fs)
+        total += 1
+        faulted += bool(fs)
+        s = by_seg.setdefault(c["segment"], [0, 0, 0, 0])      # with an address, qualify, two faults, excluded
+        s[0] += 1
+        for it in fs + fact_items(c, today):
+            keys[it["key"]] = keys.get(it["key"], 0) + 1
+        if not sp:
+            continue
+        if reason:
+            s[3] += 1
+            excl[reason.split(" (")[0]] = excl.get(reason.split(" (")[0], 0) + 1
+            continue
+        qual += 1
+        s[1] += 1
+        if len(fs) >= 2:
+            two += 1
+            s[2] += 1
+        by_city[c["town"] or "?"] = by_city.get(c["town"] or "?", 0) + 1
+        t = (c["segment"], c.get("category") or "?")
+        by_trade[t] = by_trade.get(t, 0) + 1
+    trades = sorted(by_trade.items(), key=lambda kv: -kv[1])
+    if args.json:
+        print(json.dumps({"date": today.isoformat(), "with_address": total, "with_a_fault": faulted,
+                          "qualify": qual, "two_faults": two, "suppression": supp_src if supp is not None else None,
+                          "by_segment": {k: {"with_address": v[0], "qualify": v[1], "two_faults": v[2],
+                                             "excluded": v[3]} for k, v in by_seg.items()},
+                          "excluded": excl, "by_city": by_city, "keys": keys,
+                          "trades": [{"segment": t[0], "category": t[1], "n": n} for t, n in trades]}, indent=1))
+        return
+    print(f"Email lane, {today}: {total} businesses with a usable address (MX ok, not tied by the page title alone), "
+          f"{faulted} with at least one fault before the exclusions. {qual} qualify (two true specifics, at least one a fault, after the exclusions); {two} of them with two "
+          f"faults. Stored site facts, listings cached this week and the census's Google standing (read within "
+          f"{FACT_MAX_AGE_DAYS} days); nothing read live.")
+    if supp is None:
+        print(f"  (suppressed addresses not subtracted: {supp_src}; `leads batch` itself refuses until it reads)")
+    for seg, v in sorted(by_seg.items(), key=lambda kv: -kv[1][0]):
+        print(f"  {seg:<11} {v[0]:>5} with an address · {v[1]:>4} qualify · {v[2]:>3} with two faults · "
+              f"{v[3]} more would qualify but are excluded")
+    if excl:
+        print("Excluded although they'd qualify: " + ", ".join(f"{v} {k}" for k, v in sorted(excl.items(), key=lambda kv: -kv[1])))
+    print("Batches by trade, across the corridor (top 15): " + ", ".join(f"{t[1]} ({t[0]}) {n}" for t, n in trades[:15]))
+    print("By city: " + ", ".join(f"{k} {v}" for k, v in sorted(by_city.items(), key=lambda kv: -kv[1])[:15]))
+    print("True of how many (faults and facts, before exclusions): " + ", ".join(
+        f"{k} {v}" for k, v in sorted(keys.items(), key=lambda kv: -kv[1])))
+
+
 def latest(folder):
     """The newest page in a kits folder (restaurant pages are <date>.md, the others <date>-<segment>.md)."""
     pages = list(folder.glob("*.md")) if folder.exists() else []
@@ -5356,7 +6169,38 @@ def cmd_doctor(args):
     print(f"remote lane: {GROUPS_LOG} {'exists' if GROUPS_LOG.exists() else '(created on first lead)'}; "
           f"postal address for cold email: {'set' if mail_address() else 'NOT set — drafts say not ready (TAYLOR-TODO §1)'}")
     ok = preview_doctor() and ok
+    batch_doctor()
     sys.exit(0 if ok else 1)
+
+
+def batch_doctor():
+    """The email batch's half (B90). Informational: the lane is off until the identity hour, so nothing here fails
+    the doctor."""
+    if not email_tables():
+        print("batch: no address pass yet — no `emails`/`site_facts` tables (B89, client-leads/scripts/emails.py); "
+              "`leads batch` waits on it")
+        return
+    conn = sqlite3.connect(f"file:{CENSUS}?mode=ro", uri=True)
+    try:
+        n_addr = conn.execute("SELECT count(DISTINCT place_id) FROM emails WHERE mx='ok'").fetchone()[0]
+        n_facts = conn.execute("SELECT count(*) FROM site_facts").fetchone()[0]
+    finally:
+        conn.close()
+    print(f"batch: {n_addr} businesses with an MX-ok address, {n_facts} sites with stored facts "
+          f"(`leads batch --stats` sizes the lane)")
+    supp, src = suppressed()
+    print(f"  suppression: {len(supp)} from {src}" if supp is not None else
+          f"  suppression: unreadable, so `leads batch` refuses — {src}")
+    em, dm, ph = client_marks()
+    print(f"  clients kept out: {len(em)} addresses, {len(dm)} domains, {len(ph)} phones from {CLIENTS_DIR}/*/NOTES.md, CLAUDE.md")
+    logs = batches_log()
+    since = (dt.datetime.now(TZ).date() - dt.timedelta(weeks=REPEAT_WEEKS)).isoformat()
+    held = {pid for b in logs if (b.get("for") or "") >= since for pid in b.get("place_ids") or []}
+    print(f"  batches: {len(logs)} made, {len(held)} businesses held for 56 days"
+          + (f"; last {logs[-1]['batch_id']}" if logs else ""))
+    cap = int(os.environ.get("LEADS_LIVE_READS_PER_DAY") or _env_file(ENV_FILE).get("LEADS_LIVE_READS_PER_DAY")
+              or BATCH_LIVE_CAP_DEFAULT)
+    print(f"  live listing reads (--live): {live_reads_today(now_date())} of {cap} today (LEADS_LIVE_READS_PER_DAY)")
 
 
 def preview_doctor():
@@ -5539,6 +6383,8 @@ def main():
     pv = sub.add_parser("preview", help="a lead's own website, built from the census row (B45): NAME | --kit | ls | sweep")
     pv.add_argument("name", nargs="*", help='"Name" or "Name, City" (several allowed); or `ls` / `sweep`')
     pv.add_argument("--kit", action="store_true", help="today's remote-kit picks (else the nearest of the pool)")
+    pv.add_argument("--place", metavar="PLACE_ID", help="one business by census place id, a site of its own or not "
+                                                        "(B90: `outreach inbox` on a \"yes\"); with --json one object")
     pv.add_argument("--n", type=int, default=6)
     pv.add_argument("--segment", choices=SEGMENTS + ("all",))
     pv.add_argument("--min-reviews", type=int, default=None)
@@ -5560,6 +6406,24 @@ def main():
     pv.add_argument("--out", help="with --from: render into DIR and record nothing (else the previews tree + manifest)")
     pv.add_argument("--look", help="the look (css/looks/<look>.css): overrides content.json's, or picks one for NAME")
     pv.set_defaults(fn=cmd_preview)
+
+    bt = sub.add_parser("batch", help="the email lane's batch (B90): fifty or fewer in one trade, each with its address "
+                                      "and two true specifics (a fault first); --stats sizes the lane")
+    bt.add_argument("--segment", choices=SEGMENTS, help="default services")
+    bt.add_argument("--city", help="narrow to one city (the listing's locality), e.g. Lehi; default the whole corridor")
+    bt.add_argument("--category", help="one trade as the census names it, e.g. plumber, roofing, house cleaning; "
+                                       "`any` for every trade in the city")
+    bt.add_argument("--n", type=int, default=BATCH_MAX, help=f"at most this many (default and ceiling {BATCH_MAX})")
+    bt.add_argument("--json", action="store_true", help="plan 37 § Contract's shape (what `outreach send --batch` reads)")
+    bt.add_argument("--live", action="store_true",
+                    help="read the Google listing (~$0.025) for a business one fault short; capped a day by "
+                         f"LEADS_LIVE_READS_PER_DAY (default {BATCH_LIVE_CAP_DEFAULT}), counted in the ledger")
+    bt.add_argument("--last", action="store_true", help="reprint the last batch (with --json, its JSON)")
+    bt.add_argument("--stats", action="store_true", help="how many with an address have two faults or more, by "
+                                                         "segment, city and trade, and each fault key's count")
+    bt.add_argument("--no-save", action="store_true", help="print only: no file, and no 56-day hold")
+    bt.add_argument("--fixture", help="dir of <place_id>.json Place Details (tests)")
+    bt.set_defaults(fn=cmd_batch)
 
     d = sub.add_parser("doctor")
     d.set_defaults(fn=cmd_doctor)

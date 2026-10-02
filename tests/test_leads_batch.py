@@ -91,11 +91,11 @@ B = [
     ("FX_B16", "Quail Plumbing", "plumber", "Lehi", "info@quailplumbing.example", "own-domain", OWN, "ok",
      dict(year=YEAR - 9, form=0)),
 ]
-IN_LEHI_PLUMBERS = {"FX_B01", "FX_B02", "FX_B07"}
+IN_LEHI_PLUMBERS = {"FX_B01", "FX_B02", "FX_B06", "FX_B07", "FX_B08", "FX_B16"}
 CONTRACT_TOP = {"batch_id", "date", "segment", "category", "city", "picks"}
 CONTRACT_PICK = {"place_id", "name", "category", "segment", "city", "phone", "site_url", "maps_url", "rating",
                  "reviews", "email", "email_kind", "email_evidence", "email_why", "faults"}
-CONTRACT_FAULT = {"key", "sentence", "evidence"}
+CONTRACT_FAULT = {"key", "kind", "sentence", "evidence"}
 
 FAKE_OUTREACH = '''#!/usr/bin/env python3
 import json, os, sys
@@ -121,7 +121,7 @@ def build_census(path):
                         lat, lng, refreshed_at, locality, postal_code, primary_type, types, business_status,
                         google_maps_uri) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                      (pid, name, f"{200 + i} W Main St, {loc}, UT 84043, USA", f"(801) 555-{1000 + i}",
-                      f.get("url") or home, "yes", 4.8, 5 if pid == "FX_B15" else 40 + i, 40.39, -111.85, "2026-09-28T12:00:00", loc, "84043",
+                      f.get("url") or home, "yes", 4.8, 5 if pid == "FX_B15" else 40 + i, 40.39, -111.85, dt.date.today().isoformat() + "T12:00:00", loc, "84043",
                       "plumber", "[]", "OPERATIONAL", f"https://maps.google.com/?cid={pid}&g_mp=x"))
         conn.execute("""INSERT INTO businesses (place_id, segment, category, categories, city, first_seen, source,
                         presence_class, presence_url, presence_checked, is_chain, chain_override)
@@ -211,6 +211,7 @@ class BatchTest(unittest.TestCase):
         for p in b["picks"]:
             self.assertEqual(set(p), CONTRACT_PICK)
             self.assertEqual(len(p["faults"]), 2, p)
+            self.assertEqual(p["faults"][0]["kind"], "fault")            # at least one fault, always first
             for f in p["faults"]:
                 self.assertEqual(set(f), CONTRACT_FAULT)
                 self.assertTrue(f["evidence"])
@@ -223,13 +224,18 @@ class BatchTest(unittest.TestCase):
         self.assertEqual(by["FX_B02"]["email_kind"], "free-mail")
         self.assertIn("(801) 555-0999", by["FX_B02"]["faults"][1]["sentence"])
         self.assertEqual([f["key"] for f in by["FX_B07"]["faults"]], ["no_viewport", "no_https"])
+        # one fault and a fact: their Google standing, rounded down so it stays true (47 reviews → "more than 40")
+        self.assertEqual([(f["key"], f["kind"]) for f in by["FX_B08"]["faults"]],
+                         [("no_viewport", "fault"), ("google_standing", "fact")])
+        self.assertEqual(by["FX_B08"]["faults"][1]["sentence"], "you have more than 40 Google reviews, averaging 4.8 stars")
+        self.assertEqual([f["key"] for f in by["FX_B06"]["faults"]], ["old_copyright", "google_standing"])
 
     def test_left_out_never_padded(self):
         r = self.batch("--no-save")
-        for name in ("Cedar", "Delta", "Echo", "Falcon", "Harbor", "Iron", "Juniper", "Kestrel", "Lark",
-                     "Alpine Plumbing South", "Quail", "Moab", "Nephi"):
+        for name in ("Cedar", "Delta", "Echo", "Iron", "Juniper", "Kestrel", "Lark",
+                     "Alpine Plumbing South", "Moab", "Nephi"):
             self.assertNotIn(name, r.stdout, name)
-        self.assertIn("fewer than two faults", r.stdout)
+        self.assertIn("no fault to name", r.stdout)
         self.assertIn("in the pipeline", r.stdout)
         self.assertIn("suppressed", r.stdout)
         self.assertIn("a client", r.stdout)
@@ -243,7 +249,7 @@ class BatchTest(unittest.TestCase):
             [{"value": "hello@alpineplumbing.example", "kind": "address"}, "graniteplumbing.example"])})
         ids = {p["place_id"] for p in json.loads(r.stdout)["picks"]}
         # by address and by domain; and the command's list is the whole list (Juniper is only in the file)
-        self.assertEqual(ids, {"FX_B02", "FX_B10"})
+        self.assertEqual(ids, IN_LEHI_PLUMBERS - {"FX_B01", "FX_B07"} | {"FX_B10"})
         m = leads_module(dict(self.env, FAKE_SUPPRESS=""))
         vals, src = m.suppressed()                                   # no --json yet: the file, said so
         self.assertIn("juniperplumbing.example", vals)
@@ -274,20 +280,37 @@ class BatchTest(unittest.TestCase):
         r = self.run_leads("batch", "--segment", "services", "--city", "Lehi", "--category", "roofing", "--json",
                            "--no-save")
         self.assertEqual([p["place_id"] for p in json.loads(r.stdout)["picks"]], ["FX_B13"])
-        r = self.run_leads("batch", "--segment", "services", "--city", "any", "--category", "plumber", "--json",
-                           "--no-save")
-        self.assertEqual({p["place_id"] for p in json.loads(r.stdout)["picks"]}, IN_LEHI_PLUMBERS | {"FX_B14"})
+        r = self.run_leads("batch", "--segment", "services", "--json", "--no-save")      # one trade, the corridor
+        b = json.loads(r.stdout)
+        self.assertEqual((b["city"], b["category"]), ("corridor", "plumber"))
+        self.assertRegex(b["batch_id"], r"-services-corridor-plumber-1$")
+        self.assertEqual({p["place_id"] for p in b["picks"]}, IN_LEHI_PLUMBERS | {"FX_B14"})
 
     def test_stats(self):
         r = self.run_leads("batch", "--stats", "--segment", "services", "--json")
         self.assertEqual(r.returncode, 0, r.stderr)
         s = json.loads(r.stdout)
         self.assertEqual(s["with_address"], 14)                      # Delta (titled) and Echo (no MX) aren't
-        self.assertEqual(s["by_segment"]["services"]["two_or_more"], 10)
-        self.assertEqual(s["fault_keys"]["no_https"], 1)             # Harbor's https works: not said
-        self.assertNotIn("no_contact_form", s["fault_keys"])
+        # qualify: the six Lehi plumbers, Moab, Nephi; not Iron (pipeline), Juniper (suppressed), Kestrel (client),
+        # Lark (chain), Alpine South (Alpine's inbox), Cedar (no fault)
+        self.assertEqual(s["qualify"], 8)
+        self.assertEqual(s["two_faults"], 5)
+        self.assertEqual(s["keys"]["no_https"], 1)                   # Harbor's https works: not said
+        self.assertNotIn("no_contact_form", s["keys"])
+        self.assertEqual({t["category"]: t["n"] for t in s["trades"]}, {"plumber": 7, "roofing": 1})
         self.assertFalse((self.t / "state" / "batches.jsonl").exists())
-        self.assertIn("two faults or more", self.run_leads("batch", "--stats").stdout)
+        self.assertIn("qualify", self.run_leads("batch", "--stats").stdout)
+
+    def test_a_website_on_three_listings_is_a_chain(self):
+        conn = sqlite3.connect(self.db)
+        for i in (1, 2):                                             # Quail's site on two more listings
+            conn.execute("INSERT INTO place_cache (place_id, name, website) VALUES (?,?,?)",
+                         (f"FX_Q{i}", f"Quail Plumbing {i}", "https://www.quailplumbing.example/locations"))
+        conn.commit()
+        conn.close()
+        r = self.batch("--json", "--no-save")
+        self.assertNotIn("FX_B16", {p["place_id"] for p in json.loads(r.stdout)["picks"]})
+        self.assertIn("a chain by its website", self.batch("--no-save").stdout)
 
     def test_listing_rules_reused(self):
         m = leads_module(self.env)

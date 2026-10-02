@@ -47,9 +47,9 @@ B25 (the remote lane), B7 (the pipeline: log, follow-ups, the week).
   leads preview sweep          # the expired ones come down (LEADS_NOW moves the clock)
   leads preview --remove NAME  # a takedown, now
   leads preview --claim NAME --slug mikes-pool-care   # client new + site new from the same files
-  leads batch --segment services --city Lehi [--category plumber] [--n 50] [--json]
-                               # the email lane's batch (B90): one trade in one city, each with its address and
-                               # exactly two true faults; held 56 days once printed. --stats sizes the lane,
+  leads batch --segment services [--category plumber] [--city Lehi] [--n 50] [--json]
+                               # the email lane's batch (B90): one trade across the corridor, each with its address
+                               # and two true specifics, a fault first; held 56 days once printed. --stats sizes it,
                                # --last reprints, --live reads a listing one fault short (capped a day)
   leads preview --place PLACE_ID --json   # one business's preview as one JSON object with its url (B90)
   leads doctor
@@ -5193,6 +5193,9 @@ def cmd_pipeline_strong(state):
 # fewer than two is left out; padding a letter with a weak fault is how a cold email reads as spam.
 
 BATCH_MAX = 50
+FACT_MAX_AGE_DAYS = 90         # a census read older than this isn't quoted back to them
+FACT_MIN_REVIEWS, FACT_MIN_RATING = 21, 4.5   # "more than 20 reviews, averaging 4.5" or better: a compliment
+CHAIN_SITE_LISTINGS = 3        # a website on this many listings is a franchise or a multi-site organisation
 LOW_REVIEW_MAX_REVIEWS = 100     # past this many reviews, one low one isn't a fault worth a letter
 OLD_YEAR_GAP = 3                  # a copyright line three or more years behind the calendar is worth naming
 BATCH_LIVE_CAP_DEFAULT = 100      # listing reads a day for `leads batch --live` (LEADS_LIVE_READS_PER_DAY)
@@ -5277,7 +5280,7 @@ def batch_rows(segments):
             rows += [dict(r) for r in conn.execute(f"""
                 SELECT b.place_id, b.segment, b.category, b.presence_class, b.presence_url, b.city,
                        p.name, p.address, p.locality, p.phone, p.website, p.has_website, p.rating, p.reviews,
-                       p.lat, p.lng, p.primary_type, p.google_maps_uri, p.business_status
+                       p.lat, p.lng, p.primary_type, p.google_maps_uri, p.business_status, p.refreshed_at
                 FROM businesses b JOIN place_cache p ON p.place_id = b.place_id
                 WHERE b.segment IN ({marks})
                   AND (p.business_status IS NULL OR p.business_status = 'OPERATIONAL')""", biz)]
@@ -5286,7 +5289,7 @@ def batch_rows(segments):
                      for r in conn.execute("""
                 SELECT r.place_id, r.city, r.parasite_url, r.on_doordash, r.on_uber, r.on_grubhub,
                        p.name, p.address, p.locality, p.phone, p.website, p.has_website, p.rating, p.reviews,
-                       p.lat, p.lng, p.primary_type, p.google_maps_uri, p.business_status
+                       p.lat, p.lng, p.primary_type, p.google_maps_uri, p.business_status, p.refreshed_at
                 FROM restaurants r JOIN place_cache p ON p.place_id = r.place_id
                 WHERE (p.business_status IS NULL OR p.business_status = 'OPERATIONAL')
                   AND COALESCE(r.status, 'Open') = 'Open'""")]
@@ -5469,6 +5472,40 @@ def facts_packet(c, details, today):
     return items
 
 
+def fact_items(c, today):
+    """Plain true facts about them, worth saying to an owner (B90, Flint 2026-10-01: the research is two true
+    specifics, at least one a fault). Their Google standing from the census row, said so it stays true if they've
+    gained reviews since ("more than 60", rounded down to a ten below the count) and only when it is a compliment and
+    the read is under FACT_MAX_AGE_DAYS old. Never a judgement, never a number we didn't read."""
+    out = []
+    n, r = c.get("reviews"), c.get("rating")
+    try:
+        read = dt.date.fromisoformat((c.get("refreshed_at") or "")[:10])
+    except ValueError:
+        read = None
+    if n and r and read and (today - read).days <= FACT_MAX_AGE_DAYS and n >= FACT_MIN_REVIEWS \
+            and float(r) >= FACT_MIN_RATING:
+        floor = (int(n) - 1) // 10 * 10
+        out.append({"key": "google_standing", "kind": "fact",
+                    "sentence": f"you have more than {floor:,} Google reviews, averaging {float(r):.1f} stars",
+                    "evidence": clean_maps(c.get("google_maps_uri")) + f" (census read {read.isoformat()}: "
+                                                                       f"{n} reviews, {r})"})
+    return out
+
+
+def specifics(c, today, faults_):
+    """The two things a letter says: two faults, or one fault and one fact; [] when there aren't two (no fault at
+    all, or one fault and nothing true to say beside it)."""
+    fs = [dict(f, kind="fault") for f in faults_]
+    if len(fs) >= 2:
+        return fs[:2]
+    if fs:
+        facts = fact_items(c, today)
+        if facts:
+            return [fs[0], facts[0]]
+    return []
+
+
 def client_marks():
     """What identifies a paying client (or a gift one): every address, domain and ten-digit phone in each
     clients/<slug>/NOTES.md and CLAUDE.md. The workspaces carry no place id, so these are the match."""
@@ -5568,7 +5605,25 @@ def batch_exclusions():
     for pid in ids:
         why.setdefault(pid, "a chain")
     batched = {(a or "").lower() for b in batches_log() for a in (b.get("emails") or [])}
+    for pid in shared_site_places():
+        why.setdefault(pid, f"a chain by its website ({CHAIN_SITE_LISTINGS}+ listings share it)")
     return why, names, pipe_mail | batched
+
+
+def shared_site_places():
+    """Place ids whose website domain is on CHAIN_SITE_LISTINGS or more listings in the census: franchises
+    (Hotworx, Kid to Kid, Deseret Book) and multi-site organisations the name filter misses."""
+    conn = sqlite3.connect(f"file:{CENSUS}?mode=ro", uri=True)
+    try:
+        rows = conn.execute("SELECT place_id, website FROM place_cache WHERE COALESCE(website, '') != ''").fetchall()
+    finally:
+        conn.close()
+    by = {}
+    for pid, w in rows:
+        h = host_of(w).split(":")[0]
+        if h:
+            by.setdefault(h, []).append(pid)
+    return {pid for h, ids in by.items() if len(ids) >= CHAIN_SITE_LISTINGS for pid in ids}
 
 
 def batch_pool(segments, today, live=False, places=None, want=None):
@@ -5607,16 +5662,21 @@ def batch_pool(segments, today, live=False, places=None, want=None):
             continue
         run_seen.add(addr)             # two listings, one inbox: the first one only
         details = places.get(c["place_id"]) if places and places.fixture else cache_only.get(c["place_id"])
-        c["packet"] = facts_packet(c, details, today)
-        if len(c["packet"]) == 1 and live and places and not places.fixture and details is None \
-                and (want is None or want(c)):
+        c["all_faults"] = facts_packet(c, details, today)
+        c["packet"] = specifics(c, today, c["all_faults"])
+        if len(c["all_faults"]) == 1 and not c["packet"] and live and places and not places.fixture \
+                and details is None and (want is None or want(c)):
             details = places.get(c["place_id"])
             if details and details.get("businessStatus") not in (None, "OPERATIONAL"):
                 skip("closed on Google")
                 continue
-            c["packet"] = facts_packet(c, details, today)
-        if len(c["packet"]) < 2:
-            skip("fewer than two faults")
+            c["all_faults"] = facts_packet(c, details, today)
+            c["packet"] = specifics(c, today, c["all_faults"])
+        if not c["all_faults"]:
+            skip("no fault to name")
+            continue
+        if not c["packet"]:
+            skip("one fault and nothing else true to say")
             continue
         out.append(c)
     return out, skipped
@@ -5670,12 +5730,13 @@ def pick_json(c):
             "maps_url": clean_maps(c.get("google_maps_uri")), "rating": c.get("rating"), "reviews": c.get("reviews"),
             "email": c["mail"]["address"], "email_kind": c["mail"]["kind"],
             "email_evidence": c["mail"].get("evidence_url") or "", "email_why": c["mail"].get("why") or "",
-            "faults": [{"key": f["key"], "sentence": f["sentence"], "evidence": f["evidence"]} for f in two]}
+            "faults": [{"key": f["key"], "kind": f["kind"], "sentence": f["sentence"], "evidence": f["evidence"]}
+                       for f in two]}
 
 
 def batch_page(b, notes):
     lines = [f"Batch {b['batch_id']} · {b['category']} · {b['city']} · {len(b['picks'])} "
-             f"business{'es' if len(b['picks']) != 1 else ''}, two faults each"]
+             f"business{'es' if len(b['picks']) != 1 else ''}, two true specifics each (a fault first)"]
     lines += [f"({n})" for n in notes if n]
     lines.append("")
     for i, p in enumerate(b["picks"], 1):
@@ -5739,12 +5800,14 @@ def cmd_batch(args):
     picks = [c for c in picks if want(c)]
     if not picks:
         die(f"no {seg} business{' in ' + args.city if args.city else ''}"
-            f"{' (' + args.category + ')' if args.category else ''} with an address and two faults is left "
+            f"{' (' + args.category + ')' if args.category else ''} with an address and two true specifics is left "
             f"({', '.join(f'{v} {k}' for k, v in sorted(skipped.items(), key=lambda kv: -kv[1])) or 'none with an address'})")
     groups = {}
-    any_city, any_cat = (args.city or "").lower() == "any", (args.category or "").lower() == "any"
+    # One trade across the corridor (Flint 2026-10-01: the research is about the batch size and the specifics, not
+    # the city); --city narrows to one, --category any mixes trades.
+    any_cat = (args.category or "").lower() == "any"
     for c in picks:
-        groups.setdefault(("any" if any_city else (c.get("town") or "?"),
+        groups.setdefault(((c.get("town") or "?") if city else "corridor",
                            "any" if any_cat else (c.get("category") or "?")), []).append(c)
     (town, cat), chosen = max(groups.items(), key=lambda kv: (len(kv[1]), kv[0][0] != "?"))
     chosen = chosen[:n]
@@ -5755,11 +5818,12 @@ def cmd_batch(args):
          "picks": [pick_json(c) for c in chosen]}
     mode = "fixture listings (a test)" if args.fixture else (
         f"{places.calls} listing{'s' if places.calls != 1 else ''} read live" if places else
-        "stored site facts and listings read in the last week; no live reads")
+        "stored site facts, listings read in the last week, the census's Google standing; no live reads")
     notes.insert(0, mode)
     others = sorted(((len(v), k) for k, v in groups.items() if k != (town, cat)), reverse=True)[:3]
     if others:
-        notes.append("next biggest: " + ", ".join(f"{k[1]} in {k[0]} ({m})" for m, k in others))
+        notes.append("next biggest: " + ", ".join(f"{k[1]}" + (f" in {k[0]}" if city else "") + f" ({m})"
+                                                  for m, k in others))
     left_out = {k: v for k, v in skipped.items()}
     if left_out:
         notes.append("left out: " + ", ".join(f"{v} {k}" for k, v in sorted(left_out.items(), key=lambda kv: -kv[1])))
@@ -5784,51 +5848,71 @@ def cmd_batch(args):
 
 
 def batch_stats(args, today):
-    """How big the lane really is: of the businesses with a usable address, how many have two faults or more — by
-    segment, by city and by trade × city — and how often each fault key is true. Stored facts and the week's
-    cached listings only; it spends nothing and holds nothing."""
+    """How big the lane really is under the rule (two true specifics, at least one a fault), beside the old rule
+    (two faults): by segment, by trade across the corridor, by city, and how often each fault and fact is true.
+    Stored facts and the week's cached listings only; it spends nothing and holds nothing."""
     segs = [args.segment] if args.segment else list(BUSINESS_SEGMENTS) + ["restaurant"]
     rows = batch_rows(segs)
     why, chain_names_, _ = batch_exclusions()
+    supp, _ = suppressed()
+    c_emails, c_domains, c_phones = client_marks()
     cache_only = Places(None, None)
-    by_seg, by_city, by_group, keys = {}, {}, {}, {}
-    total = two = one = 0
+    by_seg, by_city, by_trade, keys, excl = {}, {}, {}, {}, {}
+    total = qual = two = 0
+    seen_mail = set()
     for c in rows:
-        excluded = c["place_id"] in why or (c.get("name") or "").lower() in chain_names_
-        pk = facts_packet(c, cache_only.get(c["place_id"]), today)
+        reason = why.get(c["place_id"]) or ("a chain" if (c.get("name") or "").lower() in chain_names_ else None)
+        addr = c["mail"]["address"].lower()
+        if not reason and addr in seen_mail:
+            reason = "the same address as another listing"
+        if not reason and is_suppressed(c, supp):
+            reason = "suppressed"
+        if not reason and (addr in c_emails or addr.split("@")[-1] in c_domains
+                           or host_of(c.get("website") or "") in c_domains
+                           or re.sub(r"\D", "", c.get("phone") or "")[-10:] in c_phones):
+            reason = "a client"
+        seen_mail.add(addr)
+        fs = facts_packet(c, cache_only.get(c["place_id"]), today)
+        sp = specifics(c, today, fs)
         total += 1
-        s = by_seg.setdefault(c["segment"], [0, 0, 0])
+        s = by_seg.setdefault(c["segment"], [0, 0, 0, 0])      # with an address, qualify, two faults, excluded
         s[0] += 1
-        for it in pk:
+        for it in fs + fact_items(c, today):
             keys[it["key"]] = keys.get(it["key"], 0) + 1
-        one += len(pk) == 1
-        if len(pk) >= 2:
+        if not sp:
+            continue
+        if reason:
+            s[3] += 1
+            excl[reason.split(" (")[0]] = excl.get(reason.split(" (")[0], 0) + 1
+            continue
+        qual += 1
+        s[1] += 1
+        if len(fs) >= 2:
             two += 1
-            s[1] += 1
-            s[2] += excluded
-            if not excluded:
-                by_city[c["town"] or "?"] = by_city.get(c["town"] or "?", 0) + 1
-                g = (c["segment"], c["town"] or "?", c.get("category") or "?")
-                by_group[g] = by_group.get(g, 0) + 1
+            s[2] += 1
+        by_city[c["town"] or "?"] = by_city.get(c["town"] or "?", 0) + 1
+        t = (c["segment"], c.get("category") or "?")
+        by_trade[t] = by_trade.get(t, 0) + 1
+    trades = sorted(by_trade.items(), key=lambda kv: -kv[1])
     if args.json:
-        print(json.dumps({"date": today.isoformat(), "with_address": total, "two_or_more": two, "exactly_one": one,
-                          "by_segment": {k: {"with_address": v[0], "two_or_more": v[1], "excluded": v[2]}
-                                         for k, v in by_seg.items()},
-                          "by_city": by_city, "fault_keys": keys,
-                          "groups": [{"segment": g[0], "city": g[1], "category": g[2], "n": n}
-                                     for g, n in sorted(by_group.items(), key=lambda kv: -kv[1])]}, indent=1))
+        print(json.dumps({"date": today.isoformat(), "with_address": total, "qualify": qual, "two_faults": two,
+                          "by_segment": {k: {"with_address": v[0], "qualify": v[1], "two_faults": v[2],
+                                             "excluded": v[3]} for k, v in by_seg.items()},
+                          "excluded": excl, "by_city": by_city, "keys": keys,
+                          "trades": [{"segment": t[0], "category": t[1], "n": n} for t, n in trades]}, indent=1))
         return
-    print(f"Email lane, {today}: {total} businesses with a usable address (MX ok, not tied by the page title alone); "
-          f"{two} have two faults or more, {one} exactly one (stored site facts + listings cached this week; "
-          f"nothing read live, so `--live` can find a second fault only among the {one})")
+    print(f"Email lane, {today}: {total} businesses with a usable address (MX ok, not tied by the page title alone). "
+          f"{qual} qualify (two true specifics, at least one a fault, after the exclusions); {two} of them with two "
+          f"faults. Stored site facts, listings cached this week and the census's Google standing (read within "
+          f"{FACT_MAX_AGE_DAYS} days); nothing read live.")
     for seg, v in sorted(by_seg.items(), key=lambda kv: -kv[1][0]):
-        print(f"  {seg:<11} {v[0]:>5} with an address · {v[1]:>4} with two+ faults · {v[2]} of them excluded "
-              f"(held, pipeline, client, chain)")
-    print("By city (two+ faults, not excluded): " + ", ".join(
-        f"{k} {v}" for k, v in sorted(by_city.items(), key=lambda kv: -kv[1])[:15]))
-    print("Biggest batches (trade in a city): " + ", ".join(
-        f"{g[2]} in {g[1]} {n}" for g, n in sorted(by_group.items(), key=lambda kv: -kv[1])[:10]))
-    print("Fault keys (true of how many): " + ", ".join(
+        print(f"  {seg:<11} {v[0]:>5} with an address · {v[1]:>4} qualify · {v[2]:>3} with two faults · "
+              f"{v[3]} more would qualify but are excluded")
+    if excl:
+        print("Excluded although they'd qualify: " + ", ".join(f"{v} {k}" for k, v in sorted(excl.items(), key=lambda kv: -kv[1])))
+    print("Batches by trade, across the corridor (top 15): " + ", ".join(f"{t[1]} ({t[0]}) {n}" for t, n in trades[:15]))
+    print("By city: " + ", ".join(f"{k} {v}" for k, v in sorted(by_city.items(), key=lambda kv: -kv[1])[:15]))
+    print("True of how many (faults and facts, before exclusions): " + ", ".join(
         f"{k} {v}" for k, v in sorted(keys.items(), key=lambda kv: -kv[1])))
 
 
@@ -6282,10 +6366,10 @@ def main():
     pv.add_argument("--look", help="the look (css/looks/<look>.css): overrides content.json's, or picks one for NAME")
     pv.set_defaults(fn=cmd_preview)
 
-    bt = sub.add_parser("batch", help="the email lane's batch (B90): fifty or fewer in one trade and one city, each with "
-                                      "its address and two true faults; --stats sizes the lane")
+    bt = sub.add_parser("batch", help="the email lane's batch (B90): fifty or fewer in one trade, each with its address "
+                                      "and two true specifics (a fault first); --stats sizes the lane")
     bt.add_argument("--segment", choices=SEGMENTS, help="default services")
-    bt.add_argument("--city", help="one city (the listing's locality), e.g. Lehi; `any` for one trade across every city")
+    bt.add_argument("--city", help="narrow to one city (the listing's locality), e.g. Lehi; default the whole corridor")
     bt.add_argument("--category", help="one trade as the census names it, e.g. plumber, roofing, house cleaning; "
                                        "`any` for every trade in the city")
     bt.add_argument("--n", type=int, default=BATCH_MAX, help=f"at most this many (default and ceiling {BATCH_MAX})")

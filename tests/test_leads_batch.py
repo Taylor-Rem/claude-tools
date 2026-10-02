@@ -93,7 +93,8 @@ B = [
     ("FX_B16", "Quail Plumbing", "plumber", "Lehi", "info@quailplumbing.example", "own-domain", OWN, "ok",
      dict(year=YEAR - 9, form=0)),
 ]
-IN_LEHI_PLUMBERS = {"FX_B01", "FX_B02", "FX_B06", "FX_B07", "FX_B08", "FX_B16"}
+# Quail qualifies on the stored facts (© nine years back) but its page now reads "© <then>-<yy>": out on a second look
+IN_LEHI_PLUMBERS = {"FX_B01", "FX_B02", "FX_B06", "FX_B07", "FX_B08"}
 CONTRACT_TOP = {"batch_id", "date", "segment", "category", "city", "picks"}
 CONTRACT_PICK = {"place_id", "name", "category", "segment", "city", "phone", "site_url", "maps_url", "rating",
                  "reviews", "email", "email_kind", "email_evidence", "email_why", "faults"}
@@ -107,6 +108,20 @@ if sys.argv[1:] == ["suppress", "ls", "--json"] and os.environ.get("FAKE_SUPPRES
 print("usage: outreach suppress add|ls", file=sys.stderr)
 sys.exit(2)
 '''
+
+
+def page_fixture(path):
+    """Each fixture site's home page as a batch re-reads it: the stored year, except Quail's range to this year."""
+    pages = {}
+    for pid, name, cat, loc, addr, kind, why, mx, f in B:
+        dom = addr.split("@")[1] if kind == "own-domain" else f"{pid.lower()}.example"
+        home = f.get("final") or f"https://{dom}/"
+        yr = f.get("year")
+        foot = (f"Copyright © {yr}-{YEAR % 100:02d} {name}" if pid == "FX_B16" else
+                f"<footer>&copy; {yr} {name}. All rights reserved.</footer>" if yr else "<footer>Thanks</footer>")
+        pages.setdefault(home, f"<html><body><h1>{name}</h1>{foot}</body></html>")
+    path.write_text(json.dumps(pages))
+    return path
 
 
 def build_census(path):
@@ -185,6 +200,7 @@ class BatchTest(unittest.TestCase):
                     "LEADS_SEGMENT": "services", "PROJECTS_DIR": str(t / "projects"),
                     "LEADS_CLIENTS_DIR": str(t / "clients"), "LEADS_OUTREACH_BIN": str(t / "bin" / "outreach"),
                     "OUTREACH_STATE": str(t / "outreach"),
+                    "LEADS_PAGE_FIXTURE": str(page_fixture(t / "pages.json")),
                     "FAKE_SUPPRESS": json.dumps([{"value": "juniperplumbing.example", "kind": "domain"}]),
                     "LEADS_KIT_PREVIEWS": ""}
 
@@ -236,6 +252,8 @@ class BatchTest(unittest.TestCase):
                      "Alpine Plumbing South", "Moab", "Nephi"):
             self.assertNotIn(name, r.stdout, name)
         self.assertIn("no fault to name", r.stdout)
+        self.assertNotIn("Quail", r.stdout)
+        self.assertIn("1 left out on a second look", r.stdout)
         self.assertIn("in the pipeline", r.stdout)
         self.assertIn("suppressed", r.stdout)
         self.assertIn("a client", r.stdout)
@@ -299,6 +317,24 @@ class BatchTest(unittest.TestCase):
         self.assertEqual((b["city"], b["category"]), ("corridor", "plumber"))
         self.assertRegex(b["batch_id"], r"-services-corridor-plumber-1$")
         self.assertEqual({p["place_id"] for p in b["picks"]}, IN_LEHI_PLUMBERS | {"FX_B14"})
+
+    def test_site_faults_only_on_their_own_home_page(self):
+        m = leads_module(self.env)
+        ok = m.own_home_page
+        self.assertTrue(ok("https://alpine.example/?utm_source=google", "https://www.alpine.example/"))
+        self.assertTrue(ok("http://alpine.example/home", None))
+        self.assertFalse(ok("https://planetbeach.com/spa/layton/", "https://www.sol-spa.net/spa-locator"))
+        self.assertFalse(ok("https://www.discoverstrength.com/draper", "https://www.discoverstrength.com/draper"))
+        self.assertFalse(ok("https://old.example/", "https://new.example/"))
+
+    def test_copyright_read_again(self):
+        m = leads_module(self.env)
+        for html, want in (("© 2019-26 Bullett", None), ("Copyright 2019 – 2026", None), ("© 2019", 2019),
+                           ("&copy; 2018 a &copy; 2021 b", 2021),
+                           ("© <script>document.write(new Date().getFullYear())</script> 2015", None),
+                           ("no line at all", None)):
+            y, _ = m._copyright_in(html)
+            self.assertEqual(y if (y and y <= YEAR - 3) else None, want, html)
 
     def test_stats(self):
         r = self.run_leads("batch", "--stats", "--segment", "services", "--json")

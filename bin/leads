@@ -141,6 +141,8 @@ Config, by name, never printed:
   LEADS_LIVE_READS_PER_DAY  listing reads `leads batch --live` may make a day (default 100, ~$0.025 each)
   LEADS_CLIENTS_DIR     the client workspaces whose addresses, domains and phones a batch keeps out (~/projects/clients)
   LEADS_OUTREACH_BIN    the `outreach` a batch asks for the suppression list (beside this file)
+  LEADS_PAGE_CHECK      =0: a batch doesn't re-read a pick's page, so an old copyright year is never said;
+                        LEADS_PAGE_FIXTURE a JSON {url: html} (tests)
   LEADS_PIPELINE        the pipeline, one event per line (default
                         ~/projects/private-docs/leads/pipeline.jsonl: backed up
                         nightly, in no repo — it holds names and numbers). The
@@ -5305,10 +5307,113 @@ def batch_rows(segments):
     return out
 
 
+# The copyright year is read again from the page before a letter says it (B90's spot check: Bullett Electric's
+# "© 2019-26" was stored as 2019, because B89's pattern takes a range's end only when it has four digits, and a page
+# changes after a crawl). Only the picks a batch keeps are read, one request each, cached a week.
+COPY_LINE_RE = re.compile(r"(?:©|&copy;|&#169;|\(c\)|copyright)\s*(?:by\s*)?((?:19|20)\d{2})"
+                          r"(?:\s*(?:[-–—/]|&ndash;|&mdash;|&#8211;|to|through)\s*(\d{4}|\d{2})(?!\d))?", re.I)
+_COPY = None
+
+
+def copyright_now(url, today):
+    """(latest year the page's copyright lines show, why) or (None, why) when unsure: the page didn't answer, no
+    copyright line on it now, or a script writes the year (what the visitor sees is then the current one).
+    LEADS_PAGE_FIXTURE is a JSON {url: html} for tests; LEADS_PAGE_CHECK=0 turns the reads off (nothing is said)."""
+    global _COPY
+    if not url:
+        return None, "no url"
+    fx = os.environ.get("LEADS_PAGE_FIXTURE")
+    html = None
+    if fx:
+        try:
+            html = json.loads(Path(fx).read_text()).get(url)
+        except (OSError, ValueError):
+            html = None
+        if html is None:
+            return None, "fixture: no page"
+    elif os.environ.get("LEADS_PAGE_CHECK") == "0":
+        return None, "page reads off"
+    else:
+        path = STATE / "copyright.json"
+        if _COPY is None:
+            try:
+                _COPY = json.loads(path.read_text())
+            except (OSError, ValueError):
+                _COPY = {}
+        row = _COPY.get(url)
+        if row and row.get("checked", "") >= (today - dt.timedelta(days=CACHE_DAYS)).isoformat():
+            return row.get("year"), row.get("why") or ""
+        try:
+            req = urllib.request.Request(url, headers={
+                "User-Agent": "claude-tools/leads (Patchlamp; one page read to confirm a fact before it is said)"})
+            with urllib.request.urlopen(req, timeout=12) as r:
+                html = r.read(3_000_000).decode("utf-8", "replace")
+        except Exception as exc:          # noqa: BLE001 — any failure is "unsure", and unsure is never said
+            html, why = None, f"unsure ({type(exc).__name__})"
+        if html is not None:
+            year, why = _copyright_in(html)
+        else:
+            year = None
+        _COPY[url] = {"year": year, "why": why, "checked": today.isoformat()}
+        try:
+            STATE.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(_COPY, indent=0, sort_keys=True) + "\n")
+        except OSError:
+            pass
+        return year, why
+    return _copyright_in(html)
+
+
+def _copyright_in(html):
+    if re.search(r"getFullYear|getUTCFullYear", html):
+        return None, "a script writes a year on the page"
+    latest = None
+    for a, b in COPY_LINE_RE.findall(html):
+        y = int(a)
+        if b:
+            e = int(b) if len(b) == 4 else y // 100 * 100 + int(b)
+            y = max(y, e) if e <= y + 60 else y
+        latest = y if latest is None else max(latest, y)
+    return (latest, f"the page shows © {latest}") if latest else (None, "no copyright line on the page now")
+
+
+def confirm_packet(c, today):
+    """Re-read what the stored facts said and could have changed (the copyright year); drop a fault the page no
+    longer bears out and recompute the two specifics. True when the business still qualifies."""
+    items = []
+    for f in c["all_faults"]:
+        if f["key"] == "old_copyright":
+            y, why = copyright_now(f["evidence"], today)
+            if not y or y > today.year - OLD_YEAR_GAP:
+                c.setdefault("dropped", []).append(f"old_copyright ({why})")
+                continue
+            f = dict(f, sentence=f"the copyright line on your site says © {y}", year=y)
+        items.append(f)
+    c["all_faults"] = items
+    c["packet"] = specifics(c, today, items)
+    return bool(c["packet"])
+
+
+HOME_PATHS = {"", "/", "/home", "/home/", "/index.html", "/index.htm", "/index.php", "/en", "/en/"}
+
+
+def own_home_page(listed, landed):
+    """True when the page the crawl read is this business's own home page: the listing links a home path and the
+    link lands on the same host. A location page on a bigger site (planetbeach.com/spa/layton, a franchise's
+    /draper) or a link that lands on another domain is the organisation's page, not theirs, so its copyright line
+    and layout aren't said as "your site" (B90's spot check: Planet Beach Layton landed on sol-spa.net)."""
+    if not listed:
+        return False
+    path = urllib.parse.urlsplit(listed if "://" in listed else "http://" + listed).path.lower()
+    return path in HOME_PATHS and (not landed or host_of(landed) == host_of(listed))
+
+
 def site_fault_items(c, today):
     """The faults the stored site facts make true, each {key, sentence, evidence}."""
     f = c.get("facts")
     if not f:
+        return []
+    if not own_home_page(c.get("website") or f.get("url"), f.get("final_url")):
         return []
     out = []
     home_url = strip_tracking(f.get("final_url") or f.get("url") or "")
@@ -5726,8 +5831,19 @@ def cmd_batch(args):
     for c in picks:
         groups.setdefault(((c.get("town") or "?") if city else "corridor",
                            "any" if any_cat else (c.get("category") or "?")), []).append(c)
-    (town, cat), chosen = max(groups.items(), key=lambda kv: (len(kv[1]), kv[0][0] != "?"))
-    chosen = chosen[:n]
+    (town, cat), group = max(groups.items(), key=lambda kv: (len(kv[1]), kv[0][0] != "?"))
+    chosen, second_look = [], 0
+    for c in group:                     # the stored facts, read again from the page before a letter says them
+        if len(chosen) >= n:
+            break
+        if confirm_packet(c, today):
+            chosen.append(c)
+        else:
+            second_look += 1
+    if not chosen:
+        die(f"no {seg} {cat} is left once the pages are read again ({second_look} of them no longer bear the fault "
+            f"out; also {', '.join(f'{v} {k}' for k, v in sorted(skipped.items(), key=lambda kv: -kv[1])) or 'nothing else'}"
+            f"); try another --category")
     prefix = f"{today.isoformat()}-{seg}-{slugify(town)}-{slugify(cat)}"
     seq = 1 + sum(1 for b in batches_log() if str(b.get("batch_id") or "").startswith(prefix + "-"))
     bid = f"{prefix}-{seq}"
@@ -5741,6 +5857,9 @@ def cmd_batch(args):
     if others:
         notes.append("next biggest: " + ", ".join(f"{k[1]}" + (f" in {k[0]}" if city else "") + f" ({m})"
                                                   for m, k in others))
+    if second_look:
+        notes.append(f"{second_look} left out on a second look: the page no longer shows the old copyright year "
+                     f"(a range to this year, a script-written year, or changed since the crawl)")
     left_out = {k: v for k, v in skipped.items()}
     if left_out:
         notes.append("left out: " + ", ".join(f"{v} {k}" for k, v in sorted(left_out.items(), key=lambda kv: -kv[1])))

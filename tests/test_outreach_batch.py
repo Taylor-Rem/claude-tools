@@ -776,6 +776,29 @@ class Replies(ReplyWorld):
         cursor = json.loads((self.tmp / "state" / "cursor.json").read_text())
         self.assertEqual(3, cursor["ignored"])
 
+    def test_a_probe_goes_from_every_mailbox_and_its_reply_is_shown_never_classified(self):
+        # `outreach probe ADDRESS` (2026-10-02): the same builder and SMTP path, no send row; a reply
+        # to it is recognised by its Message-ID, told to Taylor, and never treated as a lead's.
+        before = len(Mail.sent)
+        r = self.run_it("probe", "taylor.own@example.com")
+        self.assertIn("3 of 3 sent", r.stdout)
+        probes = [m for m in Mail.sent[before:]]
+        self.assertEqual(3, len(probes))
+        self.assertEqual(3, len(self.state_rows("probes.jsonl")))
+        self.assertEqual(6, len(self.state_rows("sends.jsonl")), "a probe is not a send")
+        box, raw = probes[0]["user"], parsed(probes[0]["raw"])
+        Mail.deliver(box, reply_raw("Taylor Remund <taylor.own@example.com>", box, "test 1", "this",
+                                    in_reply_to=raw["Message-ID"], references=raw["Message-ID"]))
+        r = self.inbox(ANTHROPIC_KEY_OUTREACH="sk-ant-FAKEkeyNEVERreal", ANTHROPIC_API_BASE="http://127.0.0.1:1")
+        self.assertIn("1 new reply", r.stdout)
+        self.assertIn("probe reply from taylor.own@example.com", r.stdout)
+        rows = self.state_rows("replies.jsonl")
+        self.assertEqual(["probe"], [x["class"] for x in rows])
+        self.assertEqual(1, len(self.calls("notify")))
+        self.assertEqual(len(Mail.sent), before + 3, "a probe reply is never answered by the machine")
+        self.assertEqual([], self.state_rows("suppress.jsonl"))
+        self.assertEqual({"active"}, {x["status"] for x in self.seqs()})
+
     def test_each_message_is_read_once(self):
         box, msg = self.letter_to(0)
         Mail.deliver(box, reply_raw(self.p[0]["email"], box, f"Re: {msg['Subject']}", "hmm",

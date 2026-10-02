@@ -1207,6 +1207,9 @@ class Google(Provider):
         address of ours."""
         sends = read_jsonl(sends_file())
         by_mid = {r["message_id"]: r for r in sends if r.get("message_id")}
+        probes = read_jsonl(probes_file())
+        probe_mids = {r["message_id"]: r for r in probes if r.get("message_id")}
+        probe_addrs = {str(r.get("email") or "").lower(): r for r in probes if r.get("email")}
         by_addr = {}
         for r in sends:
             if r.get("email"):
@@ -1264,6 +1267,10 @@ class Google(Provider):
                 how = "thread"
                 if row is None:
                     row, how = by_addr.get(frm), "address"
+                if row is None:
+                    pr = next((probe_mids[x] for x in refs if x in probe_mids), None) or probe_addrs.get(frm)
+                    if pr is not None:
+                        row, how = pr, "probe"     # an answer to `outreach probe`: shown, never a lead
                 if row is None:
                     ignored += 1               # warm-up traffic or anything else: never a reply
                     continue
@@ -1460,6 +1467,12 @@ def kit_json(path=None, free=False):
 
 
 # ---- caps and the kill switch ---------------------------------------------------
+
+def probes_file():
+    """`outreach probe`'s test mails (2026-10-02): Message-ID, mailbox and address, so a reply to one
+    is recognised as ours and shown to Taylor, never classified as a lead's."""
+    return state_dir("probes.jsonl")
+
 
 def sends_file():
     return state_dir("sends.jsonl")
@@ -2883,6 +2896,16 @@ def cmd_inbox(args):
     if args.limit:
         replies = replies[: int(args.limit)]
     for r in replies:
+        if r.get("matched_by") == "probe":
+            first200 = " ".join(quoted_off(r.get("text") or "").split())[:200]
+            say(f"\nprobe reply from {r.get('from')} to {r.get('mailbox')}: {first200}")
+            if not DRY:
+                notify(f"Probe reply from {r.get('from')} (to {r.get('mailbox')}): {first200}")
+                append_jsonl(replies_file(), {"ts": now_iso(), "date": today().isoformat(), "email_id": r.get("id"),
+                                              "thread_id": r.get("thread_id"), "from": r.get("from"), "name": "probe",
+                                              "place_id": None, "class": "probe", "ai": False, "answered": False,
+                                              "text": first200, "email": r.get("from"), "mailbox": r.get("mailbox")})
+            continue
         name, pid, email, first = who_replied(r)
         got = classify(r)
         if got["class"] == "yes" and seq_for(email, r.get("our_message_id")) is None:
@@ -3220,11 +3243,47 @@ def cmd_approve(args):
     say("Whoever ran this command approved it; it is Taylor's step, and the file records the exact hash.")
 
 
+def probe_replies(args):
+    """`outreach probe --replies`: today's mail in each mailbox read afresh (the inbox cursor is not
+    moved or consulted), and every message that answers a probe or comes from a probed address is
+    printed. Read-only; nothing is classified, notified or written."""
+    probes = read_jsonl(probes_file())
+    if not probes:
+        die("no probes on record; `outreach probe ADDRESS` first")
+    mids = {r["message_id"] for r in probes if r.get("message_id")}
+    addrs = {str(r.get("email") or "").lower() for r in probes if r.get("email")}
+    since = min((r.get("date") for r in probes if r.get("date")), default=today().isoformat())
+    boxes = [args.mailbox] if getattr(args, "mailbox", None) else mailboxes()
+    imap = toolbelt("OUTREACH_IMAP_HOST", "imap.gmail.com:993")
+    found = 0
+    for mb in boxes:
+        pw = toolbelt(password_name(mb))
+        if not pw:
+            say(f"  {mb}: {password_name(mb)} isn't set — skipped"); continue
+        try:
+            _uv, msgs = mail.imap_fetch_new(imap, mb, pw, last_uid=None, uidvalidity=None,
+                                            since=dt.date.fromisoformat(since))
+        except mail.MailError as exc:
+            say(f"  {mb}: {exc}"); continue
+        for _uid, raw in msgs:
+            p = mail.parse_incoming(raw)
+            frm = (p.get("from") or "").lower()
+            refs = list(p.get("in_reply_to") or []) + list(p.get("references") or [])
+            if not (any(x in mids for x in refs) or frm in addrs):
+                continue
+            found += 1
+            text = " ".join(quoted_off(p.get("text") or "").split())[:300]
+            say(f"\n{mb}  <-  {p.get('from')}  ·  {p.get('date') or ''}\n  {p.get('subject') or ''}\n  {text}")
+    say(f"\n{found} repl{'y' if found == 1 else 'ies'} to the probes" if found else "No replies to the probes yet.")
+
+
 def cmd_probe(args):
+    if getattr(args, "replies", False):
+        return probe_replies(args)
     """One plain test mail from each mailbox (or --mailbox) to an address Taylor names.
     The same builder and SMTP path a letter uses; nothing is logged as a send, no pipeline row,
     no ledger line. Only Taylor asks for it (it writes to a real inbox)."""
-    to = args.to
+    to = args.to or ""
     if "@" not in to:
         die(f"{to!r} isn't an address")
     boxes = [args.mailbox] if getattr(args, "mailbox", None) else mailboxes()
@@ -3250,6 +3309,8 @@ def cmd_probe(args):
         except mail.MailError as exc:
             say(f"  {mb}: FAILED — {exc}"); continue
         say(f"  {mb} -> {to}: sent ({mid})"); ok += 1
+        append_jsonl(probes_file(), {"ts": now_iso(), "date": today().isoformat(), "mailbox": mb,
+                                     "email": to.lower(), "message_id": mid})
     say(f"{ok} of {len(boxes)} sent" + (" (dry run)" if DRY else ""))
     if ok != len(boxes):
         sys.exit(1)
@@ -3493,8 +3554,9 @@ def main():
     s.set_defaults(fn=cmd_approve)
 
     s = sub.add_parser("probe", parents=[common], help="one plain test mail from each mailbox to an address (Taylor's ask)")
-    s.add_argument("to")
+    s.add_argument("to", nargs="?")
     s.add_argument("--mailbox", help="just this one")
+    s.add_argument("--replies", action="store_true", help="read today's mail afresh and print the answers to the probes")
     s.set_defaults(fn=cmd_probe)
 
     s = sub.add_parser("doctor", parents=[common])

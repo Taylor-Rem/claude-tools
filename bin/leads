@@ -52,6 +52,8 @@ B25 (the remote lane), B7 (the pipeline: log, follow-ups, the week).
                                # and two true specifics, a fault first; held 56 days once printed. --stats sizes it,
                                # --last reprints, --live reads a listing one fault short (capped a day)
   leads preview --place PLACE_ID --json   # one business's preview as one JSON object with its url (B90)
+  leads preview --from-press HASH --json  # a press on a letter's link: build or reuse, the brief on a first press (B91)
+  leads preview --press-tokens --json     # the links the see page may answer for, active or removed (B91)
   leads doctor
 
 Preview sites (B45, plan ~/projects/plans/19-preview-sites.md): the segment's
@@ -3392,6 +3394,161 @@ def preview_place_json(args):
         sys.exit(2)
 
 
+# ---- the press link (B91, ~/projects/plans/41-the-press-link.md) ------------------------------------------------
+#
+# The second and third batch letters carry `OUTREACH_LINK_BASE/<token>`, the token `outreach` minted per business
+# (`secrets.token_urlsafe(9)` in its state dir's sequences.json, read here and never written). The page on the
+# sending domain knows only sha256(token). Two calls, both one JSON object on stdout, made by the relay's
+# press poll (sms-relay/relay/press.py), never by a timer of their own:
+#
+#   leads preview --press-tokens --json      {"ok", "links": [{"hash", "state": active|removed}]} for every
+#                                            sequence with a token; removed = its address, the address's domain,
+#                                            or its place is suppressed. No list without the suppression list.
+#   leads preview --from-press HASH|TOKEN --json
+#                                            {"ok", "state": ready|removed|unknown|failed, "url", "reused",
+#                                            "place_id", "name", "city", "first", "brief", "why"}
+#                                            ready: an unclaimed preview under its 30 days is reused, else one is
+#                                            built and published as `--place` does. first: this business's first
+#                                            press (presses.jsonl in the state dir), which carries the brief for
+#                                            Taylor's notify and logs the lead as interested, once.
+
+def press_hash(token):
+    return hashlib.sha256(str(token).encode()).hexdigest()
+
+
+def press_sequences():
+    """outreach's sequences, read-only (its OUTREACH_STATE, the same default as outreach's)."""
+    d = Path(os.environ.get("OUTREACH_STATE") or Path.home() / ".local/state/claude-tools/outreach")
+    try:
+        data = json.loads((d / "sequences.json").read_text())
+    except FileNotFoundError:
+        return []
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"{d / 'sequences.json'}: {exc}")
+    return [x for x in data if isinstance(x, dict) and x.get("token")] if isinstance(data, list) else []
+
+
+def press_removed(seq, supp):
+    e = str(seq.get("email") or "").strip().lower()
+    dom = e.split("@", 1)[1] if "@" in e else ""
+    vals = {v for v in (e, dom, "@" + dom if dom else "", str(seq.get("place_id") or "").strip().lower()) if v}
+    return bool(supp & vals)
+
+
+def press_out(obj, code=0):
+    print(json.dumps(obj, indent=1))
+    sys.exit(code)
+
+
+def press_tokens(args):
+    supp, where = suppressed()
+    if supp is None:
+        press_out({"ok": False, "links": [], "why": where}, 2)          # never a list that forgets who said no
+    try:
+        seqs = press_sequences()
+    except RuntimeError as exc:
+        press_out({"ok": False, "links": [], "why": str(exc)}, 2)
+    links, seen = [], set()
+    for q in seqs:
+        h = press_hash(q["token"])
+        if h in seen:
+            continue
+        seen.add(h)
+        links.append({"hash": h, "state": "removed" if press_removed(q, supp) else "active"})
+    press_out({"ok": True, "links": links, "count": len(links)})
+
+
+def press_log():
+    return STATE / "presses.jsonl"
+
+
+def press_seen(place_id):
+    p = press_log()
+    if not p.exists():
+        return False
+    for line in p.read_text().splitlines():
+        try:
+            if json.loads(line).get("place_id") == place_id:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def press_self(*argv, timeout=120):
+    """Run this same leads (the brief, the log) as its own process, so each keeps its own exits and output."""
+    try:
+        r = subprocess.run([sys.executable, str(Path(__file__).resolve()), *argv], capture_output=True, text=True,
+                           timeout=timeout)
+        return r.returncode, (r.stdout or "").strip(), (r.stderr or "").strip()
+    except (OSError, subprocess.SubprocessError) as exc:
+        return 1, "", f"{type(exc).__name__}: {exc}"
+
+
+def press_build(args, pid):
+    """(url, reused, why). An unclaimed preview still inside its days is reused; else the `--place` build."""
+    today = now_date()
+    have = next((m for m in previews_all() if m.get("place_id") == pid and not m.get("claimed")), None)
+    if have and have.get("url") and str(have.get("expires") or "") >= today.isoformat():
+        return have["url"], True, None
+    args.place, args.name, args.kit = pid, [], False
+    try:
+        with contextlib.redirect_stdout(sys.stderr):
+            rows = preview_rows_for(args)
+            made, ok = make_previews(rows, hero=args.hero, days=args.days, publish=not args.no_publish,
+                                     dry=args.dry_run, look=args.look)
+    except SystemExit as exc:
+        return None, False, f"leads stopped (exit {exc.code}); its reason is on stderr"
+    except Exception as exc:  # noqa: BLE001 — a failed build is an answer, not a crash
+        return None, False, f"{type(exc).__name__}: {str(exc)[:200]}"
+    if not made:
+        return None, False, "nothing was built"
+    if not ok:
+        return None, False, "the publish failed"
+    if args.no_publish or args.dry_run:
+        return made[0]["url"], False, "built, not published (--no-publish or --dry-run)"
+    return made[0]["url"], False, None
+
+
+def press_answer(args):
+    raw = (args.from_press or "").strip()
+    h = raw.lower() if re.fullmatch(r"[0-9a-fA-F]{64}", raw) else press_hash(raw)
+    out = {"ok": False, "state": "unknown", "hash": h, "url": None, "reused": False, "place_id": None,
+           "name": None, "city": None, "first": False, "brief": None, "why": None}
+    try:
+        seq = next((q for q in press_sequences() if press_hash(q["token"]) == h), None)
+    except RuntimeError as exc:
+        press_out(dict(out, state="failed", why=str(exc)), 2)
+    if not seq:
+        press_out(dict(out, why="no letter carries this link"))
+    pid, name = seq.get("place_id"), clean_name(seq.get("name") or "")
+    out.update(place_id=pid, name=name, city=seq.get("city"))
+    supp, where = suppressed()
+    if supp is None:
+        press_out(dict(out, state="failed", why=f"the suppression list can't be read: {where}"), 2)
+    if press_removed(seq, supp):
+        press_out(dict(out, state="removed", why="the address, its domain or the place is suppressed"))
+    if not pid:
+        press_out(dict(out, state="failed", why="the letter's sequence has no place id"), 2)
+    url, reused, why = press_build(args, pid)
+    published = bool(url) and not (args.no_publish or args.dry_run)
+    out.update(url=url, reused=reused, why=why,
+               state="ready" if url else "failed", ok=bool(url) and (published or reused))
+    if not press_seen(pid) and not (args.no_publish or args.dry_run):
+        STATE.mkdir(parents=True, exist_ok=True)
+        with open(press_log(), "a") as f:
+            f.write(json.dumps({"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "place_id": pid, "name": name,
+                                "hash": h, "state": out["state"], "url": url, "why": why}) + "\n")
+        out["first"] = True
+        note = f"pressed the link in the letter; preview: {url}" if url else f"pressed the link in the letter; the build failed: {why}"
+        code, _, err = press_self("log", name, "interested", note, "--place", pid, "--source", "email", "--next", "tomorrow")
+        if code != 0:
+            print(f"leads: the pipeline line wasn't written ({err[-160:]})", file=sys.stderr)
+        code, brief, err = press_self("brief", name, "--place", pid)
+        out["brief"] = brief if code == 0 and brief else None
+    press_out(out, 0 if out["state"] == "ready" else 2)
+
+
 def kit_previews(picks, build=False, publish=True):
     """Hang a preview link on each of the kit's picks: the one it already has, and with --previews
     one built for every pick that hasn't got one. Sets `preview_url` (or None) on each pick."""
@@ -3468,6 +3625,10 @@ def host_json(place_id):
 
 
 def cmd_preview(args):
+    if getattr(args, "press_tokens", False):
+        return press_tokens(args)
+    if getattr(args, "from_press", None):
+        return press_answer(args)
     if args.from_file:
         return preview_from(args)
     if args.remove:
@@ -6405,6 +6566,10 @@ def main():
                     help="render one content.json (plan 28 § Contracts) with the template's section library")
     pv.add_argument("--out", help="with --from: render into DIR and record nothing (else the previews tree + manifest)")
     pv.add_argument("--look", help="the look (css/looks/<look>.css): overrides content.json's, or picks one for NAME")
+    pv.add_argument("--from-press", metavar="HASH_OR_TOKEN",
+                    help="B91: a press on a letter's link; build or reuse that business's preview, one JSON object")
+    pv.add_argument("--press-tokens", action="store_true",
+                    help="B91: every letter link's sha256 and whether it is active or removed, one JSON object")
     pv.set_defaults(fn=cmd_preview)
 
     bt = sub.add_parser("batch", help="the email lane's batch (B90): fifty or fewer in one trade, each with its address "

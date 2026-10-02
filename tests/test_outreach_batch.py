@@ -909,6 +909,120 @@ class Replies(ReplyWorld):
 BUILD_LINE = "reply `build` and the full site is ready before you call"
 
 
+class CampaignInbox(ReplyWorld):
+    """B105: `outreach replies` is one list across the three mailboxes; `outreach reply` sends
+    Taylor's own words in the thread from the mailbox that owns it."""
+
+    def setUp(self):
+        super().setUp()
+        self.box0, m0 = self.letter_to(0)
+        self.box1, m1 = self.letter_to(1)
+        self.assertNotEqual(self.box0, self.box1, "the fixture should spread these two over two mailboxes")
+        self.m0 = m0
+        Mail.deliver(self.box0, reply_raw(f"Dan <{self.p[0]['email']}>", self.box0, f"Re: {m0['Subject']}",
+                                          "Can you call me Thursday afternoon?\n\nOn Mon someone wrote:\n> old",
+                                          in_reply_to=m0["Message-ID"], references=m0["Message-ID"],
+                                          msgid="<dan1@mail.example>"))
+        self.run_it("inbox", OUTREACH_NOW=f"{MONDAY}T15:00:00")
+        Mail.deliver(self.box1, reply_raw(self.p[1]["email"], self.box1, f"Re: {m1['Subject']}",
+                                          "Interesting. Tell me more, I'd like to talk.", in_reply_to=m1["Message-ID"],
+                                          msgid="<tim1@mail.example>"))
+        self.run_it("inbox", OUTREACH_NOW=f"{MONDAY}T15:10:00")
+        before = len(Mail.sent)
+        self.run_it("probe", "taylor.own@example.com", OUTREACH_NOW=f"{MONDAY}T15:15:00")
+        probe = Mail.sent[before]
+        Mail.deliver(probe["user"], reply_raw("taylor.own@example.com", probe["user"], "re probe", "got it",
+                                              in_reply_to=parsed(probe["raw"])["Message-ID"]))
+        self.run_it("inbox", OUTREACH_NOW=f"{MONDAY}T15:20:00")
+        self.assertEqual(3, len(self.state_rows("replies.jsonl")))
+        self.sent_before = len(Mail.sent)
+
+    def replies(self, *a, **over):
+        return self.run_it("replies", *a, OUTREACH_NOW=f"{MONDAY}T16:00:00", **over)
+
+    def test_replies_lists_every_thread_newest_first_with_the_letter_named(self):
+        out = self.replies().stdout
+        self.assertIn("3 threads", out)
+        i_probe, i_tim, i_dan = (out.index("taylor.own@example.com"), out.index("Timpanogos Plumbing"),
+                                 out.index("Summit Plumbing"))
+        self.assertLess(i_probe, i_tim)
+        self.assertLess(i_tim, i_dan)
+        self.assertIn(f"Summit Plumbing <{self.p[0]['email']}> · {self.box0}", out)
+        self.assertIn(f"letter: batch b-test-1, touch 0, sent {MONDAY}", out)
+        self.assertIn("Can you call me Thursday afternoon?", out)
+        self.assertNotIn("> old", out, "quoted text is cut off")
+        self.assertIn("probe · nothing to answer", out)
+        self.assertEqual(2, out.count("waiting on you"))
+        views = json.loads(self.replies("--json").stdout)
+        self.assertEqual(["probe", "Timpanogos Plumbing", "Summit Plumbing"], [v["name"] for v in views])
+        self.assertEqual({self.box0, self.box1}, {v["mailbox"] for v in views[1:]})
+
+    def test_open_and_count_show_only_what_waits_on_taylor(self):
+        out = self.replies("--open").stdout
+        self.assertIn("2 threads waiting on you", out)
+        self.assertNotIn("taylor.own@example.com", out)
+        self.assertEqual("2", self.replies("--open", "--count").stdout.strip())
+        self.assertIn("1 thread", self.replies("summit").stdout)
+        self.assertIn("No replies", self.replies("--since", "2026-10-20").stdout)
+
+    def test_reply_goes_from_the_threads_mailbox_in_the_thread_and_marks_it_answered(self):
+        r = self.run_it("reply", "summit", "Thursday at 2 works. I'll call you then.",
+                        OUTREACH_NOW=f"{MONDAY}T16:00:00")
+        self.assertIn("marked answered by Taylor", r.stdout)
+        self.assertEqual(self.sent_before + 1, len(Mail.sent))
+        m = Mail.sent[-1]
+        self.assertEqual(self.box0, m["user"])
+        am = parsed(m["raw"])
+        self.assertEqual("<dan1@mail.example>", am["In-Reply-To"])
+        self.assertIn("<dan1@mail.example>", am["References"])
+        self.assertIn(self.m0["Message-ID"], am["References"])
+        self.assertEqual(f"Re: {self.m0['Subject']}", am["Subject"])
+        body = am.get_content()
+        self.assertTrue(body.startswith("Thursday at 2 works. I'll call you then."))
+        self.assertIn(ADDRESS, body)
+        self.assertIn("801-555-0100", body)
+        self.assertNotIn(DISCLOSURE, body, "no template in Taylor's own reply")
+        rows = {x["name"]: x for x in self.state_rows("replies.jsonl")}
+        self.assertTrue(rows["Summit Plumbing"]["answered"])
+        self.assertEqual("taylor", rows["Summit Plumbing"]["answered_by"])
+        self.assertFalse(rows["Timpanogos Plumbing"]["answered"])
+        sends = [x for x in self.state_rows("sends.jsonl") if x.get("how") == "taylor-reply"]
+        self.assertEqual(1, len(sends))
+        self.assertEqual(self.box0, sends[0]["mailbox"])
+        self.assertEqual("stopped", {s["email"]: s for s in self.seqs()}[self.p[0]["email"]]["status"])
+        self.assertEqual("1", self.replies("--open", "--count").stdout.strip())
+        self.assertIn("answered by Taylor", self.replies("summit").stdout)
+        # his answer is not a cold send: the day's sends and the stop-rule counts don't include it
+        self.assertIn("sends today: 6", self.run_it("status", OUTREACH_NOW=f"{MONDAY}T16:00:00").stdout)
+        # and a second `reply summit` finds nothing open
+        r = self.run_it("reply", "summit", "again", expect=1, OUTREACH_NOW=f"{MONDAY}T16:05:00")
+        self.assertIn("isn't waiting on you", r.stderr + r.stdout)
+        self.assertEqual(self.sent_before + 1, len(Mail.sent))
+
+    def test_reply_refuses_a_suppressed_address_and_sends_nothing(self):
+        self.run_it("suppress", "add", self.p[1]["email"], "--reason", "asked by phone")
+        r = self.run_it("reply", "timpanogos", "Happy to talk.", expect=1, OUTREACH_NOW=f"{MONDAY}T16:00:00")
+        self.assertIn("suppressed", r.stderr)
+        self.assertIn("nothing sent", r.stderr)
+        self.assertEqual(self.sent_before, len(Mail.sent))
+        self.assertFalse({x["name"]: x for x in self.state_rows("replies.jsonl")}["Timpanogos Plumbing"]["answered"])
+
+    def test_reply_to_an_ambiguous_name_lists_the_threads_and_sends_nothing(self):
+        r = self.run_it("reply", "plumbing", "Hello", expect=2, OUTREACH_NOW=f"{MONDAY}T16:00:00")
+        self.assertIn("2 threads match", r.stdout)
+        self.assertIn("Summit Plumbing", r.stdout)
+        self.assertIn("Timpanogos Plumbing", r.stdout)
+        self.assertEqual(self.sent_before, len(Mail.sent))
+        self.assertEqual([], [x for x in self.state_rows("sends.jsonl") if x.get("how") == "taylor-reply"])
+
+    def test_dry_run_prints_the_reply_and_sends_and_marks_nothing(self):
+        r = self.run_it("reply", "summit", "Thursday works.", "--dry-run", OUTREACH_NOW=f"{MONDAY}T16:00:00")
+        self.assertIn(f"[dry-run] {self.box0}", r.stdout)
+        self.assertIn(ADDRESS, r.stdout)
+        self.assertEqual(self.sent_before, len(Mail.sent))
+        self.assertFalse(any(x.get("answered") for x in self.state_rows("replies.jsonl")))
+
+
 class BuildWord(ReplyWorld):
     """Taylor's `build` after an interested reply starts `prep one` for that business, and nothing else
     does: not the inbox pass, not the tick, not a lead whose reply says "build"."""

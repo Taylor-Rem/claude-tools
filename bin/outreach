@@ -17,6 +17,12 @@
   outreach resume MAILBOX | --lane        # Taylor's word after a pause or a stop
   outreach inbox [--dry-run]   # replies since the cursor: classified, the routine ones answered,
                                # the warm ones handed to Taylor with a brief
+  outreach replies [--open|--today|--since D|NAME] [--json|--count]
+                               # B105: every reply thread across the three mailboxes, newest first:
+                               # who, which mailbox, the letter they got, what they said, the class,
+                               # and whether the machine answered, Taylor did, or it waits on him
+  outreach reply NAME "words" [--any]   # B105: Taylor's own words in that thread, from its mailbox,
+                               # with his name, phone and the postal address; no template, no AI
   outreach build [NAME]        # B92, Taylor's word after an interested reply: `prep one` for that
                                # business, detached; the outline comes by notify. Nothing else starts it
   outreach suppress add hello@x.example | ChIJ…      # off the list for good, both channels
@@ -1110,7 +1116,7 @@ def cap_on(day=None):
 
 def sends_on(mailbox, day=None):
     stamp = (day or today()).isoformat()
-    return sum(1 for r in read_jsonl(sends_file())
+    return sum(1 for r in cold_sends()
                if r.get("date") == stamp and str(r.get("mailbox") or "").lower() == mailbox)
 
 
@@ -1303,7 +1309,7 @@ class Google(Provider):
         # counted since Taylor's last `outreach resume --lane`, as the stop rules are: a resume
         # starts the counting afresh, or the old bounces would stop the lane again at once
         since = resumed_at()
-        sends = [r for r in read_jsonl(sends_file()) if r.get("provider") == "google" and str(r.get("ts") or "") >= since]
+        sends = [r for r in cold_sends() if r.get("provider") == "google" and str(r.get("ts") or "") >= since]
         bounced = [b for b in read_jsonl(bounces_file()) if str(b.get("ts") or "") >= since]
         return {"sent": len(sends), "bounced": len(bounced), "replies": 0, "unsubscribed": 0, "complaints": None}
 
@@ -1482,6 +1488,17 @@ def replies_file():
     return state_dir("replies.jsonl")
 
 
+TAYLOR_REPLY = "taylor-reply"
+
+
+def cold_sends():
+    """The letters the lane sent, without Taylor's own answers (`outreach reply`, B105). His answer
+    is a row in sends.jsonl so a later reply still finds its thread, but it is a person writing back
+    to someone who wrote to him, not a cold send: it doesn't count against a mailbox's daily cap,
+    the day's sends, or the bounce and complaint rates the stop rules count."""
+    return [r for r in read_jsonl(sends_file()) if r.get("how") != TAYLOR_REPLY]
+
+
 def cursor_read():
     p = state_dir("cursor.json")
     try:
@@ -1501,13 +1518,14 @@ def cursor_write(cur):
 
 def sent_today(touch=None):
     stamp = today().isoformat()
-    rows = [r for r in read_jsonl(sends_file()) if r.get("date") == stamp]
+    rows = [r for r in cold_sends() if r.get("date") == stamp]
     return [r for r in rows if touch is None or int(r.get("touch", 0)) == int(touch)]
 
 
 def machine_replies_today():
     stamp = today().isoformat()
-    return [r for r in read_jsonl(replies_file()) if r.get("date") == stamp and r.get("answered")]
+    return [r for r in read_jsonl(replies_file()) if r.get("date") == stamp and r.get("answered")
+            and r.get("answered_by") != "taylor"]        # B105: Taylor's own replies aren't the machine's cap
 
 
 def answered_thread_today(thread_id):
@@ -1770,7 +1788,7 @@ def stop_reasons():
     """The lane's stop rules (Taylor, answer 2), counted from our own records since the last
     `outreach resume --lane`. Returns [reason, ...]; empty means the lane may run."""
     since = resumed_at()
-    sends = [r for r in read_jsonl(sends_file()) if str(r.get("ts") or "") >= since]
+    sends = [r for r in cold_sends() if str(r.get("ts") or "") >= since]
     bounces = [b for b in read_jsonl(bounces_file()) if str(b.get("ts") or "") >= since]
     cap = env_num("OUTREACH_BOUNCE_MAX_PCT", DEFAULT_BOUNCE_PCT)
     floor = int(env_num("OUTREACH_BOUNCE_MIN_SENDS", DEFAULT_BOUNCE_MIN_SENDS, int))
@@ -1812,7 +1830,7 @@ def stop_reasons():
 def stop_numbers():
     """The figures behind the stop rules, for `status` and `doctor`."""
     since = resumed_at()
-    sends = [r for r in read_jsonl(sends_file()) if str(r.get("ts") or "") >= since]
+    sends = [r for r in cold_sends() if str(r.get("ts") or "") >= since]
     bounces = [b for b in read_jsonl(bounces_file()) if str(b.get("ts") or "") >= since]
     window = int(env_num("OUTREACH_COMPLAINT_WINDOW", DEFAULT_COMPLAINT_WINDOW, int))
     last = sends[-window:]
@@ -2882,6 +2900,14 @@ def answer_for(topic):
     return {"price": "answer-price", "how": "answer-how"}.get(topic)
 
 
+def thread_fields(r):
+    """B105: what `outreach reply` needs to answer in the thread later — their subject, their
+    Message-ID and References, and the letter of ours they answered. Added fields; none renamed."""
+    return {"subject": r.get("subject") or "", "their_message_id": r.get("message_id"),
+            "references": [x for x in (r.get("references") or []) if x], "our_message_id": r.get("our_message_id"),
+            "mail_ts": r.get("ts")}
+
+
 def cmd_inbox(args):
     provider = pick_provider(args.provider)
     cap = int(env_num("OUTREACH_MAX_REPLIES_PER_DAY", DEFAULT_MAX_REPLIES, int))
@@ -2904,7 +2930,8 @@ def cmd_inbox(args):
                 append_jsonl(replies_file(), {"ts": now_iso(), "date": today().isoformat(), "email_id": r.get("id"),
                                               "thread_id": r.get("thread_id"), "from": r.get("from"), "name": "probe",
                                               "place_id": None, "class": "probe", "ai": False, "answered": False,
-                                              "text": first200, "email": r.get("from"), "mailbox": r.get("mailbox")})
+                                              "text": first200, "email": r.get("from"), "mailbox": r.get("mailbox"),
+                                              **thread_fields(r)})
             continue
         name, pid, email, first = who_replied(r)
         got = classify(r)
@@ -2917,7 +2944,7 @@ def cmd_inbox(args):
         row = {"ts": now_iso(), "date": today().isoformat(), "email_id": r.get("id"),
                "thread_id": r.get("thread_id"), "from": r.get("from"), "name": name, "place_id": pid,
                "class": cls, "topic": got.get("topic"), "when": got.get("when"), "ai": bool(got.get("ai")),
-               "answered": False, "text": first200, "email": email}
+               "answered": False, "text": first200, "email": email, **thread_fields(r)}
         sent_row = send_row_for(r) or {}
         mb = str(r.get("mailbox") or sent_row.get("mailbox") or "").lower() or None
         row["mailbox"], row["batch_id"] = mb, sent_row.get("batch_id")
@@ -3011,6 +3038,260 @@ def cmd_inbox(args):
         say("Nothing new. The cursor is where it was.")
 
 
+# ---- the campaign inbox (B105) ----------------------------------------------------
+# One window on the three mailboxes: `outreach inbox` already reads them all, keeps only what
+# answers a letter (warm-up mail never gets here) and logs each reply in replies.jsonl. These two
+# commands read that log and let Taylor answer in his own words. Mail is not forwarded to one box:
+# the warm-up pool writes twenty to forty mails a day into each, and a forward loses the identity
+# the thread was written from.
+
+# Classes nobody needs to answer: a no and an unsubscribe were suppressed, a bounce has nobody to
+# read it, an out-of-office isn't a person, a probe was Taylor testing the mailboxes.
+CLOSED_CLASSES = ("no", "unsubscribe", "angry", "bounce", "out of office", "probe")
+REPLIES_DAYS = 14
+
+
+def thread_key(r):
+    return r.get("thread_id") or str(r.get("email") or r.get("from") or "").lower() or r.get("email_id")
+
+
+def answered_by(r):
+    if r.get("answered_by") == "taylor":
+        return "taylor"
+    return "machine" if r.get("answered") else None
+
+
+def is_open(r):
+    """Waits on Taylor: a person wrote, nobody has answered, and it isn't a class with nothing to say."""
+    return not r.get("answered") and r.get("class") not in CLOSED_CLASSES
+
+
+def letter_for(r):
+    """The letter this reply answered, as a short phrase: batch, touch and date (or the probe)."""
+    if r.get("class") == "probe":
+        pr = next((p for p in read_jsonl(probes_file())
+                   if p.get("message_id") and p.get("message_id") == r.get("our_message_id")), None)
+        pr = pr or next((p for p in read_jsonl(probes_file()) if str(p.get("mailbox") or "").lower()
+                         == str(r.get("mailbox") or "").lower()), None)
+        return f"probe {pr.get('date')}" if pr else "probe"
+    sends = [x for x in read_jsonl(sends_file()) if x.get("how") != TAYLOR_REPLY]
+    row = None
+    mid = r.get("our_message_id")
+    if mid:
+        row = next((x for x in sends if x.get("message_id") == mid), None)
+    if row is None and r.get("thread_id"):
+        row = next((x for x in sends if x.get("thread_root") == r["thread_id"] or x.get("message_id") == r["thread_id"]), None)
+    if row is None:
+        e = str(r.get("email") or "").lower()
+        row = next((x for x in reversed(sends) if e and str(x.get("email") or "").lower() == e), None)
+    if row is None:
+        return "no letter on record"
+    what = f"batch {row['batch_id']}" if row.get("batch_id") else (row.get("template") or "kit letter")
+    return f"{what}, touch {int(row.get('touch') or 0)}, sent {row.get('date')}"
+
+
+def reply_threads(rows=None):
+    """One entry a thread, newest first: the newest reply in it decides its state."""
+    rows = read_jsonl(replies_file()) if rows is None else rows
+    by = {}
+    for r in rows:
+        k = thread_key(r)
+        if k is None:
+            continue
+        t = by.setdefault(k, {"key": k, "rows": []})
+        t["rows"].append(r)
+    out = []
+    for t in by.values():
+        t["rows"].sort(key=lambda x: str(x.get("ts") or ""))
+        t["last"] = t["rows"][-1]
+        out.append(t)
+    out.sort(key=lambda t: str(t["last"].get("ts") or ""), reverse=True)
+    return out
+
+
+def thread_matches(t, needle):
+    n = needle.strip().lower()
+    last = t["last"]
+    return any(n in str(last.get(f) or "").lower() for f in ("name", "email", "from"))
+
+
+def thread_view(t):
+    r = t["last"]
+    who = answered_by(r)
+    state = ("answered by Taylor" if who == "taylor" else "answered by the machine" if who == "machine"
+             else "waiting on you" if is_open(r) else "nothing to answer")
+    return {"name": r.get("name"), "from": r.get("from"), "email": r.get("email"), "mailbox": r.get("mailbox"),
+            "letter": letter_for(r), "date": r.get("date"), "ts": r.get("ts"), "class": r.get("class"),
+            "text": r.get("text") or "", "state": state, "open": is_open(r), "replies": len(t["rows"]),
+            "thread_id": r.get("thread_id"), "email_id": r.get("email_id"), "place_id": r.get("place_id")}
+
+
+def cmd_replies(args):
+    threads = reply_threads()
+    since = None
+    if args.today:
+        since = today().isoformat()
+    elif args.since:
+        try:
+            since = dt.date.fromisoformat(args.since).isoformat()
+        except ValueError:
+            die(f"--since wants a date like 2026-10-14, not {args.since!r}")
+    elif not args.count:
+        since = (today() - dt.timedelta(days=REPLIES_DAYS)).isoformat()
+    if since:
+        threads = [t for t in threads if str(t["last"].get("date") or "") >= since]
+    if args.open or args.count:
+        threads = [t for t in threads if is_open(t["last"])]
+    if args.name:
+        threads = [t for t in threads if thread_matches(t, " ".join(args.name))]
+    if args.count:
+        print(len(threads))
+        return
+    views = [thread_view(t) for t in threads]
+    if args.json:
+        print(json.dumps(views, indent=1))
+        return
+    scope = ("open " if args.open else "") + ("today" if args.today else f"since {since}" if since else "")
+    if not views:
+        say(f"No replies {scope.strip() or 'on record'}." if not args.open else
+            f"Nothing waiting on you ({'today' if args.today else f'since {since}'}).")
+        return
+    say(f"{len(views)} thread{'' if len(views) == 1 else 's'}{' waiting on you' if args.open else ''}, newest first")
+    for v in views:
+        name = v["name"] or v["email"] or v["from"]
+        more = f" · {v['replies']} replies" if v["replies"] > 1 else ""
+        say(f"\n{name} <{v['from']}> · {v['mailbox'] or 'mailbox unknown'} · {v['date']}{more}")
+        say(f"  letter: {v['letter']}")
+        say(f"  \"{v['text']}\"" if v["text"] else "  (no text)")
+        say(f"  {v['class']} · {v['state']}")
+    if any(v["open"] for v in views):
+        say("\nTo answer one: outreach reply NAME \"your words\" (by text: reply NAME: your words).")
+
+
+def signature():
+    """Taylor's sign-off on his own answers: name, phone if set, and the postal address, which the
+    law wants on commercial mail; a reply in a sales thread is commercial mail."""
+    lines = [toolbelt("OUTREACH_FROM_NAME", "Taylor Remund")]
+    phone = toolbelt("PATCHLAMP_VOICE_NUMBER")
+    if phone:
+        lines.append(phone)
+    lines.append(toolbelt("LEADS_MAIL_ADDRESS"))
+    return "\n".join(lines)
+
+
+def mark_taylor_answered(email_id, thread_id, ts):
+    """Rewrite replies.jsonl with that row marked answered by Taylor (added fields, none renamed).
+    Under the state lock, and read again right before the swap, so an inbox pass's append isn't lost."""
+    if DRY:
+        return
+    p = replies_file()
+    with state_lock():
+        lines = p.read_text().splitlines() if p.exists() else []
+        out = []
+        for line in lines:
+            try:
+                r = json.loads(line)
+            except json.JSONDecodeError:
+                out.append(line)
+                continue
+            if r.get("email_id") == email_id and r.get("thread_id") == thread_id:
+                r.update(answered=True, answered_by="taylor", answered_ts=ts)
+                line = json.dumps(r)
+            out.append(line)
+        tmp = p.with_suffix(".jsonl.tmp")
+        tmp.write_text("".join(l + "\n" for l in out))
+        os.replace(tmp, p)
+
+
+def cmd_reply(args):
+    """Taylor's own words, in the thread, from the mailbox that owns it. No template, no AI."""
+    needle = (args.name or "").strip()
+    text = (args.text or "").strip()
+    if not needle or not text:
+        die('usage: outreach reply NAME "your words"')
+    if not toolbelt("LEADS_MAIL_ADDRESS"):
+        die("LEADS_MAIL_ADDRESS isn't set, and a reply in a sales thread must carry the postal address; "
+            "nothing sent (see `outreach doctor`)")
+    threads = reply_threads()
+    pool = threads if args.any else [t for t in threads if is_open(t["last"])]
+    hits = [t for t in pool if thread_matches(t, needle)]
+    exact = [t for t in hits if str(t["last"].get("name") or "").lower() == needle.lower()]
+    if len(exact) == 1:
+        hits = exact
+    if not hits:
+        closed = [t for t in threads if thread_matches(t, needle)] if not args.any else []
+        if closed:
+            v = thread_view(closed[0])
+            die(f"{v['name'] or v['from']}'s thread isn't waiting on you ({v['class']}, {v['state']}); "
+                f"add --any to answer it anyway. Nothing sent.")
+        die(f"no open thread matches {needle!r}; `outreach replies --open` lists them. Nothing sent.")
+    if len(hits) > 1:
+        say(f"{len(hits)} threads match {needle!r}, so nothing was sent. Say which:")
+        for t in hits:
+            v = thread_view(t)
+            say(f"  {v['name']} <{v['from']}> · {v['mailbox']} · {v['date']} · \"{v['text'][:80]}\"")
+        sys.exit(2)
+    r = hits[0]["last"]
+    to = str(r.get("from") or "").strip()
+    if "@" not in to:
+        die(f"the reply from {r.get('name')} has no address to answer ({to!r}); nothing sent")
+    # Never to a suppressed or bounced address: a no, an angry reply and a bounce put it on the list,
+    # and writing again after "no thanks" is the one thing the opt-out promises we won't do.
+    supp = suppressed()
+    for addr in dict.fromkeys(a for a in (to.lower(), str(r.get("email") or "").lower()) if a):
+        if is_suppressed(email=addr, place_id=r.get("place_id") if addr == to.lower() else None, supp=supp):
+            why = next((x.get("reason") for x in reversed(read_jsonl(suppress_file()))
+                        if str(x.get("value") or "").lower() in (addr, mail.domain_of(addr), str(r.get("place_id") or "").lower())), None)
+            die(f"{addr} is suppressed ({why or 'on the list'}), so nothing goes to it; nothing sent")
+        if any(str(b.get("email") or "").lower() == addr for b in read_jsonl(bounces_file())):
+            die(f"{addr} bounced a letter before, so a reply wouldn't arrive; nothing sent")
+    mb = str(r.get("mailbox") or "").lower()
+    if not mb:
+        die(f"the reply from {r.get('name')} has no mailbox on record, so I can't tell which one owns the thread; nothing sent")
+    theirs = (r.get("subject") or "").strip()
+    if not theirs:
+        sent = next((x for x in read_jsonl(sends_file()) if x.get("message_id") in (r.get("our_message_id"), r.get("thread_id"))), {})
+        theirs = sent.get("subject") or ""
+    subject = theirs if theirs.lower().startswith("re:") else (f"Re: {theirs}" if theirs else "Re: your note")
+    body = f"{text}\n\n{signature()}\n"
+    # In-Reply-To: their own Message-ID; a row logged before B105 has none, so it points at our letter
+    # instead, which keeps the thread together in their mail client just as well.
+    in_reply = r.get("their_message_id") or r.get("our_message_id") or r.get("thread_id")
+    refs = [x for x in (r.get("references") or []) if x]
+    if not refs and r.get("thread_id"):
+        refs = [r["thread_id"]]
+    reply = {"from": to, "mailbox": mb, "message_id": in_reply, "references": refs, "id": r.get("email_id")}
+    provider = pick_provider(args.provider)
+    say(f"{'[dry-run] ' if DRY else ''}{mb} -> {r.get('name')} <{to}>: \"{subject}\"")
+    say("".join(f"   | {l}\n" for l in body.splitlines()).rstrip("\n"))
+    try:
+        res = provider.reply_to(reply, subject, body) or {}
+    except (Unreachable, ProviderError) as exc:
+        die(f"the reply didn't go ({exc}); nothing is marked, so you can try again")
+    if DRY:
+        say("dry run: nothing sent, nothing marked")
+        return
+    ts = now_iso()
+    mark_taylor_answered(r.get("email_id"), r.get("thread_id"), ts)
+    if r.get("class") != "probe":
+        orig = send_row_for({"our_message_id": r.get("our_message_id"), "from": to}) or {}
+        append_jsonl(sends_file(), {
+            "ts": ts, "date": today().isoformat(), "how": TAYLOR_REPLY, "template": None,
+            "place_id": r.get("place_id") or orig.get("place_id"), "name": r.get("name") or orig.get("name"),
+            "first": orig.get("first") or "", "email": to, "subject": subject, "provider": provider.name,
+            "provider_id": res.get("id"), "mailbox": mb, "message_id": res.get("message_id") or res.get("id"),
+            "thread_root": r.get("thread_id") or orig.get("thread_root"), "batch_id": r.get("batch_id") or orig.get("batch_id"),
+            "seq_id": orig.get("seq_id"), "in_reply_to": in_reply})
+        # The sequence stopped when they wrote; this keeps it stopped (a no-op unless the only
+        # reply was an out-of-office, and after Taylor writes, no cold touch should follow him).
+        left = stop_sequence(r.get("email"), r.get("our_message_id"), why="Taylor replied")
+        if left:
+            say(f"  the sequence stopped: {left} touch(es) won't go")
+        leads_log(r.get("name") or to, "talked", f"Taylor replied by email: {text[:120]}",
+                  place_id=r.get("place_id"), email=r.get("email"))
+    say(f"sent from {mb}, in the thread; marked answered by Taylor")
+
+
 # ---- the small commands ---------------------------------------------------------
 
 def cmd_suppress(args):
@@ -3050,7 +3331,7 @@ def cmd_status(args):
     cap = int(env_num("OUTREACH_MAX_REPLIES_PER_DAY", DEFAULT_MAX_REPLIES, int))
     ai_cap = env_num("OUTREACH_AI_USD_PER_DAY", DEFAULT_AI_USD)
     stamp = today().isoformat()
-    day = [r for r in read_jsonl(sends_file()) if r.get("date") == stamp]
+    day = [r for r in cold_sends() if r.get("date") == stamp]
     say(f"Email lane — {stamp} · provider {provider.name}")
     say(f"  sends today: {len(day)} of {per_day}"
         + ("  (0 means the lane is off until OUTREACH_PER_DAY is set)" if per_day <= 0 else ""))
@@ -3403,6 +3684,10 @@ def cmd_doctor(args):
     say("\nState and neighbours")
     say(f"  state: {STATE}  ({len(read_jsonl(sends_file()))} sends, {len(read_jsonl(replies_file()))} replies, "
         f"{len(suppressed())} suppressed)")
+    _threads = reply_threads()
+    say(f"  replies: {sum(1 for t in _threads if is_open(t['last']))} open, "
+        f"{sum(1 for t in _threads if answered_by(t['last']) == 'taylor')} answered by Taylor "
+        "(`outreach replies --open`)")
     say(f"  ledger: {LEDGER}")
     for t in ("leads", "notify", "prep"):
         p = tool_path(t)
@@ -3521,6 +3806,23 @@ def main():
     s = sub.add_parser("inbox", parents=[common], help="replies: classified, the routine ones answered")
     s.add_argument("--limit", type=int, help="only the first N new replies")
     s.set_defaults(fn=cmd_inbox)
+
+    s = sub.add_parser("replies", parents=[common],
+                       help="B105: every reply thread across the mailboxes, newest first (last 14 days)")
+    s.add_argument("name", nargs="*", help="only threads whose business name or address holds this")
+    s.add_argument("--open", action="store_true", help="only what waits on Taylor")
+    s.add_argument("--today", action="store_true", help="only today's")
+    s.add_argument("--since", help="since this date (YYYY-MM-DD)")
+    s.add_argument("--count", action="store_true", help="print one number: the threads waiting on Taylor")
+    s.add_argument("--json", action="store_true", help="the threads as JSON")
+    s.set_defaults(fn=cmd_replies)
+
+    s = sub.add_parser("reply", parents=[common],
+                       help="B105: Taylor's own words, in the thread, from the mailbox that owns it")
+    s.add_argument("name", help="the business name or address of one open thread")
+    s.add_argument("text", help="what to say; his name, phone and the postal address are added")
+    s.add_argument("--any", action="store_true", help="also a thread that isn't waiting (answered, or a probe)")
+    s.set_defaults(fn=cmd_reply)
 
     s = sub.add_parser("build", parents=[common],
                        help="Taylor's `build`: the researched site (prep one) for an interested reply")

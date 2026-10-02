@@ -20,6 +20,7 @@
   outreach build [NAME]        # B92, Taylor's word after an interested reply: `prep one` for that
                                # business, detached; the outline comes by notify. Nothing else starts it
   outreach suppress add hello@x.example | ChIJ…      # off the list for good, both channels
+  outreach pressed PLACE_ID [--url U]       # B91: a press on the see link stops its touches, offers build
   outreach suppress ls [--json]            # --json: [{value, kind: address|domain|place_id}] for `leads batch`
   outreach status              # today's sends, the caps, replies by class, bounces, complaints
   outreach warmup [start DATE] # the warm-up state and the ramp; `start` records the day warm-up began
@@ -1396,6 +1397,20 @@ def leads_log(name, outcome, note, place_id=None, email=None, via="email", next_
     return run_tool(cmd, f"leads log {name} {outcome}")[0]
 
 
+def pressed_already(pid):
+    """A press on the see link (B91) already logged this business as interested."""
+    return bool(pid) and any(r.get("class") == "pressed" and r.get("place_id") == pid
+                             for r in read_jsonl(replies_file()))
+
+
+def log_interested(name, note, place_id=None, email=None, next_when=None):
+    """One `interested` line a business: a press (B91) or a reply, whichever comes first, logs it."""
+    if pressed_already(place_id):
+        say("  already in the pipeline as interested (they pressed the link); no second line")
+        return True
+    return leads_log(name, "interested", note, place_id=place_id, email=email, next_when=next_when)
+
+
 def leads_sent(indices, via="email"):
     if not indices:
         return True
@@ -2688,7 +2703,7 @@ def answer_yes(provider, r, row, name, pid, email, first, first200, room):
     def hand_over(why):
         notify(f"{name} said yes to the preview, and it couldn't go back automatically ({why}): {first200} — "
                f"`leads brief {name}` before you answer{offer_build(row, pid)}")
-        leads_log(name, "interested", f"said yes to the preview: {first200[:120]}", place_id=pid, email=email,
+        log_interested(name, f"said yes to the preview: {first200[:120]}", place_id=pid, email=email,
                   next_when="tomorrow")
         say(f"  handed to Taylor: {why}")
         return False
@@ -2734,7 +2749,7 @@ def answer_yes(provider, r, row, name, pid, email, first, first200, room):
     row.update(answered=True, answer_template="answer-yes", preview_url=url)
     notify(f"{name} said yes; their preview went back: {url}. `leads brief {name}` before a call"
            f"{offer_build(row, pid)}")
-    leads_log(name, "interested", f"said yes; preview sent: {url}", place_id=pid, email=email, next_when="tomorrow")
+    log_interested(name, f"said yes; preview sent: {url}", place_id=pid, email=email, next_when="tomorrow")
     return True
 
 
@@ -2825,6 +2840,29 @@ def cmd_build(args):
         append_jsonl(builds_file(), {"ts": now_iso(), "place_id": pid, "name": name, "ok": code == 0,
                                      "reply_ts": target.get("ts"), "said": out[-400:]})
     sys.exit(code)
+
+
+def cmd_pressed(args):
+    """B91 (plan 41): someone pressed the link in their letter. Called by `leads preview --from-press` on a
+    business's first press. Their remaining touches stop the way an interested reply stops them (they have
+    seen the site; day 10's "still one press away" would be wrong, and from here it is Taylor's
+    conversation), and a `pressed` row lands in replies.jsonl so `outreach build` finds it like an
+    interested reply and a later yes logs no second `interested` line. Prints one JSON object; `build_tail`
+    is the line Taylor's message ends with when the place is known."""
+    pid = args.place
+    with state_lock():
+        seq = next((q for q in seqs_load() if q.get("place_id") == pid), None)
+    email, name = (seq or {}).get("email"), (seq or {}).get("name") or args.name or pid
+    left = 0 if DRY or not seq else stop_sequence(email, why="pressed the link")
+    row = {"ts": now_iso(), "date": today().isoformat(), "name": name, "place_id": pid, "email": email,
+           "class": "pressed", "answered": False, "text": "pressed the link in the letter",
+           "url": args.url or None, "batch_id": (seq or {}).get("batch_id")}
+    tail = offer_build(row, pid)
+    again = pressed_already(pid)
+    if not DRY and not again:
+        append_jsonl(replies_file(), row)
+    print(json.dumps({"ok": True, "place_id": pid, "stopped": left, "already": again,
+                      "build_tail": tail if tail != "." else ""}))
 
 
 def answer_for(topic):
@@ -2938,7 +2976,7 @@ def cmd_inbox(args):
             because = f" (the classifier was unsure: {why})" if cls == "unsure" and why else ""
             notify(f"{name} replied: {first200}{because} — leads brief pending; {tail}"
                    + (offer_build(row, pid) if cls == "interested" else "."))
-            leads_log(name, "interested", f"replied to the email: {first200[:120]}",
+            log_interested(name, f"replied to the email: {first200[:120]}",
                       place_id=pid, email=email, next_when="tomorrow")
             say(f"  handed to Taylor: {tail}")
             say("  no machine reply — interested, a time, or unclear is never answered by the machine")
@@ -3392,6 +3430,13 @@ def main():
                        help="Taylor's `build`: the researched site (prep one) for an interested reply")
     s.add_argument("who", nargs="*", help="a name or place id (default: the one the last message offered)")
     s.set_defaults(fn=cmd_build)
+
+    s = sub.add_parser("pressed", parents=[common],
+                       help="B91: a business pressed its letter's link; stop its touches, offer `build` (one JSON object)")
+    s.add_argument("place", help="the census place id")
+    s.add_argument("--name", help="the business, if the sequence doesn't name it")
+    s.add_argument("--url", help="the preview it was shown")
+    s.set_defaults(fn=cmd_pressed)
 
     s = sub.add_parser("suppress", parents=[common], help="off the list for good")
     s.add_argument("action", choices=("add", "ls"))

@@ -3406,11 +3406,13 @@ def preview_place_json(args):
 #                                            or its place is suppressed. No list without the suppression list.
 #   leads preview --from-press HASH|TOKEN --json
 #                                            {"ok", "state": ready|removed|unknown|failed, "url", "reused",
-#                                            "place_id", "name", "city", "first", "brief", "why"}
+#                                            "place_id", "name", "city", "first", "brief", "why", "build_tail"}
 #                                            ready: an unclaimed preview under its 30 days is reused, else one is
 #                                            built and published as `--place` does. first: this business's first
 #                                            press (presses.jsonl in the state dir), which carries the brief for
-#                                            Taylor's notify and logs the lead as interested, once.
+#                                            Taylor's notify, logs the lead as interested once (not again after a
+#                                            yes), and runs `outreach pressed` (its touches stop; `build_tail` is
+#                                            B92's "reply `build`" line for the end of Taylor's message).
 
 def press_hash(token):
     return hashlib.sha256(str(token).encode()).hexdigest()
@@ -3514,7 +3516,7 @@ def press_answer(args):
     raw = (args.from_press or "").strip()
     h = raw.lower() if re.fullmatch(r"[0-9a-fA-F]{64}", raw) else press_hash(raw)
     out = {"ok": False, "state": "unknown", "hash": h, "url": None, "reused": False, "place_id": None,
-           "name": None, "city": None, "first": False, "brief": None, "why": None}
+           "name": None, "city": None, "first": False, "brief": None, "why": None, "build_tail": None}
     try:
         seq = next((q for q in press_sequences() if press_hash(q["token"]) == h), None)
     except RuntimeError as exc:
@@ -3540,10 +3542,28 @@ def press_answer(args):
             f.write(json.dumps({"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "place_id": pid, "name": name,
                                 "hash": h, "state": out["state"], "url": url, "why": why}) + "\n")
         out["first"] = True
-        note = f"pressed the link in the letter; preview: {url}" if url else f"pressed the link in the letter; the build failed: {why}"
-        code, _, err = press_self("log", name, "interested", note, "--place", pid, "--source", "email", "--next", "tomorrow")
-        if code != 0:
-            print(f"leads: the pipeline line wasn't written ({err[-160:]})", file=sys.stderr)
+        # outreach owns the letters: the business's remaining touches stop, and its `build` word is offered
+        # (`outreach pressed`, B91 with B92's offer_build). A failure here never stops the answer.
+        try:
+            r = subprocess.run([str(OUTREACH_BIN), "pressed", pid, "--name", name] + (["--url", url] if url else []),
+                               capture_output=True, text=True, timeout=60)
+            told = json.loads(r.stdout or "{}") if r.returncode == 0 else {}
+            out["stopped"] = told.get("stopped")
+            out["build_tail"] = told.get("build_tail") or None
+            if r.returncode != 0:
+                print(f"leads: outreach pressed failed ({(r.stderr or '').strip()[-160:]})", file=sys.stderr)
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            print(f"leads: outreach pressed didn't run ({exc})", file=sys.stderr)
+        # one `interested` line a business: a yes that came first already wrote it
+        lead = next((x for x in pipeline_state().values() if x.get("place_id") == pid), None)
+        if lead and lead.get("stage") in ("interested", "demo", "won"):
+            out["logged"] = False
+        else:
+            note = f"pressed the link in the letter; preview: {url}" if url else f"pressed the link in the letter; the build failed: {why}"
+            code, _, err = press_self("log", name, "interested", note, "--place", pid, "--source", "email", "--next", "tomorrow")
+            out["logged"] = code == 0
+            if code != 0:
+                print(f"leads: the pipeline line wasn't written ({err[-160:]})", file=sys.stderr)
         code, brief, err = press_self("brief", name, "--place", pid)
         out["brief"] = brief if code == 0 and brief else None
     press_out(out, 0 if out["state"] == "ready" else 2)

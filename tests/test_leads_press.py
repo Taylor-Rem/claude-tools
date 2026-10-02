@@ -29,10 +29,33 @@ def sha(t):
     return hashlib.sha256(t.encode()).hexdigest()
 
 
+FAKE_OUTREACH = r'''#!/usr/bin/env python3
+import json, os, sys
+argv = sys.argv[1:]
+with open(os.environ["FAKE_OUTREACH_LOG"], "a") as f:
+    f.write(json.dumps(argv) + "\n")
+if argv[:3] == ["suppress", "ls", "--json"] and os.environ.get("FAKE_SUPPRESS"):
+    print(os.environ["FAKE_SUPPRESS"]); sys.exit(0)
+if argv[:1] == ["pressed"]:
+    print(json.dumps({"ok": True, "place_id": argv[1], "stopped": 2, "already": False,
+                      "build_tail": " — reply `build` and the full site is ready before you call."}))
+    sys.exit(0)
+sys.exit(2)
+'''
+
+
 class PressTest(unittest.TestCase):
-    setUp = tb.BatchTest.setUp
     tearDown = tb.BatchTest.tearDown
     run_leads = tb.BatchTest.run_leads
+
+    def setUp(self):
+        tb.BatchTest.setUp(self)
+        (self.t / "bin" / "outreach").write_text(FAKE_OUTREACH)
+        self.env["FAKE_OUTREACH_LOG"] = str(self.t / "outreach-calls.jsonl")
+
+    def outreach_calls(self):
+        p = self.t / "outreach-calls.jsonl"
+        return [json.loads(x) for x in p.read_text().splitlines()] if p.exists() else []
 
     def seqs(self, *rows):
         d = self.t / "outreach"
@@ -72,6 +95,10 @@ class PressTest(unittest.TestCase):
         self.assertIn("Alpine Plumbing", out["brief"] or "")
         lines = [json.loads(x) for x in self.pipeline.read_text().splitlines()]
         self.assertEqual(["interested"], [x["outcome"] for x in lines if x.get("place_id") == "FX_B01"])
+        # outreach ends the letters and offers `build`; the line rides on to Taylor's message
+        self.assertEqual([["pressed", "FX_B01", "--name", "Alpine Plumbing", "--url", out["url"]]],
+                         [c for c in self.outreach_calls() if c[:1] == ["pressed"]])
+        self.assertEqual(" — reply `build` and the full site is ready before you call.", out["build_tail"])
         builds = (self.t / "site.jsonl").read_text().count('"previews"')
 
         r, again = self.press("tokA1234abcd")                              # by token works too
@@ -80,6 +107,17 @@ class PressTest(unittest.TestCase):
         self.assertEqual(builds, (self.t / "site.jsonl").read_text().count('"previews"'))   # nothing published again
         lines = [json.loads(x) for x in self.pipeline.read_text().splitlines()]
         self.assertEqual(1, sum(1 for x in lines if x.get("place_id") == "FX_B01"))
+
+    def test_a_yes_that_came_first_keeps_the_one_interested_line(self):
+        self.seqs(("FX_B01", "Alpine Plumbing", "owner@alpineplumbing.example", "tokA1234abcd"))
+        r = self.run_leads("log", "Alpine Plumbing", "interested", "said yes", "--place", "FX_B01", "--source", "email")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r, out = self.press("tokA1234abcd")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(out["first"])
+        self.assertFalse(out["logged"])
+        lines = [json.loads(x) for x in self.pipeline.read_text().splitlines()]
+        self.assertEqual(1, sum(1 for x in lines if x.get("place_id") == "FX_B01" and x.get("outcome") == "interested"))
 
     def test_an_unknown_link_builds_nothing(self):
         self.seqs(("FX_B01", "Alpine Plumbing", "owner@alpineplumbing.example", "tokA1234abcd"))

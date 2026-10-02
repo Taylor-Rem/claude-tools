@@ -1205,3 +1205,43 @@ class Commands(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---- a press on the see link (B91, ~/projects/plans/41-the-press-link.md) -----------------------------
+
+class Pressed(ReplyWorld):
+    """`outreach pressed PLACE_ID`, run by `leads preview --from-press` on a business's first press: its
+    remaining touches stop as an interested reply stops them, `build` finds it, and a later reply logs no
+    second `interested` line."""
+
+    def press(self, i):
+        r = self.run_it("pressed", self.p[i]["place_id"], "--url", "https://previews.patchlamp.com/x/")
+        return json.loads(r.stdout)
+
+    def test_a_press_stops_the_later_letters_and_only_for_that_business(self):
+        out = self.press(0)
+        self.assertEqual(2, out["stopped"])
+        by = {s["email"]: s for s in self.seqs()}
+        self.assertEqual(("stopped", "pressed the link"), (by[self.p[0]["email"]]["status"], by[self.p[0]["email"]]["why"]))
+        self.tick_day("2026-10-22", start="08:00", end="17:05", step=10)
+        self.assertEqual(1, len(self.sent_to(self.p[0]["email"])))        # no day-3 letter after a press
+        self.assertEqual(2, len(self.sent_to(self.p[1]["email"])))        # still queued without one
+
+    def test_a_press_offers_build_and_build_finds_it(self):
+        out = self.press(0)
+        self.assertEqual(f" — {BUILD_LINE}.", out["build_tail"])
+        self.run_it("build")
+        self.assertEqual(self.p[0]["place_id"], [c["argv"] for c in self.calls("prep")][0][1])
+
+    def test_a_reply_after_a_press_logs_no_second_interested_line(self):
+        self.press(0)
+        again = self.press(0)
+        self.assertTrue(again["already"])
+        self.assertEqual(1, len([r for r in self.state_rows("replies.jsonl") if r["class"] == "pressed"]))
+        box, msg = self.letter_to(0)
+        Mail.deliver(box, reply_raw(self.p[0]["email"], box, f"Re: {msg['Subject']}",
+                                    "Interested. Call me tomorrow?", in_reply_to=msg["Message-ID"]))
+        r = self.inbox()
+        self.assertIn("no second line", r.stdout)
+        logs = [c["argv"] for c in self.calls("leads") if c["argv"][:1] == ["log"] and c["argv"][2] == "interested"]
+        self.assertEqual([], logs)

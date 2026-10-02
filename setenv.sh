@@ -55,6 +55,17 @@ fi
 keys=("${@:-}")
 [[ -z "${keys[0]}" ]] && keys=("${KNOWN_KEYS[@]}")
 
+# Arguments are key NAMES; the value is asked for at the prompt (echo off).
+# A value passed as an argument (2026-10-02: an address with spaces) used to
+# become a second "key" and crash bash on the subscript — refuse it up front.
+for k in "${keys[@]}"; do
+  if [[ ! "$k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+    echo "setenv.sh: '$k' isn't a key name. Pass only names, e.g.:" >&2
+    echo "  setenv.sh LEADS_MAIL_ADDRESS     # then type the value at the prompt" >&2
+    exit 2
+  fi
+done
+
 for k in "${keys[@]}"; do
   if [[ -n "${current[$k]:-}" ]]; then hint="(set — Enter to keep)"; else hint="(empty)"; fi
   read -rs -p "$k $hint: " val
@@ -62,7 +73,7 @@ for k in "${keys[@]}"; do
   if [[ -n "$val" ]]; then
     current["$k"]="$val"
   else
-    current["$k"]="${current[$k]:-}"
+    current["$k"]="${current["$k"]:-}"
   fi
 done
 

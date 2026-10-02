@@ -116,7 +116,10 @@ that says what the photo shows. Stock only; nothing generated.
 
 Taylor's message to them is fixed text (`prep message` shows it). You write
 the one sentence that shows we looked at *them*: from `high` facts, at most
-140 characters, no price, no guarded word, no exclamation mark, no name.
+140 characters, no price, no guarded word, no exclamation mark, no name. It
+comes right after "So I built you one." and before the link, so it says what
+you put on the page and why, in words they'd use ("so that's the first thing
+on the page"), never how the site works.
 
 ```json
 {"specific": {"text": "Your reviews keep mentioning the cabinet work, so I put that first.", "facts": ["f4"]}}

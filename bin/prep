@@ -2522,8 +2522,8 @@ def compose_message(wd, preview_url=None):
         problems.append("an exclamation mark")
     if "{" in text or "}" in text:
         problems.append("an unfilled brace in the message")
-    if not text.startswith(("Hi " + business, "Say: \"Hi, is this " + business)):
-        problems.append("the message greets the business by its name")
+    if business not in text:                      # named in the sentence since 2026-10-02, no longer the greeting
+        problems.append("the message names the business")
     return {"text": text, "specific": spec, "channel": channel, "section": section, "problems": problems,
             "chars": len(text), "preview_url": url, "fault": faults[0] if faults else None}
 

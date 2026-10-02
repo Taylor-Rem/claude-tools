@@ -380,7 +380,8 @@ class RehearsalTest(Base):
             self.assertIn("Sign-up: https://patchlamp.com/start?business=", entry)
             self.assertIn("Site: https://", entry)
             self.assertIn("To finish it they'd send:", entry)
-            self.assertTrue(message.startswith("Hi "), message)          # greeted by its own name
+            self.assertTrue(message.startswith("Hi, I'm Taylor."), message)
+            self.assertIn(" up on Google and ", message)                   # named in the sentence, not the greeting
             self.assertNotIn("{", message)
         # each message is its own note, not a mail merge
         msgs = [notes[2 + 2 * i] for i in range(3)]
@@ -530,7 +531,7 @@ class FinishTest(Base):
         self.assertIn("ok  message frame: approved", self.run_prep("doctor").stdout)
         frame = self.t / "frame.md"
         frame.write_text((TOOLS / "templates" / "prep" / "message.md").read_text()
-                         .replace("nothing to sign", "no obligation"))
+                         .replace("Nothing to sign", "No obligation"))
         out = self.run_prep("doctor", env={"PREP_FRAME": str(frame)}).stdout
         self.assertIn("BAD message frame: not approved", out)
 
@@ -796,7 +797,9 @@ class MessageTest(Base):
         self.assertIn("why: their Google listing's website link is their Facebook page", r.stdout)
         self.assertIn("lint OK", r.stdout)
         m = json.loads(self.run_prep("message", str(wd), "--json").stdout)
-        self.assertTrue(m["text"].startswith("Hi Mike's Pool Care — I'm Taylor"))
+        self.assertTrue(m["text"].startswith("Hi, I'm Taylor."), m["text"])
+        self.assertIn("I looked Mike's Pool Care up on Google and ", m["text"])
+        self.assertTrue(m["text"].endswith("Worth a look?"), m["text"])   # message one asks for a reply
         self.assertLess(m["chars"], 700)
         self.assertEqual(re.findall(r"https?://\S+", m["text"]), [m["preview_url"]])
         self.assertNotIn("!", m["text"])
@@ -840,7 +843,7 @@ class ApproveTest(Base):
         r = self.run_prep("approve", "--dry-run")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("───── message ─────", r.stdout)
-        self.assertIn("Hi Pinnacle Painting — I'm Taylor", r.stdout)
+        self.assertIn("I looked Pinnacle Painting up on Google and ", r.stdout)
         self.assertIn("───── call ─────", r.stdout)
         self.assertIn("[dry-run] not recorded.", r.stdout)
         self.assertFalse((self.t / "prep" / "approved.json").exists())

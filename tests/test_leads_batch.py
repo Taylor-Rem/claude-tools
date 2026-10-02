@@ -599,6 +599,7 @@ class CheckFaultsTest(unittest.TestCase):
         for text, want in (("About", "About"), ("ABOUT", "About"), ("Terms & Conditons", "Terms & Conditons"),
                            ("URBAN ARROW BUY NOW", "Urban Arrow Buy Now"), ("Contact Us", "Contact Us"),
                            ("(801)", None), ("", None), ("0 items", None), ("SEE MORE...", None),
+                           ("LEARN MORE", None), ("Read more", None), ("Click here", None), ("Shop Now", None),
                            ("www.festivalderua.com", None), ("Click here for Tea Party Info & Reservat", None),
                            ("Entrusting anyone with your celebration", None), ("<b>x</b>", None)):
             self.assertEqual(m.quotable(text), want, text)

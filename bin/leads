@@ -5417,6 +5417,11 @@ CHECK_FAULTS_WAITING = ("sideways", "broken_image", "psi_poor")   # 4/4, 6/7 and
 SITE_CHECK_MAX_DAYS = 30
 SIDEWAYS_MIN_PX = 40      # site_checks.py's own threshold: less is a wobble (an off-canvas menu edge)
 PSI_POOR_BELOW = 50       # Google's own "poor" band for the performance score
+# Words a page uses for many links at once: "the 'Learn More' link" could be any of five, and a visitor who tries a
+# working one has been told something untrue, so these are counted, not named (B99's real picks: three sites).
+GENERIC_LINK_TEXT = {"learn more", "read more", "more", "see more", "view more", "more info", "click here", "here",
+                     "details", "view details", "shop now", "buy now", "order now", "get started", "find out more",
+                     "discover more", "explore", "view", "continue", "next", "previous", "back", "link", "go"}
 LINK_TEXT_RE = re.compile(r"^[A-Za-z][A-Za-z0-9 &'’-]{1,29}$")    # a link's words safe to quote back to them
 CHECK_UA = ("Mozilla/5.0 (compatible; PatchlampBot/1.0; +https://patchlamp.com; founder@patchlamp.com) "
             "reading published business contact details")       # the pass's own honest user agent (emails.py)
@@ -5666,7 +5671,7 @@ def quotable(text):
     letter (an icon link, a phone number, a web address or a sentence falls back to a count). All capitals are
     usually a stylesheet's doing, so they are said in title case."""
     t = re.sub(r"\s+", " ", text or "").strip()
-    if not LINK_TEXT_RE.match(t) or len(t.split()) > 4:
+    if not LINK_TEXT_RE.match(t) or len(t.split()) > 4 or t.lower() in GENERIC_LINK_TEXT:
         return None
     return t.title() if t.isupper() and len(t) > 3 else t
 

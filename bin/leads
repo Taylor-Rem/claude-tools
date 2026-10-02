@@ -141,7 +141,6 @@ Config, by name, never printed:
   LEADS_LIVE_READS_PER_DAY  listing reads `leads batch --live` may make a day (default 100, ~$0.025 each)
   LEADS_CLIENTS_DIR     the client workspaces whose addresses, domains and phones a batch keeps out (~/projects/clients)
   LEADS_OUTREACH_BIN    the `outreach` a batch asks for the suppression list (beside this file)
-  LEADS_HTTPS_CHECK     =0: no https check, so "no working https" is never said; LEADS_HTTPS_FIXTURE a JSON {host: bool}
   LEADS_PIPELINE        the pipeline, one event per line (default
                         ~/projects/private-docs/leads/pipeline.jsonl: backed up
                         nightly, in no repo — it holds names and numbers). The
@@ -5189,8 +5188,10 @@ def cmd_pipeline_strong(state):
 # B89's pass (client-leads/scripts/emails.py) stored, per business with a site of its own, the addresses its site
 # publishes (`emails`) and the plain facts of the site (`site_facts`). Here those become a facts packet — the faults
 # that are true of the business, each {key, sentence, evidence}, computed in code and never written by a model — and
-# a batch: fifty or fewer in one trade and one city, each with its address and exactly two faults. A business with
-# fewer than two is left out; padding a letter with a weak fault is how a cold email reads as spam.
+# a batch: fifty or fewer in one trade across the corridor (--city narrows), each with its address and exactly two
+# true specifics, at least one a fault and faults first; the second may be a plain fact (their Google standing).
+# A business with no fault, or one fault and nothing true to say beside it, is left out: padding a letter with a
+# weak fault is how a cold email reads as spam (plan 37 § What the first build found).
 
 BATCH_MAX = 50
 FACT_MAX_AGE_DAYS = 90         # a census read older than this isn't quoted back to them
@@ -5209,10 +5210,8 @@ CLIENTS_DIR = Path(os.environ.get("LEADS_CLIENTS_DIR", PROJECTS / "clients"))
 OUTREACH_BIN = Path(os.environ.get("LEADS_OUTREACH_BIN", Path(__file__).resolve().parent / "outreach"))
 
 # key -> rank: lower is said first. The surest site facts first — the copyright year (their own words, with a
-# number), no viewport tag (absent from the page we read), https that fails (checked) — then the phone that differs
-# (true, but sometimes a tracking number the B89 crawl couldn't tell from a mistake), then the listing (true as of
-# the read).
-FAULT_RANK = {"old_copyright": 10, "no_viewport": 20, "no_https": 25, "phone_mismatch": 35, "website_link": 40,
+# number), no viewport tag (absent from the page we read) — then the listing (true as of the read).
+FAULT_RANK = {"old_copyright": 10, "no_viewport": 20, "website_link": 40,
               "no_hours": 50, "closed_saturday": 52, "no_photos": 55, "few_photos": 56, "no_phone": 60,
               "menu_page": 70, "low_review": 85, "listing": 88}
 
@@ -5306,64 +5305,6 @@ def batch_rows(segments):
     return out
 
 
-_HTTPS = None
-
-
-def https_works(host):
-    """(True|False|None, why) — does https://host/ answer with a certificate the browser accepts? None is unsure
-    (a timeout, no host, checks off), and an unsure fault is never said. Cached in STATE/https.json for a week.
-    LEADS_HTTPS_CHECK=0 turns the network off (tests); LEADS_HTTPS_FIXTURE is a JSON {host: true|false}."""
-    global _HTTPS
-    if not host:
-        return None, "no host"
-    fx = os.environ.get("LEADS_HTTPS_FIXTURE")
-    if fx:
-        try:
-            v = json.loads(Path(fx).read_text()).get(host)
-        except (OSError, ValueError):
-            v = None
-        return v, ("fixture: certificate rejected" if v is False else "fixture")
-    if os.environ.get("LEADS_HTTPS_CHECK") == "0":
-        return None, "checks off"
-    path = STATE / "https.json"
-    if _HTTPS is None:
-        try:
-            _HTTPS = json.loads(path.read_text())
-        except (OSError, ValueError):
-            _HTTPS = {}
-    row = _HTTPS.get(host)
-    if row and row.get("checked", "") >= (dt.date.today() - dt.timedelta(days=CACHE_DAYS)).isoformat():
-        return row.get("ok"), row.get("why") or ""
-    import ssl
-    ok, why = None, ""
-    try:
-        req = urllib.request.Request(f"https://{host}/", method="HEAD",
-                                     headers={"User-Agent": "claude-tools/leads (Patchlamp; one https check)"})
-        with urllib.request.urlopen(req, timeout=8, context=ssl.create_default_context()):
-            ok, why = True, "answers"
-    except urllib.error.HTTPError:
-        ok, why = True, "answers (an HTTP error, but the certificate is good)"
-    except urllib.error.URLError as exc:
-        r = exc.reason
-        if isinstance(r, ssl.SSLError):
-            ok, why = False, ("certificate rejected: " + (getattr(r, "verify_message", None) or r.reason or str(r)))[:80]
-        elif isinstance(r, ConnectionRefusedError):
-            ok, why = False, "nothing listens on https"
-        else:
-            ok, why = None, f"unsure ({str(r)[:60]})"
-    except ssl.SSLError as exc:
-        ok, why = False, ("certificate rejected: " + (exc.reason or str(exc)))[:80]
-    except (TimeoutError, OSError) as exc:
-        ok, why = None, f"unsure ({type(exc).__name__})"
-    _HTTPS[host] = {"ok": ok, "why": why, "checked": dt.date.today().isoformat()}
-    try:
-        STATE.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(_HTTPS, indent=0, sort_keys=True) + "\n")
-    except OSError:
-        pass
-    return ok, why
-
-
 def site_fault_items(c, today):
     """The faults the stored site facts make true, each {key, sentence, evidence}."""
     f = c.get("facts")
@@ -5375,32 +5316,13 @@ def site_fault_items(c, today):
     if yr and int(yr) <= today.year - OLD_YEAR_GAP:
         out.append({"key": "old_copyright", "sentence": f"the copyright line on your site says © {int(yr)}",
                     "evidence": home_url, "year": int(yr)})
-    # A listing link with utm_ tags is a marketer's, and a marketer swaps the site's number for a tracking one when
-    # the visitor came from Google (B90's spot check: Beehive Plumbing, Eagar Heating). Then the "mismatch" is on
-    # purpose, and naming it would tell them we don't know their business.
-    tagged = "utm_" in (f.get("url") or "").lower()
-    if f.get("phone_matches") == 0 and c.get("phone") and not tagged:
-        try:
-            site_phones = json.loads(f.get("phones") or "[]")
-        except ValueError:
-            site_phones = []
-        if site_phones:
-            out.append({"key": "phone_mismatch",
-                        "sentence": f"your Google listing gives {fmt_phone(c['phone'])}, but your site gives "
-                                    f"{fmt_phone(site_phones[0])}",
-                        "evidence": f"{home_url} (site) · {clean_maps(c.get('google_maps_uri'))} (listing)"})
     if f.get("viewport") == 0:
         out.append({"key": "no_viewport",
                     "sentence": "your site has no phone-sized layout, so phones get the desktop page shrunk to fit",
                     "evidence": home_url + " (no viewport tag on the home page)"})
-    if f.get("https") == 0 and (f.get("final_url") or "").lower().startswith("http://"):
-        # Chrome upgrades an http link to https when the site serves it, so "Not secure" is only true when https
-        # itself fails. B89 stored where the link landed, not whether https works: asked here, once a host.
-        ok, why = https_works(host_of(f.get("final_url")))
-        if ok is False:
-            out.append({"key": "no_https",
-                        "sentence": "your site has no working https, so Chrome marks it \"Not secure\"",
-                        "evidence": f"{home_url} (https://{host_of(f.get('final_url'))}/ fails: {why})"})
+    # Not said (B90's spot checks proved each false at least once; B99 grows the list with checks that hold):
+    # "not secure" — Chrome upgrades an http link to https when the site serves it, and B89 stored only where the
+    # link landed; a phone that differs from the listing — often a call-tracking number put there on purpose.
     # Not said: "no contact form". B89's `contact_form` looks for a <form> element, and builder sites draw theirs
     # without one (GoDaddy, a bare <textarea>) or by script (Wix, Squarespace): B90's spot check found three false of
     # thirty-six read. It becomes a fault once the crawl stores "a message box anywhere on the contact page".
@@ -5534,9 +5456,9 @@ def client_marks():
 
 
 def suppressed():
-    """(values lowercased, where from). `outreach suppress ls --json` is the source (addresses, domains and place
-    ids); while that flag doesn't exist yet, the file it reads (OUTREACH_STATE/suppress.jsonl) is read directly, so a
-    "no" is never forgotten because of a missing flag."""
+    """(values lowercased, where from) — or (None, why) when the list can't be read. `outreach suppress ls --json` is
+    the one source (plan 37 § Contract: [{value, kind: address|domain|place_id}]); a batch made without knowing who
+    said no could write to them again, so a missing or failing command is a refusal upstream, never an empty set."""
     vals = set()
     try:
         r = subprocess.run([str(OUTREACH_BIN), "suppress", "ls", "--json"], capture_output=True, text=True, timeout=30)
@@ -5551,20 +5473,12 @@ def suppressed():
                     if v:
                         vals.add(str(v).strip().lower())
                 return vals, "outreach suppress ls --json"
-        why = (r.stderr or r.stdout or "").strip().splitlines()[-1:] or ["no output"]
-        why = why[0][:120]
+            why = "its output isn't a list"
+        else:
+            why = ((r.stderr or r.stdout or "").strip().splitlines()[-1:] or [f"exit {r.returncode}"])[0][:120]
     except (OSError, subprocess.SubprocessError, ValueError) as exc:
         why = f"{type(exc).__name__}: {exc}"[:120]
-    p = OUTREACH_STATE / "suppress.jsonl"
-    if p.exists():
-        for line in p.read_text().splitlines():
-            try:
-                v = str(json.loads(line).get("value") or "").strip().lower()
-            except (ValueError, AttributeError):
-                continue
-            if v:
-                vals.add(v)
-    return vals, f"{p} read directly (`outreach suppress ls --json` unavailable: {why})"
+    return None, f"`{OUTREACH_BIN} suppress ls --json` failed ({why})"
 
 
 def is_suppressed(c, supp):
@@ -5631,7 +5545,10 @@ def batch_pool(segments, today, live=False, places=None, want=None):
     may be spent on (the chosen trade and city)."""
     rows = batch_rows(segments)
     why, chain_names_, mail_seen = batch_exclusions()
-    supp, _ = suppressed()
+    supp, src = suppressed()
+    if supp is None:
+        die(f"no batch: the suppression list can't be read, and a batch made without it could write to someone who "
+            f"said no. {src}. `outreach doctor` says why; `leads batch --stats` still works.")
     c_emails, c_domains, c_phones = client_marks()
     cache_only = Places(None, None)
     skipped, out, run_seen = {}, [], set()
@@ -5854,18 +5771,18 @@ def batch_stats(args, today):
     segs = [args.segment] if args.segment else list(BUSINESS_SEGMENTS) + ["restaurant"]
     rows = batch_rows(segs)
     why, chain_names_, _ = batch_exclusions()
-    supp, _ = suppressed()
+    supp, supp_src = suppressed()
     c_emails, c_domains, c_phones = client_marks()
     cache_only = Places(None, None)
     by_seg, by_city, by_trade, keys, excl = {}, {}, {}, {}, {}
-    total = qual = two = 0
+    total = qual = two = faulted = 0
     seen_mail = set()
     for c in rows:
         reason = why.get(c["place_id"]) or ("a chain" if (c.get("name") or "").lower() in chain_names_ else None)
         addr = c["mail"]["address"].lower()
         if not reason and addr in seen_mail:
             reason = "the same address as another listing"
-        if not reason and is_suppressed(c, supp):
+        if not reason and supp and is_suppressed(c, supp):
             reason = "suppressed"
         if not reason and (addr in c_emails or addr.split("@")[-1] in c_domains
                            or host_of(c.get("website") or "") in c_domains
@@ -5875,6 +5792,7 @@ def batch_stats(args, today):
         fs = facts_packet(c, cache_only.get(c["place_id"]), today)
         sp = specifics(c, today, fs)
         total += 1
+        faulted += bool(fs)
         s = by_seg.setdefault(c["segment"], [0, 0, 0, 0])      # with an address, qualify, two faults, excluded
         s[0] += 1
         for it in fs + fact_items(c, today):
@@ -5895,16 +5813,19 @@ def batch_stats(args, today):
         by_trade[t] = by_trade.get(t, 0) + 1
     trades = sorted(by_trade.items(), key=lambda kv: -kv[1])
     if args.json:
-        print(json.dumps({"date": today.isoformat(), "with_address": total, "qualify": qual, "two_faults": two,
+        print(json.dumps({"date": today.isoformat(), "with_address": total, "with_a_fault": faulted,
+                          "qualify": qual, "two_faults": two, "suppression": supp_src if supp is not None else None,
                           "by_segment": {k: {"with_address": v[0], "qualify": v[1], "two_faults": v[2],
                                              "excluded": v[3]} for k, v in by_seg.items()},
                           "excluded": excl, "by_city": by_city, "keys": keys,
                           "trades": [{"segment": t[0], "category": t[1], "n": n} for t, n in trades]}, indent=1))
         return
-    print(f"Email lane, {today}: {total} businesses with a usable address (MX ok, not tied by the page title alone). "
-          f"{qual} qualify (two true specifics, at least one a fault, after the exclusions); {two} of them with two "
+    print(f"Email lane, {today}: {total} businesses with a usable address (MX ok, not tied by the page title alone), "
+          f"{faulted} with at least one fault before the exclusions. {qual} qualify (two true specifics, at least one a fault, after the exclusions); {two} of them with two "
           f"faults. Stored site facts, listings cached this week and the census's Google standing (read within "
           f"{FACT_MAX_AGE_DAYS} days); nothing read live.")
+    if supp is None:
+        print(f"  (suppressed addresses not subtracted: {supp_src}; `leads batch` itself refuses until it reads)")
     for seg, v in sorted(by_seg.items(), key=lambda kv: -kv[1][0]):
         print(f"  {seg:<11} {v[0]:>5} with an address · {v[1]:>4} qualify · {v[2]:>3} with two faults · "
               f"{v[3]} more would qualify but are excluded")
@@ -6149,7 +6070,8 @@ def batch_doctor():
     print(f"batch: {n_addr} businesses with an MX-ok address, {n_facts} sites with stored facts "
           f"(`leads batch --stats` sizes the lane)")
     supp, src = suppressed()
-    print(f"  suppression: {len(supp)} from {src}")
+    print(f"  suppression: {len(supp)} from {src}" if supp is not None else
+          f"  suppression: unreadable, so `leads batch` refuses — {src}")
     em, dm, ph = client_marks()
     print(f"  clients kept out: {len(em)} addresses, {len(dm)} domains, {len(ph)} phones from {CLIENTS_DIR}/*/NOTES.md, CLAUDE.md")
     logs = batches_log()

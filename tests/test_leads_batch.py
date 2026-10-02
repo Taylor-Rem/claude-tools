@@ -3,14 +3,16 @@
     python3 -m unittest discover -s tests -q   (from claude-tools/)
 
 Offline: the census is B44's fixture census (tests/fixtures/leads-services/build.py) with B89's three tables
-added here and sixteen made-up plumbers and roofers (FX_B ids, 555 numbers, .example domains). Whether https
-works comes from LEADS_HTTPS_FIXTURE, the suppression list from a stand-in `outreach`, the clients from a
-throwaway clients/ tree, and nothing reaches Google, a site or a mail server.
+added here and sixteen made-up plumbers and roofers (FX_B ids, 555 numbers, .example domains). The suppression
+list comes from a stand-in `outreach`, the clients from a throwaway clients/ tree, and nothing reaches Google, a
+site or a mail server.
 
-What's pinned: the JSON is § Contract's shape key for key; every pick has exactly two faults and a business with
-fewer is left out, not padded; own-domain beats free-mail and a free-mail address tied only by the page title is
-never used; MX must be ok; a tracked listing link (utm_) never yields "the phone differs"; https is named only when
-it fails; held, pipeline, client, chain and suppressed businesses never appear; a batched business is held out of
+What's pinned: the JSON is § Contract's shape key for key; every pick has exactly two entries, a fault first, the
+second a fault or a plain fact, and a business with no fault (or one and nothing true beside it) is left out, not
+padded; own-domain beats free-mail and a free-mail address tied only by the page title is never used; MX must be
+ok; the three rules spot checks proved false (no contact form, not secure, the phone that differs) are never said;
+no batch is made when `outreach suppress ls --json` can't be read; held, pipeline, client, chain and suppressed
+businesses never appear; a batched business is held out of
 the next batch and the kits; `leads candidates` is unchanged; `--stats` counts; `preview --place --json` is one
 object with the URL, for a business with a site of its own.
 """
@@ -99,7 +101,7 @@ CONTRACT_FAULT = {"key", "kind", "sentence", "evidence"}
 
 FAKE_OUTREACH = '''#!/usr/bin/env python3
 import json, os, sys
-if sys.argv[1:] == ["suppress", "ls", "--json"] and os.environ.get("FAKE_SUPPRESS"):
+if sys.argv[1:] == ["suppress", "ls", "--json"] and os.environ.get("FAKE_SUPPRESS"):   # unset: as if no --json yet
     print(os.environ["FAKE_SUPPRESS"])
     sys.exit(0)
 print("usage: outreach suppress add|ls", file=sys.stderr)
@@ -170,14 +172,10 @@ class BatchTest(unittest.TestCase):
             (t / "bin" / name).chmod(0o755)
         (t / "clients" / "kestrel").mkdir(parents=True)
         (t / "clients" / "kestrel" / "NOTES.md").write_text("Owner: Kay (owner@kestrelplumbing.example).\n")
-        (t / "https.json").write_text(json.dumps({"graniteplumbing.example": False, "harborplumbing.example": True}))
         self.pipeline = t / "pipeline.jsonl"
         self.pipeline.write_text(json.dumps({"ts": "2026-09-30T10:00:00-06:00", "date": "2026-09-30",
                                              "key": "place:FX_B09", "place_id": "FX_B09", "name": "Iron Plumbing",
                                              "outcome": "messaged", "stage": "messaged"}) + "\n")
-        (t / "outreach").mkdir()
-        (t / "outreach" / "suppress.jsonl").write_text(
-            json.dumps({"value": "juniperplumbing.example", "kind": "domain"}) + "\n")
         self.env = {"LEADS_DB": str(self.db), "LEADS_STATE": str(t / "state"), "LEADS_LEDGER": str(t / "ledger.jsonl"),
                     "LEADS_PIPELINE": str(self.pipeline), "LEADS_GROUPS_LOG": str(t / "groups.md"),
                     "LEADS_PREVIEWS": str(t / "previews"), "LEADS_PREVIEW_HOST": "previews.patchlamp.com",
@@ -186,14 +184,15 @@ class BatchTest(unittest.TestCase):
                     "CLAUDE_TOOLS_ENV": str(t / "no-env"), "GOOGLE_MAPS_API_KEY": "", "LEADS_MAIL_ADDRESS": "",
                     "LEADS_SEGMENT": "services", "PROJECTS_DIR": str(t / "projects"),
                     "LEADS_CLIENTS_DIR": str(t / "clients"), "LEADS_OUTREACH_BIN": str(t / "bin" / "outreach"),
-                    "OUTREACH_STATE": str(t / "outreach"), "LEADS_HTTPS_FIXTURE": str(t / "https.json"),
+                    "OUTREACH_STATE": str(t / "outreach"),
+                    "FAKE_SUPPRESS": json.dumps([{"value": "juniperplumbing.example", "kind": "domain"}]),
                     "LEADS_KIT_PREVIEWS": ""}
 
     def tearDown(self):
         self.tmp.cleanup()
 
     def run_leads(self, *args, env=None):
-        e = dict(os.environ, **self.env, **(env or {}))
+        e = {**os.environ, **self.env, **(env or {})}
         return subprocess.run([sys.executable, str(LEADS), *args], capture_output=True, text=True, env=e)
 
     def batch(self, *extra, ok=True, env=None):
@@ -222,8 +221,9 @@ class BatchTest(unittest.TestCase):
         self.assertEqual([f["key"] for f in by["FX_B01"]["faults"]], ["old_copyright", "no_viewport"])
         self.assertIn(f"© {YEAR - 7}", by["FX_B01"]["faults"][0]["sentence"])
         self.assertEqual(by["FX_B02"]["email_kind"], "free-mail")
-        self.assertIn("(801) 555-0999", by["FX_B02"]["faults"][1]["sentence"])
-        self.assertEqual([f["key"] for f in by["FX_B07"]["faults"]], ["no_viewport", "no_https"])
+        # the site's phone differs from the listing's and Granite's link is http: neither is said (proved false)
+        self.assertEqual([f["key"] for f in by["FX_B02"]["faults"]], ["old_copyright", "google_standing"])
+        self.assertEqual([f["key"] for f in by["FX_B07"]["faults"]], ["no_viewport", "google_standing"])
         # one fault and a fact: their Google standing, rounded down so it stays true (47 reviews → "more than 40")
         self.assertEqual([(f["key"], f["kind"]) for f in by["FX_B08"]["faults"]],
                          [("no_viewport", "fault"), ("google_standing", "fact")])
@@ -248,12 +248,26 @@ class BatchTest(unittest.TestCase):
         r = self.batch("--json", "--no-save", env={"FAKE_SUPPRESS": json.dumps(
             [{"value": "hello@alpineplumbing.example", "kind": "address"}, "graniteplumbing.example"])})
         ids = {p["place_id"] for p in json.loads(r.stdout)["picks"]}
-        # by address and by domain; and the command's list is the whole list (Juniper is only in the file)
+        # by address and by domain; and the command's list is the whole list (Juniper isn't on this one)
         self.assertEqual(ids, IN_LEHI_PLUMBERS - {"FX_B01", "FX_B07"} | {"FX_B10"})
+
+    def test_no_batch_without_the_suppression_list(self):
+        # `outreach` without --json (today's main), one that isn't there, one that prints junk: a refusal, no file
+        for env in ({"FAKE_SUPPRESS": ""}, {"LEADS_OUTREACH_BIN": str(self.t / "bin" / "missing")},
+                    {"FAKE_SUPPRESS": "not json"}):
+            r = self.batch("--json", ok=False, env=env)
+            self.assertNotEqual(r.returncode, 0, env)
+            self.assertIn("suppression list can't be read", r.stderr)
+            self.assertEqual(r.stdout, "")
+            self.assertFalse((self.t / "state" / "batches.jsonl").exists())
         m = leads_module(dict(self.env, FAKE_SUPPRESS=""))
-        vals, src = m.suppressed()                                   # no --json yet: the file, said so
-        self.assertIn("juniperplumbing.example", vals)
-        self.assertIn("read directly", src)
+        vals, src = m.suppressed()
+        self.assertIsNone(vals)
+        self.assertIn("suppress ls --json", src)
+        s = self.run_leads("batch", "--stats", env={"FAKE_SUPPRESS": ""})   # sizing still works, and says so
+        self.assertEqual(s.returncode, 0, s.stderr)
+        self.assertIn("suppressed addresses not subtracted", s.stdout)
+        self.assertIn("unreadable", self.run_leads("doctor", env={"FAKE_SUPPRESS": ""}).stdout)
 
     def test_held_once_batched_and_out_of_the_kits(self):
         before = self.run_leads("candidates", "--segment", "services", "--n", "100").stdout
@@ -294,9 +308,10 @@ class BatchTest(unittest.TestCase):
         # qualify: the six Lehi plumbers, Moab, Nephi; not Iron (pipeline), Juniper (suppressed), Kestrel (client),
         # Lark (chain), Alpine South (Alpine's inbox), Cedar (no fault)
         self.assertEqual(s["qualify"], 8)
-        self.assertEqual(s["two_faults"], 5)
-        self.assertEqual(s["keys"]["no_https"], 1)                   # Harbor's https works: not said
-        self.assertNotIn("no_contact_form", s["keys"])
+        self.assertEqual(s["two_faults"], 3)                          # Alpine, Moab, Nephi
+        self.assertEqual(s["with_a_fault"], 13)                       # all with an address but Cedar
+        for dropped in ("no_contact_form", "no_https", "phone_mismatch"):
+            self.assertNotIn(dropped, s["keys"])
         self.assertEqual({t["category"]: t["n"] for t in s["trades"]}, {"plumber": 7, "roofing": 1})
         self.assertFalse((self.t / "state" / "batches.jsonl").exists())
         self.assertIn("qualify", self.run_leads("batch", "--stats").stdout)

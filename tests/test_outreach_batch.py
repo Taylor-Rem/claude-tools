@@ -430,6 +430,12 @@ class Letters(Base):
         self.assertEqual([], self.seqs())
         self.assertEqual([], Mail.sent)
 
+    def test_a_batch_waits_on_go_even_with_outreach_auto(self):
+        self.approve()
+        r = self.run_it("send", "--batch", str(BATCH), OUTREACH_AUTO="1")
+        self.assertIn("Waiting on `go`", r.stdout)
+        self.assertEqual([], self.seqs())
+
     def test_go_refuses_unapproved_letters(self):
         r = self.run_it("send", "--batch", str(BATCH), "--go", expect=1)
         self.assertIn("batch-first: not in APPROVED", r.stderr)

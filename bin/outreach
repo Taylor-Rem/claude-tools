@@ -59,13 +59,14 @@ volume-shaped is an environment number, never a sentence in a prompt:
   OUTREACH_AI_USD_PER_DAY      the classifier's daily spend (default 0.50); over it,
                                nothing is machine-answered and everything unclear
                                goes to Taylor.
-  OUTREACH_BOUNCE_MAX_PCT      the kill switch (default 3.0). Over it, or any spam
+  OUTREACH_BOUNCE_MAX_PCT      the kill switch (default 2.0, Taylor 2026-10-01). Over it, or any spam
                                complaint, `send` refuses, Taylor is notified and one
                                TAYLOR-TODO §7 entry is filed.
   OUTREACH_COMPLAINTS          complaints seen in Google Postmaster Tools (Instantly
                                reports no complaint count of its own). Any value
                                above zero trips the switch.
-  OUTREACH_AUTO                1 = the two weeks of `go` are over.
+  OUTREACH_AUTO                1 = the two weeks of `go` are over (the kit lane only: a batch
+                               always waits on `go`, because its letter says "I approve each batch").
   OUTREACH_PREVIEW_DAYS        how long a preview stands (default 14); the day-10
                                letter names the date it comes down.
 
@@ -2440,7 +2441,9 @@ def cmd_send_batch(args, provider_name):
         if problems:
             say("Before `go` can send: " + "; ".join(problems))
         return
-    if not args.go and str(toolbelt("OUTREACH_AUTO") or "") != "1":
+    # Every batch waits on Taylor's `go`, OUTREACH_AUTO or not: each letter says "I approve each
+    # batch" (his disclosure, answer 1), and that sentence has to stay true. AUTO is the kit lane's.
+    if not args.go:
         say(f"\nWaiting on `go` for this batch — {len(plan)} businesses, each with the two facts its letter "
             "will carry:")
         for i, p, faults in plan:
@@ -2838,7 +2841,9 @@ def cmd_inbox(args):
             when = got.get("when")
             book = toolbelt("LEADS_BOOKING_URL") or "the booking link (LEADS_BOOKING_URL isn't set)"
             tail = f"reply yes to book {when}" if when else f"reply yes to send the booking link ({book})"
-            notify(f"{name} replied: {first200} — leads brief pending; {tail}")
+            # an "unsure" carries the classifier's reason to Taylor, as its prompt promises
+            because = f" (the classifier was unsure: {why})" if cls == "unsure" and why else ""
+            notify(f"{name} replied: {first200}{because} — leads brief pending; {tail}")
             leads_log(name, "interested", f"replied to the email: {first200[:120]}",
                       place_id=pid, email=email, next_when="tomorrow")
             say(f"  handed to Taylor: {tail}")

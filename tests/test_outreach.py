@@ -219,7 +219,7 @@ class Templates(Base):
         letter = r.stdout.split("───── first.md ─────")[1].split("─────")[0]
         self.assertIn("American Fork", letter)
         self.assertIn("Taylor Remund", letter)
-        self.assertIn("$99 a month, no contract, stated on the site", letter)
+        self.assertIn("$10 a month, no contract", letter)
         self.assertIn(ADDRESS, letter)
         self.assertIn(BOOKING, letter)
         self.assertIn("801-555-0100", letter)
@@ -292,7 +292,7 @@ class Send(Base):
             self.assertIn('"no thanks"', row["text"])
             self.assertIn("advertisement", row["text"])
             self.assertIn("Patch, my AI operator", row["text"])
-            self.assertIn("$99 a month, no contract, stated on the site", row["text"])
+            self.assertIn("$10 a month, no contract", row["text"])
             self.assertTrue(row["subject"].strip())
             self.assertEqual(MAILBOX, row["from"])
 
@@ -416,7 +416,7 @@ class Send(Base):
         r = self.send("--touch", "3")
         self.assertEqual(6, len(self.outbox()))
         self.assertIn("touch day 3 (second)", r.stdout)
-        self.assertIn("Following up once", self.outbox()[0]["text"])
+        self.assertIn("Following up on the page", self.outbox()[0]["text"])
         r = self.send("--touch", "10")
         self.assertIn("touch day 10 (third)", r.stdout)
         third = [row for row in self.outbox() if "comes down" in row["text"]]
@@ -627,7 +627,7 @@ class InboxWithClassifier(Base):
         self.assertIn("answering:", r.stdout)
         out = self.sent_replies()
         self.assertEqual(1, len(out))
-        self.assertIn("$99 a month, no contract, stated on the site", out[0]["text"])
+        self.assertIn("$10 a month, no contract", out[0]["text"])
         self.assertIn("435-901-7141", out[0]["text"])            # text it yourself
         self.assertIn(BOOKING, out[0]["text"])
         self.assertIn(ADDRESS, out[0]["text"])
@@ -824,7 +824,7 @@ class InstantlyProvider(Base):
         self.assertEqual(1, len(rep))
         self.assertEqual("e9", rep[0]["body"]["reply_to_uuid"])
         self.assertEqual(MAILBOX, rep[0]["body"]["eaccount"])
-        self.assertIn("$99 a month", rep[0]["body"]["body"]["text"])
+        self.assertIn("$10 a month", rep[0]["body"]["body"]["text"])
         self.assertIn("<br/>", rep[0]["body"]["body"]["html"])
 
     def test_the_bounce_rate_comes_from_the_campaign_analytics(self):

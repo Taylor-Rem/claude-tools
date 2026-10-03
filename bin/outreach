@@ -223,11 +223,14 @@ DISCLOSURE_BATCH = "Patch, my AI operator, found this and drafted it; I approve 
 OFFER_SENTENCE = ("I can build you a preview of a site for {business} from your Google listing, free, "
                   "nothing to sign. Want to see it? Just reply.")
 
-# The only price sentences that may leave this tool. Starter, exactly as /pricing and
-# patchlamp/CLAIMS.md state it; change these only with a CLAIMS.md row in hand.
-PRICE_LINE = "$99 a month, no contract, stated on the site"
-PRICES_LINE = ("The rest of the range is $10 a month for hosting on its own, then $50, $250, $400 "
-               "and $1,000 as the volume of changes goes up — all six are on the pricing page.")
+# The only price sentences that may leave this tool. Hosting, exactly as /pricing and
+# patchlamp/CLAIMS.md state it (small plans first: Taylor 2026-10-01, the first quote settled
+# 2026-10-02 — a lead whose site is broken or missing meets the small plan; the letters carry
+# the one clause that keeps $10 from surprising anyone later); change these only with a
+# CLAIMS.md row in hand.
+PRICE_LINE = "$10 a month, no contract"
+PRICES_LINE = ("The full range is $10, $50, $99, $250, $400 and $1,000 a month as the amount of work "
+               "goes up; all six are on the pricing page.")
 DEMO_NUMBER_DEFAULT = "435-901-7141"
 
 # The classifier. Haiku, no thinking, a couple of hundred tokens out.

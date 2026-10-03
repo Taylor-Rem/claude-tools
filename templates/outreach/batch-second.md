@@ -12,10 +12,10 @@ Subject default: Re: {thread_subject}
 ---
 Hi {first},
 
-Following up once on my note from a few days ago about {business}.
+Following up on my note from a few days ago about {business}.
 [?see_url] If you'd like to see a site for {business} built from your Google listing, this page makes a free preview of one in a couple of minutes: {see_url}
 [!see_url] If you'd like to see a free preview of a site for {business}, built from your Google listing, just reply and I'll send it.
-If you'd want it kept, it's {price_line}; if not, no hard feelings.
+If you'd want it kept, it's {price_line} to keep it up on your own web address, with a few small changes by text each month; if not, no hard feelings.
 
 Taylor Remund
 {phone}

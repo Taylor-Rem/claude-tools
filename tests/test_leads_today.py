@@ -327,8 +327,9 @@ class MorningEmailTest(Base):
         self.assertNotIn("http", out[cy + 1])                            # the link is message two, under it
         self.assertEqual(out[cy + 2], "When they say yes: https://previews.patchlamp.com/cy-pools/ — nothing to sign, "
                                       "and I'll take it down the moment you say so. Patch, my AI, does the work and "
-                                      "I'm on the hook for it; if you want it kept right after the free fix it's $99 "
-                                      "a month.")
+                                      "I'm on the hook for it; if you want it kept right after the free fix it's $10 "
+                                      "a month to keep it up on your own web address, with a few small changes by "
+                                      "text each month.")
         bo = next(l for l in out if l.startswith("2. Bo Pools"))
         self.assertIn("call: (801) 555-0199 (the email to bo@example.test waits for the email lane)", bo)
 
@@ -736,11 +737,12 @@ class RegisterTest(unittest.TestCase):
         for word in ("$", "http", "I fix", "Free, no strings", "AI", "Patch"):
             self.assertNotIn(word, dm)
 
-    def test_message_two_is_the_link_the_ai_line_and_starter(self):
+    def test_message_two_is_the_link_the_ai_line_and_hosting(self):
         self.assertEqual(self.m.then_text("https://p.example/x/"),
                          "https://p.example/x/ — nothing to sign, and I'll take it down the moment you say so. Patch, "
                          "my AI, does the work and I'm on the hook for it; if you want it kept right after the free "
-                         "fix it's $99 a month.")
+                         "fix it's $10 a month to keep it up on your own web address, with a few small changes by text "
+                         "each month.")
         mp = self.m.morning_pick({"name": "Summit Roofing", "segment": "services", "faults": ["no website on Google"],
                                   "reviews": 92, "rating": 4.9, "preview_url": "https://p.example/x/",
                                   "facebook": "https://facebook.com/summitroofing"}, email_on=False)

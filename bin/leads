@@ -1889,7 +1889,7 @@ def segment_email(c, fs):
 
 DM_HELLO = "Hi, I'm Taylor. A small business owner in American Fork."
 REVIEWS_MIN, RATING_MIN = 10, 4.5
-STARTER_PRICE = "$99"          # Starter on patchlamp.com/pricing (patchlamp/CLAIMS.md, Prices::TIERS)
+HOSTING_PRICE = "$10"          # Hosting on patchlamp.com/pricing (patchlamp/CLAIMS.md, Prices::TIERS); small plans first, 2026-10-02
 
 
 def pick_reviews(c):
@@ -1978,7 +1978,8 @@ def register_dm(c, fs):
 def then_text(url):
     """Message two, for when they answer yes: the link, the AI line, the price. Never in message one."""
     return (f"{url} — nothing to sign, and I'll take it down the moment you say so. Patch, my AI, does the work and "
-            f"I'm on the hook for it; if you want it kept right after the free fix it's {STARTER_PRICE} a month.")
+            f"I'm on the hook for it; if you want it kept right after the free fix it's {HOSTING_PRICE} a month to keep it up "
+            f"on your own web address, with a few small changes by text each month.")
 
 
 def register_email(c, fs):

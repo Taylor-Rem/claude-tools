@@ -14,7 +14,7 @@ Hi {first},
 
 Here it is: {preview_url}
 
-I built it from your Google listing alone, so it only knows what Google knows, and it stays up for 30 days. If you'd like to keep it, it's {price_line}, and changes after that are a text to Patch. Any questions, just reply.
+I built it from your Google listing alone, so it only knows what Google knows, and it stays up for 30 days. If you'd like to keep it, it's {price_line} to keep it up on your own web address, and a few small changes a month are a text to Patch; anything bigger is a plan up. Any questions, just reply.
 
 Taylor Remund
 {phone}

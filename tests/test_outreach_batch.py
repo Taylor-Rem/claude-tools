@@ -380,7 +380,7 @@ class Letters(Base):
                 self.assertIn("advertisement", text)
                 self.assertIn(f"I can build you a preview of a site for {pick['name']} from your Google listing, "
                               "free, nothing to sign. Want to see it? Just reply.", text)
-                self.assertIn("$99 a month, no contract, stated on the site", text)
+                self.assertIn("$10 a month, no contract", text)
                 self.assertNotRegex(text, r"https?://|www\.|\.com\b")
         self.assertEqual([], Mail.sent)
         self.assertEqual([], self.seqs())

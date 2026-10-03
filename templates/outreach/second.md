@@ -9,7 +9,7 @@ Subject default: the page I made for {business}
 ---
 Hi {first},
 
-Following up once on the page for {business} — it's still at {preview_url}. If you keep it ({price_line}), changing anything on it is a text to Patch and it's done the same day. If it's not for you, no hard feelings.
+Following up on the page for {business} — it's still at {preview_url}. If you keep it ({price_line}), it stays up on your own web address, and a few small changes a month are a text to Patch; anything bigger is a plan up. If it's not for you, no hard feelings.
 
 Taylor Remund
 {phone}

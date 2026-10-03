@@ -11,7 +11,7 @@ Subject default: the page for {business} comes down {expiry}
 ---
 Hi {first},
 
-Last note from me: the page I made for {business} comes down on {expiry}, so this is the point to say either way. It's at {preview_url} until then, and keeping it is {price_line}; I point your own domain at it as part of that. If I don't hear from you it goes quietly and I won't write again.
+Last note from me: the page I made for {business} comes down on {expiry}, so this is the point to say either way. It's at {preview_url} until then, and keeping it is {price_line}, and I move it onto your own web address with you as part of that. If I don't hear from you it goes quietly and I won't write again.
 
 Taylor Remund
 {phone}

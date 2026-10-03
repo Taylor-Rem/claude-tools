@@ -12,7 +12,7 @@ Hi {first},
 
 The short version: you text Patch — that's the assistant that looks after your site — in plain words ("put Saturday's hours at 9 to 4", "add the new service"), and it makes the change and texts you back. There's a page you can sign in to and type instead, if you'd rather, and your texts are there to read as well.
 
-The best way to judge it is to use it: text {demo} and ask it anything. That's a real one running a demo business, so nothing you say to it breaks anything. It costs {price_line} if you want your own. Fifteen minutes on the phone if that's easier: {booking}
+The best way to judge it is to use it: text {demo} and ask it anything. That's a real one running a demo business, so nothing you say to it breaks anything. Your own starts at {price_line} for the site and a few small changes a month; the plans that do more are on the pricing page. Fifteen minutes on the phone if that's easier: {booking}
 
 Taylor Remund
 {phone}

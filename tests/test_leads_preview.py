@@ -21,6 +21,7 @@ import sys as _sys, pathlib as _pathlib  # noqa: E401
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parent))
 import _offline  # noqa: F401,E402  first, before any tool loads: the suite stays off production (tests/_offline.py)
 
+import datetime
 import json
 import os
 import re
@@ -254,7 +255,9 @@ class PreviewTest(unittest.TestCase):
         self.build("Blue Canyon Landscaping", extra=["--days", "3"])
         r = self.run_leads("preview", "sweep", "--no-publish")
         self.assertIn("nothing expired", r.stdout)
-        r = self.run_leads("preview", "sweep", "--no-publish", env={"LEADS_NOW": "2026-10-05"})
+        # five days on from the real today (the build used it): past the three, short of the thirty
+        later = (datetime.date.today() + datetime.timedelta(days=5)).isoformat()
+        r = self.run_leads("preview", "sweep", "--no-publish", env={"LEADS_NOW": later})
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("removing blue-canyon-landscaping-lehi", r.stdout)
         self.assertNotIn("mikes-pool-care", r.stdout)

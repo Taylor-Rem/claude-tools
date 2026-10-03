@@ -614,6 +614,44 @@ def record_remotes(project, ws, write=False):
     return out
 
 
+def add_remote(project, ws, name, write=False):
+    """(url|None, note): register repos/<name>, a repo we don't host (no Pages project; its own push
+    deploys it, like James's Worker), so a walled run can push and fetch it. Its origin is validated
+    as record_remotes validates a hosted one and recorded as a row of its own, {"host": "external",
+    "remote": URL}; `site`, `print` and `db` act on "cloudflare" rows only, so to them it's no row.
+    Run outside the wall, by Taylor or a session on his word: the address is the whole of the
+    trust, so it is read once, here, and printed for a person to see."""
+    if not name or "/" in name or name.startswith("."):
+        return None, "give the repo's directory name under repos/"
+    row = (registry_load().get(project) or {}).get(name)
+    if row is not None:
+        return row.get("remote"), ("already registered" if row.get("remote")
+                                   else "already registered without an address; `client remotes --write` records it")
+    if not (ws / "repos" / name).is_dir():
+        return None, "no repo on disk"
+    bad = repo_problem(ws, name)
+    m = None if bad else GITHUB_URL.match(origin_url(ws, name) or "")
+    if not m:
+        return None, f"nothing registered: {bad or 'no GitHub origin in its .git/config'}"
+    url = f"git@github.com:{m.group(1)}/{m.group(2)}.git"
+    if not write:
+        return url, "would register (host external: pushed and fetched, never published by `site`)"
+    lock = REGISTRY.with_suffix(".lock")
+    with open(lock, "a") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        try:    # strict here: registry_load's {} on a bad file would write every other row away
+            cur = json.loads(REGISTRY.read_text()) if REGISTRY.exists() else {}
+        except (OSError, ValueError):
+            return None, f"{REGISTRY.name} couldn't be read as JSON; nothing written"
+        cur.setdefault(project, {}).setdefault(name, {"host": "external", "remote": url})
+        tmp = REGISTRY.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(cur, indent=2, sort_keys=True) + "\n")
+        if REGISTRY.exists():
+            shutil.copymode(REGISTRY, tmp)
+        tmp.replace(REGISTRY)
+    return url, "registered"
+
+
 def origin_url(ws, name):
     """remote.origin.url from repos/<name>/.git/config, read without following links."""
     cfg = read_beneath(ws, f"repos/{name}/.git/config") or b""

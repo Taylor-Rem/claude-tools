@@ -687,6 +687,39 @@ class RecordRemotes(Base):
         self.assertNotIn("remote", reg["hooked"])
         self.assertIsNone(ST.registry_remote_problem(self.ws, "acme", "site"))
 
+    def test_add_registers_an_outside_repo_at_its_origin(self):
+        self.make_repo("acme", "outside")
+        ST.REGISTRY.write_text(json.dumps({"acme": {"site": {"host": "cloudflare", "project": "acme-site"}},
+                                           "other": {"x": {"project": "x"}}}))
+        url, note = ST.add_remote("acme", self.ws, "outside")
+        self.assertEqual((url, note[:5]), ("git@github.com:patchlamp/outside.git", "would"))
+        self.assertNotIn("outside", json.loads(ST.REGISTRY.read_text())["acme"])
+        with self.assertRaises(ST.Refused):
+            ST.push_url("acme", "outside")
+        self.assertEqual(ST.add_remote("acme", self.ws, "outside", write=True)[1], "registered")
+        reg = json.loads(ST.REGISTRY.read_text())
+        self.assertEqual(reg["acme"]["outside"], {"host": "external", "remote": "git@github.com:patchlamp/outside.git"})
+        self.assertEqual(reg["other"], {"x": {"project": "x"}})          # every other row kept
+        self.assertEqual(reg["acme"]["site"]["project"], "acme-site")
+        self.assertEqual(ST.push_url("acme", "outside"), "git@github.com:patchlamp/outside.git")
+        self.assertIsNone(ST.registry_remote_problem(self.ws, "acme", "outside"))
+        self.assertEqual(ST.add_remote("acme", self.ws, "outside", write=True)[1], "already registered")
+
+    def test_add_refuses_a_bad_repo_a_missing_one_and_an_unreadable_registry(self):
+        bad = self.make_repo("acme", "hooked")
+        git(bad, "config", "core.hooksPath", "/tmp")
+        ST.REGISTRY.write_text("{}")
+        self.assertIsNone(ST.add_remote("acme", self.ws, "hooked", write=True)[0])
+        self.assertIsNone(ST.add_remote("acme", self.ws, "nope", write=True)[0])
+        self.assertIsNone(ST.add_remote("acme", self.ws, "../hooked", write=True)[0])
+        self.assertEqual(json.loads(ST.REGISTRY.read_text()), {})
+        self.make_repo("acme", "fine")
+        ST.REGISTRY.write_text("{not json")
+        url, note = ST.add_remote("acme", self.ws, "fine", write=True)
+        self.assertIsNone(url)
+        self.assertIn("nothing written", note)
+        self.assertEqual(ST.REGISTRY.read_text(), "{not json")
+
 
 class FakeBroker(threading.Thread):
     def __init__(self, path, reply_exit=7):

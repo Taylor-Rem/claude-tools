@@ -129,12 +129,14 @@ def relay_view(slug, cfg):
 
 
 def patch_built(slug, repo):
-    """Is this repo a site `site new` / `site adopt` made (so it carries the template's CLAUDE.md)?"""
+    """Is this repo a site `site new` / `site adopt` made (so it carries the template's CLAUDE.md)?
+    A row `client remotes --add` wrote (host "external") is only a push address, not one of ours."""
     try:
         entries = json.loads(SITES.read_text()).get(slug, {})
     except (OSError, ValueError):
         return True
-    return any(e.get("repo") == repo or name == repo for name, e in entries.items()) if entries else False
+    return any((e.get("repo") == repo or name == repo) and e.get("host") != "external"
+               for name, e in entries.items()) if entries else False
 
 
 def binding_problem(ws, repo, entry):
@@ -555,7 +557,16 @@ def sandbox_doctor(a):
 
 def cmd_remotes(a):
     """Record each registered repo's origin into its sites.json row as `remote` (B85): the only
-    place a walled run's git push/fetch address comes from. Prints what it would do without --write."""
+    place a walled run's git push/fetch address comes from. Prints what it would do without --write.
+    --add REPO registers a repo we don't host (sandbox_tools.add_remote)."""
+    if a.add:
+        if not a.slug:
+            die("--add needs the workspace: client remotes SLUG --add REPO")
+        url, note = sandbox_tools.add_remote(a.slug, CLIENTS_DIR / a.slug, a.add, write=a.write)
+        print(f"{a.slug}/{a.add}: {url or '-'}  ({note})")
+        if not a.write and url and note.startswith("would"):
+            print("(nothing written; --write registers it)")
+        sys.exit(0 if url else 1)
     targets = [CLIENTS_DIR / a.slug] if a.slug else [d for d in sorted(CLIENTS_DIR.iterdir())
                                                      if d.is_dir() and (d / ".client.json").exists()]
     for ws in targets:
@@ -599,6 +610,8 @@ def main():
     s.add_argument("slug"); s.set_defaults(fn=cmd_snippet)
     r = sub.add_parser("remotes", help="record each registered repo's push address in sites.json (B85)")
     r.add_argument("slug", nargs="?"); r.add_argument("--write", action="store_true")
+    r.add_argument("--add", metavar="REPO", help="register repos/REPO, a repo we don't host (its own push deploys it), "
+                   "at its GitHub origin, so a walled run can push it")
     r.set_defaults(fn=cmd_remotes)
     x = sub.add_parser("exec", help="(the relay's broker) run one keyed tool for a walled run")
     x.add_argument("--project", required=True); x.add_argument("--role", required=True, choices=sandbox_tools.ROLES)

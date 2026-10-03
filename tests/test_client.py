@@ -121,5 +121,24 @@ class ClientAllowlist(unittest.TestCase):
             self.assertIn(step, md)
 
 
+class PatchBuilt(unittest.TestCase):
+    """A repo registered only for its push address (`client remotes --add`, host "external") isn't
+    one of our sites, so the doctor doesn't ask it for the template's CLAUDE.md."""
+
+    def test_external_row_is_not_patch_built(self):
+        import importlib.machinery, importlib.util  # noqa: E401
+        loader = importlib.machinery.SourceFileLoader("client_tool", str(CLIENT))
+        mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("client_tool", loader))
+        loader.exec_module(mod)
+        with tempfile.TemporaryDirectory() as tmp:
+            mod.SITES = Path(tmp) / "sites.json"
+            mod.SITES.write_text(json.dumps({"acme": {
+                "site": {"host": "cloudflare", "project": "acme-site"},
+                "app": {"host": "external", "remote": "git@github.com:someone/app.git"}}}))
+            self.assertTrue(mod.patch_built("acme", "site"))
+            self.assertFalse(mod.patch_built("acme", "app"))
+            self.assertFalse(mod.patch_built("other", "site"))
+
+
 if __name__ == "__main__":
     unittest.main()

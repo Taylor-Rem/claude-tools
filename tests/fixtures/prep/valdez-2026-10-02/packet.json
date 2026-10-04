@@ -1,0 +1,125 @@
+{
+ "schema": 1,
+ "place_id": "ChIJ2XdYeSWbTYcRzcl5fw_nC20",
+ "slug": "valdez-brothers-plumbing",
+ "name": "Valdez Brothers Plumbing",
+ "category": "plumber",
+ "segment": "services",
+ "city": "Orem",
+ "census": {
+  "rating": 4.9,
+  "reviews": 265,
+  "phone": "(385) 332-8356",
+  "website": "",
+  "primary_type": "plumber",
+  "locality": "Orem",
+  "google_maps_uri": "https://maps.google.com/?cid=7857628028627175885&g_mp=Cidnb29nbGUubWFwcy5wbGFjZXMudjEuUGxhY2VzLlNlYXJjaFRleHQQAhgEIAA",
+  "business_status": "OPERATIONAL",
+  "refreshed_at": "2026-09-28T16:14:38",
+  "categories": "[\"plumber\"]"
+ },
+ "listing": {
+  "file": "listing.json",
+  "read": "2026-09-30",
+  "maps_url": "https://maps.google.com/?cid=7857628028627175885&g_mp=CiVnb29nbGUubWFwcy5wbGFjZXMudjEuUGxhY2VzLkdldFBsYWNlEAIYBCAA",
+  "phone": "(385) 332-8356",
+  "website": "",
+  "rating": 4.9,
+  "review_count": 265,
+  "type": "Plumber",
+  "service_area_business": false,
+  "hours": [
+   "Monday: Open 24 hours",
+   "Tuesday: Open 24 hours",
+   "Wednesday: Open 24 hours",
+   "Thursday: Open 24 hours",
+   "Friday: Open 24 hours",
+   "Saturday: Open 24 hours",
+   "Sunday: Open 24 hours"
+  ],
+  "address_never_publish": "50 1200 W #2760, Orem, UT 84058, USA",
+  "photos": 10
+ },
+ "reviews": [
+  {
+   "ref": 0,
+   "rating": 5,
+   "when": "2 months ago",
+   "published": "2026-07-22",
+   "text": "Douglas was fantastic today. We have used Valdez Brothers Plumbing before for plumbing service and always had a great experience. douglas was very polite, professional, and easy to talk with. as a blue collar professional myself, it is great to see that kind of work ethic and clear communication from a plumber. Every time he came into the house, he wore boot covers and treated the home with care. He left everything clean, explained the repairs, and showed me that all the plumbing was working properly before he finished. Partway through the visit, I also asked him to fix a leaking outdoor faucet, and he was able to take care of that too at a fair price. i really appreciated how efficient, respectful, and thorough he was during the whole job. it made the whole service call easy and stress free. I strongly recommend using them, and if you can ask for a specific technician, i highly recommend Douglas."
+  },
+  {
+   "ref": 1,
+   "rating": 5,
+   "when": "3 months ago",
+   "published": "2026-06-24",
+   "text": "Douglas has been my plumber for many years, and he is always knowledgeable, professional, and dependable. I can count on him to handle every plumbing job the right way. When I needed a water heater replacement, I did not think about calling anyone else because I trust his work completely. He also takes time to answer general plumbing questions and gives helpful advice beyond the specific service call. It is great to have a reliable plumbing expert who delivers quality work and excellent customer service every time. I honestly hope Douglas keeps doing plumbing for a long time."
+  },
+  {
+   "ref": 2,
+   "rating": 5,
+   "when": "a month ago",
+   "published": "2026-08-27",
+   "text": "If I ever have another plumbing problem, or if someone I know needs a great plumber, this is the only team I would recommend. The list of good things to say is long. Their plumbing service was prompt, on time early in the day, fairly priced, easy to book, and quick to finish. Douglas and the crew were courteous, professional, clean, and very friendly. They gave helpful plumbing advice for our home and were also kind to my young children. My family hired them for a major sewer and drain project, including pipe bursting for the main sewer line and replacing the connected branch sewer pipes under the house. It was a big job on an older two-story home with aging plumbing and a very small crawlspace. They handled the work smoothly and made a difficult repair feel much less stressful. Douglas managed the whole project with a high level of professionalism, including permits, and the team was licensed and bonded. I am very relieved and happy that we chose this plumbing company. There are many plumbers out there, but this is the team I trust for sewer line work, drain pipe replacement, and large home plumbing repairs. If you need a dependable plumber, I would not hesitate to call them again."
+  },
+  {
+   "ref": 3,
+   "rating": 5,
+   "when": "a month ago",
+   "published": "2026-08-06",
+   "text": "We’ve used Valdez Brothers Plumbing for a while, and they keep impressing us with the quality of their plumbing service. I called for service, and the plumber arrived at our home in Orem early the next morning right on time. Within about an hour, Douglas completed the whole-house water filter replacement and changed out two bathroom water shutoff valves. Everything was handled smoothly, and the work area was kept clean. The service was attentive, professional, and very friendly, and they took time to explain the repairs and make sure everything was working properly before leaving. Their dependable plumbing work and strong customer care have earned our trust and continued business."
+  },
+  {
+   "ref": 4,
+   "rating": 5,
+   "when": "2 months ago",
+   "published": "2026-07-28",
+   "text": "I've used Valdez Brothers Plumbing for several years, and douglas has always done great plumbing work. He has helped at our shop and at two of our homes, handling repairs, faucet issues, and other household plumbing needs. He is always on time, and if he is running late, he calls to let us know when he will arrive. Most recently, he repaired two leaking outdoor faucets at our home. They had been worked on before by other plumbers and homeowners, but the leaks never fully stopped. douglas came out, found the problem quickly, and fixed both in a short time. now they work perfectly, with no water leaking everywhere when we turn them on. It was a big relief to finally have those hose bibs working the right way. We also plan to have him come back soon to re-plumb our garbage disposal line, since it was clearly not installed the right way before. i appreciate the quality of the work, the clear communication, and the dependable service. it is hard to find a plumber who is this consistent, professional, and easy to work with. overall, we have had a very good experience and are happy with the results."
+  }
+ ],
+ "reach": {
+  "instagram": "valdezbrothersplumbing",
+  "facebook": "facebook.com/valdezbrothersplumbingandheating",
+  "email": null,
+  "directory": null,
+  "source": "search; instagram=result #9, the handle spells the name; facebook=result #10, the page name spells the name",
+  "checked": "2026-09-29T12:53:02",
+  "evidence": {
+   "query": "\"Valdez Brothers Plumbing\" Orem Utah",
+   "instagram": {
+    "url": "https://www.instagram.com/valdezbrothersplumbing/",
+    "title": "Valdez Brothers Plumbing & Re-pipe (@valdezbrothersplumbing) • Instagram photos and videos",
+    "page": "https://www.instagram.com/valdezbrothersplumbing/",
+    "visible": true,
+    "why": "og:title",
+    "checked": "2026-09-30T13:04:25",
+    "og_title": "Valdez Brothers Plumbing & Re-pipe (@valdezbrothersplumbing) • Instagram photos and videos"
+   },
+   "facebook": {
+    "url": "https://m.facebook.com/valdezbrothersplumbingandheating/?locale=az_AZ",
+    "title": "Valdez Brothers Plumbing & Heating llc | Rio Rancho NM",
+    "page": "https://www.facebook.com/valdezbrothersplumbingandheating",
+    "visible": true,
+    "why": "og:title",
+    "checked": "2026-09-30T12:58:27",
+    "og_title": "Valdez Brothers Plumbing & Heating llc | Rio Rancho NM"
+   }
+  }
+ },
+ "presence": {
+  "class": "none",
+  "label": null,
+  "url": ""
+ },
+ "faults": [
+  "no website on Google",
+  "Google shows a street address, not the area they serve"
+ ],
+ "summary": "4.9★ (265) · no website · 10+ photos · plumber",
+ "hosting": null,
+ "caps": {
+  "searches": 8,
+  "fetches": 10,
+  "minutes": 15.0
+ }
+}

@@ -26,6 +26,7 @@ import os
 import re
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -1006,3 +1007,245 @@ class OneTest(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---- B107: a handle that belongs to a namesake (plan ~/projects/plans/44-wrong-business-handles.md) ---------
+# On 2026-10-02 the outline named @valdezbrothersplumbing for an Orem plumber; it and the Facebook page were a
+# New Mexico company's. These pin that research's verdict reaches the outline and the reach table: only a `high`
+# route is a DM line, `not_theirs` always wins, `unsure` is said as "look before sending", and a business whose
+# only routes were taken away is dropped unless the run allows calls.
+
+VALDEZ = "ChIJ2XdYeSWbTYcRzcl5fw_nC20"
+VALDEZ_FIX = FIX / "valdez-2026-10-02"
+REACH_STUB = FIX / "reach-stub.py"
+REAL_REACH = Path.home() / "projects" / ".worktrees" / "client-leads-b104" / "scripts" / "reach.py"
+REACH_DDL = """CREATE TABLE IF NOT EXISTS reach (place_id TEXT PRIMARY KEY, instagram TEXT, facebook TEXT, email TEXT,
+    source TEXT, checked TEXT, evidence TEXT, unconfirmed TEXT)"""
+NM_WHY = "the Facebook page and valdezbrothersplumbing.com are a New Mexico business"
+
+
+def real_reach_ok():
+    return REAL_REACH.exists() and "def set_verdict" in REAL_REACH.read_text()
+
+
+def with_reach_py(path):
+    """In-process: point leads' place check at `path` and forget the one it imported before."""
+    L = P.leads()
+    old = os.environ.get("LEADS_REACH_PY")
+    os.environ["LEADS_REACH_PY"] = str(path)
+    L._REACH_MOD = None
+
+    def undo():
+        if old is None:
+            os.environ.pop("LEADS_REACH_PY", None)
+        else:
+            os.environ["LEADS_REACH_PY"] = old
+        L._REACH_MOD = None
+    return undo
+
+
+def low_packet(value="bluecanyonlandscaping", confidence="low", place=None, why="nothing ties it to the place"):
+    return {"place_id": "FX_S02", "name": "Blue Canyon Landscaping", "city": "Lehi",
+            "listing": {"phone": "(801) 555-0102", "website": None}, "census": {},
+            "reach": {"instagram": value if confidence == "high" else None, "facebook": None, "email": None,
+                      "judged": {"instagram": {"value": value, "confidence": confidence, "place": place,
+                                               "why": None if confidence == "high" else why, "by": "reach.py"}}}}
+
+
+class HandleRouteTest(unittest.TestCase):
+    """The precedence table, in process (plan 44 § Change 11)."""
+
+    def setUp(self):
+        self.addCleanup(with_reach_py(REACH_STUB))
+
+    def test_the_valdez_packet_replayed_gives_no_instagram_route(self):
+        pkt = json.loads((VALDEZ_FIX / "packet.json").read_text())        # the original row: no confidence
+        facts = json.loads((VALDEZ_FIX / "facts.json").read_text())
+        for f in (facts, None):                                             # with research's verdicts, and without
+            ch = P.channel_for(pkt, f)
+            self.assertEqual(ch["kind"], "phone", ch)
+            self.assertNotIn("valdezbrothersplumbing", ch["label"])
+            self.assertNotIn("their Instagram", ch["why"])
+        ch = P.channel_for(pkt, facts)
+        self.assertIn(f"Facebook refused (research: {NM_WHY})", ch["refused"])
+        self.assertTrue(any(t.startswith("facebook not theirs (") for t in ch["taken"]), ch["taken"])
+        self.assertTrue(any(t.startswith("instagram unsure (") for t in ch["taken"]), ch["taken"])
+
+    def test_an_unsure_on_a_high_row_is_look_before_sending_never_the_route(self):
+        pkt = low_packet(confidence="high", place="names Lehi (the result's title)")
+        self.assertEqual(P.channel_for(pkt)["kind"], "instagram")          # no verdict: the reach table's high stands
+        ch = P.channel_for(pkt, {"reach": {"instagram": {"verdict": "unsure", "why": "two accounts by this name"}}})
+        self.assertEqual(ch["kind"], "phone")
+        self.assertEqual(ch["unconfirmed"], [
+            "Instagram @bluecanyonlandscaping: unconfirmed, look before sending (research unsure: two accounts by "
+            "this name) https://www.instagram.com/bluecanyonlandscaping/"])
+        ch = P.channel_for(pkt, {"reach": {"instagram": {"verdict": "not_theirs", "why": "a Boise landscaper"}}})
+        self.assertEqual(ch["kind"], "phone")
+        self.assertEqual(ch["refused"], ["Instagram refused (research: a Boise landscaper)"])
+
+    def test_theirs_promotes_a_low_row_only_when_the_cited_words_tie_it(self):
+        pkt = low_packet()
+        tied = {"reach": {"instagram": {"verdict": "theirs", "why": "bio names the towns",
+                                        "source": {"words": "Serving Orem and Provo, Utah"}}}}
+        rt = P.route_confidence(pkt, tied, "instagram")
+        self.assertEqual(rt["confidence"], "high", rt)
+        ch = P.channel_for(pkt, tied)
+        self.assertEqual(ch["kind"], "instagram")
+        self.assertIn("research cited words that tie it to the place", ch["why"])
+        untied = {"reach": {"instagram": {"verdict": "theirs", "why": "the name matches",
+                                          "source": {"words": "Blue Canyon Landscaping, lawns and yards"}}}}
+        self.assertEqual(P.route_confidence(pkt, untied, "instagram")["confidence"], "low")
+        self.assertEqual(P.channel_for(pkt, untied)["kind"], "phone")
+        bare = {"reach": {"instagram": {"verdict": "theirs", "why": "looks right"}}}
+        self.assertEqual(P.route_confidence(pkt, bare, "instagram")["confidence"], "low")
+        rej = low_packet(confidence="rejected", why="another state")
+        self.assertEqual(P.route_confidence(rej, tied, "instagram")["confidence"], "rejected")
+
+    @unittest.skipUnless(real_reach_ok(), f"no B104 reach.py at {REAL_REACH}")
+    def test_theirs_against_the_real_place_check(self):
+        self.addCleanup(with_reach_py(REAL_REACH))
+        pkt = low_packet()
+        for words, want in (("Serving Orem and Provo, Utah", "high"), ("lawns and yards", "low"),
+                            ("Lawn care in Boise, ID 83702", "low")):
+            facts = {"reach": {"instagram": {"verdict": "theirs", "why": "w", "source": {"words": words}}}}
+            self.assertEqual(P.route_confidence(pkt, facts, "instagram")["confidence"], want, words)
+
+
+class HandleRunTest(Base):
+    """A whole night, the verdicts written through `reach.py --verdict` at finish."""
+
+    def add_valdez(self):
+        pkt = json.loads((VALDEZ_FIX / "packet.json").read_text())
+        rc = pkt["reach"]
+        conn = sqlite3.connect(self.db)
+        conn.execute("""INSERT INTO place_cache (place_id, name, address, phone, website, has_website, rating, reviews,
+                        lat, lng, refreshed_at, locality, postal_code, primary_type, types, business_status,
+                        google_maps_uri) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                     (VALDEZ, "Valdez Brothers Plumbing", pkt["listing"]["address_never_publish"], "(385) 332-8356",
+                      None, "no", 4.9, 265, 40.296, -111.716, "2026-09-28T16:14:38", "Orem", "84058", "plumber",
+                      json.dumps(["plumber", "service"]), "OPERATIONAL", pkt["census"]["google_maps_uri"]))
+        conn.execute("""INSERT INTO businesses (place_id, segment, category, categories, city, first_seen, source,
+                        presence_class, presence_url, presence_checked, is_chain, chain_override)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                     (VALDEZ, "services", "plumber", json.dumps(["plumber"]), "Orem, Utah", "2026-09-28",
+                      "scan_services", "none", None, "2026-09-28T12:00:00", 0, None))
+        conn.execute(REACH_DDL)
+        conn.execute("INSERT INTO reach VALUES (?,?,?,?,?,?,?,NULL)",     # the row as it was on 2026-10-02
+                     (VALDEZ, rc["instagram"], rc["facebook"], None, rc["source"], rc["checked"],
+                      json.dumps(rc["evidence"])))
+        conn.commit()
+        conn.close()
+        shutil.copy(VALDEZ_FIX / "listing.json", self.t / "leads" / "details" / f"{VALDEZ}.json")
+
+    def stub_env(self):
+        return {"LEADS_REACH_PY": str(REACH_STUB), "REACH_STUB_LOG": str(self.t / "reach-stub.jsonl"),
+                "FAKE_CLAUDE_FACTS": str(VALDEZ_FIX / "facts.json"), "FAKE_CLAUDE_FACTS_DIR": "",
+                "PREP_VERIFY": "off"}            # its sources are real hosts: the suite reads none of them
+
+    def test_valdez_replayed_records_both_verdicts_and_is_dropped_with_no_route_left(self):
+        self.add_valdez()
+        self.write_plan({"build": "good", "judge": "pass", "batch": "good"})
+        r, run_dir = self.night(VALDEZ, n=1, env=self.stub_env())
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        slug, b = next(iter(self.rj(run_dir)["businesses"].items()))
+        self.assertEqual(b["stage"], "dropped", b)
+        self.assertTrue(b["why"].startswith("no route left: "), b["why"])
+        self.assertIn(f"facebook not theirs ({NM_WHY})", b["why"])
+        self.assertIn("instagram unsure (Whether the Instagram account is theirs)", b["why"])
+        self.assertTrue(b["why"].endswith("; phone only"), b["why"])
+        calls = self.rows("reach-stub.jsonl")
+        verdicts = {c[2]: c for c in calls if c[:1] == ["--verdict"]}
+        self.assertEqual(sorted(verdicts), ["facebook", "instagram"])      # no call for the website: no column
+        by = f"prep {run_dir.name}/{slug}"
+        self.assertEqual(verdicts["facebook"][:8], ["--verdict", VALDEZ, "facebook", "not_theirs", NM_WHY, "--by", by,
+                                                    "--value"])
+        self.assertEqual(verdicts["facebook"][8], "facebook.com/valdezbrothersplumbingandheating")
+        self.assertEqual(verdicts["instagram"][:5], ["--verdict", VALDEZ, "instagram", "unsure",
+                                                     "Whether the Instagram account is theirs"])
+        md = (run_dir / "outline.md").read_text()
+        self.assertIn("Dropped: Valdez Brothers Plumbing — no route left: ", md)
+        self.assertIn("Refused handles:", md)
+        self.assertIn(f"- Valdez Brothers Plumbing: Facebook facebook.com/valdezbrothersplumbingandheating — not "
+                      f"theirs: {NM_WHY} (recorded)", md)
+        self.assertIn("- Valdez Brothers Plumbing: Instagram @valdezbrothersplumbing — unsure: Whether the Instagram "
+                      "account is theirs (recorded)", md)
+        self.assertIn(f"- Valdez Brothers Plumbing: Website valdezbrothersplumbing.com — not theirs: {NM_WHY}", md)
+        self.assertNotIn("Instagram DM", md)
+
+    def test_a_refusal_from_reach_py_is_said_and_finish_carries_on(self):
+        self.add_valdez()
+        self.write_plan({"build": "good", "judge": "pass", "batch": "good"})
+        env = dict(self.stub_env(), REACH_STUB_REFUSE="facebook")
+        r, run_dir = self.night(VALDEZ, n=1, extra=["--allow-calls"], env=env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        _, b = next(iter(self.rj(run_dir)["businesses"].items()))
+        self.assertEqual(b["stage"], "ready", b)                           # --allow-calls: the call opener
+        out = json.loads((run_dir / "outline.json").read_text())
+        self.assertEqual(out[0]["channel"]["kind"], "phone")
+        md = (run_dir / "outline.md").read_text()
+        self.assertIn("(not recorded: --verdict refused: ", md)
+        self.assertIn("Not used: ", md)
+        self.assertNotIn("Instagram DM", md)
+
+    def blue_canyon(self):
+        """FX_S02 with a listing, a `high` Instagram in the reach table, and research's not_theirs about it."""
+        listing = json.loads((FIX / "details" / "FX_S01.json").read_text().replace("FX_S01", "FX_S02"))
+        listing["displayName"] = {"text": "Blue Canyon Landscaping"}
+        listing.pop("websiteUri", None)
+        (self.t / "leads" / "details" / "FX_S02.json").write_text(json.dumps(listing))
+        conn = sqlite3.connect(self.db)
+        conn.execute(REACH_DDL)
+        ev = {"query": "\"Blue Canyon Landscaping\" Lehi Utah",
+              "instagram": {"url": "https://www.instagram.com/bluecanyonlandscaping/", "value": "bluecanyonlandscaping",
+                            "title": "Blue Canyon Landscaping (@bluecanyonlandscaping) · Lehi, Utah",
+                            "confidence": "high", "place": "names Lehi (the result's title)", "by": "reach.py"}}
+        conn.execute("INSERT INTO reach VALUES (?,?,?,?,?,?,?,NULL)",
+                     ("FX_S02", "bluecanyonlandscaping", None, None, "search; instagram=result #2",
+                      "2026-10-01T12:00:00", json.dumps(ev)))
+        conn.commit()
+        conn.close()
+        facts = json.loads((FIX / "facts-good.json").read_text().replace("FX_S01", "FX_S02"))
+        facts["schema"] = 2
+        facts["reach"] = {"instagram": {"verdict": "not_theirs", "why": "the profile's own result says Boise, Idaho"}}
+        src = self.t / "facts-s02.json"
+        src.write_text(json.dumps(facts))
+        return src
+
+    def check_not_theirs(self, env):
+        src = self.blue_canyon()
+        self.write_plan({"build": "good", "judge": "pass", "batch": "good"})
+        r, run_dir = self.night("FX_S02", n=1, extra=["--allow-calls"],
+                             env=dict(env, FAKE_CLAUDE_FACTS=str(src), FAKE_CLAUDE_FACTS_DIR=""))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        _, b = next(iter(self.rj(run_dir)["businesses"].items()))
+        self.assertEqual(b["stage"], "ready", b)
+        out = json.loads((run_dir / "outline.json").read_text())
+        self.assertEqual(out[0]["channel"]["kind"], "phone")
+        md = (run_dir / "outline.md").read_text()
+        self.assertNotIn("Instagram DM", md)
+        self.assertIn("Not used: Instagram refused (research: the profile's own result says Boise, Idaho)", md)
+        self.assertIn("- Blue Canyon Landscaping: Instagram @bluecanyonlandscaping — not theirs: the profile's own "
+                      "result says Boise, Idaho (recorded)", md)
+        return run_dir
+
+    def test_not_theirs_on_a_high_row_gets_no_dm_line_and_the_verdict_goes_to_reach_py(self):
+        env = {"LEADS_REACH_PY": str(REACH_STUB), "REACH_STUB_LOG": str(self.t / "reach-stub.jsonl")}
+        run_dir = self.check_not_theirs(env)
+        calls = [c for c in self.rows("reach-stub.jsonl") if c[:1] == ["--verdict"]]
+        self.assertEqual(len(calls), 1, calls)
+        self.assertEqual(calls[0][:7], ["--verdict", "FX_S02", "instagram", "not_theirs",
+                                        "the profile's own result says Boise, Idaho", "--by",
+                                        f"prep {run_dir.name}/{next(iter(self.rj(run_dir)['businesses']))}"])
+
+    @unittest.skipUnless(real_reach_ok(), f"no B104 reach.py at {REAL_REACH}")
+    def test_not_theirs_nulls_the_row_with_the_reason_through_the_real_reach_py(self):
+        self.check_not_theirs({"LEADS_REACH_PY": str(REAL_REACH)})
+        conn = sqlite3.connect(self.db)
+        ig, ev, unconf = conn.execute("SELECT instagram, evidence, unconfirmed FROM reach WHERE place_id='FX_S02'").fetchone()
+        conn.close()
+        self.assertIsNone(ig)
+        e = json.loads(ev)["instagram"]
+        self.assertEqual(e["confidence"], "rejected", e)
+        self.assertIn("Boise, Idaho", json.dumps(e))
+        self.assertTrue(str(e.get("by") or "").startswith("prep "), e)
+        self.assertIn("instagram=", unconf or "")

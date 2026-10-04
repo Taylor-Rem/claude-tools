@@ -237,6 +237,76 @@ class LintTest(unittest.TestCase):
             self.assertFalse(json.loads(r.stdout)["ok"])
 
 
+class ReachLintTest(unittest.TestCase):
+    """B107 (plan 44 § Change 10): schema 2's `reach`, research's verdict on each route the packet carries."""
+
+    VALDEZ = FIX / "valdez-2026-10-02"
+    NO_IG = "reach.instagram has no verdict yet (theirs, not_theirs or unsure; unsure is a fine answer)"
+
+    def setUp(self):
+        self.doc = json.loads((self.VALDEZ / "facts.json").read_text())
+        self.listing = json.loads((self.VALDEZ / "listing.json").read_text())
+        self.pkt = json.loads((self.VALDEZ / "packet.json").read_text())
+
+    def lint(self, fn=None, pkt="same"):
+        d = copy.deepcopy(self.doc)
+        if fn:
+            fn(d)
+        return P.lint_facts(d, self.listing, self.pkt if pkt == "same" else pkt)
+
+    def test_the_valdez_fixture_passes(self):
+        res = self.lint()
+        self.assertTrue(res["ok"], res["errors"])
+
+    def test_a_null_verdict_is_refused_with_its_message(self):
+        res = self.lint(lambda d: d["reach"]["instagram"].update(verdict=None))
+        self.assertEqual(res["errors"], [self.NO_IG])
+        res = self.lint(lambda d: d["reach"].pop("instagram"))            # left out: the packet carries it
+        self.assertEqual(res["errors"], [self.NO_IG])
+        res = self.lint(lambda d: d["reach"].pop("instagram"), pkt=None)  # no packet: only what the file names
+        self.assertTrue(res["ok"], res["errors"])
+        with tempfile.TemporaryDirectory() as t:                          # the CLI reads packet.json beside it
+            t = Path(t)
+            for n in ("listing.json", "packet.json"):
+                shutil.copy(self.VALDEZ / n, t / n)
+            d = copy.deepcopy(self.doc)
+            d["reach"]["instagram"]["verdict"] = None
+            (t / "facts.json").write_text(json.dumps(d))
+            r = subprocess.run([sys.executable, str(PREP), "facts", "lint", str(t / "facts.json")],
+                               capture_output=True, text=True)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn(f"error: {self.NO_IG}", r.stdout)
+
+    def test_a_verdict_needs_its_word_its_why_and_a_website_its_value(self):
+        self.assertTrue(any("is not one of theirs, not_theirs or unsure" in e for e in
+                            self.lint(lambda d: d["reach"]["facebook"].update(verdict="probably"))["errors"]))
+        self.assertIn("reach.facebook: a verdict needs its one-line why",
+                      self.lint(lambda d: d["reach"]["facebook"].update(why=" "))["errors"])
+        self.assertIn("reach.website needs its value: the site's address",
+                      self.lint(lambda d: d["reach"]["website"].pop("value"))["errors"])
+        self.assertTrue(any("source is {url?, words}" in e for e in
+                            self.lint(lambda d: d["reach"]["facebook"].update(source={"url": "x"}))["errors"]))
+        self.assertTrue(any("not a route" in e for e in self.lint(lambda d: d["reach"].update(tiktok={}))["errors"]))
+        res = self.lint(lambda d: d["reach"]["instagram"].update(verdict="theirs"))
+        self.assertTrue(res["ok"], res["errors"])                          # allowed, but it can't promote a handle
+        self.assertTrue(any("theirs with no source.words" in w for w in res["warnings"]), res["warnings"])
+
+    def test_schema_1_still_reads_and_the_skeleton_writes_2_with_nothing_decided(self):
+        self.assertTrue(P.lint_facts(GOOD, LISTING)["ok"])                 # schema 1, no reach
+        self.assertFalse(P.lint_facts(dict(GOOD, schema=3), LISTING)["ok"])
+        sk = P.skeleton(self.pkt, self.listing)
+        self.assertEqual(sk["schema"], 2)
+        self.assertEqual(sk["reach"], {"instagram": {"verdict": None, "why": None},
+                                       "facebook": {"verdict": None, "why": None}})
+        own = copy.deepcopy(self.pkt)                                       # the listing's own link: theirs already
+        own["listing"]["website"] = "https://www.instagram.com/valdezbrothersplumbing/"
+        own["reach"]["facebook"] = None
+        self.assertEqual(P.skeleton(own, self.listing)["reach"], {})
+        back = P.computed({"schema": 1, "hours": {}}, self.pkt)             # code puts back a route left out
+        self.assertEqual(back["schema"], 2)
+        self.assertEqual(set(back["reach"]), {"instagram", "facebook"})
+
+
 class VerifyTest(unittest.TestCase):
     def test_words_not_on_the_page_are_set_aside_and_high_drops_to_medium(self):
         doc = copy.deepcopy(GOOD)

@@ -15,8 +15,11 @@ you have. A thin, honest file beats a padded one.
 - `packet.json`: the census row, the listing summary (phone, website link,
   rating, count, type, hours, whether Google shows it as a service-area
   business), the reviews numbered by `ref`, the reach row (an Instagram
-  handle, a Facebook page, an email, each with the search that found it), the
-  presence (what their website link is today) and the faults we computed.
+  handle, a Facebook page, an email, each with the search that found it, and
+  under `judged` how sure code is that each one is theirs: `high` with the
+  line that tied it to the place, or `low`, `unsure`, `rejected` with the
+  reason), the presence (what their website link is today) and the faults we
+  computed.
 - `listing.json`: the Google listing read itself. Its `googleMapsUri` is the
   URL of every `listing` and `review` source.
 
@@ -55,7 +58,42 @@ same name and the same town, or the same phone number. A same-named business
 in another state is not a source. When unsure, leave it out and put the
 question in `unknown`.
 
-## The file (schema 1)
+## Is the handle theirs?
+
+For each route in the packet's reach (the keys already in `facts.json`
+under `reach`), write a verdict: `theirs`, `not_theirs` or `unsure`, with a
+one-line `why`. Taylor messages whoever the outline names, and a message to
+a namesake reaches a stranger with his name on it, so this is the one
+question in the file where a wrong yes costs more than a gap.
+
+- The verdict comes from search results and what the packet carries. The
+  Instagram or Facebook page itself is never fetched, so you are judging the
+  result's title, snippet and URL.
+- `unsure` is the right answer whenever the result doesn't say where the
+  account is. It is a fine answer, not a failure: the handle is shown to
+  Taylor to look at before he sends anything.
+- `not_theirs` when the result names another place (another state, another
+  town), or the page is a different business of the same name.
+- `theirs` only promotes a handle code couldn't confirm when the words you
+  cite tie it to this place: Utah, their city, the listing's phone. Put those
+  words in `source.words` (and the result's address in `source.url`). A
+  `theirs` with no such words leaves the handle unconfirmed.
+- A site you found by search that isn't the listing's own goes under
+  `website` with its address in `value`, and the same three verdicts.
+
+```json
+"reach": {
+  "instagram": {"verdict": "unsure", "why": "The profile's result names no town or state."},
+  "facebook": {"verdict": "not_theirs", "why": "The page title says Rio Rancho NM.",
+               "source": {"url": "https://www.facebook.com/…", "words": "Valdez Brothers Plumbing & Heating llc | Rio Rancho NM"}},
+  "website": {"value": "valdezbrothersplumbing.com", "verdict": "not_theirs",
+              "why": "A New Mexico business of the same name."}
+}
+```
+
+If you can't tell at all, say `unsure` and why; that is enough.
+
+## The file (schema 2)
 
 A skeleton is already in `facts.json`. Code owns and rewrites `place_id`,
 `slug`, `name`, `category`, `segment`, `city`, `researched`,
@@ -77,7 +115,10 @@ A skeleton is already in `facts.json`. Code owns and rewrites `place_id`,
   "unknown": ["Whether they do commercial work"],
   "owner_asks": ["Photos of recent jobs", "Confirm the list of services"],
   "verdict": "build",
-  "skip_reason": null
+  "skip_reason": null,
+  "reach": {"instagram": {"verdict": "theirs", "why": "The result names American Fork, UT.",
+                          "source": {"url": "https://www.instagram.com/example_garage/",
+                                     "words": "Garage door repair in American Fork, UT"}}}
 }
 ```
 
@@ -97,6 +138,7 @@ A skeleton is already in `facts.json`. Code owns and rewrites `place_id`,
 - `owner_asks[]`: what the owner would send to finish the site (their photos,
   a confirmed service list, their logo).
 - `verdict`: `build`, or `skip` with a `skip_reason` in one line.
+- `reach`: one verdict for each route, as § Is the handle theirs? says.
 
 ## Confidence
 

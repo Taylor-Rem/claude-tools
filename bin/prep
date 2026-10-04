@@ -328,9 +328,14 @@ def packet(place_id, fetch=True, spend=None):
             "photos": len(d.get("photos") or []),
         },
         "reviews": reviews,
+        # B107: `judged` is what code found of each candidate (confidence high|unsure|low|rejected, the place line
+        # or the reason), and `unconfirmed` the candidates that aren't usable as they stand, so research sees them
+        # and gives each its own verdict (facts.json § reach). A column value is only ever a `high` one.
         "reach": {"instagram": rc.get("instagram"), "facebook": rc.get("facebook"), "email": rc.get("email"),
                   "directory": list(rc["directory"]) if rc.get("directory") else None,
-                  "source": reach_row.get("source"), "checked": reach_row.get("checked"), "evidence": evidence},
+                  "source": reach_row.get("source"), "checked": reach_row.get("checked"), "evidence": evidence,
+                  "judged": L.reach_judgement(place_id) if hasattr(L, "reach_judgement") else {},
+                  "unconfirmed": rc.get("unconfirmed") or None, "skipped": rc.get("skipped") or None},
         "presence": {"class": cls, "label": label, "url": link},
         "faults": faults,
         "summary": summary,
@@ -356,7 +361,7 @@ def hosting_fact(L, place_id):
                          "title": (ev.get("http") or {}).get("title")}}
 
 
-# ---- the facts file: schema 1 and its lint (plan § Contracts) --------------------------------------
+# ---- the facts file: schema 2 (1 still read) and its lint (plan § Contracts) --------------------------------------
 
 WORD_RE = re.compile(r"[a-z0-9]+(?:'[a-z0-9]+)*")
 PRICE_RES = [re.compile(p, re.I) for p in (
@@ -469,6 +474,181 @@ def likely_names(listing, business_name, city):
     return names
 
 
+# ---- B107: is the handle theirs? (plan ~/projects/plans/44-wrong-business-handles.md § Changes 10, 11) --------
+# On 2026-10-02 an outline told Taylor to DM @valdezbrothersplumbing for an Orem plumber; that Instagram and the
+# Facebook page were a New Mexico namesake's. Research had doubted them in prose under `unknown`, and nothing carried
+# that doubt to the outline. Now research writes a verdict per route (facts.json § reach, schema 2), and one table
+# combines it with what the reach table found. Only a `high` result is a DM or email route, because a message to a
+# namesake reaches a stranger with Taylor's name on it. A model's `theirs` never promotes a handle on its word alone:
+# research reads the same search result that fooled the name match, so only cited words that tie the handle to the
+# place (reach.py's place_evidence) promote it. `not_theirs` always wins.
+
+REACH_ROUTES = ("instagram", "facebook", "email")
+REACH_KEYS = ("instagram", "facebook", "website", "email")
+REACH_VERDICTS = ("theirs", "not_theirs", "unsure")
+NO_VERDICT = "reach.{} has no verdict yet (theirs, not_theirs or unsure; unsure is a fine answer)"
+ROUTE_LABEL = {"instagram": "Instagram", "facebook": "Facebook", "email": "Email", "website": "Website"}
+CONFIDENCES = ("high", "unsure", "low", "rejected")
+
+
+def own_routes(pkt):
+    """{field: value} for a handle that is the listing's own website link: theirs by definition."""
+    L = leads()
+    web = (pkt.get("listing") or {}).get("website") or (pkt.get("census") or {}).get("website") or ""
+    out = {}
+    if "instagram.com" in web and L.ig_handle(web):
+        out["instagram"] = L.ig_handle(web)
+    if "facebook.com" in web and L.fb_page(web):
+        out["facebook"] = L.fb_page(web)
+    return out
+
+
+def reach_found(pkt, field):
+    """What code found for one route, before research: {value, confidence, place, why, own} or None when the
+    packet carries no candidate. The confidence comes from the packet's `judged` (B107), else the evidence's own
+    `confidence` (B104), else a column value with neither reads as `low`: stored before B104 and never checked."""
+    L = leads()
+    rc = pkt.get("reach") or {}
+    own = own_routes(pkt).get(field)
+    if own:
+        return {"value": own, "confidence": "high", "place": "the listing's own website link", "why": None, "own": True}
+    norm = (lambda v: L.reach_value(field, v) if hasattr(L, "reach_value") else v)
+    val = rc.get(field)
+    j = (rc.get("judged") or {}).get(field) if isinstance(rc.get("judged"), dict) else None
+    if isinstance(j, dict) and (j.get("value") or val):
+        if val and j.get("value") and norm(val) != norm(j["value"]):
+            return {"value": val, "confidence": "low", "place": None, "why": "the reach table judged another value",
+                    "own": False}
+        conf = j.get("confidence") if j.get("confidence") in CONFIDENCES else "low"
+        return {"value": j.get("value") or val, "confidence": conf, "place": j.get("place"),
+                "why": j.get("why"), "own": False}
+    ev = rc.get("evidence") if isinstance(rc.get("evidence"), dict) else {}
+    e = ev.get(field) if isinstance(ev.get(field), dict) else {}
+    if e.get("confidence"):
+        value = val or norm(e.get("value")) or (norm(e.get("page") or e.get("url")) if field != "email" else None)
+        if value:
+            conf = e["confidence"] if e["confidence"] in CONFIDENCES else "low"
+            if conf == "high" and e.get("visible") is False:
+                conf = "low"
+            return {"value": value, "confidence": conf, "place": e.get("place") if conf == "high" else None,
+                    "why": None if conf == "high" else (e.get("reason") or e.get("place_reason")
+                                                        or "nothing ties it to the place"), "own": False}
+    if val:
+        return {"value": val, "confidence": "low", "place": None,
+                "why": getattr(L, "UNCHECKED_WHY", "not checked against the place yet"), "own": False}
+    for u in rc.get("unconfirmed") or []:
+        if isinstance(u, dict) and u.get("field") == field and u.get("value"):
+            conf = u.get("confidence") if u.get("confidence") in CONFIDENCES else "low"
+            return {"value": u["value"], "confidence": conf, "place": None, "why": u.get("why"), "own": False}
+    return None
+
+
+def routes_to_judge(pkt):
+    """The routes research gives a verdict on: every candidate the packet carries but the listing's own link,
+    which is theirs by definition (research may still say not_theirs about it, and that wins)."""
+    if not isinstance(pkt, dict):
+        return []
+    return [f for f in REACH_ROUTES if (r := reach_found(pkt, f)) and not r["own"]]
+
+
+def research_verdict(facts, field):
+    """facts.json § reach[field] when it holds a verdict, else None (schema 1, or no verdict)."""
+    reach = (facts or {}).get("reach") if isinstance(facts, dict) else None
+    e = reach.get(field) if isinstance(reach, dict) else None
+    return e if isinstance(e, dict) and e.get("verdict") in REACH_VERDICTS else None
+
+
+def route_confidence(pkt, facts, field):
+    """One route after research (plan 44 § Change 11), or None when there is no candidate:
+    {field, value, confidence, why, place, verdict, code, own}. `confidence` is high | unsure | low | rejected.
+
+        reach \\ research | theirs                               | unsure | not_theirs
+        high              | high                                 | unsure | rejected
+        low/unsure/none   | low, unless source.words tie it (high)| as is  | rejected
+        rejected          | rejected                             | rejected | rejected
+
+    No verdict (schema 1, or none written) leaves the reach confidence as it is."""
+    found = reach_found(pkt, field)
+    if not found:
+        return None
+    code = found["confidence"]
+    r = research_verdict(facts, field)
+    v = r.get("verdict") if r else None
+    rwhy = ((r or {}).get("why") or "").strip() or None
+    out = dict(found, field=field, verdict=v, code=code)
+    if code == "rejected":
+        out["confidence"] = "rejected"
+    elif v == "not_theirs":
+        out.update(confidence="rejected", why=f"research: {rwhy}" if rwhy else "research says not theirs", place=None)
+    elif v is None:
+        pass
+    elif code == "high":
+        if v == "unsure":
+            out.update(confidence="unsure", why=f"research unsure: {rwhy}" if rwhy else "research unsure", place=None)
+    elif v == "theirs":
+        words = (((r or {}).get("source") or {}).get("words") or "").strip() if isinstance((r or {}).get("source"), dict) else ""
+        if words:
+            L = leads()
+            li = pkt.get("listing") or {}
+            tie, line = L.place_tie(words, name=pkt.get("name") or "", city=pkt.get("city") or "",
+                                    phone=li.get("phone"), site=li.get("website"), where="research's cited words")
+            if tie == "high":
+                out.update(confidence="high", place=line, why=None, promoted=True)
+            else:
+                out["why"] = f"research says theirs, but the cited words don't tie it to the place ({line})"
+        else:
+            out["why"] = "research says theirs but cites no words that tie it to the place"
+    elif v == "unsure" and rwhy:
+        out["why"] = f"research unsure: {rwhy}"
+    return out
+
+
+def route_taken_line(rt):
+    """How a route that isn't usable is said in a drop reason: 'facebook not theirs (why)'."""
+    v, why = rt.get("verdict"), rt.get("why") or "no reason given"
+    if v == "not_theirs":
+        return f"{rt['field']} not theirs ({why.removeprefix('research: ')})"
+    if rt["confidence"] == "rejected":
+        return f"{rt['field']} refused ({why})"
+    if rt["confidence"] == "unsure" or v == "unsure":
+        return f"{rt['field']} unsure ({why.removeprefix('research unsure: ')})"
+    return f"{rt['field']} unconfirmed ({why})"
+
+
+def lint_reach(reach, pkt, err, warnings):
+    """facts.json § reach (schema 2): a verdict and a one-line why on every route the packet carries; `website`
+    (a site found by search that isn't the listing's own) when research names one, with its `value`."""
+    if not isinstance(reach, dict):
+        err("reach must be an object: a verdict for each route in packet.json's reach ({} when there is none)")
+        return
+    for k in reach:
+        if k not in REACH_KEYS:
+            err(f"reach.{k}: not a route (instagram, facebook, website or email)")
+    need = set(routes_to_judge(pkt)) if pkt else set()
+    for k in [x for x in REACH_KEYS if x in need or x in reach]:
+        e = reach.get(k)
+        if not isinstance(e, dict) or e.get("verdict") is None:
+            err(NO_VERDICT.format(k))
+            continue
+        v = e.get("verdict")
+        if v not in REACH_VERDICTS:
+            err(f"reach.{k}: verdict {v!r} is not one of theirs, not_theirs or unsure")
+        why = e.get("why")
+        if not isinstance(why, str) or not why.strip():
+            err(f"reach.{k}: a verdict needs its one-line why")
+        elif "\n" in why.strip():
+            err(f"reach.{k}: the why is one line")
+        src = e.get("source")
+        if src is not None and (not isinstance(src, dict) or not isinstance(src.get("words"), str)
+                                or not src["words"].strip()
+                                or (src.get("url") is not None and not isinstance(src.get("url"), str))):
+            err(f"reach.{k}: source is {{url?, words}}, the words research read")
+        if k == "website" and not (isinstance(e.get("value"), str) and e["value"].strip()):
+            err("reach.website needs its value: the site's address")
+        if v == "theirs" and k != "website" and not (isinstance(src, dict) and (src.get("words") or "").strip()):
+            warnings.append(f"reach.{k}: theirs with no source.words, so it can't confirm an unconfirmed handle")
+
+
 def publishable(facts_doc):
     """(where, text) for every field a site or the outline may print. source.words is never one of them."""
     out = []
@@ -504,10 +684,12 @@ def _independent(sources):
     return len(keys) >= 2
 
 
-def lint_facts(doc, listing=None):
-    """{ok, errors, warnings, counts, thin} for a facts.json (schema 1). `listing` is the listing read the
+def lint_facts(doc, listing=None, pkt=None):
+    """{ok, errors, warnings, counts, thin} for a facts.json (schema 1 or 2). `listing` is the listing read the
     file was researched from (listing.json beside it): without it the review, name and listing-words checks
-    cannot run, which is an error."""
+    cannot run, which is an error. Schema 2 (B107) adds `reach`, research's verdict on each route the packet
+    carries; `pkt` (packet.json beside it) says which routes those are, and without it every key the file
+    has must hold a verdict."""
     errors, warnings = [], []
 
     def err(msg):
@@ -515,8 +697,10 @@ def lint_facts(doc, listing=None):
 
     if not isinstance(doc, dict):
         return {"ok": False, "errors": ["not a JSON object"], "warnings": [], "counts": {}, "thin": True}
-    if doc.get("schema") != 1:
-        err("schema must be 1")
+    if doc.get("schema") not in (1, 2):
+        err("schema must be 1 or 2")
+    if doc.get("schema") == 2:
+        lint_reach(doc.get("reach"), pkt, err, warnings)
     for k in ("place_id", "slug", "name", "category", "segment", "city", "researched"):
         if not isinstance(doc.get(k), str) or not doc.get(k).strip():
             err(f"{k} is missing")
@@ -710,7 +894,9 @@ def lint_file(path, listing_path=None):
         return {"ok": False, "errors": [f"{path}: not readable JSON"], "warnings": [], "counts": {}, "thin": True}
     lp = Path(listing_path) if listing_path else path.parent / "listing.json"
     listing = read_json(lp) if lp.exists() else None
-    return lint_facts(doc, listing)
+    pp = path.parent / "packet.json"
+    pkt = read_json(pp) if pp.exists() else None
+    return lint_facts(doc, listing, pkt if isinstance(pkt, dict) else None)
 
 
 def lint_lines(res):
@@ -824,20 +1010,27 @@ def stamp(workdir, stage, pkt, listing):
 
 
 def skeleton(pkt, listing):
-    return {"schema": 1, "place_id": pkt["place_id"], "slug": pkt["slug"], "name": pkt["name"],
+    """A facts file to start from. Schema 2 (B107): `reach` holds one key for each route the packet carries,
+    every verdict null, so nothing is decided for research."""
+    return {"schema": 2, "place_id": pkt["place_id"], "slug": pkt["slug"], "name": pkt["name"],
             "category": pkt["category"], "segment": pkt["segment"], "city": pkt["city"],
             "researched": today().isoformat(), "facts": [], "services": [], "area": None,
             "hours": {"as_listed": list((pkt.get("listing") or {}).get("hours") or []), "say": None},
             "about": [], "faults": list(pkt.get("faults") or []), "unknown": [], "owner_asks": [],
-            "verdict": "build", "skip_reason": None}
+            "verdict": "build", "skip_reason": None,
+            "reach": {f: {"verdict": None, "why": None} for f in routes_to_judge(pkt)}}
 
 
 def computed(doc, pkt):
     """What code owns in a facts file, set again after the session: identity, the listed hours, the faults."""
     for k in ("place_id", "slug", "name", "category", "segment", "city"):
         doc[k] = pkt[k]
-    doc["schema"] = 1
+    doc["schema"] = 2
     doc["researched"] = today().isoformat()
+    reach = doc.get("reach") if isinstance(doc.get("reach"), dict) else {}
+    for f in routes_to_judge(pkt):          # a route research left out comes back with no verdict, for the lint
+        reach.setdefault(f, {"verdict": None, "why": None})
+    doc["reach"] = reach
     hours = doc.get("hours") if isinstance(doc.get("hours"), dict) else {}
     hours["as_listed"] = list((pkt.get("listing") or {}).get("hours") or [])
     hours.setdefault("say", None)
@@ -988,12 +1181,13 @@ def run_session(workdir, stage, model, prompt, seconds, resume=None, tag=None):
 
 RESEARCH_PROMPT = """Research this one business for its preview site. Your manual is RESEARCH.md in this directory: \
 read it first, then packet.json (the census row, the listing read, its reviews, the reach row, the faults). \
-Write your findings into facts.json (a skeleton is there), run `prep facts lint facts.json` and fix what it \
+Write your findings into facts.json (a skeleton is there; § Is the handle theirs? asks a verdict on each reach \
+route), run `prep facts lint facts.json` and fix what it \
 says until it prints OK, then stop. Caps: {searches} web searches, {fetches} fetches, {minutes:g} minutes. \
 Nothing leaves this directory: you never message, post or publish anything."""
 
 RETRY_PROMPT = """`prep facts lint facts.json` still fails:\n\n{errors}\n\nFix facts.json (RESEARCH.md § The never \
-list and § Confidence say how), run the lint again until it prints OK, then stop. No new searches unless a \
+list, § Confidence and § Is the handle theirs? say how), run the lint again until it prints OK, then stop. No new searches unless a \
 fix needs one."""
 
 
@@ -1460,6 +1654,11 @@ def cmd_brief(args):
     reach = [x for x in (rc.get("instagram") and f"Instagram @{rc['instagram']}", rc.get("facebook"),
                          rc.get("email"), rc.get("directory") and f"{rc['directory'][0]} {rc['directory'][1]}") if x]
     print(f"  reach: {' · '.join(reach) or 'none'} ({rc.get('source') or 'no reach row'})")
+    for f in REACH_ROUTES:                  # B107: what code found of each candidate, confirmed or not
+        rt = reach_found(pkt, f)
+        if rt:
+            print(f"  {f}: {rt['value']} · {rt['confidence']}"
+                  + (f" · {rt['place']}" if rt.get("place") else f" ({rt['why']})" if rt.get("why") else ""))
     if rc.get("evidence"):
         print(f"  evidence: {json.dumps(rc['evidence'], ensure_ascii=False)}")
     if not li["file"]:
@@ -2431,16 +2630,17 @@ def resolve_business_dir(key):
 
 # ---- the message (plan § Contracts, "The message" and "The channel") -----------------------------------
 
-def channel_for(pkt):
+def channel_for(pkt, facts=None):
     """How Taylor reaches them, chosen by code, with the reason: the listing's own link, then the reach
-    row's Instagram, its Facebook page, the published email, the phone."""
+    row's Instagram, its Facebook page, the published email, the phone. Since B107 a route is used only when
+    `route_confidence` (the reach table and research's verdict together) says `high`; the rest come back in
+    `unconfirmed` (unsure, low: said with their why, never as the route) and `refused`, and `taken` names the
+    routes that existed but aren't usable, for finish's "no route left"."""
     L = leads()
     li, rc = pkt.get("listing") or {}, pkt.get("reach") or {}
-    web = li.get("website") or (pkt.get("census") or {}).get("website") or ""
     ev = reach_evidence_url(rc.get("evidence"))
     from_reach = "from the reach table" + (f" (evidence {ev})" if ev else "")
-    ig_own = L.ig_handle(web) if "instagram.com" in web else None
-    fb_own = L.fb_page(web) if "facebook.com" in web else None
+    routes = {f: route_confidence(pkt, facts, f) for f in REACH_ROUTES}
 
     def ig(h, why):
         return {"kind": "instagram", "label": f"Instagram DM to @{h}", "link": f"https://ig.me/m/{h}",
@@ -2450,20 +2650,44 @@ def channel_for(pkt):
         name = page.split("/", 1)[1]
         return {"kind": "facebook", "label": f"Facebook message to {page}", "link": f"https://m.me/{name}",
                 "profile": f"https://www.facebook.com/{name}", "why": why}
-    if ig_own:
-        return ig(ig_own, "their Google listing's website link is their Instagram")
-    if fb_own:
-        return fb(fb_own, "their Google listing's website link is their Facebook page")
-    if rc.get("instagram"):
-        return ig(rc["instagram"], "their Instagram, " + from_reach)
-    if rc.get("facebook"):
-        return fb(rc["facebook"], "their Facebook page, " + from_reach)
-    if rc.get("email"):
-        return {"kind": "email", "label": f"Email to {rc['email']}", "link": f"mailto:{rc['email']}",
-                "profile": None, "why": "the address published for them, " + from_reach}
-    phone = li.get("phone") or (pkt.get("census") or {}).get("phone") or ""
-    return {"kind": "phone", "label": f"Call {phone}", "link": f"tel:{L.phone_href(phone)}", "profile": None,
-            "why": "no Instagram, Facebook or email found: the phone"}
+
+    def why_for(rt, what):
+        if rt.get("promoted"):
+            return f"{what}: research cited words that tie it to the place ({rt.get('place')})"
+        return f"{what}, {from_reach}" + (f": {rt['place']}" if rt.get("place") else "")
+
+    usable = {f: rt for f, rt in routes.items() if rt and rt["confidence"] == "high"}
+    ch = None
+    if usable.get("instagram", {}).get("own"):
+        ch = ig(usable["instagram"]["value"], "their Google listing's website link is their Instagram")
+    elif usable.get("facebook", {}).get("own"):
+        ch = fb(usable["facebook"]["value"], "their Google listing's website link is their Facebook page")
+    elif usable.get("instagram"):
+        ch = ig(usable["instagram"]["value"], why_for(usable["instagram"], "their Instagram"))
+    elif usable.get("facebook"):
+        ch = fb(L.fb_page(usable["facebook"]["value"]) or usable["facebook"]["value"],
+                why_for(usable["facebook"], "their Facebook page"))
+    elif usable.get("email"):
+        e = usable["email"]["value"]
+        ch = {"kind": "email", "label": f"Email to {e}", "link": f"mailto:{e}", "profile": None,
+              "why": why_for(usable["email"], "the address published for them")}
+    held = [rt for rt in routes.values() if rt and rt["confidence"] != "high"]
+    if ch is None:
+        phone = li.get("phone") or (pkt.get("census") or {}).get("phone") or ""
+        ch = {"kind": "phone", "label": f"Call {phone}", "link": f"tel:{L.phone_href(phone)}", "profile": None,
+              "why": ("no confirmed Instagram, Facebook or email: the phone" if held else
+                      "no Instagram, Facebook or email found: the phone")}
+    unconfirmed, refused = [], []
+    for rt in held:
+        label = L.unconfirmed_label(rt["field"], {"value": rt["value"], "confidence": rt["confidence"],
+                                                  "why": rt.get("why")})
+        if rt["confidence"] == "rejected":
+            refused.append(label)
+        else:
+            prof = L.reach_profile(rt["field"], rt["value"]) if rt["confidence"] == "unsure" else None
+            unconfirmed.append(label + (f" {prof}" if prof else ""))
+    ch.update(unconfirmed=unconfirmed, refused=refused, taken=[route_taken_line(rt) for rt in held])
+    return ch
 
 
 def compose_message(wd, preview_url=None):
@@ -2478,7 +2702,7 @@ def compose_message(wd, preview_url=None):
         frames = frame_sections()
     except OSError as exc:
         return {"text": "", "problems": [f"no message frame ({exc})"], "specific": spec, "channel": None}
-    channel = channel_for(pkt)
+    channel = channel_for(pkt, facts)
     section = "call" if channel["kind"] == "phone" else "message"
     faults = list(facts.get("faults") or pkt.get("faults") or [])
     fault = L.to_you(faults[0]) if faults else None
@@ -2539,6 +2763,8 @@ def cmd_message(args):
     ch = m["channel"] or {}
     print(f"send by: {ch.get('label')} → {ch.get('link')}" + (f" (profile {ch['profile']})" if ch.get("profile") else ""))
     print(f"   why: {ch.get('why')}")
+    for line in (ch.get("unconfirmed") or []) + (ch.get("refused") or []):
+        print(f"   not used: {line}")
     print(f"\n{m['text']}\n")
     print(f"{m['chars']} characters · " + ("lint OK" if not m["problems"] else "lint FAIL:\n  " + "\n  ".join(m["problems"])))
     return 0 if not m["problems"] else 1
@@ -3074,6 +3300,9 @@ def outline_entry(i, wd, m):
     head.append("To finish it they'd send: " + ("; ".join(asks[:4]) if asks else "their own photos"))
     head.append(f"Send by {ch.get('label')}: {ch.get('link')}" + (f" (profile {ch['profile']})" if ch.get("profile") else "")
                 + f" — {ch.get('why')}")
+    not_used = (ch.get("unconfirmed") or []) + (ch.get("refused") or [])
+    if not_used:
+        head.append("Not used: " + " · ".join(not_used))
     return "\n".join(head)
 
 
@@ -3087,7 +3316,14 @@ def finish(run_dir, publish=True):
     rj = get_run(run_dir)
     order = rj.get("outline_order") or rj["order"]
     bs = rj["businesses"]
+    record_verdicts(run_dir)            # also in a rehearsal: a correction isn't a publish
     ready = [s for s in order if bs.get(s, {}).get("stage") == "ready"]
+    if not (rj.get("opts") or {}).get("allow_calls"):
+        for s in list(ready):
+            taken = route_left(run_dir / s)
+            if taken:
+                drop(run_dir, s, "no route left: " + "; ".join(taken) + "; phone only")
+                ready.remove(s)
     delivered = []
     for s in ready:
         res = run_gates(run_dir / s)
@@ -3153,6 +3389,80 @@ def finish(run_dir, publish=True):
     return 0
 
 
+def route_left(wd):
+    """[] when the business can be reached by message (or never had a route but the phone); else the routes
+    research and the reach table took away, said for the drop reason: ['facebook not theirs (why)', …]."""
+    wd = Path(wd)
+    pkt = read_json(wd / "packet.json", {}) or {}
+    facts = read_json(wd / "facts.json", {}) or {}
+    if not pkt:
+        return []
+    ch = channel_for(pkt, facts)
+    return (ch.get("taken") or []) if ch["kind"] == "phone" else []
+
+
+def record_verdicts(run_dir):
+    """Every `not_theirs` and `unsure` research wrote, to the reach table through `reach.py --verdict` (the one
+    way anything outside reach.py writes it), once a business: kept in run.json as `reach_verdicts` so a resume
+    or a publish retry doesn't ask twice. `website` has no reach column: listed, never written. A refusal (no
+    candidate stored, a different value stored) is recorded beside it and never stops finish."""
+    L = leads()
+    run_dir = Path(run_dir)
+    rj = get_run(run_dir)
+    for slug, b in (rj.get("businesses") or {}).items():
+        if b.get("reach_verdicts") is not None:
+            continue
+        wd = run_dir / slug
+        facts, pkt = read_json(wd / "facts.json"), read_json(wd / "packet.json")
+        if not isinstance(facts, dict) or not isinstance(pkt, dict) or not isinstance(facts.get("reach"), dict):
+            continue
+        out = []
+        for field in REACH_KEYS:
+            e = research_verdict(facts, field)
+            if not e or e["verdict"] not in ("not_theirs", "unsure"):
+                continue
+            why = " ".join(str(e.get("why") or "").split()) or "no reason given"
+            row = {"field": field, "verdict": e["verdict"], "why": why}
+            if field == "website":
+                row.update(value=e.get("value"), recorded=None, line="no reach column for a website")
+                out.append(row)
+                continue
+            rt = reach_found(pkt, field) or {}
+            value = rt.get("value") or e.get("value")
+            row["value"] = value
+            if rt.get("confidence") == "rejected" and e["verdict"] == "unsure":
+                row.update(recorded=None, line="already refused in the reach table; left as it is")
+                out.append(row)
+                continue
+            ok, line = L.reach_verdict(pkt.get("place_id") or b.get("place_id"), field, e["verdict"], why,
+                                       by=f"prep {run_dir.name}/{slug}", value=value)
+            row.update(recorded=bool(ok), line=line)
+            out.append(row)
+        set_biz(run_dir, slug, reach_verdicts=out)
+    return get_run(run_dir)
+
+
+def refused_lines(rj):
+    """The outline's `Refused handles:` lines, from every business's recorded verdicts."""
+    lines = []
+    for slug, b in (rj.get("businesses") or {}).items():
+        for v in b.get("reach_verdicts") or []:
+            value = v.get("value") or ""
+            shown = f"@{value}" if v["field"] == "instagram" and value else value
+            what = "not theirs" if v["verdict"] == "not_theirs" else "unsure"
+            if v.get("recorded"):
+                tail = " (recorded)"
+            elif v["field"] == "website":
+                tail = ""
+            elif v.get("recorded") is None:
+                tail = f" ({v.get('line')})"
+            else:
+                tail = f" (not recorded: {v.get('line')})"
+            lines.append(f"- {b.get('name') or slug}: {ROUTE_LABEL[v['field']]} {shown}".rstrip()
+                         + f" — {what}: {v['why']}{tail}")
+    return lines
+
+
 def register_images(wd):
     """The images a delivered site shows, in the previews' registry, so no later preview repeats them."""
     L = leads()
@@ -3188,11 +3498,15 @@ def write_outline(run_dir, delivered, held=False):
         entry = outline_entry(i, run_dir / s, m)
         blocks.append(f"{entry}\n\nThe message ({m['chars']} characters):\n\n{m['text']}")
         notes += [entry, m["text"]]
+    refused = refused_lines(rj)
     if dropped:
         tail = "Dropped: " + "; ".join(f"{b.get('name') or s} — {b.get('why')}" for s, b in dropped)
-        notes.append(tail)
     else:
         tail = "Dropped: none."
+    if refused:
+        tail += "\n\nRefused handles:\n" + "\n".join(refused)
+    if dropped or refused:
+        notes.append(tail)
     batch_ = read_json(run_dir / "batch.json", {}) or {}
     md = [f"# {header}", ""]
     if batch_.get("last_word"):

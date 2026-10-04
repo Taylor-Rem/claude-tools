@@ -1,0 +1,286 @@
+{
+ "id": "ChIJ2XdYeSWbTYcRzcl5fw_nC20",
+ "nationalPhoneNumber": "(385) 332-8356",
+ "formattedAddress": "50 1200 W #2760, Orem, UT 84058, USA",
+ "location": {
+  "latitude": 40.2955468,
+  "longitude": -111.7245291
+ },
+ "rating": 4.9,
+ "googleMapsUri": "https://maps.google.com/?cid=7857628028627175885&g_mp=CiVnb29nbGUubWFwcy5wbGFjZXMudjEuUGxhY2VzLkdldFBsYWNlEAIYBCAA",
+ "regularOpeningHours": {
+  "openNow": true,
+  "periods": [
+   {
+    "open": {
+     "day": 0,
+     "hour": 0,
+     "minute": 0
+    }
+   }
+  ],
+  "weekdayDescriptions": [
+   "Monday: Open 24 hours",
+   "Tuesday: Open 24 hours",
+   "Wednesday: Open 24 hours",
+   "Thursday: Open 24 hours",
+   "Friday: Open 24 hours",
+   "Saturday: Open 24 hours",
+   "Sunday: Open 24 hours"
+  ]
+ },
+ "businessStatus": "OPERATIONAL",
+ "userRatingCount": 265,
+ "displayName": {
+  "text": "Valdez Brothers Plumbing",
+  "languageCode": "en"
+ },
+ "primaryTypeDisplayName": {
+  "text": "Plumber",
+  "languageCode": "en-US"
+ },
+ "currentOpeningHours": {
+  "openNow": true,
+  "periods": [
+   {
+    "open": {
+     "day": 3,
+     "hour": 0,
+     "minute": 0,
+     "truncated": true,
+     "date": {
+      "year": 2026,
+      "month": 9,
+      "day": 30
+     }
+    },
+    "close": {
+     "day": 2,
+     "hour": 23,
+     "minute": 59,
+     "truncated": true,
+     "date": {
+      "year": 2026,
+      "month": 10,
+      "day": 6
+     }
+    }
+   }
+  ],
+  "weekdayDescriptions": [
+   "Monday: Open 24 hours",
+   "Tuesday: Open 24 hours",
+   "Wednesday: Open 24 hours",
+   "Thursday: Open 24 hours",
+   "Friday: Open 24 hours",
+   "Saturday: Open 24 hours",
+   "Sunday: Open 24 hours"
+  ]
+ },
+ "primaryType": "plumber",
+ "reviews": [
+  {
+   "name": "places/ChIJ2XdYeSWbTYcRzcl5fw_nC20/reviews/Ci9DQUlRQUNvZENodHljRjlvT2kxb05Vc3pOalJvWHprdGIzSk1lRFE1Y2pOTGNrRRAB",
+   "relativePublishTimeDescription": "2 months ago",
+   "rating": 5,
+   "text": {
+    "text": "Douglas was fantastic today. We have used Valdez Brothers Plumbing before for plumbing service and always had a great experience. douglas was very polite, professional, and easy to talk with. as a blue collar professional myself, it is great to see that kind of work ethic and clear communication from a plumber. Every time he came into the house, he wore boot covers and treated the home with care. He left everything clean, explained the repairs, and showed me that all the plumbing was working properly before he finished. Partway through the visit, I also asked him to fix a leaking outdoor faucet, and he was able to take care of that too at a fair price. i really appreciated how efficient, respectful, and thorough he was during the whole job. it made the whole service call easy and stress free. I strongly recommend using them, and if you can ask for a specific technician, i highly recommend Douglas.",
+    "languageCode": "en"
+   },
+   "originalText": {
+    "text": "Douglas was fantastic today. We have used Valdez Brothers Plumbing before for plumbing service and always had a great experience. douglas was very polite, professional, and easy to talk with. as a blue collar professional myself, it is great to see that kind of work ethic and clear communication from a plumber. Every time he came into the house, he wore boot covers and treated the home with care. He left everything clean, explained the repairs, and showed me that all the plumbing was working properly before he finished. Partway through the visit, I also asked him to fix a leaking outdoor faucet, and he was able to take care of that too at a fair price. i really appreciated how efficient, respectful, and thorough he was during the whole job. it made the whole service call easy and stress free. I strongly recommend using them, and if you can ask for a specific technician, i highly recommend Douglas.",
+    "languageCode": "en"
+   },
+   "authorAttribution": {
+    "displayName": "S. M."
+   },
+   "publishTime": "2026-07-22T16:36:02.237456342Z",
+   "googleMapsUri": "https://www.google.com/maps/reviews/data=!4m6!14m5!1m4!2m3!1sCi9DQUlRQUNvZENodHljRjlvT2kxb05Vc3pOalJvWHprdGIzSk1lRFE1Y2pOTGNrRRAB!2m1!1s0x874d9b25795877d9:0x6d0be70f7f79c9cd"
+  },
+  {
+   "name": "places/ChIJ2XdYeSWbTYcRzcl5fw_nC20/reviews/Ci9DQUlRQUNvZENodHljRjlvT2xvM01FODBNMmxYYUhvMVgwRlJkSEJaTFhkNFFXYxAB",
+   "relativePublishTimeDescription": "3 months ago",
+   "rating": 5,
+   "text": {
+    "text": "Douglas has been my plumber for many years, and he is always knowledgeable, professional, and dependable. I can count on him to handle every plumbing job the right way. When I needed a water heater replacement, I did not think about calling anyone else because I trust his work completely. He also takes time to answer general plumbing questions and gives helpful advice beyond the specific service call. It is great to have a reliable plumbing expert who delivers quality work and excellent customer service every time. I honestly hope Douglas keeps doing plumbing for a long time.",
+    "languageCode": "en"
+   },
+   "originalText": {
+    "text": "Douglas has been my plumber for many years, and he is always knowledgeable, professional, and dependable. I can count on him to handle every plumbing job the right way. When I needed a water heater replacement, I did not think about calling anyone else because I trust his work completely. He also takes time to answer general plumbing questions and gives helpful advice beyond the specific service call. It is great to have a reliable plumbing expert who delivers quality work and excellent customer service every time. I honestly hope Douglas keeps doing plumbing for a long time.",
+    "languageCode": "en"
+   },
+   "authorAttribution": {
+    "displayName": "T. R."
+   },
+   "publishTime": "2026-06-24T08:39:53.625939322Z",
+   "googleMapsUri": "https://www.google.com/maps/reviews/data=!4m6!14m5!1m4!2m3!1sCi9DQUlRQUNvZENodHljRjlvT2xvM01FODBNMmxYYUhvMVgwRlJkSEJaTFhkNFFXYxAB!2m1!1s0x874d9b25795877d9:0x6d0be70f7f79c9cd"
+  },
+  {
+   "name": "places/ChIJ2XdYeSWbTYcRzcl5fw_nC20/reviews/Ci9DQUlRQUNvZENodHljRjlvT2pVMmNsQldXVzh0Y0c4NVNqRmpOMWRmZG1WcGVWRRAB",
+   "relativePublishTimeDescription": "a month ago",
+   "rating": 5,
+   "text": {
+    "text": "If I ever have another plumbing problem, or if someone I know needs a great plumber, this is the only team I would recommend. The list of good things to say is long. Their plumbing service was prompt, on time early in the day, fairly priced, easy to book, and quick to finish. Douglas and the crew were courteous, professional, clean, and very friendly. They gave helpful plumbing advice for our home and were also kind to my young children. My family hired them for a major sewer and drain project, including pipe bursting for the main sewer line and replacing the connected branch sewer pipes under the house. It was a big job on an older two-story home with aging plumbing and a very small crawlspace. They handled the work smoothly and made a difficult repair feel much less stressful. Douglas managed the whole project with a high level of professionalism, including permits, and the team was licensed and bonded. I am very relieved and happy that we chose this plumbing company. There are many plumbers out there, but this is the team I trust for sewer line work, drain pipe replacement, and large home plumbing repairs. If you need a dependable plumber, I would not hesitate to call them again.",
+    "languageCode": "en"
+   },
+   "originalText": {
+    "text": "If I ever have another plumbing problem, or if someone I know needs a great plumber, this is the only team I would recommend. The list of good things to say is long. Their plumbing service was prompt, on time early in the day, fairly priced, easy to book, and quick to finish. Douglas and the crew were courteous, professional, clean, and very friendly. They gave helpful plumbing advice for our home and were also kind to my young children. My family hired them for a major sewer and drain project, including pipe bursting for the main sewer line and replacing the connected branch sewer pipes under the house. It was a big job on an older two-story home with aging plumbing and a very small crawlspace. They handled the work smoothly and made a difficult repair feel much less stressful. Douglas managed the whole project with a high level of professionalism, including permits, and the team was licensed and bonded. I am very relieved and happy that we chose this plumbing company. There are many plumbers out there, but this is the team I trust for sewer line work, drain pipe replacement, and large home plumbing repairs. If you need a dependable plumber, I would not hesitate to call them again.",
+    "languageCode": "en"
+   },
+   "authorAttribution": {
+    "displayName": "E. O."
+   },
+   "publishTime": "2026-08-27T01:47:51.614492304Z",
+   "googleMapsUri": "https://www.google.com/maps/reviews/data=!4m6!14m5!1m4!2m3!1sCi9DQUlRQUNvZENodHljRjlvT2pVMmNsQldXVzh0Y0c4NVNqRmpOMWRmZG1WcGVWRRAB!2m1!1s0x874d9b25795877d9:0x6d0be70f7f79c9cd"
+  },
+  {
+   "name": "places/ChIJ2XdYeSWbTYcRzcl5fw_nC20/reviews/Ci9DQUlRQUNvZENodHljRjlvT2xsV2RVUkNhMUkxTld0TFRXeGpha0ZPZEhOYWRrRRAB",
+   "relativePublishTimeDescription": "a month ago",
+   "rating": 5,
+   "text": {
+    "text": "We’ve used Valdez Brothers Plumbing for a while, and they keep impressing us with the quality of their plumbing service. I called for service, and the plumber arrived at our home in Orem early the next morning right on time. Within about an hour, Douglas completed the whole-house water filter replacement and changed out two bathroom water shutoff valves. Everything was handled smoothly, and the work area was kept clean. The service was attentive, professional, and very friendly, and they took time to explain the repairs and make sure everything was working properly before leaving. Their dependable plumbing work and strong customer care have earned our trust and continued business.",
+    "languageCode": "en"
+   },
+   "originalText": {
+    "text": "We’ve used Valdez Brothers Plumbing for a while, and they keep impressing us with the quality of their plumbing service. I called for service, and the plumber arrived at our home in Orem early the next morning right on time. Within about an hour, Douglas completed the whole-house water filter replacement and changed out two bathroom water shutoff valves. Everything was handled smoothly, and the work area was kept clean. The service was attentive, professional, and very friendly, and they took time to explain the repairs and make sure everything was working properly before leaving. Their dependable plumbing work and strong customer care have earned our trust and continued business.",
+    "languageCode": "en"
+   },
+   "authorAttribution": {
+    "displayName": "E. G."
+   },
+   "publishTime": "2026-08-06T04:18:31.912535681Z",
+   "googleMapsUri": "https://www.google.com/maps/reviews/data=!4m6!14m5!1m4!2m3!1sCi9DQUlRQUNvZENodHljRjlvT2xsV2RVUkNhMUkxTld0TFRXeGpha0ZPZEhOYWRrRRAB!2m1!1s0x874d9b25795877d9:0x6d0be70f7f79c9cd"
+  },
+  {
+   "name": "places/ChIJ2XdYeSWbTYcRzcl5fw_nC20/reviews/Ci9DQUlRQUNvZENodHljRjlvT25sQ1h6VnFaMTlJTFhVNFJWTlJkemRyWVdGRWNtYxAB",
+   "relativePublishTimeDescription": "2 months ago",
+   "rating": 5,
+   "text": {
+    "text": "I've used Valdez Brothers Plumbing for several years, and douglas has always done great plumbing work. He has helped at our shop and at two of our homes, handling repairs, faucet issues, and other household plumbing needs. He is always on time, and if he is running late, he calls to let us know when he will arrive. Most recently, he repaired two leaking outdoor faucets at our home. They had been worked on before by other plumbers and homeowners, but the leaks never fully stopped. douglas came out, found the problem quickly, and fixed both in a short time. now they work perfectly, with no water leaking everywhere when we turn them on. It was a big relief to finally have those hose bibs working the right way. We also plan to have him come back soon to re-plumb our garbage disposal line, since it was clearly not installed the right way before. i appreciate the quality of the work, the clear communication, and the dependable service. it is hard to find a plumber who is this consistent, professional, and easy to work with. overall, we have had a very good experience and are happy with the results.",
+    "languageCode": "en"
+   },
+   "originalText": {
+    "text": "I've used Valdez Brothers Plumbing for several years, and douglas has always done great plumbing work. He has helped at our shop and at two of our homes, handling repairs, faucet issues, and other household plumbing needs. He is always on time, and if he is running late, he calls to let us know when he will arrive. Most recently, he repaired two leaking outdoor faucets at our home. They had been worked on before by other plumbers and homeowners, but the leaks never fully stopped. douglas came out, found the problem quickly, and fixed both in a short time. now they work perfectly, with no water leaking everywhere when we turn them on. It was a big relief to finally have those hose bibs working the right way. We also plan to have him come back soon to re-plumb our garbage disposal line, since it was clearly not installed the right way before. i appreciate the quality of the work, the clear communication, and the dependable service. it is hard to find a plumber who is this consistent, professional, and easy to work with. overall, we have had a very good experience and are happy with the results.",
+    "languageCode": "en"
+   },
+   "authorAttribution": {
+    "displayName": "M. B."
+   },
+   "publishTime": "2026-07-28T05:38:21.901555068Z",
+   "googleMapsUri": "https://www.google.com/maps/reviews/data=!4m6!14m5!1m4!2m3!1sCi9DQUlRQUNvZENodHljRjlvT25sQ1h6VnFaMTlJTFhVNFJWTlJkemRyWVdGRWNtYxAB!2m1!1s0x874d9b25795877d9:0x6d0be70f7f79c9cd"
+  }
+ ],
+ "photos": [
+  {
+   "name": "places/ChIJ2XdYeSWbTYcRzcl5fw_nC20/photos/Aa-ngMZ-xneggwA8Jlziz6S3xdyFPC4WjVhyH5252mlPUZFbDkGJ-hgVk1V8Mru6qPhG5nSEXf4zSNLwIx3t4-tvbpc_0JScsKHb-qRGHxBk-KW7zS6curfshc8I-44K91HF1IBQ7Em55UX-f3I10M7BrjDU_9X8jqxsBGQNpZLHSZOkB-CUQ3ZZ3Km21eTjx9rJ7v1Ir6tqsBxrINr65REtHyEisP-YsWvXtJR7EamSA5_Rh5GRp1zWBUpCmyPV-zsJjPunvorvpMdXh9t25UNPL-kKPI5-yj8teQcm9UirL1kt0k7khiGJJv8EXCo7wUupY-jzcNacLSLpQSlTvaKEoKAfxa4RvBZ4m2EmuamaEShaVwnPMqJVZF2sE3HPPm3MnrXzLbJBWia-ndBJ7ESjmgIu9HSALtRNpAHexauBaWbIgA",
+   "widthPx": 686,
+   "heightPx": 914,
+   "authorAttributions": [
+    {
+     "displayName": "D. K."
+    }
+   ],
+   "googleMapsUri": "https://www.google.com/maps/place//data=!3m4!1e2!3m2!1sCIABIhD54nlkNLFYy2VnYavFOBp5!2e10!4m2!3m1!1s0x874d9b25795877d9:0x6d0be70f7f79c9cd"
+  },
+  {
+   "name": "places/ChIJ2XdYeSWbTYcRzcl5fw_nC20/photos/Aa-ngMbjxfwIPTHqnEapvVf7afUB9EzZP9imGEItZ56ZfDmOLYSPuShVFRAlSU7jElVbY-eRCXHfD-jYgNGL7AF7t-KI5QLn7tj4NpNYFhFRAsuUoMTT9rgc_JwoNdx2z3fvgOPkrjvi9maF0Lvno5hRpk9LbM1_RJG0469fR1-YCXTmh2dKh54qi7QWkf025_wMNLUT9Fh5viDxOQjFF2PeCya1TV48maHa-F3Rut4aHeJ2qeQwYbbKeInxKulQn3Umr7k4GaCLwQfpPhBWDbeBt-u-AFqJHFOQclgh9EKJN5F1IvFB7sXK4ZyvUWFPorx2srmug8q7kn2_GmJFLVecmoiW-rbdlC2MWKdWk2l1Lj_Fq0GFSg8o37lXQHtDSQTMY1qy5Tjmbq802h2l_fuaxqaIvzG0vurAx4aOHVk6qf-i6A",
+   "widthPx": 652,
+   "heightPx": 869,
+   "authorAttributions": [
+    {
+     "displayName": "R. M."
+    }
+   ],
+   "googleMapsUri": "https://www.google.com/maps/place//data=!3m4!1e2!3m2!1sCIABIhDQzb5fplAsWOVnX068khWG!2e10!4m2!3m1!1s0x874d9b25795877d9:0x6d0be70f7f79c9cd"
+  },
+  {
+   "name": "places/ChIJ2XdYeSWbTYcRzcl5fw_nC20/photos/Aa-ngMY9ueGZj1MzT96IStXnxCpaR1DJqz5CT6qJe6-CmvPNg8JjY8SXJq7XfIIm_KEdUxcNRtFhJ2-IuT6tzdvIFaVhSuTwGug6_uD4M4oTcFgViizBDp7TMl54nTOWPFgd1N9IfXcN5EtuY_06uvoXrqOFAeoJ9_1ZDiIwjo-n2W-hVVVVSb4eBR0Sx1WwiXJzGovcupfhTQgBXVdHDFMxFMIrNBk5r9TC0E9v7E0JxGUdk9zEx61sRwpaSL-ygA9r2PbzGjXwvjuOByDI-JuO-MAyZ1uWTYSOcCN-2GbW2Q9LdRX7DYHzF5zCE3ypeNLUaj2wyLmseP-nsvAlUqfEyf55bmx4_uiCLqeGL-jsKxxFFOH76rrAs4ggYKK8ja28ddak9vPjenjpdfECzNjGcmj_e6qPoX2x80okxQQu-qPuvg",
+   "widthPx": 915,
+   "heightPx": 686,
+   "authorAttributions": [
+    {
+     "displayName": "K. S."
+    }
+   ],
+   "googleMapsUri": "https://www.google.com/maps/place//data=!3m4!1e2!3m2!1sCIABIhBl4kLOg4Ard9KAvbJoTQsj!2e10!4m2!3m1!1s0x874d9b25795877d9:0x6d0be70f7f79c9cd"
+  },
+  {
+   "name": "places/ChIJ2XdYeSWbTYcRzcl5fw_nC20/photos/Aa-ngMZBoIr9lyt2SOborYMStFhRk60zoPo8hNRh93BJLQ30WVKmnKrMpIZx89jelxx1L24QmmQlXzEIK7prcZbbxhKvhZHGWjFTFFakX_H6sGjrM7VZUJbR21UUBx40aDHVyDZtWTpYeU3hBeaVOuxFgq8hRCM08a8HFWOsueZsA83zv1mjnLBRV_MoHMPt9-lnn1dH9igQEy-Xmt27KZZMB-Ux0mWeQMfx_RZcC-FbxvxZhkFkiKGCI0mCjUGWNygClyxJCX-zg53NatF3Qqej2PIKY0wKzc9mBVq2jY58Y0U9r5GFgAVMt36KCOhgzVQP2bvGwbL_pzBU7o7iCcYrd_4oRcLrl_Bzw1ZPmEKKgZZ-fG1W_8uQIWuKnOXRfGouzwr3DD2pwyh5lmvl4f2I3Ati2PuABPx9EIKAa9y3akO-6g",
+   "widthPx": 926,
+   "heightPx": 617,
+   "authorAttributions": [
+    {
+     "displayName": "I. T."
+    }
+   ],
+   "googleMapsUri": "https://www.google.com/maps/place//data=!3m4!1e2!3m2!1sCIABIhCLsAxwmbfGOg9rFMWiZzfN!2e10!4m2!3m1!1s0x874d9b25795877d9:0x6d0be70f7f79c9cd"
+  },
+  {
+   "name": "places/ChIJ2XdYeSWbTYcRzcl5fw_nC20/photos/Aa-ngMZW3KpfSlNkm1LV3PsRb7LS2f1LRQop4gc6PrKfVw3OZjVqR6nTuXLZ-Js7Bvg-EAbO48gtn-OB4fNi1_2xAyvn5M0x2jznslGM8JVnHvNOLdGkAgcdVfdEexs3ZNf8y02BPOL9_ce7dThttr69SQUVXgZKROWowjHQMDa8-5Fg86-4Oixqf0SJW0K2Xuq_rqMBSnN-11-wNIAhSVpy71Jt06oStCTBNcvRc8fZ0qDT2bByJWZFM_EId0WG6-Zwt8-cWA3S3QB8rrEaZGBuUwUUQJSsE-P8dbhxQjqR9rggDcqtEw8cMMWMgjSGajLTLuDwSBhgtK0k2pg72A6aOGr1tq4C-i1a_3cRMYQ_j5dUjt4R7767bL5XaC-_NDqBPY1N8ZuE-vK4tsakfBYiYMLoy36mFuXhr8x9o4KAF8B5Zg",
+   "widthPx": 770,
+   "heightPx": 380,
+   "authorAttributions": [
+    {
+     "displayName": "T. S."
+    }
+   ],
+   "googleMapsUri": "https://www.google.com/maps/place//data=!3m4!1e2!3m2!1sCIABIhAH9uT9IEfhGzHhjwShmfIW!2e10!4m2!3m1!1s0x874d9b25795877d9:0x6d0be70f7f79c9cd"
+  },
+  {
+   "name": "places/ChIJ2XdYeSWbTYcRzcl5fw_nC20/photos/Aa-ngMbPx0cWnmzam3DX05D5d-Pe-SjrzXuN49qN21mZF0zvrbB8yTrGa6GEjHsCo6v0396TUelFLVFSCReaYyRBnXfkEbCI6XeSaCVEzUOpeZks38fufDFK1vexiE04-6EZse7gfcPKXdRrs8ZU4LZdLPOlw95WPOpdLRgHJG6SUNZnP5ZM7q23wzhPcLsq7mZUD0YEEuOpzn9Oa132la--lrrflso-2oz1gOO5p0_q570K0w32pQwucBqgaq1XzuptawDtgUo_jOcB3tAw7_3OeIszeqQNv2wXFEbzP8ggRXhd0rB_IiuQDjn-bNIgq5cVdtxxeNXdikTSS_NWInDRGYUnI6l5iKg0ag1imlQ7pYUOkk3lmA5ZShbyFBlV453WVpWY6k8x5VYO3TtdwqfrQfwJVgs",
+   "widthPx": 877,
+   "heightPx": 584,
+   "authorAttributions": [
+    {
+     "displayName": "K. C."
+    }
+   ],
+   "googleMapsUri": "https://www.google.com/maps/place//data=!3m4!1e2!3m2!1sCIHM0ogKEICAgIDyi4q4Uw!2e10!4m2!3m1!1s0x874d9b25795877d9:0x6d0be70f7f79c9cd"
+  },
+  {
+   "name": "places/ChIJ2XdYeSWbTYcRzcl5fw_nC20/photos/Aa-ngMYNqpDSYhMqu7tb1CZKxg9PBHEdVW6S0mCf0ybO2tOyprNFVGvaRs0KpvWG2bftt-AI5yPLHsc9JsTG2U-NYM6RL8XCiT_VRNJaH5gn5MM_urHp5pyV4gd1OWjAjmnlMfoGWsmFaWNuTM1XkYyvetXXVOVyf5mnW83LVQXOpBxQNJvvxrlzhdDrXZ4Za7UCaKox8xnuf3MbjW-_1DILBunvatVzbKaIRqCTYd4X4cUKCzQolitP2-CUMyQmMxYjI2YrTTkwHSsjmz7JiXm9EFcHYm6aMFwI6AGI8gcpfS3dTxIkSYxAFeU_AnsDap5l96Y69Ss3g7j0J9yQr9Ved9bo1KGR953A1p-jTDmo3lIe8mv4evpfNNY1ZmJVkjrmEXglzE2QRIsEZUc_c0LjR7D2kCArrJcR4PxeLKcnWBl5tg",
+   "widthPx": 911,
+   "heightPx": 603,
+   "authorAttributions": [
+    {
+     "displayName": "R. S. R."
+    }
+   ],
+   "googleMapsUri": "https://www.google.com/maps/place//data=!3m4!1e2!3m2!1sCIABIhBop3_UskSiL8UMxN46NnO0!2e10!4m2!3m1!1s0x874d9b25795877d9:0x6d0be70f7f79c9cd"
+  },
+  {
+   "name": "places/ChIJ2XdYeSWbTYcRzcl5fw_nC20/photos/Aa-ngMYflvwx_PtHRK8I0A58XrVWxLsaLIvTqB7rR7-ok3frCszvAOiHtT26gSple5Svi9bHwSUs3NqE8vprAhv9MXrHeAXRHtdgq1EXkbMrOehlqmi27caN39QbE0e9PbTWlAfXBWoiR3YUPGkPpwsyo1B0fEoM_4RblcIr5eEvE1fmVMXORxGeKnTtZvgekK2scx0obcn46fEuQyYhA6tVR9JvaL36PVHZ1YAsQ5eTNI-gwOuGARKnlGNrckXGPdRaWDvDMLVdrNky3zLfT6dSfZyRCjlWnOTHhGnXQdgm7OPkOu8cYXu3q6PoFJSMWWa9csVOM9t_ExGnwcYAyXuP3PzhMImRtAWduU1v5B4uB7PWTL7TO5jupqrTNITM9IOgxVEuCf1_VFj9P0Rji2nuFajPGNRvygHb6lJ9lgLSZjZE",
+   "widthPx": 915,
+   "heightPx": 915,
+   "authorAttributions": [
+    {
+     "displayName": "E. T."
+    }
+   ],
+   "googleMapsUri": "https://www.google.com/maps/place//data=!3m4!1e2!3m2!1sCIABIhCcIpLzoevpwAKHGeOgrzpW!2e10!4m2!3m1!1s0x874d9b25795877d9:0x6d0be70f7f79c9cd"
+  },
+  {
+   "name": "places/ChIJ2XdYeSWbTYcRzcl5fw_nC20/photos/Aa-ngMa-lPOCFcH1en2GXCTAVllkUfIDMAmS5RWc2IzriOZudx0dwlgfKRKUrRqfpjy3ZnWoOfFyIUAhpdYbEhOKUvYBjbrxc--ErYlj5ba9lFO4jfdgcI60DXKZCJh-xBIbcXr2MaHEZcNH7i7ZyjaS4HXFzJOcKRb6fdIZjEiw9EEENGYflxZ3acujp49ncrXpuQnq2iYzE7211k4z1axJVb3rH71CtlMPdg68swlLO5GSHfeTUfoOxFSkz4h36JGymHaPOD8fbYzGb2ZUPCKkAYB4S53xYv_njzi-Mhk3LtC_F0P7B--yCenwbXYUFyZtwDQM3VuidAPaZW-jyWJ1sMtyVCQDkx91lpeMDU0lHYoee8XOU3MVCPl3v1hGwQkpaIRINBzC_wwfmOTwv7Xb6nyDThckaXcU3lMPpX-unEwR6A",
+   "widthPx": 889,
+   "heightPx": 667,
+   "authorAttributions": [
+    {
+     "displayName": "C. P."
+    }
+   ],
+   "googleMapsUri": "https://www.google.com/maps/place//data=!3m4!1e2!3m2!1sCIABIhCIb4VbVk6Gw3DMwfvy0b5h!2e10!4m2!3m1!1s0x874d9b25795877d9:0x6d0be70f7f79c9cd"
+  },
+  {
+   "name": "places/ChIJ2XdYeSWbTYcRzcl5fw_nC20/photos/Aa-ngMZd4SuVuOl8rD_MovKIIjl3e2rseE4pT2mTLrIK6mY8UQoont3kqxNWjehD0wYG4eYeEVoID3_tupLr9lyUL4_aY-oi_LijQqlfXypo5eOEXbU4_cf-sr8nLFhG-hnbhMW2xW3VRszrIMNjxSbBmgxSqZxwkfrjwfjkAwgGVPBigw_UQl4kR5V4h2so9I4LwbUPE3gSaKTiyfWH7yKx17m-4FHSxmNyNs99mROx0U0vV91IcKZ_dehiNbhTh1ut8bbYiiJO_39_8iTl95Lq87XBBH8GxfN3BoOIc61tpFz8Ve04ESCjlUYS-p1fVUBxKHYQcEZAjjq816du048xHhlHVeOoN0s2SzmQPrhYn9P9n-GDoGIDk2VMcDR_uRInWsKjnq659tIfqsHLC-B3thpZEOaFEvWEl19Nmb6NyxEzYQ",
+   "widthPx": 713,
+   "heightPx": 951,
+   "authorAttributions": [
+    {
+     "displayName": "J. F."
+    }
+   ],
+   "googleMapsUri": "https://www.google.com/maps/place//data=!3m4!1e2!3m2!1sCIABIhA66yVwOeCyFz-AaXZ05VaY!2e10!4m2!3m1!1s0x874d9b25795877d9:0x6d0be70f7f79c9cd"
+  }
+ ],
+ "pureServiceAreaBusiness": false
+}

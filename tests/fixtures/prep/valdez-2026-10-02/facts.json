@@ -1,0 +1,338 @@
+{
+  "schema": 2,
+  "place_id": "ChIJ2XdYeSWbTYcRzcl5fw_nC20",
+  "slug": "valdez-brothers-plumbing",
+  "name": "Valdez Brothers Plumbing",
+  "category": "plumber",
+  "segment": "services",
+  "city": "Orem",
+  "researched": "2026-10-02",
+  "facts": [
+    {
+      "id": "f1",
+      "kind": "contact",
+      "text": "Call (385) 332-8356.",
+      "confidence": "high",
+      "source": {
+        "kind": "listing",
+        "url": "https://maps.google.com/?cid=7857628028627175885&g_mp=CiVnb29nbGUubWFwcy5wbGFjZXMudjEuUGxhY2VzLkdldFBsYWNlEAIYBCAA",
+        "words": "(385) 332-8356"
+      },
+      "also": [
+        {
+          "kind": "own_site",
+          "url": "https://valdezplumbers.com/",
+          "words": "Call (385) 332-8356"
+        }
+      ]
+    },
+    {
+      "id": "f2",
+      "kind": "hours",
+      "text": "Takes calls at any hour, every day of the week.",
+      "confidence": "high",
+      "source": {
+        "kind": "listing",
+        "url": "https://maps.google.com/?cid=7857628028627175885&g_mp=CiVnb29nbGUubWFwcy5wbGFjZXMudjEuUGxhY2VzLkdldFBsYWNlEAIYBCAA",
+        "words": "Open 24 hours"
+      },
+      "also": [
+        {
+          "kind": "own_site",
+          "url": "https://valdezplumbers.com/",
+          "words": "24/7 Plumbing in Orem"
+        }
+      ]
+    },
+    {
+      "id": "f3",
+      "kind": "service",
+      "text": "Clears clogged drains and pipes, including toilet clogs.",
+      "confidence": "high",
+      "source": {
+        "kind": "own_site",
+        "url": "https://valdezplumbers.com/",
+        "words": "Clearing Clogged Pipes and Drains in Orem"
+      },
+      "also": [
+        {
+          "kind": "own_site",
+          "url": "https://valdezplumbers.com/",
+          "words": "Toilet Clog Repair in Orem"
+        }
+      ]
+    },
+    {
+      "id": "f4",
+      "kind": "service",
+      "text": "Sewer line repair and replacement, including work under the house.",
+      "confidence": "high",
+      "source": {
+        "kind": "own_site",
+        "url": "https://valdezplumbers.com/",
+        "words": "Sewer Line Fix in Orem"
+      },
+      "also": [
+        {
+          "kind": "review",
+          "ref": 2,
+          "url": "https://maps.google.com/?cid=7857628028627175885&g_mp=CiVnb29nbGUubWFwcy5wbGFjZXMudjEuUGxhY2VzLkdldFBsYWNlEAIYBCAA",
+          "words": "major sewer and drain project, including pipe bursting"
+        }
+      ]
+    },
+    {
+      "id": "f5",
+      "kind": "service",
+      "text": "Water heater repair, installation and replacement.",
+      "confidence": "high",
+      "source": {
+        "kind": "own_site",
+        "url": "https://valdezplumbers.com/",
+        "words": "Hot Water Heater Services: Repairs and Installations in Orem"
+      },
+      "also": [
+        {
+          "kind": "review",
+          "ref": 1,
+          "url": "https://maps.google.com/?cid=7857628028627175885&g_mp=CiVnb29nbGUubWFwcy5wbGFjZXMudjEuUGxhY2VzLkdldFBsYWNlEAIYBCAA",
+          "words": "When I needed a water heater replacement"
+        }
+      ]
+    },
+    {
+      "id": "f6",
+      "kind": "credential",
+      "text": "Licensed, bonded and insured.",
+      "confidence": "high",
+      "source": {
+        "kind": "own_site",
+        "url": "https://valdezplumbers.com/",
+        "words": "Licensed · Bonded · Insured"
+      },
+      "also": [
+        {
+          "kind": "review",
+          "ref": 2,
+          "url": "https://maps.google.com/?cid=7857628028627175885&g_mp=CiVnb29nbGUubWFwcy5wbGFjZXMudjEuUGxhY2VzLkdldFBsYWNlEAIYBCAA",
+          "words": "the team was licensed and bonded"
+        }
+      ]
+    },
+    {
+      "id": "f7",
+      "kind": "service",
+      "text": "Fixes leaking outdoor faucets.",
+      "confidence": "high",
+      "source": {
+        "kind": "review",
+        "ref": 0,
+        "url": "https://maps.google.com/?cid=7857628028627175885&g_mp=CiVnb29nbGUubWFwcy5wbGFjZXMudjEuUGxhY2VzLkdldFBsYWNlEAIYBCAA",
+        "words": "fix a leaking outdoor faucet"
+      },
+      "also": [
+        {
+          "kind": "review",
+          "ref": 4,
+          "url": "https://maps.google.com/?cid=7857628028627175885&g_mp=CiVnb29nbGUubWFwcy5wbGFjZXMudjEuUGxhY2VzLkdldFBsYWNlEAIYBCAA",
+          "words": "repaired two leaking outdoor faucets"
+        }
+      ]
+    },
+    {
+      "id": "f8",
+      "kind": "service",
+      "text": "Water main replacement or setup, and water pipe restoration.",
+      "confidence": "high",
+      "source": {
+        "kind": "own_site",
+        "url": "https://valdezplumbers.com/",
+        "words": "Water Main Replacement or Setup: Orem Water Service"
+      }
+    },
+    {
+      "id": "f9",
+      "kind": "service",
+      "text": "Thaws frozen water, sewer and septic lines.",
+      "confidence": "high",
+      "source": {
+        "kind": "own_site",
+        "url": "https://valdezplumbers.com/",
+        "words": "Orem Pipe Thawing: Water, Sewer, and Septic Lines Unfrozen"
+      }
+    },
+    {
+      "id": "f10",
+      "kind": "service",
+      "text": "Swaps out water filters and shutoff valves.",
+      "confidence": "medium",
+      "source": {
+        "kind": "review",
+        "ref": 3,
+        "url": "https://maps.google.com/?cid=7857628028627175885&g_mp=CiVnb29nbGUubWFwcy5wbGFjZXMudjEuUGxhY2VzLkdldFBsYWNlEAIYBCAA",
+        "words": "whole-house water filter replacement and changed out two bathroom water shutoff valves"
+      }
+    },
+    {
+      "id": "f11",
+      "kind": "area",
+      "text": "Serves Orem and the area around it, within about a 44-mile radius.",
+      "confidence": "high",
+      "source": {
+        "kind": "own_site",
+        "url": "https://valdezplumbers.com/service-region.htm",
+        "words": "Our plumbing service territory for Orem, UT comprises a 44 mile radius"
+      }
+    },
+    {
+      "id": "f12",
+      "kind": "about",
+      "text": "Customers describe returning to the company over several years.",
+      "confidence": "high",
+      "source": {
+        "kind": "review",
+        "ref": 1,
+        "url": "https://maps.google.com/?cid=7857628028627175885&g_mp=CiVnb29nbGUubWFwcy5wbGFjZXMudjEuUGxhY2VzLkdldFBsYWNlEAIYBCAA",
+        "words": "has been my plumber for many years"
+      },
+      "also": [
+        {
+          "kind": "review",
+          "ref": 4,
+          "url": "https://maps.google.com/?cid=7857628028627175885&g_mp=CiVnb29nbGUubWFwcy5wbGFjZXMudjEuUGxhY2VzLkdldFBsYWNlEAIYBCAA",
+          "words": "used Valdez Brothers Plumbing for several years"
+        }
+      ]
+    },
+    {
+      "id": "f13",
+      "kind": "about",
+      "text": "Customers mention punctual arrivals and a tidy work area.",
+      "confidence": "high",
+      "source": {
+        "kind": "review",
+        "ref": 3,
+        "url": "https://maps.google.com/?cid=7857628028627175885&g_mp=CiVnb29nbGUubWFwcy5wbGFjZXMudjEuUGxhY2VzLkdldFBsYWNlEAIYBCAA",
+        "words": "arrived at our home in Orem early the next morning right on time"
+      },
+      "also": [
+        {
+          "kind": "review",
+          "ref": 4,
+          "url": "https://maps.google.com/?cid=7857628028627175885&g_mp=CiVnb29nbGUubWFwcy5wbGFjZXMudjEuUGxhY2VzLkdldFBsYWNlEAIYBCAA",
+          "words": "He is always on time"
+        }
+      ]
+    }
+  ],
+  "services": [
+    {
+      "name": "Drain and clog clearing",
+      "facts": [
+        "f3"
+      ]
+    },
+    {
+      "name": "Sewer line repair and replacement",
+      "facts": [
+        "f4"
+      ]
+    },
+    {
+      "name": "Water heater service",
+      "facts": [
+        "f5"
+      ]
+    },
+    {
+      "name": "Outdoor faucet repair",
+      "facts": [
+        "f7"
+      ]
+    },
+    {
+      "name": "Water main replacement and pipe thawing",
+      "facts": [
+        "f8",
+        "f9"
+      ]
+    }
+  ],
+  "area": {
+    "text": "Serves Orem and the area around it, within about a 44-mile radius.",
+    "facts": [
+      "f11"
+    ]
+  },
+  "hours": {
+    "as_listed": [
+      "Monday: Open 24 hours",
+      "Tuesday: Open 24 hours",
+      "Wednesday: Open 24 hours",
+      "Thursday: Open 24 hours",
+      "Friday: Open 24 hours",
+      "Saturday: Open 24 hours",
+      "Sunday: Open 24 hours"
+    ],
+    "say": {
+      "text": "Call any day, any hour.",
+      "facts": [
+        "f2"
+      ]
+    }
+  },
+  "about": [
+    {
+      "text": "Customers describe returning to the company over several years.",
+      "facts": [
+        "f12"
+      ]
+    },
+    {
+      "text": "Customers mention punctual arrivals and a tidy work area.",
+      "facts": [
+        "f13"
+      ]
+    },
+    {
+      "text": "Licensed, bonded and insured.",
+      "facts": [
+        "f6"
+      ]
+    }
+  ],
+  "faults": [
+    "no website on Google",
+    "Google shows a street address, not the area they serve"
+  ],
+  "unknown": [
+    "Whether valdezplumbers.com (their phone and address, but not linked from Google) is run by the owner or a lead-gen vendor; if it is theirs and works, the preview may have nothing to add",
+    "Year the business started",
+    "Whether they do heating/HVAC (the Facebook page and valdezbrothersplumbing.com are a New Mexico business and were excluded)",
+    "Whether the Instagram account is theirs"
+  ],
+  "owner_asks": [
+    "Photos of recent jobs",
+    "Confirm the list of services",
+    "Their logo",
+    "Confirm towns served and hours",
+    "Year started"
+  ],
+  "verdict": "build",
+  "skip_reason": null,
+  "reach": {
+    "instagram": {
+      "verdict": "unsure",
+      "why": "Whether the Instagram account is theirs"
+    },
+    "facebook": {
+      "verdict": "not_theirs",
+      "why": "the Facebook page and valdezbrothersplumbing.com are a New Mexico business"
+    },
+    "website": {
+      "value": "valdezbrothersplumbing.com",
+      "verdict": "not_theirs",
+      "why": "the Facebook page and valdezbrothersplumbing.com are a New Mexico business"
+    }
+  }
+}

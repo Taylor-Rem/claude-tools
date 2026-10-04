@@ -467,6 +467,19 @@ class Letters(Base):
         self.assertIn("neither fault nor fact", r.stdout)
         self.assertIn("1 first letters rendered", r.stdout)
 
+    def test_an_address_that_isnt_high_is_refused_with_one_line(self):
+        # B104 (plan 44 § 9): a batch address the census didn't tie to the place is never written to
+        self.approve()
+        p = self.picks(3)
+        p[1] = dict(p[1], email_confidence="low", email_place="nothing ties it to the place (no Utah, no Lehi)")
+        p[2] = {k: v for k, v in p[2].items() if k not in ("email_confidence", "email_place")}   # before B104
+        r = self.run_it("send", "--batch", str(self.write_batch(p)), "--dry-run")
+        self.assertIn(f"  2. {p[1]['name']} — skipped: unconfirmed address {p[1]['email']} "
+                      "(nothing ties it to the place (no Utah, no Lehi)), call-only", r.stdout)
+        self.assertIn(f"  3. {p[2]['name']} — skipped: unconfirmed address {p[2]['email']} "
+                      "(no place judgement on it: a batch made before B104), call-only", r.stdout)
+        self.assertIn("1 first letters rendered", r.stdout)
+
     def test_the_follow_ups_carry_one_link_on_the_sending_domain_or_ask_for_a_reply(self):
         r = self.run_it("approve", "--dry-run")
         self.assertNotIn("PROBLEMS", r.stdout)

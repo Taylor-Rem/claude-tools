@@ -2207,6 +2207,20 @@ def greeting_name(first, business):
     return f"{plain} team" if plain else "there"
 
 
+def unconfirmed_address(p):
+    """The skip reason for a kit pick whose address isn't one the census tied to the place (B104, plan 44), or None.
+    `leads kit --json` puts only a `high` address in `email` and the held-back one in `email_unconfirmed`; a pick
+    from a kit made before B104 has no `email_unconfirmed` key at all, so its address was never judged and waits
+    for a fresh kit. A letter to a namesake reaches a stranger with Taylor's name on it, so this fails closed."""
+    held = p.get("email_unconfirmed")
+    if isinstance(held, dict) and held.get("address") and not (p.get("email") or "").strip():
+        return f"unconfirmed address {held['address']} ({held.get('why') or 'no reason given'}), call-only"
+    if (p.get("email") or "").strip() and "email_unconfirmed" not in p:
+        return (f"unconfirmed address {p['email'].strip()} (a kit made before B104: never judged against the place; "
+                "run the kit again), call-only")
+    return None
+
+
 def cmd_send(args):
     global DRY
     if getattr(args, "batch", None):
@@ -2269,6 +2283,10 @@ def cmd_send(args):
     plan, skipped = [], []
     for i, p in enumerate(picks, 1):
         email = (p.get("email") or "").strip()
+        held = unconfirmed_address(p)
+        if held:
+            skipped.append((i, p.get("name"), held))
+            continue
         if not email:
             skipped.append((i, p.get("name"), "no address on the listing"))
             continue
@@ -2394,7 +2412,10 @@ def screen_batch(batch):
         name, email = p.get("name") or "?", str(p.get("email") or "").strip()
         faults = details_of(p)
         why = None
-        if not email or "@" not in email:
+        if email and p.get("email_confidence") != "high":
+            why = (f"unconfirmed address {email} ({p.get('email_place') or p.get('email_confidence') or 'no place judgement on it: a batch made before B104'}), "
+                   "call-only")
+        elif not email or "@" not in email:
             why = "no address"
         elif is_suppressed(email, p.get("place_id"), supp):
             why = "suppressed"

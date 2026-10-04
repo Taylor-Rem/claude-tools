@@ -41,11 +41,15 @@ LEADS = HERE.parent / "bin" / "leads"
 SERVICES = HERE / "fixtures" / "leads-services"
 YEAR = dt.date.today().year
 
+
+def host_of_url(url):
+    return re.sub(r"^https?://(?:www\.)?", "", url or "").split("/")[0]
+
 # B89's DDL (client-leads/scripts/emails.py SCHEMA), the columns `leads` reads.
 B89_DDL = """
 CREATE TABLE emails (place_id TEXT NOT NULL, address TEXT NOT NULL, source TEXT, kind TEXT, why TEXT, how TEXT,
     evidence_url TEXT NOT NULL, page_title TEXT, syntax_ok INTEGER, mx TEXT, mx_hosts TEXT, mx_checked TEXT,
-    found TEXT, PRIMARY KEY (place_id, address));
+    found TEXT, confidence TEXT, place TEXT, PRIMARY KEY (place_id, address));
 CREATE TABLE email_pass (place_id TEXT PRIMARY KEY, crawled TEXT, crawl_status TEXT, crawl_why TEXT, pages TEXT,
     requests INTEGER, seconds REAL, searched TEXT, query TEXT, search_status TEXT, search_why TEXT, rejected TEXT,
     notice TEXT);
@@ -97,7 +101,8 @@ B = [
 IN_LEHI_PLUMBERS = {"FX_B01", "FX_B02", "FX_B06", "FX_B07", "FX_B08"}
 CONTRACT_TOP = {"batch_id", "date", "segment", "category", "city", "picks"}
 CONTRACT_PICK = {"place_id", "name", "category", "segment", "city", "phone", "site_url", "maps_url", "rating",
-                 "reviews", "email", "email_kind", "email_evidence", "email_why", "faults"}
+                 "reviews", "email", "email_kind", "email_evidence", "email_why", "faults",
+                 "email_confidence", "email_place"}           # B104: added, never renamed; only `high` is picked
 CONTRACT_FAULT = {"key", "kind", "sentence", "evidence"}
 
 FAKE_OUTREACH = '''#!/usr/bin/env python3
@@ -145,9 +150,9 @@ def build_census(path):
                         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                      (pid, "services", cat, json.dumps([cat]), f"{loc}, Utah", "2026-09-28", "scan_services", "own",
                       f.get("url") or home, "2026-09-28T12:00:00", 1 if pid == "FX_B12" else 0, None))
-        conn.execute("INSERT INTO emails VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        conn.execute("INSERT INTO emails VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                      (pid, addr, "site", kind, why, "mailto", home + "contact", name, 1, mx, "[]", "2026-10-01",
-                      "2026-10-01"))
+                      "2026-10-01", "high", "read on the listing's own website " + host_of_url(home)))
         pages = [f.get("url") or home, home + "contact-us/"]
         conn.execute("INSERT INTO email_pass (place_id, crawled, crawl_status, pages) VALUES (?,?,?,?)",
                      (pid, "2026-10-01", "ok", json.dumps(pages)))
@@ -245,6 +250,20 @@ class BatchTest(unittest.TestCase):
                          [("no_viewport", "fault"), ("google_standing", "fact")])
         self.assertEqual(by["FX_B08"]["faults"][1]["sentence"], "you have more than 40 Google reviews, averaging 4.8 stars")
         self.assertEqual([f["key"] for f in by["FX_B06"]["faults"]], ["old_copyright", "google_standing"])
+
+    def test_an_address_that_isnt_high_is_never_in_a_batch_and_is_said_as_call_only(self):
+        # B104 (plan 44 § 7): only an address emails.py tied to the place (`high`) is ever written to
+        conn = sqlite3.connect(self.db)
+        conn.execute("UPDATE emails SET confidence = 'low', place = 'nothing ties it to the place (no Utah, no Lehi)' "
+                     "WHERE place_id = 'FX_B01'")
+        conn.commit()
+        conn.close()
+        b = json.loads(self.batch("--json", "--no-save").stdout)
+        self.assertNotIn("FX_B01", {p["place_id"] for p in b["picks"]})
+        self.assertTrue(all(p["email_confidence"] == "high" for p in b["picks"]))
+        r = self.batch("--no-save")
+        line = next(x for x in r.stdout.splitlines() if "call-only, address unconfirmed" in x)
+        self.assertIn("(nothing ties it to the place (no Utah, no Lehi))", line)
 
     def test_left_out_never_padded(self):
         r = self.batch("--no-save")
@@ -476,9 +495,9 @@ def add_check_businesses(db, pages_json):
                         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                      (pid, "services", "electrician", '["electrician"]', "Draper, Utah", "2026-09-28", "scan",
                       "own", site, "2026-09-28T12:00:00", 0, None))
-        conn.execute("INSERT INTO emails VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        conn.execute("INSERT INTO emails VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                      (pid, f"office@{dom}", "site", "own-domain", OWN, "mailto", site, name, 1, "ok", "[]",
-                      "2026-10-01", "2026-10-01"))
+                      "2026-10-01", "2026-10-01", "high", f"read on the listing's own website {dom}"))
         conn.execute("INSERT INTO site_facts VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                      (pid, site, site, 1, 1, yr, None, 1, "[]", 1, "2026-10-01", "{}"))
         pages[site] = f"<footer>&copy; {yr} {name}</footer>" if yr else "<footer>hi</footer>"

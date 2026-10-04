@@ -441,11 +441,24 @@ class WeekTest(Base):
 class ReachTest(Base):
     """B61's table, read here: the census's own columns first, the table second."""
 
-    def add_reach(self, rows):
+    def add_reach(self, rows, judged=True):
+        """Rows as B61 wrote them; `judged` gives every column value the B104 judgement `high` (as `reach.py
+        --check` leaves a tied one), so these tests read the table as it is after the check."""
         conn = sqlite3.connect(self.db)
         conn.execute("""CREATE TABLE IF NOT EXISTS reach (place_id TEXT PRIMARY KEY, instagram TEXT,
-                        facebook TEXT, email TEXT, source TEXT, checked TEXT, evidence TEXT)""")
-        conn.executemany("INSERT OR REPLACE INTO reach VALUES (?,?,?,?,?,?,?)", rows)
+                        facebook TEXT, email TEXT, source TEXT, checked TEXT, evidence TEXT, unconfirmed TEXT)""")
+        out = []
+        for r in rows:
+            r = list(r) + [None] * (8 - len(r))
+            if judged and not str(r[6] or "").startswith("{"):
+                ev = {"query": "fixture", "url": r[6]}
+                for i, f in ((1, "instagram"), (2, "facebook"), (3, "email")):
+                    if r[i]:
+                        ev[f] = {"url": r[6], "value": r[i], "confidence": "high", "place": "names Utah (fixture)",
+                                 "by": "reach.py"}
+                r[6] = json.dumps(ev)
+            out.append(tuple(r))
+        conn.executemany("INSERT OR REPLACE INTO reach VALUES (?,?,?,?,?,?,?,?)", out)
         conn.commit()
         conn.close()
 
@@ -467,9 +480,10 @@ class ReachTest(Base):
         self.assertEqual(sorted(env), ["date", "picks", "segment"])
         by = {p["name"]: p for p in env["picks"]}
         self.assertEqual(sorted(by["Mike's Pool Care"]),
-                         ["category", "city", "email", "facebook", "faults", "first", "host", "instagram", "language",
-                          "maps_url", "message", "name", "paying", "phone", "place_id", "preview_url", "rating",
-                          "reach_skipped", "reviews", "segment", "summary", "variant"])
+                         ["category", "city", "email", "email_unconfirmed", "facebook", "faults", "first", "host",
+                          "instagram", "language", "maps_url", "message", "name", "paying", "phone", "place_id",
+                          "preview_url", "rating", "reach_skipped", "reach_unconfirmed", "reviews", "segment",
+                          "summary", "variant"])
         blue = by["Blue Canyon Landscaping"]
         self.assertEqual(blue["instagram"], "bluecanyonlandscaping")
         self.assertEqual(blue["facebook"], "https://facebook.com/bluecanyonut")
@@ -772,7 +786,9 @@ class RegisterTest(unittest.TestCase):
         self.assertIsNone(self.m.fb_from_url("pynecoservices.com"))
         # a kit saved before the fix: the reach table's full page replaces the cut one
         self.m._REACH = {"PY": {"facebook": "facebook.com/p/PyneCo-Services-100090734772685", "instagram": None,
-                                "evidence": "{}"}}
+                                "evidence": json.dumps({"facebook": {
+                                    "value": "https://www.facebook.com/p/PyneCo-Services-100090734772685",
+                                    "confidence": "high", "place": "names Utah (the page title)"}})}}
         try:
             ig, page, skipped = self.m.pick_handles({"place_id": "PY", "name": "PyneCo Services",
                                                      "facebook": "https://facebook.com/p"})
@@ -785,8 +801,11 @@ class RegisterTest(unittest.TestCase):
         self.m._REACH = {"PS": {"instagram": "proslatgaragestore.dallas", "facebook": None,
                                 "email": "info@lifetime-coatings.com", "evidence": json.dumps({
                                     "query": "\"ProSlat Garage Store\" American Fork Utah",
+                                    # judged high by a slip (say): the city list behind it still refuses it
                                     "instagram": {"url": "https://www.instagram.com/proslatgaragestore.dallas/",
-                                                  "title": "Proslat Garage Store Dallas (@proslatgaragestore.dallas)"}})}}
+                                                  "title": "Proslat Garage Store Dallas (@proslatgaragestore.dallas)",
+                                                  "value": "proslatgaragestore.dallas", "confidence": "high",
+                                                  "place": "names Utah (fixture)"}})}}
         try:
             p = {"place_id": "PS", "name": "ProSlat Garage Store", "city": "American Fork", "segment": "services",
                  "instagram": "proslatgaragestore.dallas", "email": "info@lifetime-coatings.com",
@@ -796,7 +815,10 @@ class RegisterTest(unittest.TestCase):
         finally:
             self.m._REACH = {}
         self.assertTrue(mp["how"].startswith("call: (801) 203-4466"), mp["how"])
-        self.assertEqual(mp["skipped"], ["Instagram skipped: another city's account (Dallas)"])
+        self.assertEqual(mp["skipped"][0], "Instagram skipped: another city's account (Dallas)")
+        # B104: the address B61 stored has no judgement yet, so it is said and not used
+        self.assertEqual(mp["skipped"][1:], ["email: unconfirmed, call-only (not checked against the place yet "
+                                             "(stored before B104; reach.py --check))"])
         self.assertIsNone(out["instagram"])
         # a Utah business named for the place keeps its own handle; a word inside another word is not a place
         self.assertIsNone(self.m.foreign_place("phoenixplumbingutah", {"name": "Phoenix Plumbing"}))

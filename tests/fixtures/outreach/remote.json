@@ -18,7 +18,8 @@
         "no hours on the listing"
       ],
       "preview_url": "https://preview-highland-pool.pages.dev/",
-      "maps_url": "https://maps.google.com/?cid=1000000000000000001"
+      "maps_url": "https://maps.google.com/?cid=1000000000000000001",
+      "email_unconfirmed": null
     },
     {
       "place_id": "ChIJfixture0000000000002",
@@ -35,7 +36,8 @@
         "there is no website on your Google listing at all"
       ],
       "preview_url": "https://preview-cedar-hollow.pages.dev/",
-      "maps_url": "https://maps.google.com/?cid=1000000000000000002"
+      "maps_url": "https://maps.google.com/?cid=1000000000000000002",
+      "email_unconfirmed": null
     },
     {
       "place_id": "ChIJfixture0000000000003",
@@ -53,7 +55,8 @@
         "only two photos on the listing"
       ],
       "preview_url": "https://preview-timp-peak.pages.dev/",
-      "maps_url": "https://maps.google.com/?cid=1000000000000000003"
+      "maps_url": "https://maps.google.com/?cid=1000000000000000003",
+      "email_unconfirmed": null
     },
     {
       "place_id": "ChIJfixture0000000000004",
@@ -70,7 +73,8 @@
         "your Google listing points at a Facebook page you don't control"
       ],
       "preview_url": "https://preview-saratoga-blinds.pages.dev/",
-      "maps_url": "https://maps.google.com/?cid=1000000000000000004"
+      "maps_url": "https://maps.google.com/?cid=1000000000000000004",
+      "email_unconfirmed": null
     },
     {
       "place_id": "ChIJfixture0000000000005",
@@ -88,7 +92,8 @@
         "no hours on the listing"
       ],
       "preview_url": "https://preview-lehi-detail.pages.dev/",
-      "maps_url": "https://maps.google.com/?cid=1000000000000000005"
+      "maps_url": "https://maps.google.com/?cid=1000000000000000005",
+      "email_unconfirmed": null
     },
     {
       "place_id": "ChIJfixture0000000000006",
@@ -105,7 +110,8 @@
         "your Google listing has almost no photos"
       ],
       "preview_url": "https://preview-alpine-ridge.pages.dev/",
-      "maps_url": "https://maps.google.com/?cid=1000000000000000006"
+      "maps_url": "https://maps.google.com/?cid=1000000000000000006",
+      "email_unconfirmed": null
     },
     {
       "place_id": "ChIJfixture0000000000007",
@@ -122,7 +128,8 @@
         "there is no website on your Google listing at all"
       ],
       "preview_url": "https://preview-vineyard-sprinkler.pages.dev/",
-      "maps_url": "https://maps.google.com/?cid=1000000000000000007"
+      "maps_url": "https://maps.google.com/?cid=1000000000000000007",
+      "email_unconfirmed": null
     }
   ]
 }

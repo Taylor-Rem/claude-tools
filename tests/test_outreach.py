@@ -322,7 +322,7 @@ class Send(Base):
                 "your website is a free Wix address (mikes.wixsite.com)",
         }
         picks = [{"place_id": f"P{i}", "name": f"Biz {i}", "first": f"Biz {i}", "email": f"b{i}@example.test",
-                  "preview_url": f"https://previews.patchlamp.com/biz-{i}/", "faults": [f]}
+                  "email_unconfirmed": None, "preview_url": f"https://previews.patchlamp.com/biz-{i}/", "faults": [f]}
                  for i, f in enumerate(said)]
         kit = self.tmp / "leads-kit.json"
         kit.write_text(json.dumps({"date": "2026-09-29", "segment": "services", "picks": picks}))
@@ -411,6 +411,29 @@ class Send(Base):
         self.assertEqual([], self.outbox())
         self.assertEqual([], self.ledger())
         self.assertEqual([], self.calls())
+
+    def test_an_unconfirmed_address_is_skipped_with_one_line_and_never_written_to(self):
+        # B104 (plan 44 § 9): the kit holds back an address nothing ties to the place; a kit from before B104
+        # (no email_unconfirmed key) never had its address judged, so it waits for a fresh kit
+        kit = json.loads(KIT.read_text())
+        picks = kit["picks"][:3]
+        picks[2] = dict(picks[2], email=None, email_unconfirmed={
+            "address": "info@valdezbrothersplumbing.com", "confidence": "low",
+            "why": 'another state: "Rio Rancho NM" in the result title'})
+        old = {k: v for k, v in picks[1].items() if k != "email_unconfirmed"}
+        picks[1] = old
+        kit["picks"] = picks
+        path = self.tmp / "kit-b104.json"
+        path.write_text(json.dumps(kit))
+        r = self.run_it("send", "--kit", str(path), "--go", "--dry-run", OUTREACH_PER_DAY="10")
+        name = picks[2]["name"]
+        self.assertIn(f"  3. {name} — skipped: unconfirmed address info@valdezbrothersplumbing.com "
+                      f'(another state: "Rio Rancho NM" in the result title), call-only', r.stdout)
+        self.assertEqual(1, sum(1 for line in r.stdout.splitlines() if "valdezbrothersplumbing" in line), r.stdout)
+        self.assertIn(f"  2. {old['name']} — skipped: unconfirmed address {old['email']} (a kit made before B104",
+                      r.stdout)
+        self.assertNotIn("To: info@valdezbrothersplumbing.com", r.stdout)
+        self.assertEqual([], self.outbox())
 
     def test_the_two_follow_up_touches_render_and_send(self):
         r = self.send("--touch", "3")

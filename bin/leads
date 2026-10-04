@@ -168,7 +168,23 @@ The kit's machine-readable seam (`leads kit --remote --json`), which
               else the business), "category", "segment", "city", "phone",
               "email"|null, "instagram" (handle)|null, "facebook" (url)|null,
               "faults": [str], "preview_url"|null, "maps_url",
-              "message" (the DM draft) and "summary" beyond the agreed shape}]}
+              "message" (the DM draft) and "summary" beyond the agreed shape,
+              B104: "email_unconfirmed" {address, why, confidence}|null and
+              "reach_unconfirmed" [{field, value, confidence, why, label, profile}]}]}
+
+Is it their place? (B104/B107, plan ~/projects/plans/44-wrong-business-handles.md.) The
+`reach` table's columns hold only a handle or an address client-leads/scripts/reach.py tied
+to the place (`high`); the rest sit in its `evidence` with a confidence and a reason and are
+named in `unconfirmed`. The readers here use `high` only: `email`, `instagram`, `facebook`
+above are never anything else. A `low` one is said as "Instagram: unconfirmed, call-only
+(why)", an `unsure` one (research doubted it) as "Instagram @x: unconfirmed, look before
+sending (why)" with its profile link and never as the DM line, a `rejected` one as
+"Instagram refused (why)". A column value from before B104 (no confidence) reads as `low`
+until `reach.py --check` has run over it. `leads show` and `brief` say a logged handle that
+isn't high instead of printing it (the pipeline is never rewritten), `leads batch` writes to
+a `high` address only (`emails.confidence`), and `leads recheck` runs `reach.py --check`
+over the week's messaged leads. LEADS_REACH_PY points at the reach script (default
+scripts/reach.py beside the census); `doctor` says where it is.
 
 `leads kit --json` without --remote is unchanged: the picks as a plain list. Every
 remote run also saves that envelope beside its page (state/remote/<date>[-segment].json),
@@ -632,12 +648,15 @@ def reach_judgement(place_id):
         if col and not conf:
             out[f] = {"value": col, "confidence": "low", "place": None, "why": UNCHECKED_WHY, "by": None}
             continue
-        if conf not in ("unsure", "low", "rejected"):
+        judged = conf in ("unsure", "low", "rejected")
+        if not judged:
             conf = "low"                                 # no judgement, a hidden high, or a word we don't know
         why = unconf.get(f) or (e.get("reason") if e.get("reason") != "hidden" else None) or e.get("place_reason")
         if hidden:
             why = unconf.get(f) or "hidden: " + (e.get("why") or e.get("place_reason") or "a stranger can't see the page")
-        out[f] = {"value": value, "confidence": conf, "place": None, "why": why or "nothing ties it to the place",
+        out[f] = {"value": value, "confidence": conf, "place": None,
+                  "why": why or ("nothing ties it to the place" if judged else
+                                 "not judged against the place yet (reach.py --check)"),
                   "by": e.get("by")}
     return out
 
@@ -688,6 +707,15 @@ def reach_judge(out, place_id, own=()):
     if skipped:
         out["skipped"] = skipped
     out["unconfirmed"] = unconfirmed
+    return out
+
+
+def unconfirmed_lines(rc, indent="   "):
+    """The kit's lines under a pick for what isn't a route: the refused ones, then the unconfirmed ones (B104/B107).
+    An `unsure` handle is shown with its profile link so Taylor can look; it is never the pick's DM line."""
+    out = [indent + s for s in (rc or {}).get("skipped") or []]
+    out += [indent + u["label"] + (f" — look: {u['profile']}" if u.get("profile") else "")
+            for u in (rc or {}).get("unconfirmed") or []]
     return out
 
 
@@ -1974,6 +2002,7 @@ def _render_remote(picks, today, mode, note, census_date, emails):
             lines.append(f"   Email: {rc['email']}")
         else:
             lines.append(f"   No handle or address found — call {p.get('phone') or 'them'}; the message is the opener")
+        lines += unconfirmed_lines(rc)
         if p.get("variant") == "tool":
             lines.append("   (a service business with no way to book online: the tool message, B40)")
         if p.get("preview_url"):
@@ -2294,6 +2323,7 @@ def render_segment_remote(picks, segment, today, mode, note, census_date, emails
             lines.append(f"   Email: {rc['email']}")
         else:
             lines.append(f"   No page to message — call {p.get('phone') or 'them'}; the message is the opener")
+        lines += unconfirmed_lines(rc)
         if p.get("preview_url"):
             lines.append(f"   Their preview site: {p['preview_url']}")
         lines.append(f"   \"{p['message']}\"")
@@ -2453,6 +2483,7 @@ def cmd_diagnose(args):
     print(f"({at} · {summary.replace(' · (census only)', '')}"
           + (f" · presence: {c['presence']}" if biz else "")
           + (f" · reach: {rline}" if rline else "")
+          + (f" · {unconfirmed_line(rc)}" if unconfirmed_line(rc) else "")
           + tail
           + (f" · also matched: {', '.join(h[1]['name'] + ' (' + (h[1]['locality'] or '?') + ')' for h in hits[1:3])}" if len(hits) > 1 else "")
           + ")")
@@ -3841,6 +3872,13 @@ def kit_json(picks, segment, today):
             # 2026-09-30: what the register reads (the reviews clause) and why a handle was refused
             "reviews": pick_reviews(c)[0], "rating": pick_reviews(c)[1], "variant": c.get("variant") or "listing",
             "reach_skipped": list(rc.get("skipped") or []),
+            # B104/B107: what the table didn't find `high` — `email` above is a high address only, and the one it
+            # held back (low or unsure) is here for `outreach send` to name in its skip line; never sent to
+            "email_unconfirmed": next(({"address": u["value"], "why": u.get("why"), "confidence": u["confidence"]}
+                                       for u in rc.get("unconfirmed") or [] if u["field"] == "email" and u.get("value")),
+                                      None),
+            "reach_unconfirmed": [{k: u.get(k) for k in ("field", "value", "confidence", "why", "label", "profile")}
+                                  for u in rc.get("unconfirmed") or []],
             # B71: the letter's `{paying}` line (null drops it whole) and the fingerprint behind it
             "paying": paying_sentence(c.get("place_id"), "letter"),
             "host": host_json(c.get("place_id")),
@@ -4428,11 +4466,124 @@ def cmd_show(args):
         return
     print(f"{lead['name']}{' (' + lead['city'] + ')' if lead.get('city') else ''} — {lead['stage']}"
           + (f", follow up {lead['next']}" if lead.get("next") and lead["stage"] not in ("won", "lost") else ""))
+    judged = reach_judgement(lead.get("place_id") or pid)
     for x in ("who", "phone", "email", "reach"):
         if lead.get(x):
-            print(f"  {x}: {lead[x]}")
+            shown = shown_reach(lead[x], judged) if x in ("email", "reach") else lead[x]
+            print(f"  {x}: {shown}")
     for e in lead["history"]:
         print(f"  {e['date']}  {e['outcome']:<10} {e.get('note') or ''}")
+
+
+def reach_bit_field(bit):
+    """Which reach field one ' · '-separated piece of a logged `reach` string is: ('instagram', 'x'), …, or None."""
+    b = (bit or "").strip()
+    m = re.match(r"^(?:Instagram\s+)?@([A-Za-z0-9_.]+)$", b) or re.match(r"^(?:https?://)?(?:www\.)?instagram\.com/", b)
+    if m:
+        return "instagram", ig_handle(m.group(1) if m.lastindex else b)
+    if re.search(r"facebook\.com/", b):
+        return "facebook", fb_page(b)
+    if re.fullmatch(r"[^@\s]+@[^@\s]+\.[A-Za-z]{2,}", b):
+        return "email", b.lower()
+    return None, None
+
+
+def shown_reach(text, judged):
+    """A logged `reach` string with every handle or address the table doesn't find `high` replaced by its label and
+    reason (B104: `leads show`). The pipeline itself is never rewritten; a handle the table doesn't know is left
+    as logged. The label never carries the handle: a messaged lead's history shouldn't hand it back."""
+    out = []
+    for bit in str(text).split(" · "):
+        field, value = reach_bit_field(bit)
+        j = judged.get(field) if field else None
+        if j and j["confidence"] != "high" and (not j.get("value") or j["value"] == reach_value(field, value)):
+            word = {"rejected": "refused", "unsure": "unconfirmed, look before sending",
+                    "low": "unconfirmed, call-only"}[j["confidence"]]
+            out.append(f"{REACH_LABEL[field]} {word} ({j.get('why') or 'no reason given'})")
+        else:
+            out.append(bit)
+    return " · ".join(out)
+
+
+def cmd_recheck(args):
+    """B104: every handle and address the week's `messaged` leads were logged with, judged again against the place by
+    `reach.py --check <ids> --json` (no search; it reads a page only when the stored words don't settle it, and is
+    $0). `ok   Name  handle — the place line` or `FAIL Name  handle — why`, then `N of M fail: …`. The pipeline is
+    never rewritten; a FAIL is for Taylor to see what went out to whom, and `--dry-run` asks reach.py to fetch
+    nothing and write nothing."""
+    today = now_date()
+    since = dt.date.fromisoformat(args.since) if args.since else today - dt.timedelta(days=today.weekday())
+    sent = {}
+    for e in pipeline_events():
+        if e.get("outcome") != "messaged" or (e.get("date") or "") < since.isoformat() or not e.get("place_id"):
+            continue
+        rec = sent.setdefault(e["place_id"], {"name": e.get("name") or e["place_id"], "bits": []})
+        for text in (e.get("reach"), e.get("email")):
+            for bit in str(text or "").split(" · "):
+                field, value = reach_bit_field(bit)
+                if field and value and (field, value) not in rec["bits"]:
+                    rec["bits"].append((field, value))
+    rows = {pid: r for pid, r in sent.items() if r["bits"]}
+    if not rows:
+        print(f"no messaged lead since {since} was logged with a handle or an address — nothing to recheck")
+        return
+    code, out, err = reach_cli(["--check", *rows, "--json"] + (["--dry-run"] if args.dry_run else []))
+    if code != 0:
+        die(f"reach.py --check didn't run (exit {code}): {(err.strip().splitlines() or ['no output'])[-1]}")
+    try:
+        checked = {r["place_id"]: r.get("fields") or {} for r in json.loads(out or "[]")}
+    except (ValueError, KeyError, TypeError) as exc:
+        die(f"reach.py --check --json printed something that isn't its JSON ({exc})")
+    census = {}
+    for pid in rows:
+        hit = census_row_by_id(pid)
+        if hit:
+            census[pid] = hit
+    lines, fails, total = [], [], 0
+    for pid, r in rows.items():
+        fields = checked.get(pid) or {}
+        c = census.get(pid) or {}
+        link = c.get("website") or c.get("presence_url") or ""
+        for field, value in r["bits"]:
+            total += 1
+            shown = f"@{value}" if field == "instagram" else value
+            f = fields.get(field) or {}
+            same = reach_value(field, f.get("value")) == value
+            own = (field == "instagram" and "instagram.com" in link and ig_handle(link) == value) or (
+                field == "facebook" and "facebook.com" in link and fb_page(link) == value)
+            if own:
+                lines.append(f"ok   {r['name']}  {shown} — the listing's own website link")
+            elif same and f.get("confidence") == "high" and not f.get("hidden"):
+                lines.append(f"ok   {r['name']}  {shown} — {f.get('place') or 'tied to the place'}")
+            else:
+                why = (f.get("hidden") and f"hidden: {f['hidden']}") or f.get("reason") or (
+                    f"{f.get('confidence')} ({f.get('place')})" if same else
+                    "the reach table holds no candidate for it now, so nothing ties it to the place")
+                lines.append(f"FAIL {r['name']}  {shown} — {why}")
+                fails.append(f"{r['name']} {shown}")
+    print("\n".join(lines))
+    print(f"{len(fails)} of {total} fail" + (": " + "; ".join(fails) if fails else "")
+          + f" (messaged since {since}{'; dry run, nothing fetched or written' if args.dry_run else ''})")
+
+
+def census_row_by_id(place_id):
+    """{'website', 'presence_url'} for one place from the census, or None. Read-only."""
+    if not CENSUS.exists():
+        return None
+    conn = sqlite3.connect(f"file:{CENSUS}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        out = {}
+        if "place_cache" in tables:
+            r = conn.execute("SELECT website FROM place_cache WHERE place_id = ?", (place_id,)).fetchone()
+            out["website"] = r["website"] if r else None
+        if "businesses" in tables:
+            r = conn.execute("SELECT presence_url FROM businesses WHERE place_id = ?", (place_id,)).fetchone()
+            out["presence_url"] = r["presence_url"] if r else None
+        return out
+    finally:
+        conn.close()
 
 
 def week_bounds(today):
@@ -4981,7 +5132,8 @@ def morning_pick(p, email_on):
     else:
         dm = register_dm(c, faults) if faults else p.get("message")
     then = then_text(url) if (dm and url) else None
-    ig, fb, skipped = pick_handles(p)
+    ig, fb, skipped, email = pick_handles(p, with_email=True)
+    p = dict(p, email=email)                       # B104: a saved address the table no longer finds `high` is gone
     phone = p.get("phone")
     out = {"dm": dm, "then": then, "say": None, "skipped": skipped, "preview_url": url}
     if ig:
@@ -4997,18 +5149,24 @@ def morning_pick(p, email_on):
     return dict(out, how=f"no way in yet — leads brief \"{p['name']}\"")
 
 
-def pick_handles(p):
+def pick_handles(p, with_email=False):
     """(instagram handle, 'facebook.com/…', skipped) for a saved pick, read again: the Facebook page from the
-    `reach` table when the saved one was cut short (facebook.com/p before 2026-09-30), and `reach_guard` over both."""
+    `reach` table when the saved one was cut short (facebook.com/p before 2026-09-30), and `reach_guard` over both.
+    Since B104 `skipped` also carries the unconfirmed labels, and `with_email` adds the address as a 4th item, None
+    when the table doesn't find it `high` (a kit saved before B104 may carry one)."""
     raw = p.get("facebook") or ""
     fb = fb_page(raw) if raw else None
     row_fb = ((reach_table() or {}).get(p.get("place_id") or "") or {}).get("facebook")
     if raw and row_fb and (fb is None or row_fb.startswith(fb + "/")):
         fb = row_fb
-    out = reach_guard({"instagram": p.get("instagram"), "facebook": fb,
+    out = reach_guard({"instagram": p.get("instagram"), "facebook": fb, "email": p.get("email"),
                        "skipped": list(p.get("reach_skipped") or [])},
                       {"place_id": p.get("place_id"), "name": p.get("name"), "city": p.get("city")})
-    return out["instagram"], out["facebook"], out.get("skipped") or []
+    said = list(out.get("skipped") or [])
+    said += [u["label"] for u in out.get("unconfirmed") or [] if u["label"] not in said]
+    if with_email:
+        return out["instagram"], out["facebook"], said, out.get("email")
+    return out["instagram"], out["facebook"], said
 
 
 def today_message(d, n_due=6):
@@ -5128,7 +5286,9 @@ def cmd_brief(args):
     if summary:
         print(f"  Google: {summary}")
     phone = (lead or {}).get("phone") or (row or {}).get("phone")
-    contact = " · ".join(x for x in (phone, (lead or {}).get("reach"), lead_email(lead or {}),
+    judged = reach_judgement(pid) if pid else {}                 # B104: a logged handle that isn't high is said, not shown
+    shown = lambda t: shown_reach(t, judged) if t else t           # noqa: E731
+    contact = " · ".join(x for x in (phone, shown((lead or {}).get("reach")), shown(lead_email(lead or {})),
                                      clean_maps((row or {}).get("google_maps_uri") or "") or None) if x)
     if contact:
         print(f"  {contact}")
@@ -5711,14 +5871,20 @@ def strip_tracking(url):
     return urllib.parse.urlunsplit((p.scheme, p.netloc, p.path, urllib.parse.urlencode(q), p.fragment))
 
 
-def best_email(rows):
+def best_email(rows, high=True):
     """The address a letter goes to, or None: MX ok and syntax ok only; own-domain over free-mail; never a free-mail
-    address B89 tied to the business by the page title alone."""
+    address B89 tied to the business by the page title alone. B104: only an address `emails.confidence` holds as
+    `high` (tied to the place where it was read); a census from before that column has none, so no letter goes
+    until emails.py's migrate has run. `high=False` is the best of the rest, for the call-only line."""
+    rows = [r for r in rows if (r.get("confidence") == "high") == high]
     ok = [r for r in rows if r.get("mx") == "ok" and (r.get("syntax_ok") in (1, None))
           and r.get("kind") in ("own-domain", "free-mail")
           and not (r.get("kind") == "free-mail" and WEAK_EMAIL_WHY in (r.get("why") or ""))]
     ok.sort(key=lambda r: (r.get("kind") != "own-domain", r.get("source") != "site", r.get("address") or ""))
     return ok[0] if ok else None
+
+
+BATCH_UNCONFIRMED = []      # B104: the rows batch_rows left out because their address isn't `high`; call-only
 
 
 def batch_rows(segments):
@@ -5766,9 +5932,18 @@ def batch_rows(segments):
     finally:
         conn.close()
     out = []
+    BATCH_UNCONFIRMED.clear()
     for d in rows:
         e = best_email(mail.get(d["place_id"]) or [])
         if not e:
+            held = best_email(mail.get(d["place_id"]) or [], high=False)
+            if held:                       # an address nothing ties to the place: never a letter, said as call-only
+                BATCH_UNCONFIRMED.append({"place_id": d["place_id"], "name": d.get("name"), "address": held["address"],
+                                          "category": d.get("category"), "locality": d.get("locality"),
+                                          "city": d.get("city"),
+                                          "town": (d.get("locality") or (d.get("city") or "").replace(", Utah", "")).strip(),
+                                          "why": held.get("place") or held.get("confidence")
+                                          or "no place judgement yet (emails.py migrate)"})
             continue
         d["mail"], d["facts"], d["pages"] = e, facts.get(d["place_id"]), pages.get(d["place_id"]) or []
         d["checks"] = checks.get(d["place_id"])
@@ -6459,6 +6634,8 @@ def pick_json(c):
             "site_url": strip_tracking((c.get("facts") or {}).get("url") or c.get("website") or ""),
             "maps_url": clean_maps(c.get("google_maps_uri")), "rating": c.get("rating"), "reviews": c.get("reviews"),
             "email": c["mail"]["address"], "email_kind": c["mail"]["kind"],
+            # B104: how sure the census is the address is this place's (only `high` is ever picked; outreach checks)
+            "email_confidence": c["mail"].get("confidence"), "email_place": c["mail"].get("place"),
             "email_evidence": c["mail"].get("evidence_url") or "", "email_why": c["mail"].get("why") or "",
             "faults": [{"key": f["key"], "kind": f["kind"], "sentence": f["sentence"], "evidence": f["evidence"]}
                        for f in two]}
@@ -6571,6 +6748,11 @@ def cmd_batch(args):
     left_out = {k: v for k, v in skipped.items()}
     if left_out:
         notes.append("left out: " + ", ".join(f"{v} {k}" for k, v in sorted(left_out.items(), key=lambda kv: -kv[1])))
+    held = [u for u in BATCH_UNCONFIRMED if want(u)]
+    if held:
+        notes.append(f"call-only, address unconfirmed ({len(held)}): "
+                     + "; ".join(f"{u['name']} {u['address']} ({u['why']})" for u in held[:5])
+                     + (" …" if len(held) > 5 else ""))
     page = batch_page(b, notes)
     if not args.no_save:
         (STATE / "batches").mkdir(parents=True, exist_ok=True)
@@ -6836,6 +7018,21 @@ def cmd_doctor(args):
             em = sum(1 for r in table.values() if r["email"])
             print(f"reach: {len(table)} rows searched — {ig} Instagram, {fb} Facebook, {em} email"
                   + (f"; newest check {max((r['checked'] or '')[:10] for r in table.values())}" if table else ""))
+            # B104: what the readers will actually use — a column value with no judgement yet reads as low
+            conf = {}
+            for pid in table:
+                for f, j in reach_judgement(pid).items():
+                    conf[j["confidence"]] = conf.get(j["confidence"], 0) + 1
+            unchecked = sum(1 for pid, r in table.items()
+                            for f in REACH_FIELDS if r.get(f) and reach_judgement(pid).get(f, {}).get("why") == UNCHECKED_WHY)
+            print("reach judged (B104): " + (", ".join(f"{conf.get(k, 0)} {k}" for k in ("high", "unsure", "low", "rejected")))
+                  + (f"; {unchecked} column value(s) not checked against the place yet — run reach.py --check --all"
+                     if unchecked else ""))
+        rp = reach_py()
+        print(f"reach script: {rp}" + (" (LEADS_REACH_PY)" if os.environ.get("LEADS_REACH_PY") else "")
+              + ("" if rp.exists() else " — missing: `leads recheck` and prep's verdicts can't run")
+              + ("; place_evidence importable" if rp.exists() and reach_module() else
+                 "; place_evidence not importable (research's 'theirs' promotes nothing)" if rp.exists() else ""))
         ht = hosts_table()
         if ht is None:
             print("hosts: no hosts table yet — B71 (client-leads/scripts/hosts.py) hasn't run; no vendor on the lines")
@@ -7058,6 +7255,12 @@ def main():
 
     du = sub.add_parser("due", help="follow-ups due today")
     du.set_defaults(fn=cmd_due)
+
+    rk = sub.add_parser("recheck", help="the week's messaged leads: each logged handle or address judged again against "
+                                        "the place (B104, reach.py --check through LEADS_REACH_PY; $0)")
+    rk.add_argument("--since", help="YYYY-MM-DD (default: this week's Monday)")
+    rk.add_argument("--dry-run", action="store_true", help="reach.py fetches nothing and writes nothing")
+    rk.set_defaults(fn=cmd_recheck)
 
     td = sub.add_parser("today", help="the 07:30 message: the six, yesterday's replies, what's due, the first call")
     td.add_argument("--n", type=int, default=6, help="picks in the kit (default 6)")

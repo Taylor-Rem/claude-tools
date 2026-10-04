@@ -34,7 +34,9 @@
      "sentence": "your website has no layout for a phone, so it shows the desktop page shrunk",
      "evidence": "https://maps.google.com/?cid=2000000000000000000"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website summitplumbing0.example"
   },
   {
    "place_id": "ChIJbatch00000000000000001",
@@ -65,7 +67,9 @@
      "sentence": "your Google listing has only 2 photos",
      "evidence": "https://maps.google.com/?cid=2000000000000000001"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website timpanogosplumbing1.example"
   },
   {
    "place_id": "ChIJbatch00000000000000002",
@@ -96,7 +100,9 @@
      "sentence": "your Google listing has no hours on it at all",
      "evidence": "https://maps.google.com/?cid=2000000000000000002"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website alpineplumbing2.example"
   },
   {
    "place_id": "ChIJbatch00000000000000003",
@@ -127,7 +133,9 @@
      "sentence": "your website doesn't load over https, so browsers mark it \"Not secure\"",
      "evidence": "https://maps.google.com/?cid=2000000000000000003"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website gmail.example"
   },
   {
    "place_id": "ChIJbatch00000000000000004",
@@ -158,7 +166,9 @@
      "sentence": "the phone number on your website isn't the one on your Google listing",
      "evidence": "https://maps.google.com/?cid=2000000000000000004"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website wasatchplumbing4.example"
   },
   {
    "place_id": "ChIJbatch00000000000000005",
@@ -189,7 +199,9 @@
      "sentence": "your Google listing has no hours for Saturday",
      "evidence": "https://maps.google.com/?cid=2000000000000000005"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website cedarplumbing5.example"
   },
   {
    "place_id": "ChIJbatch00000000000000006",
@@ -220,7 +232,9 @@
      "sentence": "your website's footer still says © 2017",
      "evidence": "https://maps.google.com/?cid=2000000000000000006"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website highlandplumbing6.example"
   },
   {
    "place_id": "ChIJbatch00000000000000007",
@@ -251,7 +265,9 @@
      "sentence": "there's no way to send you a message from your website, only a phone number",
      "evidence": "https://maps.google.com/?cid=2000000000000000007"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website saratogaplumbing7.example"
   },
   {
    "place_id": "ChIJbatch00000000000000008",
@@ -282,7 +298,9 @@
      "sentence": "your website has no layout for a phone, so it shows the desktop page shrunk",
      "evidence": "https://maps.google.com/?cid=2000000000000000008"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website eagleplumbing8.example"
   },
   {
    "place_id": "ChIJbatch00000000000000009",
@@ -313,7 +331,9 @@
      "sentence": "your Google listing has only 2 photos",
      "evidence": "https://maps.google.com/?cid=2000000000000000009"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website canyonplumbing9.example"
   },
   {
    "place_id": "ChIJbatch00000000000000010",
@@ -344,7 +364,9 @@
      "sentence": "your Google listing has no hours on it at all",
      "evidence": "https://maps.google.com/?cid=2000000000000000010"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website gmail.example"
   },
   {
    "place_id": "ChIJbatch00000000000000011",
@@ -375,7 +397,9 @@
      "sentence": "your website doesn't load over https, so browsers mark it \"Not secure\"",
      "evidence": "https://maps.google.com/?cid=2000000000000000011"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website timpanogosdrainandrooter11.example"
   },
   {
    "place_id": "ChIJbatch00000000000000012",
@@ -406,7 +430,9 @@
      "sentence": "the phone number on your website isn't the one on your Google listing",
      "evidence": "https://maps.google.com/?cid=2000000000000000012"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website alpinedrainandrooter12.example"
   },
   {
    "place_id": "ChIJbatch00000000000000013",
@@ -437,7 +463,9 @@
      "sentence": "your Google listing has no hours for Saturday",
      "evidence": "https://maps.google.com/?cid=2000000000000000013"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website thanksgivingpointdrainandrooter13.example"
   },
   {
    "place_id": "ChIJbatch00000000000000014",
@@ -468,7 +496,9 @@
      "sentence": "your website's footer still says © 2017",
      "evidence": "https://maps.google.com/?cid=2000000000000000014"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website wasatchdrainandrooter14.example"
   },
   {
    "place_id": "ChIJbatch00000000000000015",
@@ -499,7 +529,9 @@
      "sentence": "there's no way to send you a message from your website, only a phone number",
      "evidence": "https://maps.google.com/?cid=2000000000000000015"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website cedardrainandrooter15.example"
   },
   {
    "place_id": "ChIJbatch00000000000000016",
@@ -530,7 +562,9 @@
      "sentence": "your website has no layout for a phone, so it shows the desktop page shrunk",
      "evidence": "https://maps.google.com/?cid=2000000000000000016"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website highlanddrainandrooter16.example"
   },
   {
    "place_id": "ChIJbatch00000000000000017",
@@ -561,7 +595,9 @@
      "sentence": "your Google listing has only 2 photos",
      "evidence": "https://maps.google.com/?cid=2000000000000000017"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website gmail.example"
   },
   {
    "place_id": "ChIJbatch00000000000000018",
@@ -592,7 +628,9 @@
      "sentence": "your Google listing has no hours on it at all",
      "evidence": "https://maps.google.com/?cid=2000000000000000018"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website eagledrainandrooter18.example"
   },
   {
    "place_id": "ChIJbatch00000000000000019",
@@ -623,7 +661,9 @@
      "sentence": "your website doesn't load over https, so browsers mark it \"Not secure\"",
      "evidence": "https://maps.google.com/?cid=2000000000000000019"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website canyondrainandrooter19.example"
   },
   {
    "place_id": "ChIJbatch00000000000000020",
@@ -654,7 +694,9 @@
      "sentence": "the phone number on your website isn't the one on your Google listing",
      "evidence": "https://maps.google.com/?cid=2000000000000000020"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website summitwaterheaters20.example"
   },
   {
    "place_id": "ChIJbatch00000000000000021",
@@ -685,7 +727,9 @@
      "sentence": "your Google listing has no hours for Saturday",
      "evidence": "https://maps.google.com/?cid=2000000000000000021"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website timpanogoswaterheaters21.example"
   },
   {
    "place_id": "ChIJbatch00000000000000022",
@@ -716,7 +760,9 @@
      "sentence": "your website's footer still says © 2017",
      "evidence": "https://maps.google.com/?cid=2000000000000000022"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website alpinewaterheaters22.example"
   },
   {
    "place_id": "ChIJbatch00000000000000023",
@@ -747,7 +793,9 @@
      "sentence": "there's no way to send you a message from your website, only a phone number",
      "evidence": "https://maps.google.com/?cid=2000000000000000023"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website thanksgivingpointwaterheaters23.example"
   },
   {
    "place_id": "ChIJbatch00000000000000024",
@@ -778,7 +826,9 @@
      "sentence": "your website has no layout for a phone, so it shows the desktop page shrunk",
      "evidence": "https://maps.google.com/?cid=2000000000000000024"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website gmail.example"
   },
   {
    "place_id": "ChIJbatch00000000000000025",
@@ -809,7 +859,9 @@
      "sentence": "your Google listing has only 2 photos",
      "evidence": "https://maps.google.com/?cid=2000000000000000025"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website cedarwaterheaters25.example"
   },
   {
    "place_id": "ChIJbatch00000000000000026",
@@ -840,7 +892,9 @@
      "sentence": "your Google listing has no hours on it at all",
      "evidence": "https://maps.google.com/?cid=2000000000000000026"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website highlandwaterheaters26.example"
   },
   {
    "place_id": "ChIJbatch00000000000000027",
@@ -871,7 +925,9 @@
      "sentence": "your website doesn't load over https, so browsers mark it \"Not secure\"",
      "evidence": "https://maps.google.com/?cid=2000000000000000027"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website saratogawaterheaters27.example"
   },
   {
    "place_id": "ChIJbatch00000000000000028",
@@ -902,7 +958,9 @@
      "sentence": "the phone number on your website isn't the one on your Google listing",
      "evidence": "https://maps.google.com/?cid=2000000000000000028"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website eaglewaterheaters28.example"
   },
   {
    "place_id": "ChIJbatch00000000000000029",
@@ -933,7 +991,9 @@
      "sentence": "your Google listing has no hours for Saturday",
      "evidence": "https://maps.google.com/?cid=2000000000000000029"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website canyonwaterheaters29.example"
   },
   {
    "place_id": "ChIJbatch00000000000000030",
@@ -964,7 +1024,9 @@
      "sentence": "your website's footer still says © 2017",
      "evidence": "https://maps.google.com/?cid=2000000000000000030"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website summitpipeworks30.example"
   },
   {
    "place_id": "ChIJbatch00000000000000031",
@@ -995,7 +1057,9 @@
      "sentence": "there's no way to send you a message from your website, only a phone number",
      "evidence": "https://maps.google.com/?cid=2000000000000000031"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website gmail.example"
   },
   {
    "place_id": "ChIJbatch00000000000000032",
@@ -1026,7 +1090,9 @@
      "sentence": "your website has no layout for a phone, so it shows the desktop page shrunk",
      "evidence": "https://maps.google.com/?cid=2000000000000000032"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website alpinepipeworks32.example"
   },
   {
    "place_id": "ChIJbatch00000000000000033",
@@ -1057,7 +1123,9 @@
      "sentence": "your Google listing has only 2 photos",
      "evidence": "https://maps.google.com/?cid=2000000000000000033"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website thanksgivingpointpipeworks33.example"
   },
   {
    "place_id": "ChIJbatch00000000000000034",
@@ -1088,7 +1156,9 @@
      "sentence": "your Google listing has no hours on it at all",
      "evidence": "https://maps.google.com/?cid=2000000000000000034"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website wasatchpipeworks34.example"
   },
   {
    "place_id": "ChIJbatch00000000000000035",
@@ -1119,7 +1189,9 @@
      "sentence": "your website doesn't load over https, so browsers mark it \"Not secure\"",
      "evidence": "https://maps.google.com/?cid=2000000000000000035"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website cedarpipeworks35.example"
   },
   {
    "place_id": "ChIJbatch00000000000000036",
@@ -1150,7 +1222,9 @@
      "sentence": "the phone number on your website isn't the one on your Google listing",
      "evidence": "https://maps.google.com/?cid=2000000000000000036"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website highlandpipeworks36.example"
   },
   {
    "place_id": "ChIJbatch00000000000000037",
@@ -1181,7 +1255,9 @@
      "sentence": "your Google listing has no hours for Saturday",
      "evidence": "https://maps.google.com/?cid=2000000000000000037"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website saratogapipeworks37.example"
   },
   {
    "place_id": "ChIJbatch00000000000000038",
@@ -1212,7 +1288,9 @@
      "sentence": "your website's footer still says © 2017",
      "evidence": "https://maps.google.com/?cid=2000000000000000038"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website gmail.example"
   },
   {
    "place_id": "ChIJbatch00000000000000039",
@@ -1243,7 +1321,9 @@
      "sentence": "there's no way to send you a message from your website, only a phone number",
      "evidence": "https://maps.google.com/?cid=2000000000000000039"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website canyonpipeworks39.example"
   },
   {
    "place_id": "ChIJbatch00000000000000040",
@@ -1274,7 +1354,9 @@
      "sentence": "your website has no layout for a phone, so it shows the desktop page shrunk",
      "evidence": "https://maps.google.com/?cid=2000000000000000040"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website summitplumbingco40.example"
   },
   {
    "place_id": "ChIJbatch00000000000000041",
@@ -1305,7 +1387,9 @@
      "sentence": "your Google listing has only 2 photos",
      "evidence": "https://maps.google.com/?cid=2000000000000000041"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website timpanogosplumbingco41.example"
   },
   {
    "place_id": "ChIJbatch00000000000000042",
@@ -1336,7 +1420,9 @@
      "sentence": "your Google listing has no hours on it at all",
      "evidence": "https://maps.google.com/?cid=2000000000000000042"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website alpineplumbingco42.example"
   },
   {
    "place_id": "ChIJbatch00000000000000043",
@@ -1367,7 +1453,9 @@
      "sentence": "your website doesn't load over https, so browsers mark it \"Not secure\"",
      "evidence": "https://maps.google.com/?cid=2000000000000000043"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website thanksgivingpointplumbingco43.example"
   },
   {
    "place_id": "ChIJbatch00000000000000044",
@@ -1398,7 +1486,9 @@
      "sentence": "the phone number on your website isn't the one on your Google listing",
      "evidence": "https://maps.google.com/?cid=2000000000000000044"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website wasatchplumbingco44.example"
   },
   {
    "place_id": "ChIJbatch00000000000000045",
@@ -1429,7 +1519,9 @@
      "sentence": "your Google listing has no hours for Saturday",
      "evidence": "https://maps.google.com/?cid=2000000000000000045"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website gmail.example"
   },
   {
    "place_id": "ChIJbatch00000000000000046",
@@ -1460,7 +1552,9 @@
      "sentence": "your website's footer still says © 2017",
      "evidence": "https://maps.google.com/?cid=2000000000000000046"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website highlandplumbingco46.example"
   },
   {
    "place_id": "ChIJbatch00000000000000047",
@@ -1491,7 +1585,9 @@
      "sentence": "there's no way to send you a message from your website, only a phone number",
      "evidence": "https://maps.google.com/?cid=2000000000000000047"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website saratogaplumbingco47.example"
   },
   {
    "place_id": "ChIJbatch00000000000000048",
@@ -1522,7 +1618,9 @@
      "sentence": "your website has no layout for a phone, so it shows the desktop page shrunk",
      "evidence": "https://maps.google.com/?cid=2000000000000000048"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website eagleplumbingco48.example"
   },
   {
    "place_id": "ChIJbatch00000000000000049",
@@ -1553,7 +1651,9 @@
      "sentence": "your Google listing has only 2 photos",
      "evidence": "https://maps.google.com/?cid=2000000000000000049"
     }
-   ]
+   ],
+   "email_confidence": "high",
+   "email_place": "read on the listing's own website canyonplumbingco49.example"
   }
  ]
 }

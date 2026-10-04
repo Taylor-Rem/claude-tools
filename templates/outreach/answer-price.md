@@ -14,7 +14,7 @@ It's {price_line}, and that keeps your site up on your own web address with a fe
 
 If you'd rather see it work before deciding, text {demo} and ask it something — that's a real one running a demo business, and you can ask it whatever you like. Fifteen minutes on the phone if that's easier: {booking}
 
-Taylor Remund
+Taylor Remund · Patchlamp
 {phone}
 {address}
 

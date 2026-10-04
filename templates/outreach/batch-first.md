@@ -31,7 +31,7 @@ Hi {first},
 
 I can build you a preview of a site for {business} from your Google listing, free, nothing to sign. Want to see it? Just reply. If you'd want it kept after that, it's {price_line}: your site, up on your own web address, with a few small changes by text each month. If you ever want more changed than that, there are bigger plans for it.
 
-Taylor Remund
+Taylor Remund · Patchlamp
 {phone}
 {address}
 

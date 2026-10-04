@@ -14,7 +14,7 @@ The short version: you text Patch — that's the assistant that looks after your
 
 The best way to judge it is to use it: text {demo} and ask it anything. That's a real one running a demo business, so nothing you say to it breaks anything. Your own starts at {price_line} for the site and a few small changes a month; the plans that do more are on the pricing page. Fifteen minutes on the phone if that's easier: {booking}
 
-Taylor Remund
+Taylor Remund · Patchlamp
 {phone}
 {address}
 

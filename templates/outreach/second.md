@@ -11,7 +11,7 @@ Hi {first},
 
 Following up on the page for {business} — it's still at {preview_url}. If you keep it ({price_line}), it stays up on your own web address, and a few small changes a month are a text to Patch; anything bigger is a plan up. If it's not for you, no hard feelings.
 
-Taylor Remund
+Taylor Remund · Patchlamp
 {phone}
 Fifteen minutes on the phone, if that's easier: {booking}
 {address}

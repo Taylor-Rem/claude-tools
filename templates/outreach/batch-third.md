@@ -13,7 +13,7 @@ Last note from me about {business}.
 [!see_url] If a free preview of a site for {business} would help, reply and I'll send it; there's nothing to sign.
 If I don't hear from you, I won't write again.
 
-Taylor Remund
+Taylor Remund · Patchlamp
 {phone}
 {address}
 

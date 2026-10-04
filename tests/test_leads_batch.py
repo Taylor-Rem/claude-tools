@@ -656,7 +656,9 @@ class CheckFaultsTest(unittest.TestCase):
         for body in ("<title>Page not found | Alta Air</title>", "<h1>404</h1><p>Oops</p>",
                      "<p>We couldn&#39;t find the page you were looking for.</p>",
                      "<div>4 04</div><p>The page you are looking for<br>can not be found</p>",
-                     "<p>Sorry, but the page you are trying to view does not exist.</p>"):
+                     "<p>Sorry, but the page you are trying to view does not exist.</p>",
+                     # WordPress's own 404 (Tri-phase Electric, B99 round 2): "can't" with a curly apostrophe
+                     "<h1 class=\"page-title\">Oops! That page can&rsquo;t be found.</h1>"):
             self.assertTrue(m.reads_gone(body), body)
         for body in ("<title>About — Nepali Chulo</title><p>Chulo is a traditional Nepali wood stove</p>"
                      "<p>801 987-8404, UT 84120</p>",

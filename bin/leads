@@ -439,8 +439,8 @@ _REACH = None
 
 
 def reach_table():
-    """place_id -> {'instagram' (handle), 'facebook' ('facebook.com/x'), 'email', 'source', 'checked', 'evidence'},
-    or None when the census has no `reach` table yet (B61 hasn't run). Read once, never written."""
+    """place_id -> {'instagram' (handle), 'facebook' ('facebook.com/x'), 'email', 'source', 'checked', 'evidence',
+    'unconfirmed' (B104: 'field=why; …' for the candidates not in a column)}, or None when the census has no `reach` table yet (B61 hasn't run). Read once, never written."""
     global _REACH
     if _REACH is not None:
         return _REACH or None
@@ -463,7 +463,8 @@ def reach_table():
             continue
         out[pid] = {"instagram": ig_handle(d.get("instagram")), "facebook": fb_page(d.get("facebook")),
                     "email": (d.get("email") or "").strip() or None, "source": d.get("source"),
-                    "checked": d.get("checked"), "evidence": d.get("evidence")}
+                    "checked": d.get("checked"), "evidence": d.get("evidence"),
+                    "unconfirmed": d.get("unconfirmed")}
     _REACH = out
     return out
 
@@ -532,10 +533,13 @@ def foreign_place(text, c=None):
     return None
 
 
-def reach_guard(out, c):
+def reach_guard(out, c, own=()):
     """Refuse an Instagram or Facebook handle that is another city's account (the handle itself, or the title of
     the search result B61 found it by). A refused handle is dropped, so the pick falls through to the next
-    channel, and `out['skipped']` says why ("Instagram skipped: another city's account (Dallas)")."""
+    channel, and `out['skipped']` says why ("Instagram skipped: another city's account (Dallas)").
+    Since B104/B107 the table's own judgement runs first (`reach_judge`): a value it didn't find `high` is taken
+    out and labelled; the city list stays as a backstop for what the table doesn't know."""
+    out = reach_judge(out, (c or {}).get("place_id"), own=own)
     row = (reach_table() or {}).get((c or {}).get("place_id") or "") or {}
     try:
         ev = json.loads(row.get("evidence") or "{}") if isinstance(row.get("evidence"), str) else (row.get("evidence") or {})
@@ -557,6 +561,211 @@ def reach_guard(out, c):
     if skipped:
         out["skipped"] = skipped
     return out
+
+
+# ---- B104/B107: is it *their* place? (plan 44; the seam is client-leads/scripts/reach.py's docstring) ----
+# reach.py judges every candidate against the place before it goes in its column: `high` only when something on the
+# result or the page ties it to the business (Utah, the city, the listing phone, a 801/385/435 number, the listing's
+# domain). Only `high` is ever in a column; the rest are named in `unconfirmed` and kept in `evidence[field]` with a
+# `confidence` of unsure, low or rejected. A row stored before B104 has no `confidence`: its column value reads as
+# `low` here until `reach.py --check` has run over it, so an unchecked handle is never a DM line (fails closed).
+# Why it matters: on 2026-10-02 the kit carried a New Mexico namesake's Instagram for an Orem plumber, and a message
+# to a namesake reaches a stranger with Taylor's name on it.
+
+REACH_FIELDS = ("instagram", "facebook", "email")
+REACH_LABEL = {"instagram": "Instagram", "facebook": "Facebook", "email": "email"}
+UNCHECKED_WHY = "not checked against the place yet (stored before B104; reach.py --check)"
+
+
+def reach_value(field, value):
+    """One field's value in the form the readers compare: a bare handle, 'facebook.com/x', a lower-case address."""
+    if not value:
+        return None
+    if field == "instagram":
+        return ig_handle(value)
+    if field == "facebook":
+        return fb_page(value)
+    return str(value).strip().lower() or None
+
+
+def parse_unconfirmed(text):
+    """reach.unconfirmed ('instagram=why; facebook=hidden: why') → {field: why}. A field named twice keeps the first."""
+    out = {}
+    for part in re.split(r";\s+(?=(?:instagram|facebook|email)=)", text or ""):
+        field, _, why = part.partition("=")
+        field = field.strip()
+        if field in REACH_FIELDS and field not in out:
+            out[field] = why.strip() or None
+    return out
+
+
+def reach_evidence(row):
+    ev = (row or {}).get("evidence")
+    if isinstance(ev, str):
+        try:
+            ev = json.loads(ev or "{}")
+        except ValueError:
+            ev = {}
+    return ev if isinstance(ev, dict) else {}
+
+
+def reach_judgement(place_id):
+    """{field: {'value','confidence','place','why','by'}} for what the `reach` table knows of one place; a field with
+    nothing known is absent. `confidence` is high | unsure | low | rejected; `why` is the reason when not high."""
+    row = (reach_table() or {}).get(place_id or "") if place_id else None
+    if not row:
+        return {}
+    ev, unconf = reach_evidence(row), parse_unconfirmed(row.get("unconfirmed"))
+    out = {}
+    for f in REACH_FIELDS:
+        e = ev.get(f) if isinstance(ev.get(f), dict) else {}
+        col = row.get(f)
+        value = (reach_value(f, e.get("value")) or col
+                 or reach_value(f, e.get("page") or e.get("url") if f != "email" else None))
+        if not (value or e or f in unconf):
+            continue
+        conf = e.get("confidence")
+        hidden = e.get("visible") is False
+        if col and conf == "high" and not hidden and (not e.get("value") or reach_value(f, e["value"]) == col):
+            out[f] = {"value": col, "confidence": "high", "place": e.get("place"), "why": None, "by": e.get("by")}
+            continue
+        if col and not conf:
+            out[f] = {"value": col, "confidence": "low", "place": None, "why": UNCHECKED_WHY, "by": None}
+            continue
+        if conf not in ("unsure", "low", "rejected"):
+            conf = "low"                                 # no judgement, a hidden high, or a word we don't know
+        why = unconf.get(f) or (e.get("reason") if e.get("reason") != "hidden" else None) or e.get("place_reason")
+        if hidden:
+            why = unconf.get(f) or "hidden: " + (e.get("why") or e.get("place_reason") or "a stranger can't see the page")
+        out[f] = {"value": value, "confidence": conf, "place": None, "why": why or "nothing ties it to the place",
+                  "by": e.get("by")}
+    return out
+
+
+def unconfirmed_label(field, j):
+    """How a reader says a candidate that isn't `high`. low: no handle at all, call-only. unsure: the handle and a
+    look first (research or a judge doubted it; never a DM line). rejected: refused, said in the `skipped` list."""
+    label, v, why = REACH_LABEL[field], j.get("value"), j.get("why") or "no reason given"
+    if j["confidence"] == "rejected":
+        return f"{label} refused ({why})"
+    if j["confidence"] == "unsure" and v:
+        shown = f"@{v}" if field == "instagram" else v
+        return f"{label} {shown}: unconfirmed, look before sending ({why})"
+    return f"{label}: unconfirmed, call-only ({why})"
+
+
+def reach_profile(field, value):
+    if field == "instagram":
+        return f"https://www.instagram.com/{value}/"
+    if field == "facebook":
+        return "https://www." + value if not str(value).startswith("http") else value
+    return None
+
+
+def reach_judge(out, place_id, own=()):
+    """Take out of `out` every value the table judged and didn't find `high`, and say why: `out['unconfirmed']` is a
+    list of {field, value, confidence, why, label, profile} for the candidates that aren't usable (low and unsure),
+    and a rejected one is a line in `out['skipped']`. A field in `own` came off the listing's own website link and is
+    theirs by definition. A value the table doesn't know at all (a restaurant's own search result) is left as it was;
+    the city backstop in `reach_guard` still reads it."""
+    judged = reach_judgement(place_id)
+    skipped = list(out.get("skipped") or [])
+    unconfirmed = list(out.get("unconfirmed") or [])
+    for f, j in judged.items():
+        if j["confidence"] == "high" or f in own:
+            continue
+        have = reach_value(f, out.get(f))
+        if have and j.get("value") and have != j["value"]:
+            continue                                     # a different, usable value (the census's own) — keep it
+        out[f] = None
+        line = unconfirmed_label(f, j)
+        if j["confidence"] == "rejected":
+            if line not in skipped:
+                skipped.append(line)
+        elif not any(u["field"] == f for u in unconfirmed):
+            unconfirmed.append({"field": f, "value": j.get("value"), "confidence": j["confidence"], "why": j.get("why"),
+                                "label": line, "profile": reach_profile(f, j.get("value")) if j["confidence"] == "unsure" else None})
+    if skipped:
+        out["skipped"] = skipped
+    out["unconfirmed"] = unconfirmed
+    return out
+
+
+def unconfirmed_line(rc):
+    """The kit's line for the candidates that aren't usable: 'Instagram: unconfirmed, call-only (why)' · …"""
+    bits = []
+    for u in (rc or {}).get("unconfirmed") or []:
+        bits.append(u["label"] + (f" {u['profile']}" if u.get("profile") else ""))
+    return " · ".join(bits)
+
+
+def reach_py():
+    """The census's reach script (B104's `--check` and `--verdict`): LEADS_REACH_PY, else scripts/reach.py next to
+    the census. Tests point it at a stub."""
+    return Path(os.environ.get("LEADS_REACH_PY") or CENSUS.parent / "scripts" / "reach.py")
+
+
+def reach_cli(args, timeout=1800):
+    """(exit code, stdout, stderr) of `reach.py ARGS --db CENSUS`; (127, '', why) when it can't be run."""
+    path = reach_py()
+    if not path.exists():
+        return 127, "", f"no reach script at {path} (LEADS_REACH_PY)"
+    try:
+        p = subprocess.run([sys.executable, str(path), *args, "--db", str(CENSUS)], capture_output=True, text=True,
+                           timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return 124, "", f"reach.py didn't finish ({exc})"
+    return p.returncode, p.stdout, p.stderr
+
+
+def reach_verdict(place_id, field, verdict, why, by, value=None):
+    """Someone else's verdict on a stored candidate (B107: prep's research), through `reach.py --verdict`, the one
+    way anything outside reach.py writes the table. (ok, the line it printed or why it refused)."""
+    args = ["--verdict", place_id, field, verdict, why, "--by", by] + (["--value", value] if value else [])
+    code, out, err = reach_cli(args, timeout=60)
+    global _REACH
+    _REACH = None                                        # the next read sees the verdict
+    if code == 0:
+        return True, out.strip().splitlines()[-1] if out.strip() else "recorded"
+    return False, (err.strip().splitlines() or [f"exit {code}"])[-1]
+
+
+_REACH_MOD = None
+
+
+def reach_module():
+    """reach.py imported (for `place_evidence`), or None when it isn't there or won't import. Never runs a pass."""
+    global _REACH_MOD
+    if _REACH_MOD is not None:
+        return _REACH_MOD or None
+    path = reach_py()
+    _REACH_MOD = False
+    if path.exists():
+        import importlib.util
+        sys.path.insert(0, str(path.parent))
+        try:
+            spec = importlib.util.spec_from_file_location("census_reach", path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            if hasattr(mod, "place_evidence"):
+                _REACH_MOD = mod
+        except Exception:                                # a broken census script never stops a reader
+            _REACH_MOD = False
+        finally:
+            sys.path.remove(str(path.parent))
+    return _REACH_MOD or None
+
+
+def place_tie(text, *, name, city, phone=None, site=None, where="the cited words"):
+    """reach.py's `place_evidence` on some words: ('high', line) | ('low', why) | ('rejected', why). ('low', why)
+    when reach.py isn't importable, so nothing is promoted without it."""
+    mod = reach_module()
+    if not mod:
+        return "low", f"no place check here ({reach_py()} not importable)"
+    try:
+        return mod.place_evidence(text or "", name=name, city=city, phone=phone, site=site, where=where)
+    except Exception as exc:                             # noqa: BLE001 — a reader says why and stays closed
+        return "low", f"place check failed ({exc})"
 
 
 # ---- the hosts table (B71's `hosts`; read here, written by client-leads/scripts/hosts.py) ----
@@ -772,12 +981,11 @@ def language_tag(c_or_pid):
 
 
 def reach_fill(out, place_id):
-    """The census's own columns win; the B61 table fills what they left empty."""
-    row = (reach_table() or {}).get(place_id or "")
-    if row:
-        for f in ("instagram", "facebook", "email"):
-            if not out.get(f) and row.get(f):
-                out[f] = row[f]
+    """The census's own columns win; the B61 table fills what they left empty, with a value it judged `high` only
+    (B104: a column value with no judgement yet is a pre-B104 name match, and waits for `reach.py --check`)."""
+    for f, j in reach_judgement(place_id).items():
+        if not out.get(f) and j["confidence"] == "high":
+            out[f] = j["value"]
     return out
 
 
@@ -1836,7 +2044,8 @@ def business_reach(c):
     out["facebook"] = fb_from_url(url)
     if c.get("presence") == "directory" and url:
         out["directory"] = (c.get("presence_label") or host_of(url), url)
-    return reach_guard(reach_fill(out, c.get("place_id")), c)
+    own = tuple(f for f in ("instagram", "facebook") if out.get(f))      # the listing's own link: theirs by definition
+    return reach_guard(reach_fill(out, c.get("place_id")), c, own=own)
 
 
 def business_reach_line(rc):

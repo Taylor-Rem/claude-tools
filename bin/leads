@@ -5457,8 +5457,10 @@ FAULT_RANK = {"https_fails": 4, "broken_link": 6, "sideways": 7, "broken_image":
 # that list, and the one place a fault is switched on. The others are computed, tested and counted by
 # `--stats` as waiting, and never reach a letter. "No contact form" is not here and must not come back: forms hide
 # in booking flows and pages two clicks deep (8 of 30 false), so `form` is a fact the pass stores, never a fault.
-CHECK_FAULTS_PROVEN = ("https_fails", "broken_link")        # https 30/30; links 56 true, 0 false (2026-10-01)
-CHECK_FAULTS_WAITING = ("sideways", "broken_image", "psi_poor")   # 4/4, 6/7 and no scores yet: fewer than thirty
+CHECK_FAULTS_PROVEN = ("https_fails", "broken_link")        # https 35/35; links 56 true, 0 false (2026-10-01, -03)
+# Waiting, 2026-10-03: the census holds fewer than thirty of each, all checked. Sideways 5/5 true once a page that
+# lets a phone zoom out is left out (site_checks.zoom_locked; 4 of the re-read's 9 were); images 17/17; no scores yet.
+CHECK_FAULTS_WAITING = ("sideways", "broken_image", "psi_poor")
 # A stored check older than this isn't said: the pass reads the whole census in a night, and a month is long enough
 # for a batch a week to draw on one re-read while short enough that a redesign rarely lands in between. The faults a
 # re-check can confirm (the secure address, a link, an image) are also asked again the day the batch is made; the

@@ -5831,7 +5831,7 @@ _LAST_HIT = {}
 # What a page that isn't there says. A 404 is not enough for a link: a site can answer 404 and still show a whole
 # page (B99's real-pick check: Nepali Chulo's Squarespace answers 404 for /mneu-nepali-chulo and shows its About
 # page), and a visitor who meets a real page has not met a broken link. A blank answer is unsure, not gone.
-GONE_PAGE_RE = re.compile(r"not\s*found|\b404\b|can\s*not be found|could\s*not be found|couldn.t find|can.t find|"
+GONE_PAGE_RE = re.compile(r"not\s*found|\b404\b|can\s*not be found|can.t be found|could\s*not be found|couldn.t find|can.t find|"
                           r"could not find|unable to find|does\s*n.?o?t exist|no longer exists|no longer available|"
                           r"page (?:you|you're) (?:are |were )?(?:looking|searching) for", re.I)
 

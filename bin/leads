@@ -749,6 +749,10 @@ def reach_cli(args, timeout=1800):
 def reach_verdict(place_id, field, verdict, why, by, value=None):
     """Someone else's verdict on a stored candidate (B107: prep's research), through `reach.py --verdict`, the one
     way anything outside reach.py writes the table. (ok, the line it printed or why it refused)."""
+    if value and field == "facebook" and not str(value).startswith("http"):
+        value = "https://www." + str(value)              # reach.py stores the page URL; 'facebook.com/x' is our form
+    if value and field == "instagram":
+        value = ig_handle(value) or value
     args = ["--verdict", place_id, field, verdict, why, "--by", by] + (["--value", value] if value else [])
     code, out, err = reach_cli(args, timeout=60)
     global _REACH

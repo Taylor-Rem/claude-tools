@@ -1159,7 +1159,8 @@ class HandleRunTest(Base):
         by = f"prep {run_dir.name}/{slug}"
         self.assertEqual(verdicts["facebook"][:8], ["--verdict", VALDEZ, "facebook", "not_theirs", NM_WHY, "--by", by,
                                                     "--value"])
-        self.assertEqual(verdicts["facebook"][8], "facebook.com/valdezbrothersplumbingandheating")
+        # reach.py stores the page URL and compares --value with it, so leads sends the page URL form
+        self.assertEqual(verdicts["facebook"][8], "https://www.facebook.com/valdezbrothersplumbingandheating")
         self.assertEqual(verdicts["instagram"][:5], ["--verdict", VALDEZ, "instagram", "unsure",
                                                      "Whether the Instagram account is theirs"])
         md = (run_dir / "outline.md").read_text()

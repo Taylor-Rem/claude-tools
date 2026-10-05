@@ -228,10 +228,12 @@ class Templates(Base):
         self.assertIn("advertisement", letter)
         self.assertIn('"no thanks"', letter)
         self.assertIn("Patch, my AI operator", letter)
-        body = letter.split("Hi Dave,", 1)[1]
-        pitch = [p for p in body.split("\n\n") if p.strip()][0]
-        self.assertEqual(1, len(re.findall(r"https?://", pitch)), f"one link in the pitch, not\n{pitch}")
-        self.assertTrue(4 <= len(re.split(r"(?<=[.!?])\s+", pitch.strip())) <= 6)
+        body = letter.split("Hi Dave,", 1)[1].split("Taylor Remund · Patchlamp", 1)[0]
+        # Since 2026-10-05 (Codex's density pass) the letter is several short paragraphs, measured in words.
+        self.assertEqual(1, len(re.findall(r"https?://", body)), f"one link in the letter, not\n{body}")
+        self.assertTrue(40 <= len(body.split()) <= 130, len(body.split()))
+        self.assertTrue(body.strip().endswith("Want to take a look?"))                # one ask, last
+        self.assertNotIn("Hibu", body)                                                # one hook: the fault
 
     def test_the_sample_fault_is_a_leads_fault_said_to_the_owner(self):
         r = self.run_it("approve", "--dry-run", "--template", "first")
@@ -253,8 +255,7 @@ class Templates(Base):
     def test_editing_a_letter_unapproves_it(self):
         self.approve()
         p = self.tpl / "first.md"
-        p.write_text(p.read_text().replace("Either way the page is yours to copy from.",
-                                           "Either way the page is yours. Free forever."))
+        p.write_text(p.read_text().replace("Want to take a look?", "Want to take a look? Free forever."))
         r = self.send(expect=1)
         self.assertIn("changed since Taylor approved it", r.stderr)
         self.assertEqual([], self.outbox())
@@ -441,7 +442,9 @@ class Send(Base):
         r = self.send("--touch", "3")
         self.assertEqual(6, len(self.outbox()))
         self.assertIn("touch day 3 (second)", r.stdout)
-        self.assertIn("Following up on the page", self.outbox()[0]["text"])
+        self.assertIn("Here's a page I made for you", self.outbox()[0]["text"])   # the first message again, shorter (Taylor, 2026-10-05)
+        self.assertNotIn("Following up", self.outbox()[0]["text"])
+        self.assertNotIn("$", self.outbox()[0]["text"])                           # no price in the day-3 touch
         r = self.send("--touch", "10")
         self.assertIn("touch day 10 (third)", r.stdout)
         third = [row for row in self.outbox() if "comes down" in row["text"]]
@@ -473,15 +476,17 @@ class Send(Base):
         p = self.tmp / "paying.json"
         p.write_text(json.dumps(kit))
         r = self.run_it("send", "--kit", str(p), "--go", "--dry-run")
-        self.assertEqual(1, r.stdout.count(hibu), r.stdout)
+        # Since 2026-10-05 the first letter carries one hook, the fault; `{paying}` is still handed over by
+        # `leads` (the vendor's price is true and kept for the reply) but no letter prints it.
+        self.assertEqual(0, r.stdout.count(hibu), r.stdout)
         self.assertEqual([], self.outbox())
         self.run_it("send", "--kit", str(p), "--go")
         by = {row["to"]: row["text"] for row in self.outbox()}
         dave, cedar = by["dave@highlandpoolspa.example"], by["hello@cedarhollowlawn.example"]
-        self.assertIn(hibu + " I've made you a page", dave)
+        self.assertNotIn("set up with", dave)
         self.assertNotIn("set up with", cedar)
         self.assertNotIn("  ", cedar)
-        self.assertRegex(cedar, r"\. I've made you a page")
+        self.assertIn("I made you a page from your Google listing", cedar)
         for text in by.values():
             self.assertNotIn("{paying}", text)
 

@@ -6,12 +6,20 @@
 # Placeholders: {first} {business} {fault} {preview_url} {price_line} {phone}
 # {booking} {address} {expiry}.
 
+# Body by Codex (marketing/copy/2026-10-05-letters.md, variant A), 2026-10-05: one thought a sentence, one ask a letter;
+# the disclosure beside the intro. Flint's one change: batch-first's takedown sentence is out (nothing is built yet in this lane).
+
 Subject default: the page for {business} comes down {expiry}
 
 ---
 Hi {first},
 
-Last note from me: the page I made for {business} comes down on {expiry}, so this is the point to say either way. It's at {preview_url} until then, and keeping it is {price_line}, and I move it onto your own web address with you as part of that. If I don't hear from you it goes quietly and I won't write again.
+This is my last note. The page I made for {business} comes down on {expiry}.
+Patch, my AI operator, drafted this note for my review.
+
+Here's the preview: {preview_url}
+
+Want me to keep it for you?
 
 Taylor Remund · Patchlamp
 {phone}
@@ -19,4 +27,3 @@ Fifteen minutes on the phone, if that's easier: {booking}
 {address}
 
 The last of three notes from a local business; this is an advertisement. Reply "no thanks" and you won't hear from me again.
-Patch, my AI operator, drafted this note; I read every one before it goes.

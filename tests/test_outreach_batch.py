@@ -45,7 +45,7 @@ ADDRESS = "PO Box 1234, American Fork, UT 84003"
 DOMAIN = "trypatchlamp.example"
 BOXES = [f"taylor@{DOMAIN}", f"t.remund@{DOMAIN}", f"hello@{DOMAIN}"]
 PASSWORDS = {b: f"app-pass-{i}-NEVERreal" for i, b in enumerate(BOXES)}
-DISCLOSURE = "Patch, my AI operator, found this and drafted it; I approve each batch."
+DISCLOSURE = "Patch, my AI operator, drafted this note for my approval of the batch."
 MONDAY = "2026-10-19"
 
 
@@ -381,7 +381,7 @@ class Letters(Base):
                 self.assertIn('Reply "no thanks"', text)
                 self.assertIn("advertisement", text)
                 self.assertIn(f"I can build you a preview of a site for {pick['name']} from your Google listing, "
-                              "free, nothing to sign. Want to see it? Just reply.", text)
+                              "free, nothing to sign.", text)
                 self.assertIn("$20 a month, no contract", text)
                 self.assertNotRegex(text, r"https?://|www\.|\.com\b")
         self.assertEqual([], Mail.sent)
@@ -395,7 +395,7 @@ class Letters(Base):
         pick = self.picks(1)[0]
         pick["faults"][0]["kind"] = pick["faults"][1]["kind"] = "fault"
         text, _ = self.letter_for(pick)
-        self.assertIn("I looked Summit Plumbing up, and two things stood out:\n\n"
+        self.assertIn("I looked Summit Plumbing up and noticed two things:\n\n"
                       f"- {pick['faults'][0]['sentence']}\n- {pick['faults'][1]['sentence']}\n", text)
 
     def test_a_fault_and_a_fact_read_as_one_to_fix_and_one_in_their_favour_fault_first(self):
@@ -405,9 +405,9 @@ class Letters(Base):
                           {"key": "hours", "kind": "fault", "sentence": "your Google listing has no hours for Saturday",
                            "evidence": "y"}]
         text, _ = self.letter_for(pick)
-        self.assertIn("I looked Summit Plumbing up: one thing could be better, and one is already working for you."
+        self.assertIn("I looked Summit Plumbing up and noticed one thing to fix and one thing working for you:"
                       f"\n\n- your Google listing has no hours for Saturday\n- {fact}\n", text)
-        self.assertNotIn("stood out", text)
+        self.assertNotIn("two things", text)
         self.assertIn(DISCLOSURE, text)
 
     def test_a_pick_with_only_facts_is_not_written_to(self):
@@ -497,7 +497,7 @@ class Letters(Base):
         self.tick_day("2026-10-22", OUTREACH_LINK_BASE="https://previews.patchlamp.com")
         second = body_of(self.sent_to(p[0]["email"])[1]["raw"])
         self.assertNotIn("http", second)
-        self.assertIn("just reply and I'll send it", second)
+        self.assertIn("send it over? Just reply.", second)
 
     def test_with_a_link_base_the_second_touch_carries_exactly_that_link(self):
         self.approve()

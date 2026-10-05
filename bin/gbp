@@ -15,7 +15,20 @@ posts, reviews and owner replies, on the B11 connection.
   gbp photo FILE|URL [--category FOOD_AND_DRINK]
   gbp reviews [-n 10] [--unanswered]
   gbp reply 1 "Thanks Maria — see you Saturday."     # 1 = newest; or a review id
+  gbp ask Smith                             # the job's done: the review link to them, an hour later
+  gbp ask Smith --cancel | --stop           # drop a waiting ask | they asked never to be contacted
+  gbp asks                                  # review asks: waiting, sent, refused
+  gbp watch [--json] [--fresh]              # the reviews: the API when Google opens it, else Places
   gbp doctor
+
+The review loop (B118): `ask` finds the customer in the book (`db customers`),
+marks the job done and files the ask in reviews/queue.jsonl; the relay sends
+it an hour later through relay/customers.py (90 days a customer, the
+do-not-contact list, email only) and texts the owner what happened. `watch`
+reads the listing once a day for the relay (Places: one call, one toolbelt
+ledger line, ~$0.025) and keeps reviews/latest.json for a walled run. The
+place id is a line in NOTES.md: `Google place id: ChIJ…`. A refusal exits 3
+with the reason, and nothing is changed.
 
 Credentials come from the run's environment — `GBP_ACCESS_TOKEN`,
 `GBP_LOCATION`, `GBP_ACCOUNT` — which the relay puts there for a project with
@@ -36,12 +49,15 @@ the date and open/closed, so never tell an owner their listing says
 "Thanksgiving" — it says closed on that date.
 
 Free: Business Profile calls cost nothing, so there is no ledger line (that
-rule is about money — see `img`).
+rule is about money — see `img`). The one paid call is `watch` by Places,
+which writes its line.
 
 Config, by name, never printed:
   GBP_ACCESS_TOKEN / GBP_LOCATION / GBP_ACCOUNT   the run's environment
   PATCHLAMP_RELAY_SHARED_SECRET                   only for --project, from the toolbelt
+  GOOGLE_MAPS_API_KEY                             `watch` by Places (the key `leads` uses)
   GBP_FIXTURES / GBP_RECORD                       recorded responses, for the tests
+  GBP_DB / GBP_PLACES_URL                         stand-ins for the customer book and Places, for the tests
 """
 
 import argparse
@@ -78,6 +94,18 @@ def die(msg, code=1):
     sys.exit(code)
 
 
+REFUSED = 3          # "I couldn't, here's why": the reason is on stdout/stderr, nothing was changed
+
+
+class GbpError(Exception):
+    """A soft failure (api(..., soft=True), Creds(..., soft=True)): the caller decides what to say.
+    `quota` is True when Google refused because the API access isn't approved yet."""
+
+    def __init__(self, message, status=0, quota=False):
+        super().__init__(message)
+        self.status, self.quota = status, quota
+
+
 # ---- credentials ----------------------------------------------------------------
 
 def read_env_file():
@@ -102,8 +130,21 @@ def workspace_slug():
     return slug
 
 
-def from_patchlamp(slug):
-    """The same env the relay would have injected, for a terminal run."""
+def from_patchlamp(slug, soft=False):
+    """The same env the relay would have injected, for a terminal run. soft: GbpError instead of exiting."""
+    if soft:
+        try:
+            return _from_patchlamp(slug, _raise)
+        except GbpError:
+            return {}
+    return _from_patchlamp(slug, die)
+
+
+def _raise(msg):
+    raise GbpError(msg)
+
+
+def _from_patchlamp(slug, die):
     keys = read_env_file()
     secret = os.environ.get("PATCHLAMP_RELAY_SHARED_SECRET") or keys.get("PATCHLAMP_RELAY_SHARED_SECRET")
     if not secret:
@@ -127,7 +168,9 @@ def from_patchlamp(slug):
 
 
 class Creds:
-    def __init__(self, args):
+    def __init__(self, args, soft=False):
+        """soft (the review watch): a missing connection leaves the creds empty instead of exiting,
+        because the watch has a second way to read reviews (Places)."""
         env = dict(os.environ)
         if not env.get("GBP_LOCATION"):
             ws = workspace_slug()
@@ -135,7 +178,7 @@ class Creds:
                 die(f"this workspace is {ws}; it can't reach another project's listing")
             slug = getattr(args, "project", None) or ws
             if slug:
-                env.update(from_patchlamp(slug))
+                env.update(from_patchlamp(slug, soft=soft))
         self.token = env.get("GBP_ACCESS_TOKEN", "")
         self.location = env.get("GBP_LOCATION", "")        # locations/123
         self.account = env.get("GBP_ACCOUNT", "")          # accounts/456
@@ -192,7 +235,9 @@ def _fixture(method, url, params):
 _fixture.used = {}
 
 
-def api(creds, method, url, body=None, params=None, ok=(200,)):
+def api(creds, method, url, body=None, params=None, ok=(200,), soft=False):
+    """One call to Google. soft: raise GbpError (with .quota) instead of exiting, for a caller that
+    has something better to do with a refusal than print it (the watch, the reply's draft)."""
     creds.need()          # before anything is built: a missing connection has its own clear answer
     params = {k: v for k, v in (params or {}).items() if v is not None}
     full = url + ("?" + urllib.parse.urlencode(params) if params else "")
@@ -220,17 +265,27 @@ def api(creds, method, url, body=None, params=None, ok=(200,)):
                 data = {"error": {"message": raw[:300]}}
             status = exc.code
         except urllib.error.URLError as exc:
+            if soft:
+                raise GbpError(f"Google unreachable: {exc.reason}")
             die(f"Google unreachable: {exc.reason}")
     if status not in ok:
+        if soft:
+            raise GbpError(why(status, data), status, quota=is_quota(status, data))
         die(why(status, data))
     return status, data
+
+
+def is_quota(status, data):
+    msg = ((data or {}).get("error") or {})
+    msg = str((msg.get("message") if isinstance(msg, dict) else msg) or "").lower()
+    return status in (403, 429) and ("quota" in msg or "not been used" in msg or "disabled" in msg)
 
 
 def why(status, data):
     msg = ((data or {}).get("error") or {})
     msg = msg.get("message") if isinstance(msg, dict) else str(msg)
     msg = (msg or "")[:300]
-    if status == 403 and ("quota" in msg.lower() or "not been used" in msg.lower() or "disabled" in msg.lower()):
+    if is_quota(status, data):
         return ("quota is 0 — the Business Profile API access request is not approved yet "
                 "(TAYLOR-TODO §1 \"Google Business Profile API access\"). Nothing was changed.")
     if status == 401:
@@ -660,26 +715,478 @@ def fetch_reviews(creds, n=20):
 
 
 def cmd_reply(args):
+    """Post an owner reply. While Google's quota is 0 the post is refused, and the reply comes back as a draft to
+    paste by hand: the owner's words are never lost to a refusal (B118 acceptance)."""
     creds = Creds(args)
     which = args.review
-    if re.fullmatch(r"\d{1,3}", which):
-        reviews = fetch_reviews(creds)
-        idx = int(which) - 1
-        if idx < 0 or idx >= len(reviews):
-            die(f"there is no review {which} (gbp reviews lists them, newest first)")
-        target = reviews[idx]
-        name = target.get("name") or f"{creds.v4}/reviews/{target.get('reviewId')}"
-        who = (target.get("reviewer") or {}).get("displayName") or "them"
-    else:
-        name = which if which.startswith("accounts/") else f"{creds.v4}/reviews/{which}"
-        who = "them"
-    api(creds, "PUT", f"{V4}/{name}/reply", {"comment": args.text[:4096]})
+    try:
+        if re.fullmatch(r"\d{1,3}", which):
+            _, data = api(creds, "GET", f"{V4}/{creds.v4}/reviews",
+                          params={"pageSize": 20, "orderBy": "updateTime desc"}, soft=True)
+            reviews = data.get("reviews") or []
+            idx = int(which) - 1
+            if idx < 0 or idx >= len(reviews):
+                die(f"there is no review {which} (gbp reviews lists them, newest first)")
+            target = reviews[idx]
+            name = target.get("name") or f"{creds.v4}/reviews/{target.get('reviewId')}"
+            who = (target.get("reviewer") or {}).get("displayName") or "them"
+        else:
+            name = which if which.startswith("accounts/") else f"{creds.v4}/reviews/{which}"
+            who = "them"
+        api(creds, "PUT", f"{V4}/{name}/reply", {"comment": args.text[:4096]}, soft=True)
+    except GbpError as exc:
+        if not exc.quota:
+            die(str(exc))
+        print("Not posted: Google hasn't opened its Business Profile API to us yet (quota 0 until it approves "
+              "the application, TAYLOR-TODO §1), so nothing was changed on the listing.")
+        print("The reply, ready to paste by hand — business.google.com → Reviews → Reply on that review:")
+        print()
+        print(f"  {args.text}")
+        sys.exit(REFUSED)
     print(f"Replied to {who} on Google:")
     print(f"  {args.text}")
     print("  (the owner reply shows under their review, signed with the business name)")
 
 
+# ---- the review loop (B118, plan ~/projects/plans/49-the-customer-side.md) ------------------
+#
+# Two halves. `gbp ask` is the owner's "done with the Smith job": it finds the customer in the
+# book (`db customers`, B122), marks the job done, and files the ask in the workspace's
+# reviews/queue.jsonl. It sends nothing: the relay (sms-relay/relay/reviews.py, on its own
+# timer) picks the queue up, waits out the hour, checks the 90-day rule and the do-not-contact
+# list in relay/customers.py, sends, and texts the owner what happened. The queue sits in the
+# workspace because that is the one place both a walled client run and the relay can reach.
+#
+# `gbp watch` reads the listing's reviews: the Business Profile API when Google has granted the
+# quota, else Place Details through the same Places key and code `leads` uses (one call, one
+# toolbelt ledger line). Each live read is written to reviews/latest.json, which is what a
+# walled run (no Places key in there, on purpose: the daily read is the relay's) gets instead.
+# Which reviews are *new* is the relay's to decide (state/reviews.json), not this tool's.
+
+ASK_DELAY_MINUTES = 60
+COOLDOWN_DAYS = 90                  # one review ask a customer in 90 days (VISION § Decided 2026-10-05)
+WATCH_FRESH_HOURS = 20              # a read younger than this is reused unless --fresh: one Places call a day
+PLACES_COST_USD = 0.025             # Place Details, Enterprise + Atmosphere SKU (approx.; leads' DETAILS_COST_USD)
+PLACE_RE = re.compile(r"(?im)^[\s*_>-]*(?:google\s+)?place[\s_-]?id\**\s*[:=]\s*`?([A-Za-z0-9_-]{16,})`?")
+WRITE_REVIEW = "https://search.google.com/local/writereview?placeid={}"
+LEDGER = Path(os.environ.get("IMG_LEDGER") or Path.home() / ".local/state/claude-tools/ledger.jsonl")
+
+
+def workspace_root():
+    here = Path.cwd().resolve()
+    for d in (here, *here.parents):
+        if (d / ".client.json").is_file():
+            return d
+    return here
+
+
+def place_id(ws=None):
+    """The Google place id from NOTES.md (a line `Google place id: ChIJ…`), or None."""
+    notes = (ws or workspace_root()) / "NOTES.md"
+    try:
+        m = PLACE_RE.search(tenant.read_inside(notes) if notes.is_file() else "")
+    except OSError:
+        return None
+    return m.group(1) if m else None
+
+
+def review_link(pid):
+    return WRITE_REVIEW.format(urllib.parse.quote(pid, safe=""))
+
+
+def reviews_dir(ws=None):
+    return (ws or workspace_root()) / "reviews"
+
+
+def _now():
+    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+
+
+def _read_json(path, default):
+    try:
+        return json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return default
+
+
+def _append_queue(entry, ws=None):
+    """One line on reviews/queue.jsonl, under the lock the relay's drain takes too."""
+    import fcntl
+    d = reviews_dir(ws)
+    d.mkdir(exist_ok=True)
+    with open(d / "queue.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        with open(d / "queue.jsonl", "a") as f:
+            f.write(json.dumps(entry) + "\n")
+
+
+def _queued(ws=None):
+    path = reviews_dir(ws) / "queue.jsonl"
+    out = []
+    if path.is_file():
+        for line in path.read_text().splitlines():
+            try:
+                out.append(json.loads(line))
+            except ValueError:
+                pass
+    return out
+
+
+def _mask(email):
+    name, _, host = (email or "").partition("@")
+    return f"{name[:1]}…@{host}" if host else "?"
+
+
+def _clock(ts):
+    try:
+        t = dt.datetime.fromisoformat(ts).astimezone()
+    except (TypeError, ValueError):
+        return ts or "?"
+    return t.strftime("%-I:%M%p").lower().replace(":00", "")
+
+
+# -- the customer book: the one adapter over B122's `db customers` / `db jobs` -----------------
+# Every call to the book goes through these three functions, so a renamed subcommand or field
+# in bin/db is one edit here. GBP_DB points at a stand-in for the tests.
+
+DB_BIN = Path(os.environ.get("GBP_DB") or Path(__file__).resolve().parent / "db")
+
+
+def _db(*argv):
+    import subprocess
+    try:
+        r = subprocess.run([str(DB_BIN), *argv], capture_output=True, text=True, timeout=90)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return None, f"the customer book couldn't be read ({exc})"
+    if r.returncode != 0:
+        lines = (r.stderr or r.stdout or "").strip().splitlines()
+        return None, (lines[-1] if lines else f"db exited {r.returncode}")
+    return r.stdout, None
+
+
+def book_find(who):
+    """[{id, name, email, phone, jobs?}] for a name, phone or email, or raises GbpError."""
+    out, err = _db("customers", "find", who, "--json")
+    if err:
+        raise GbpError(err)
+    try:
+        data = json.loads(out or "[]")
+    except ValueError:
+        raise GbpError("the customer book answered with something that isn't JSON")
+    rows = data.get("customers", data.get("rows", [])) if isinstance(data, dict) else data
+    return [r for r in rows or [] if isinstance(r, dict)]
+
+
+def book_jobs(customer):
+    """The customer's jobs, newest first: from the find row if it carries them, else `customers show`."""
+    jobs = customer.get("jobs")
+    if jobs is None:
+        out, err = _db("customers", "show", str(customer.get("id")), "--json")
+        data = {}
+        if not err:
+            try:
+                data = json.loads(out or "{}")
+            except ValueError:
+                data = {}
+        jobs = (data.get("jobs") if isinstance(data, dict) else None) or []
+    return sorted([j for j in jobs if isinstance(j, dict)], key=lambda j: (str(j.get("date") or ""), str(j.get("id"))),
+                  reverse=True)
+
+
+def book_mark_done(job_id):
+    """Mark one job done. Returns None, or why it couldn't."""
+    _, err = _db("jobs", "done", str(job_id))
+    return err
+
+
+# -- gbp ask ------------------------------------------------------------------------------------
+
+def cmd_ask(args):
+    ws = workspace_root()
+    who = " ".join(args.who).strip()
+    if not who:
+        die("who? e.g. gbp ask Smith  (a name, phone or email from the customer book)")
+    if args.stop and "@" in who and " " not in who:            # an address, straight from a reply
+        cust = {"id": None, "name": who, "email": who.lower()}
+    else:
+        try:
+            matches = book_find(who)
+        except GbpError as exc:
+            print(f"I couldn't look {who} up in the customer book: {exc}")
+            print("Nothing was queued. (`db customers find` is the book's own command if you want to look by hand.)")
+            sys.exit(REFUSED)
+        if not matches:
+            print(f"Nobody in the customer book matches \"{who}\", so there's no address to write to. Nothing was queued.")
+            print("If they're a customer, add them first (`db customers add …`) with the email they gave the business.")
+            sys.exit(REFUSED)
+        if len(matches) > 1:
+            print(f"More than one customer matches \"{who}\"; say which one (a phone or email is exact):")
+            for m in matches[:8]:
+                print(f"  {m.get('name') or '?'}  {m.get('phone') or ''}  {m.get('email') or '(no email)'}")
+            sys.exit(REFUSED)
+        cust = matches[0]
+    name = cust.get("name") or who
+    email = (cust.get("email") or "").strip().lower()
+    entry = {"id": os.urandom(4).hex(), "at": _now().isoformat(), "by": os.environ.get("RELAY_ROLE", "terminal"),
+             "customer": {"id": cust.get("id"), "name": name, "email": email}}
+
+    if args.stop:
+        if not email:
+            print(f"{name} has no email in the book, so there's nothing to stop. Noted nowhere; nothing changed.")
+            sys.exit(REFUSED)
+        if args.dry_run:
+            print(f"would add {name} ({_mask(email)}) to the do-not-contact list")
+            return
+        _append_queue(dict(entry, op="stop", why=args.why or "asked not to be contacted"), ws)
+        print(f"Done: {name} won't be written to again from this business — no review asks, no reminders, "
+              f"nothing. The relay files it within five minutes.")
+        return
+    if args.cancel:
+        if args.dry_run:
+            print(f"would cancel any waiting review ask for {name}")
+            return
+        _append_queue(dict(entry, op="cancel"), ws)
+        print(f"Cancelled: if a review ask for {name} was waiting, it won't go. (One that already went can't be unsent.)")
+        return
+
+    pid = place_id(ws)
+    if not pid:
+        print("There's no Google place id in NOTES.md, so there's no review link to send. Nothing was queued.")
+        print("Add a line `Google place id: ChIJ…` to NOTES.md (Taylor can look it up from the listing), then ask again.")
+        sys.exit(REFUSED)
+    if not email:
+        print(f"{name} has no email in the customer book: they never gave the business one, so I can't ask them "
+              f"for a review. Nothing was queued. (By text comes once the business has its own number.)")
+        sys.exit(REFUSED)
+    status = _read_json(reviews_dir(ws) / "status.json", {})
+    stopped = set((status.get("stopped") or []))
+    if email in stopped:
+        print(f"{name} asked not to be contacted, so no review ask. Nothing was queued.")
+        sys.exit(REFUSED)
+    last = (status.get("asked") or {}).get(email)
+    if last:
+        try:
+            again = dt.date.fromisoformat(last[:10]) + dt.timedelta(days=COOLDOWN_DAYS)
+        except ValueError:
+            again = None
+        if again and again > dt.date.today():
+            print(f"{name} was asked for a review on {last[:10]}; one ask in {COOLDOWN_DAYS} days is the rule, "
+                  f"so not again before {again.isoformat()}. Nothing was queued.")
+            sys.exit(REFUSED)
+
+    jobs_note = ""
+    if cust.get("id") is not None and not args.no_job:
+        job = None
+        if args.job:
+            job = {"id": args.job}
+        else:
+            open_jobs = [j for j in book_jobs(cust) if str(j.get("status") or "").lower() != "done"]
+            job = open_jobs[0] if open_jobs else None
+        if job:
+            entry["job"] = job.get("id")
+            if args.dry_run:
+                jobs_note = f" (would mark job {job.get('id')} done)"
+            else:
+                err = book_mark_done(job.get("id"))
+                what = f" — {job.get('what')}" if job.get("what") else ""
+                jobs_note = (f" Job {job.get('id')}{what} is marked done." if not err
+                             else f" (The job wasn't marked done: {err}.)")
+    due = _now() + dt.timedelta(minutes=args.delay)
+    entry.update(op="ask", due=due.isoformat(), place_id=pid)
+    if args.dry_run:
+        print(f"would queue a review ask to {name} ({_mask(email)}) for {_clock(due.isoformat())}{jobs_note}")
+        print(f"  link: {review_link(pid)}")
+        return
+    _append_queue(entry, ws)
+    print(f"Queued: {name} gets the Google review link by email ({_mask(email)}) at about {_clock(due.isoformat())}, "
+          f"an hour from now.{jobs_note}")
+    print("Before it goes the relay checks they haven't been asked in the last 90 days and haven't asked not to be "
+          "contacted, and it texts the owner either way. `gbp ask " + (name.split()[-1] if name else who)
+          + " --cancel` stops it.")
+
+
+def cmd_asks(args):
+    ws = workspace_root()
+    status = _read_json(reviews_dir(ws) / "status.json", {})
+    waiting = [q for q in _queued(ws) if q.get("op") == "ask"]
+    rows = status.get("asks") or []
+    if not (waiting or rows):
+        print("No review asks yet. `gbp ask <name>` after a job is done.")
+    for q in waiting:
+        print(f"  filed     {q['customer'].get('name')}  due {_clock(q.get('due'))} (the relay hasn't picked it up yet)")
+    for a in rows[-15:]:
+        when = a.get("sent_at") or a.get("due") or ""
+        print(f"  {a.get('state', '?'):<9} {a.get('name')}  {when[:16].replace('T', ' ')}"
+              + (f"  — {a['reason']}" if a.get("reason") else ""))
+    if status.get("stopped"):
+        print(f"Do-not-contact: {len(status['stopped'])} customer(s).")
+    if status.get("updated"):
+        print(f"(as the relay last wrote it, {status['updated'][:16].replace('T', ' ')} UTC)")
+
+
+# -- gbp watch ----------------------------------------------------------------------------------
+
+def _leads_module():
+    """`leads` itself, for its Places reader (key lookup, field mask, errors): one code path for Places."""
+    import importlib.machinery
+    import importlib.util
+    path = Path(__file__).resolve().parent / "leads"
+    loader = importlib.machinery.SourceFileLoader("leads_for_gbp", str(path))
+    spec = importlib.util.spec_from_loader("leads_for_gbp", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    if os.environ.get("GBP_PLACES_URL"):                       # tests: a local stand-in for Google
+        mod.DETAILS_URL = os.environ["GBP_PLACES_URL"]
+    return mod
+
+
+def _ledger(event):
+    try:
+        LEDGER.parent.mkdir(parents=True, exist_ok=True)
+        with open(LEDGER, "a") as f:
+            f.write(json.dumps(event) + "\n")
+    except OSError as exc:
+        print(f"gbp: ledger write failed ({exc})", file=sys.stderr)
+
+
+def _from_places(pid, slug):
+    leads = _leads_module()
+    key, where = leads.places_key()
+    if not key:
+        raise GbpError("no Places key here (GOOGLE_MAPS_API_KEY)")
+    places = leads.Places(key, where, refresh=True)
+    d = places.get(pid)
+    if places.calls:
+        _ledger({"ts": _now().isoformat(), "kind": "places_details", "tool": "gbp watch", "project": slug or "",
+                 "calls": places.calls, "cost_usd": round(places.calls * PLACES_COST_USD, 3), "place_id": pid})
+    if not d:
+        raise GbpError(places.failed or "Places returned nothing for that place id")
+    if d.get("businessStatus") == "GONE":
+        raise GbpError(f"Google has no place {pid} any more; check the place id in NOTES.md")
+    out = []
+    for r in d.get("reviews") or []:
+        rid = (r.get("name") or "").rsplit("/", 1)[-1] or f"{(r.get('authorAttribution') or {}).get('displayName')}|{r.get('publishTime')}"
+        text = (r.get("originalText") or {}).get("text") or (r.get("text") or {}).get("text") or ""
+        out.append({"id": rid, "author": (r.get("authorAttribution") or {}).get("displayName") or "someone",
+                    "stars": int(r.get("rating") or 0), "text": text, "when": r.get("publishTime") or "",
+                    "replied": None})
+    return {"source": "places", "rating": d.get("rating"), "count": d.get("userRatingCount"), "reviews": out,
+            "calls": places.calls,
+            "note": "Places shows Google's five most relevant reviews (usually the newest on a small listing) and "
+                    "no owner replies, so 'unanswered' isn't known from this read."}
+
+
+def _from_gbp(creds):
+    _, data = api(creds, "GET", f"{V4}/{creds.v4}/reviews", params={"pageSize": 20, "orderBy": "updateTime desc"},
+                  soft=True)
+    out = []
+    for r in data.get("reviews") or []:
+        out.append({"id": r.get("reviewId") or (r.get("name") or "").rsplit("/", 1)[-1],
+                    "author": (r.get("reviewer") or {}).get("displayName") or "someone",
+                    "stars": stars(r.get("starRating")), "text": r.get("comment") or "",
+                    "when": r.get("createTime") or "", "replied": bool(r.get("reviewReply"))})
+    return {"source": "gbp", "rating": data.get("averageRating"), "count": data.get("totalReviewCount"),
+            "reviews": out, "calls": 0, "note": ""}
+
+
+def read_reviews(args):
+    """The listing's reviews as {source, rating, count, reviews[], note, place_id, at}, or GbpError."""
+    ws = workspace_root()
+    slug = getattr(args, "project", None) or workspace_slug()
+    pid = args.place or place_id(ws)
+    latest = reviews_dir(ws) / "latest.json"
+    cached = _read_json(latest, None)
+    if cached and not args.fresh:
+        try:
+            age = _now() - dt.datetime.fromisoformat(cached.get("at"))
+        except (TypeError, ValueError):
+            age = None
+        if age is not None and age < dt.timedelta(hours=WATCH_FRESH_HOURS):
+            return dict(cached, cached=True)
+    why = []
+    creds = Creds(args, soft=True)
+    got = None
+    if creds.ok and creds.account:
+        try:
+            got = _from_gbp(creds)
+        except GbpError as exc:
+            why.append("Google's Business Profile API: " + ("quota is 0 until Google approves the application"
+                                                           if exc.quota else str(exc)))
+    if got is None and pid:
+        try:
+            got = _from_places(pid, slug)
+        except GbpError as exc:
+            why.append(f"Places: {exc}")
+    if got is None:
+        if cached:                                              # a walled run: the relay's last read
+            return dict(cached, cached=True, why=why)
+        if not pid and not creds.ok:
+            why.append("no Google place id in NOTES.md (a line `Google place id: ChIJ…`) and no connected listing")
+        raise GbpError("; ".join(why) or "nothing to read")
+    got.update(place_id=pid, at=_now().isoformat(), project=slug or "")
+    if why:
+        got["why"] = why
+    try:
+        latest.parent.mkdir(exist_ok=True)
+        latest.write_text(json.dumps(got, indent=1) + "\n")
+    except OSError:
+        pass
+    return got
+
+
+def cmd_watch(args):
+    try:
+        got = read_reviews(args)
+    except GbpError as exc:
+        if args.json:
+            print(json.dumps({"ok": False, "why": str(exc)}))
+        else:
+            print(f"I couldn't read the reviews: {exc}")
+        sys.exit(REFUSED)
+    if args.json:
+        print(json.dumps(dict(got, ok=True)))
+        return
+    head = {"gbp": "Google's Business Profile API", "places": "Google Places"}.get(got.get("source"), got.get("source"))
+    rating = f"{got['rating']}★ from {got['count']} reviews" if got.get("rating") is not None else "no rating yet"
+    print(f"{rating} (read {got.get('at', '')[:16].replace('T', ' ')} UTC by {head}"
+          + (", the daily watch's copy" if got.get("cached") else "") + ")")
+    for i, r in enumerate(got.get("reviews") or [], 1):
+        n = int(r.get("stars") or 0)
+        tag = "" if r.get("replied") is None else ("  [replied]" if r["replied"] else "  [no reply yet]")
+        print(f"  {i}. {'★' * n}{'☆' * (5 - n)}  {r.get('author')}  {(r.get('when') or '')[:10]}{tag}")
+        if r.get("text"):
+            print(f"     {' '.join(r['text'].split())[:300]}")
+    if got.get("note"):
+        print(got["note"])
+
+
+def review_doctor_lines():
+    ws = workspace_root()
+    out = ["review loop (B118):"]
+    pid = place_id(ws)
+    out.append(f"  place id (NOTES.md): {pid or 'MISSING — add a line `Google place id: ChIJ…`; no review link without it'}")
+    if pid:
+        out.append(f"  write-a-review link: {review_link(pid)}")
+    try:
+        key, _ = _leads_module().places_key()
+    except Exception:  # noqa: BLE001 — a broken leads import is a doctor line, not a crash
+        key = None
+    out.append("  Places key: " + ("present (GOOGLE_MAPS_API_KEY)" if key else
+                                   "not here (normal inside a client run: the daily read is the relay's)"))
+    latest = _read_json(reviews_dir(ws) / "latest.json", None)
+    out.append("  last read: " + (f"{latest.get('at', '?')[:16]} by {latest.get('source')}, "
+                                  f"{len(latest.get('reviews') or [])} reviews shown" if latest else "none yet"))
+    out.append(f"  customer book: {'found' if DB_BIN.exists() else 'MISSING'} ({DB_BIN.name} customers find …)")
+    waiting = [q for q in _queued(ws) if q.get("op") == "ask"]
+    status = _read_json(reviews_dir(ws) / "status.json", {})
+    out.append(f"  asks filed, not yet picked up: {len(waiting)}; the relay's last word: "
+               + (status.get("updated", "")[:16] or "nothing yet"))
+    return out
+
+
 def cmd_doctor(args):
+    for line in review_doctor_lines():
+        print(line)
     creds = Creds(args)
     where = "the run's environment" if os.environ.get("GBP_LOCATION") else (
         f"patchlamp.com (--project {args.project or workspace_slug()})" if (args.project or workspace_slug()) else "nothing")
@@ -742,6 +1249,24 @@ def main():
     rp.add_argument("review", help="a number from `gbp reviews` (1 = newest), or a review id")
     rp.add_argument("text")
     rp.set_defaults(fn=cmd_reply)
+
+    ak = sub.add_parser("ask", help="after a job: the review link to that customer, an hour later (B118)")
+    ak.add_argument("who", nargs="+", help="a name, phone or email from the customer book")
+    ak.add_argument("--job", help="the job id to mark done (default: their newest open job)")
+    ak.add_argument("--no-job", action="store_true", help="don't touch their jobs")
+    ak.add_argument("--delay", type=int, default=ASK_DELAY_MINUTES, help=argparse.SUPPRESS)
+    ak.add_argument("--stop", action="store_true", help="they asked not to be contacted: nothing goes to them again")
+    ak.add_argument("--why", help="with --stop, what they said")
+    ak.add_argument("--cancel", action="store_true", help="drop a waiting ask")
+    ak.set_defaults(fn=cmd_ask)
+
+    sub.add_parser("asks", help="review asks: waiting, sent, refused").set_defaults(fn=cmd_asks)
+
+    wt = sub.add_parser("watch", help="the listing's reviews: Google's API when it's open, else Places (B118)")
+    wt.add_argument("--json", action="store_true")
+    wt.add_argument("--fresh", action="store_true", help="read now even if today's read is under 20 hours old")
+    wt.add_argument("--place", help="a place id (default: NOTES.md)")
+    wt.set_defaults(fn=cmd_watch)
 
     sub.add_parser("doctor").set_defaults(fn=cmd_doctor)
 

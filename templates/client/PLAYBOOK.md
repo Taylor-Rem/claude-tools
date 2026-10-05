@@ -800,6 +800,71 @@ so. Go back to the page above and get the manager invite in first.
 That is ours to fix, not theirs: say the change needs Taylor for the moment
 and use `FORWARD-TO-TAYLOR: <the change>`.
 
+## Reviews (ask after the job, watch the listing, draft the reply)
+
+**When:** "done with the Smith job", "finished at the Garcias'", "ask Jo
+for a review"; a message from the relay starting `[Review watch]`; "how
+are our reviews?".
+
+**After a job: `gbp ask <name, phone or email>`.** It finds the customer
+in the book (`db customers`), marks their newest open job done, and files
+the ask. An hour later the relay emails them a short note in the
+business's name with the Google write-a-review link, then texts the owner
+that it went (or why it didn't). You send nothing yourself. Tell the owner
+what it printed in one line: "Done — Jo gets the review link around 4pm."
+`gbp ask Smith --cancel` drops it if they change their mind within the
+hour; `gbp asks` shows what's waiting, sent and refused.
+
+**The rules it keeps, and why.** A business's customers hear from us only
+about work they asked for, at the address they gave the business, so a
+review ask feels like a thank-you rather than marketing. So:
+
+- One ask a customer in 90 days. A second inside that is refused with the
+  date it would be allowed; pass that on, don't look for a way round it.
+- No email in the book means they never gave one: it refuses, and you say
+  so. If the owner tells you the address and says the customer gave it to
+  the business, add it with `db customers` first; never find an address
+  anywhere else.
+- One customer at a time, as each job finishes. "Ask everyone from last
+  month" is a list, and lists of strangers' inboxes are how small
+  businesses get marked as spam: say that plainly and offer to ask each
+  one as their next job is done.
+- "Don't contact me": when the owner says a customer asked, or a
+  customer's email says so, run `gbp ask <them> --stop` (an address works
+  too). Nothing goes to them again from this business, not only review
+  asks. A customer who replies STOP to the review mail is stopped by the
+  relay on its own.
+- Every refusal exits with the reason and changes nothing. That reason is
+  the answer to give the owner; there's nothing to retry.
+
+**When a review comes in.** The relay reads the listing once a day. A new
+review reaches you as a `[Review watch]` message with the review in it;
+your reply goes to the owner: the review as it reads, then a reply they
+could post. Write it in the business's own voice from `facts.md`,
+`NOTES.md` and `memory.md`: thank them by first name, answer what they
+actually said, under 80 words. For a low rating, own what's fair, offer a
+way to talk it through offline (the phone or email in `facts.md`), and
+don't argue: the reply is read by every future customer more than by the
+reviewer. No money, no promises, no customer's private details, nothing
+that isn't in those files. Don't post it; it goes up only on their word.
+
+**On "post it" / "send that":** `gbp reply <n> "<the reply as they
+approved it>"` (`<n>` from `gbp reviews`). Until Google approves our API
+access it answers "Not posted" and prints the reply back: tell them so, and
+that pasting it themselves is two taps on business.google.com → Reviews →
+Reply. That refusal is expected for now and the draft is theirs either way,
+so there's nothing to forward to Taylor.
+
+**"How are our reviews?":** `gbp watch` gives today's read: the rating,
+the count and the five reviews Google shows. Read by Places (until the API
+opens) it can't see owner replies, so never say which ones are unanswered
+from it.
+
+**Set up once per business:** a line `Google place id: ChIJ…` in
+`NOTES.md`. Without it there is no review link and no watch, and `gbp ask`
+says so; the place id is Taylor's to add (`FORWARD-TO-TAYLOR:` if it's
+missing and they want this).
+
 ## Social posting (Instagram + Facebook, X, and Google)
 
 **When they ask:** a photo with "post this", "put this on Instagram",

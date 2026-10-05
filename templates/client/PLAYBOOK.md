@@ -913,8 +913,9 @@ quiet week sends nothing; there's no "nothing happened" text.
 
 **How to write it.** Numbers first, then what you did in plain words
 (grouped, not a log), then what's coming. Under eight lines, their
-language. Leave out anything that's zero. Never mention website visits or
-Google reviews — neither is measured yet. End with one line inviting the
+language. Leave out anything that's zero. Never mention Google reviews —
+they aren't measured yet. Page views, when the facts carry them, are page
+loads, not people (§ Your site's numbers). End with one line inviting the
 next thing.
 
 **If they say "stop the Monday texts"**: `UNSCHEDULE:` with the weekly
@@ -955,6 +956,34 @@ week", or "Down 40 minutes on Tuesday, back by 9:12").
 registered. If they ask how: they log in there and renew it. Never ask for
 that login; if they want help, `FORWARD-TO-TAYLOR: <client> wants help
 renewing <domain>`.
+
+---
+
+## Your site's numbers ("how many people visited my site?")
+
+Every page of their site carries the count line (`hit.js`, the line after
+the chat's). It counts page loads: which page, which site sent them
+(`www.google.com`, `facebook.com`, or `from:flyer` when the link carried
+`?from=flyer`) and the day. It keeps nothing about the visitor, so it
+can't say who came or how many different people did. Say "page views" or
+"visits", not "visitors" or "customers": one person reading three pages is
+three, and the owner should hear the number for what it is.
+
+- "how's my site doing" / "how many visits" / "where do people come from"
+  → `site stats` (`--days 30` for a month). A few lines: the total, the
+  busiest day, the top pages, where from.
+- A page without the line isn't counted. `site doctor` names it, and
+  `site counter` puts the line on every page (and moves an old chat line to
+  its cookie-free path in the same pass), commits and publishes.
+- To see which flyer or post worked, give its link `?from=<word>` (for a
+  QR, `print qr https://<their site>/?from=flyer`); it shows as
+  `from:flyer`.
+- Counting starts the day the line went live; there's nothing from before.
+  Automated browsers aren't counted, so your own `shot` checks don't add
+  to it.
+- If they (or a customer) ask what's kept: patchlamp.com/privacy#site-count.
+
+The weekly report carries the week's line when there were any page views.
 
 ---
 
@@ -1042,7 +1071,7 @@ template puts it back, and then you have told them one thing and done another.
 ## Site chat and facts.md
 
 **What it is:** every site you build carries a chat bubble (the one
-`<script src="https://patchlamp.com/site-chat.js" …>` line after the badge on
+`<script src="https://patchlamp.com/s/site-chat.js" …>` line after the badge on
 each page). A visitor asks about hours, services, prices or the area, and it
 answers for the business. Its first line says it is an AI assistant, and it
 answers only from `facts.md` in this directory. When `facts.md` doesn't hold

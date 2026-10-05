@@ -77,11 +77,21 @@ never fails the publish, and a site that asks not to be indexed is never
 submitted.
 
 The site chat (B108, plan ~/projects/plans/45-site-bubble.md): every page of every template
-carries `<script src="https://patchlamp.com/site-chat.js" data-site="{{SLUG}}" defer>` on the line
-after the badge (before </body> on a page without one), {{SLUG}} filled by `site new` with the
+carries `<script src="https://patchlamp.com/s/site-chat.js" data-site="{{SLUG}}" crossorigin="anonymous"
+defer>` on the line after the badge (the /s/ path and crossorigin since B127: no cookie kept; B108's
+/site-chat.js still works, and `site counter` moves an old tag) (before </body> on a page without one), {{SLUG}} filled by `site new` with the
 workspace's slug. Whether the bubble shows is patchlamp.com's switch (the owner's, on /account or
 by text), so the tag stays on the pages either way; `site doctor` warns on a page without it.
 The helper is lib/site_chat.py.
+
+The count (B127, plan ~/projects/plans/50-site-numbers.md): every page also carries
+`<script src="https://patchlamp.com/hit.js" data-site="{{SLUG}}" crossorigin="anonymous" defer>` on the line
+after the chat's (crossorigin: fetched without cookies, none kept).
+It counts page loads on patchlamp.com: the path, the referring host and the day, nothing about the
+visitor (no cookie, no address, no identifier). `site stats [--days N]` prints this workspace's week
+by day, pages and referrers (the slug is .client.json's, never an argument); `site counter [<name>]`
+puts the line on a site made before it and moves an old chat tag to /s/site-chat.js (commit, push, publish); `site doctor` warns on a page without
+it. The helper is lib/site_hit.py. Taylor's view of any site is `front --project <slug>`.
 
 The watch (B72, plan ~/projects/plans/30-site-watch.md): `site watch --once`, every 15 minutes from
 site-watch.timer, checks every Cloudflare site in the registry and every published preview — DNS (IPv4)
@@ -135,6 +145,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 import tenant  # noqa: E402  (shared tenant-identity check, B80)
 import site_chat  # noqa: E402  (the site chat's script tag, B108)
+import site_hit  # noqa: E402  (the page-load count's script tag, B127)
 
 HERE = Path(__file__).resolve().parent.parent
 SITES_DIR = HERE / "templates" / "sites"
@@ -2668,6 +2679,167 @@ def mail_doctor(say_, fail_, strict=False):
     return ok
 
 
+# ---- the site's numbers (B127, ~/projects/plans/50-site-numbers.md) ------------------------------
+
+STATS_NOT_YET = ("patchlamp.com doesn't count client sites yet (the B127 app half isn't deployed), "
+                 "so there are no numbers to show")
+
+
+def hit_tag_gaps(d, slug):
+    """The page-load count (B127): every page should carry hit.js naming this workspace's slug.
+    Returns (pages without it, pages naming another slug), relative to the repo; same pages as
+    chat_tag_gaps."""
+    missing, other = [], []
+    for p in sorted(d.rglob("*.html")):
+        rel = p.relative_to(d)
+        if rel.parts[0] in (".git", "functions", "migrations", "node_modules", "exports"):
+            continue
+        try:
+            html = p.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        found = site_hit.slugs(html)
+        if not found:
+            missing.append(str(rel))
+        elif slug not in found or len(found) > 1:
+            other.append(f"{rel} ({', '.join(found)})")
+    return missing, other
+
+
+def site_visits(slug, days, to=None):
+    """This project's count from patchlamp.com, or None when the app doesn't count client sites yet.
+    The slug is the workspace's, never an argument: a client run reads its own numbers only."""
+    q = f"days={int(days)}&project={slug}" + (f"&to={to}" if to else "")
+    try:
+        code, data = app_call("GET", f"/internal/relay/front/visits?{q}")
+    except AppMissing:
+        return None
+    if code == 404:
+        die(f"patchlamp.com has no project {slug} yet (the relay pushes it when the workspace is set up)")
+    if code != 200:
+        die(f"patchlamp.com answered {code} for the visits: {(data or {}).get('error')}")
+    # An app from before B127 ignores ?project= and answers with its own numbers: never show those as theirs.
+    return data if (data or {}).get("project") == slug else None
+
+
+def cmd_stats(a):
+    """The site's week (B127): page loads by day, the pages, where people came from."""
+    ws, meta = workspace()
+    slug = meta["slug"]
+    days = max(1, min(90, a.days))
+    d = site_visits(slug, days)
+    if d is None:
+        say(STATS_NOT_YET)
+        sys.exit(1)
+    if a.json:
+        print(json.dumps(d, indent=2))
+        return
+    views = d["totals"]["views"]
+    say(f"{meta.get('name') or slug}, last {days} day{'s' if days != 1 else ''} ({d['since']} to {d['to']}): "
+        f"{views} page view{'s' if views != 1 else ''}")
+    if not d["by_day"]:
+        say("  no page views counted in that time")
+    peak = max((r["views"] for r in d["by_day"]), default=0)
+    for r in d["by_day"]:
+        day = datetime.date.fromisoformat(r["day"])
+        bar = "#" * (round(r["views"] * 30 / peak) if peak else 0)
+        say(f"  {day.strftime('%a')} {r['day']}  {r['views']:>5}  {bar}")
+    if d["pages"]:
+        say("  pages:      " + ", ".join(f"{p['path']} {p['views']}" for p in d["pages"]))
+    say("  came from:  " + (", ".join(f"{p['ref']} {p['views']}" for p in d["referrers"]) if d["referrers"]
+                            else "no other site sent anyone (typed in, a bookmark, or an app that hides it)"))
+    say("  (page loads, not people: nothing about a visitor is kept, so one person reading three pages is three)")
+    gaps = []
+    for n in repos_of(ws):
+        missing, _ = hit_tag_gaps(ws / "repos" / n, slug)
+        gaps += [f"repos/{n}/{m}" for m in missing]
+    if gaps:
+        say(f"  NOTE {len(gaps)} page(s) carry no count line and aren't counted: {', '.join(gaps[:5])}"
+            + (" …" if len(gaps) > 5 else "") + " (site counter adds it)")
+
+
+def site_pages(d):
+    """The .html files a publish uploads, relative to the repo (functions/ and migrations/ are the server's)."""
+    out = []
+    for p in sorted(d.rglob("*.html")):
+        rel = p.relative_to(d)
+        if rel.parts[0] not in (".git", "functions", "migrations", "node_modules", "exports"):
+            out.append(str(rel))
+    return out
+
+
+def tags_behind(d, slug):
+    """Pages whose two patchlamp.com lines aren't the current ones (B127): the count line
+    (hit.js) missing or naming another site, or the chat line missing, naming another site
+    or still in B108's form (/site-chat.js without crossorigin, which leaves Cloudflare's
+    __cf_bm cookie in the visitor's browser)."""
+    todo = []
+    for rel in site_pages(d):
+        try:
+            html = (d / rel).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if not (site_chat.current(html, slug) and site_hit.slugs(html) == [slug] and site_hit.tag(slug) in html):
+            todo.append(rel)
+    return todo
+
+
+def cmd_counter(a):
+    """The two patchlamp.com lines, current, on every page of a site made before B127: the
+    page-load count (hit.js) and the chat at its cookie-free path. Add or rewrite, commit,
+    push, publish."""
+    global DRY
+    DRY = a.dry_run
+    ws, meta = workspace()
+    slug = meta["slug"]
+    reg = registry_load().get(slug, {})
+    names = [a.name] if a.name else [n for n in repos_of(ws) if (reg.get(n) or {}).get("host") == "cloudflare"]
+    if not names:
+        say("no Cloudflare site here to count (site new makes one, with the line on every page)")
+        return
+    behind = False
+    for n in names:
+        d = repo_dir(ws, n)
+        todo = tags_behind(d, slug)
+        if not todo:
+            say(f"  repos/{n}: the count line and the current chat line are on every page (data-site={slug})")
+            continue
+        behind = True
+        say(f"  repos/{n}: {len(todo)} page(s) without the count line or with the old chat line: "
+            f"{', '.join(todo[:8])}" + (" …" if len(todo) > 8 else ""))
+        if a.check:
+            continue
+        _, dirty = git(d, "status", "--porcelain", "--untracked-files=no", check=False)
+        if dirty.strip():
+            die(f"repos/{n} has uncommitted changes; commit them first, then site counter {n}")
+        changed = []
+        for rel in todo:
+            p = d / rel
+            html = p.read_text(encoding="utf-8")
+            new = site_hit.ensure(site_chat.ensure(html, slug), slug)   # chat first, so the count lands after it
+            if new != html:
+                changed.append(rel)
+                if not DRY:
+                    p.write_text(new, encoding="utf-8")
+        skipped = sorted(set(todo) - set(changed))
+        if skipped:
+            say(f"  repos/{n}: no badge, chat line or </body> to put it by in {', '.join(skipped)}; left as is")
+        if not changed:
+            continue
+        say(f"  repos/{n}: {'would put' if DRY else 'put'} the count line and the current chat line on {len(changed)} page(s)")
+        if DRY:
+            continue
+        git(d, "add", "--", *changed)
+        git(d, "-c", "user.name=Patch (claude-tools site)", "-c", "user.email=noreply@anthropic.com",
+            "commit", "-q", "-m", "The page-load count on every page, the chat at its cookie-free path (patchlamp.com)")
+        git(d, "push", "-q")
+        cmd_publish(argparse.Namespace(name=n, dry_run=DRY))
+    if DRY:
+        say("dry run: nothing changed")
+    if a.check and behind:
+        sys.exit(1)
+
+
 def cmd_adopt(a):
     """Register an existing repo (made for GitHub Pages) as a Cloudflare site
     and create its project. Doesn't touch DNS or GitHub Pages: publish, look,
@@ -3464,13 +3636,22 @@ def cmd_doctor(a):
                                               if has_badge(d) else
                                               "MISSING from index.html and NOTES.md has no `badge: off` (B60)"))
                 gaps, other = chat_tag_gaps(d, meta["slug"])
+                oldf = [r for r in site_pages(d) if meta["slug"] in site_chat.slugs((d / r).read_text(encoding="utf-8", errors="replace"))
+                        and not site_chat.current((d / r).read_text(encoding="utf-8", errors="replace"), meta["slug"])]
                 say(f"  repos/{n}: site chat tag " + (
                     f"WARN missing from {len(gaps)} page(s): {', '.join(gaps[:6])}"
                     + (" …" if len(gaps) > 6 else "")
-                    + f" (B108: copy the <script src=\"{site_chat.SRC}\" data-site=\"{meta['slug']}\" defer> "
-                      f"line from index.html onto the line after the badge)" if gaps else
+                    + f" (site counter {n} adds it)" if gaps else
                     f"WARN names another site on {', '.join(other[:4])}; data-site should be {meta['slug']}" if other else
+                    f"WARN the old form (/site-chat.js, which leaves Cloudflare's cookie) on "
+                    f"{len(oldf)} page(s); site counter {n} moves it" if oldf else
                     f"on every page (data-site={meta['slug']}; on or off is the owner's switch on patchlamp.com)"))
+                hgaps, hother = hit_tag_gaps(d, meta["slug"])
+                say(f"  repos/{n}: page-load count " + (
+                    f"WARN missing from {len(hgaps)} page(s): {', '.join(hgaps[:6])}" + (" …" if len(hgaps) > 6 else "")
+                    + f" (B127: site counter {n} adds it)" if hgaps else
+                    f"WARN names another site on {', '.join(hother[:4])}; data-site should be {meta['slug']}" if hother else
+                    f"on every page (hit.js, data-site={meta['slug']}; site stats reads it)"))
                 ping = entry.get("indexnow") or {}
                 say(f"  repos/{n}: IndexNow " + (f"{'accepted' if ping.get('ok') else 'refused'} "
                                                  f"{ping.get('urls')} URL(s) at {(ping.get('at') or '')[:19]}"
@@ -3514,6 +3695,12 @@ def cmd_doctor(a):
     mail_doctor(say, fail)
     if (Path.cwd() / ".client.json").exists():
         handover_doctor(say, fail)
+        try:                                        # B127: the count, read back (a note, never a failure)
+            v = site_visits(json.loads((Path.cwd() / ".client.json").read_text())["slug"], 7)
+            say("== the page-load count: " + (STATS_NOT_YET if v is None else
+                f"{v['totals']['views']} page view(s) in the last 7 days on patchlamp.com (site stats for the rest)"))
+        except SystemExit:
+            say("== the page-load count: couldn't read it from patchlamp.com (site stats says why)")
     sys.exit(0 if ok else 1)
 
 
@@ -3590,6 +3777,16 @@ def main():
     ml.add_argument("--check", action="store_true", help="say what's off, change nothing (exit 1 when it is)")
     ml.add_argument("--dry-run", action="store_true", help="print every write (Resend, DNS, the PUT, the commit); make none")
     ml.set_defaults(fn=cmd_mail)
+    sts = sub.add_parser("stats", help="this site's page loads (B127): the week by day, the pages, where people came from")
+    sts.add_argument("--days", type=int, default=7, help="how many days back, today included (default 7, at most 90)")
+    sts.add_argument("--json", action="store_true", help="patchlamp.com's answer as it came")
+    sts.set_defaults(fn=cmd_stats)
+    ctr = sub.add_parser("counter", help="put the page-load count line (hit.js) on every page and move an old chat "
+                         "line to its cookie-free path; commit, push, publish (B127)")
+    ctr.add_argument("name", nargs="?", help="repo name under ./repos (default: every Cloudflare site here)")
+    ctr.add_argument("--check", action="store_true", help="say which pages lack it, change nothing (exit 1 when any do)")
+    ctr.add_argument("--dry-run", action="store_true", help="say what would change; change nothing")
+    ctr.set_defaults(fn=cmd_counter)
     sub.add_parser("ls", help="repos in ./repos with their Pages URLs").set_defaults(fn=cmd_ls)
     st = sub.add_parser("stamp", help="(GitHub Pages sites only) new build id into version.json + every page's cache-buster")
     st.add_argument("name", help="repo name under ./repos")

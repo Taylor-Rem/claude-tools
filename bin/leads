@@ -3104,7 +3104,7 @@ def _copy_site_files(tdir, out, name, year):
     if (tdir / "404.html").exists():
         # a preview carries no site chat (plan 45, Open 5: no project, no allowance); the claim
         # puts the tag back with the client's slug (claim_tree)
-        (out / "404.html").write_text(_site_chat().strip(fill_preview((tdir / "404.html").read_text(), vals)))
+        (out / "404.html").write_text(_site_hit().strip(_site_chat().strip(fill_preview((tdir / "404.html").read_text(), vals))))
     (out / "css" / "preview.css").write_text((PREVIEW_OVERLAY / "css" / "preview.css").read_text())
 
 
@@ -4100,14 +4100,22 @@ def _site_chat():
     return site_chat
 
 
+def _site_hit():
+    """lib/site_hit.py: the page-load count's script tag (B127), shared with `site`."""
+    _site_chat()                     # puts lib/ on the path
+    import site_hit
+    return site_hit
+
+
 def claim_tree(tree, dest, slug=None):
     """Copy the rendered site into the client repo (after `site new`), overlay cut, forms on.
     With `slug` (the new workspace's), every page gets the site chat's script tag naming it
-    (B108): the preview was rendered before the slug existed and carries no tag of its own."""
+    (B108) and the page-load count's after it (B127): the preview was rendered before the
+    slug existed and carries neither of its own."""
     files = claim_files(tree)
     pages = {f: claim_page((tree / f).read_text()) for f in files if f.endswith(".html")}
     if slug:
-        pages = {f: _site_chat().ensure(h, slug) for f, h in pages.items()}
+        pages = {f: _site_hit().ensure(_site_chat().ensure(h, slug), slug) for f, h in pages.items()}   # B108 chat, B127 count
     for f, html_ in pages.items():
         left = re.findall(r"<!--/?[pc]:[\w-]+|noindex|class=\"demo-bar\"|disabled>", html_)
         if left:

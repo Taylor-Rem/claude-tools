@@ -754,7 +754,7 @@ class RegisterTest(unittest.TestCase):
     def test_message_two_is_the_link_the_ai_line_and_hosting(self):
         two = self.m.then_text("https://p.example/x/")
         self.assertTrue(two.startswith("https://p.example/x/\n\nIt's $20 a month, no contract, to keep this site up on your own web address. "))
-        for said in ("like changing your hours", "Bigger changes need a plan up", "my AI operator; I answer for its work",
+        for said in ("like changing your hours", "Bigger changes need a bigger plan", "my AI operator; I'm on the hook for it",
                      "You buy the web address if you need one; I help connect it", "Your Google listing can link to the site"):
             self.assertIn(said, two)
         self.assertTrue(two.endswith("Want this to be your live site?"))   # ends on a question, never on the exit

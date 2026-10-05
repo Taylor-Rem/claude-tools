@@ -16,7 +16,11 @@ Hi {first},
 
 Here it is: {preview_url}
 
-I built it from your Google listing alone, so it only knows what Google knows. The preview stays up for 30 days. Keeping it as your live site is {price_line}, on your own web address. If you already have one, I help connect it; if you need one, you buy it and I help connect it. Your Google listing can link to the site. A few small changes by text each month are included, like changing your hours. After that, you can wait for next month or move up a plan; a full redesign or a big new feature is quoted separately. You text Patch, my AI operator; I answer for its work. Want this to be your live site?
+I built it from your Google listing alone, so it only knows what Google knows. The preview stays up for 30 days.
+
+Keeping it as your live site is {price_line}, on your own web address. If you already have one, I help connect it; if you need one, you buy it and I help connect it. Your Google listing can link to the site.
+
+A few small changes by text each month are included, like changing your hours. After that, you can wait for next month or move up a plan; a full redesign or a big new feature is quoted separately. You text Patch, my AI operator; I'm on the hook for it. Want this to be your live site?
 
 Taylor Remund · Patchlamp
 {phone}

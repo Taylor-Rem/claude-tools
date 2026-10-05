@@ -2239,8 +2239,8 @@ def then_text(url):
     once in message one and is not repeated (playbook, Taylor 2026-10-05)."""
     return (f"{url}\n\n"
             f"It's {HOSTING_PRICE} a month, no contract, to keep this site up on your own web address. A few small changes "
-            f"by text each month are included, like changing your hours. Bigger changes need a plan up. You text Patch, "
-            f"my AI operator; I answer for its work.\n\n"
+            f"by text each month are included, like changing your hours. Bigger changes need a bigger plan. You text Patch, "
+            f"my AI operator; I'm on the hook for it.\n\n"
             f"You buy the web address if you need one; I help connect it. Your Google listing can link to the site. "
             f"Want this to be your live site?")
 

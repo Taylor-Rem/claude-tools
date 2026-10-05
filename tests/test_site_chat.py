@@ -56,7 +56,8 @@ class TemplateTag(unittest.TestCase):
                     if "patchlamp-badge" in html:
                         self.assertIn("patchlamp-badge", lines[i - 1], "on the line after the badge")
                     else:
-                        self.assertIn("</body>", lines[i + 1], "a page without a badge: just before </body>")
+                        nxt = lines[i + 1] if "patchlamp.com/hit.js" not in lines[i + 1] else lines[i + 2]   # B127's count line follows it
+                        self.assertIn("</body>", nxt, "a page without a badge: just before </body>")
 
     def test_site_new_fills_the_slug(self):
         site = load("site_tool_chat", ROOT / "bin" / "site")

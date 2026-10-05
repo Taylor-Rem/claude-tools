@@ -944,6 +944,33 @@ renewing <domain>`.
 
 ---
 
+## Your site's numbers ("how many people visited my site?")
+
+Every page of their site carries the count line (`hit.js`, the line after
+the chat's). It counts page loads: which page, which site sent them
+(`www.google.com`, `facebook.com`, or `from:flyer` when the link carried
+`?from=flyer`) and the day. It keeps nothing about the visitor, so it
+can't say who came or how many different people did. Say "page views" or
+"visits", not "visitors" or "customers": one person reading three pages is
+three, and the owner should hear the number for what it is.
+
+- "how's my site doing" / "how many visits" / "where do people come from"
+  → `site stats` (`--days 30` for a month). A few lines: the total, the
+  busiest day, the top pages, where from.
+- A page without the line isn't counted. `site doctor` names it, and
+  `site counter` puts the line on every page, commits and publishes.
+- To see which flyer or post worked, give its link `?from=<word>` (for a
+  QR, `print qr https://<their site>/?from=flyer`); it shows as
+  `from:flyer`.
+- Counting starts the day the line went live; there's nothing from before.
+  Automated browsers aren't counted, so your own `shot` checks don't add
+  to it.
+- If they (or a customer) ask what's kept: patchlamp.com/privacy#site-count.
+
+The weekly report carries the week's line when there were any page views.
+
+---
+
 ## Leaving ("I want to leave", "cancel")
 
 **The rule** (Taylor, 2026-09-29): a client who wants to leave gets everything

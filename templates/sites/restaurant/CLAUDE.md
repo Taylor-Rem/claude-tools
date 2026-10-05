@@ -35,13 +35,20 @@ how to change it, and how to check a change is live.
   page you add (the `data-site` value is this client's name on patchlamp.com).
   Whether the bubble shows is the owner's switch on patchlamp.com, so the line
   stays even when the chat is off; `site doctor` warns on a page without it.
+- After that line sits `<script src="https://patchlamp.com/hit.js" data-site="…"
+  defer></script>`: the page-load count (what it keeps is below). Keep it on every
+  page and copy it onto a page you add, like the chat's line; `site stats` reads the
+  numbers back and `site doctor` warns on a page without it.
 - `images/` holds the photos. `_headers` and `_redirects` are read by the
   host, not served: `_headers` makes every page `no-cache` (so nobody ever
   sees a stale page); `_redirects` is for a page that moved. Leave both
   alone otherwise. With a custom domain every page carries a canonical
   link to the bare domain (www serves the same site).
-- **No trackers, no analytics, no cookie banners, and no checkout but the
-  catalog's own** (Stripe Checkout on the owner's account, below). The only
+- **No trackers, no ads, no cookie banners, and no checkout but the
+  catalog's own** (Stripe Checkout on the owner's account, below). The one
+  count is patchlamp.com/hit.js: a page load's path and the site that linked
+  to it, nothing about the visitor (no cookie, no address, no identifier), so
+  the owner sees how many and from where, never who. The only
   forms allowed are the ones that post to patchlamp.com (`newsletter form`
   prints the sign-up box; contact/booking forms follow the workspace
   `PLAYBOOK.md`) or, once the site has a database, to its own `/api/…`

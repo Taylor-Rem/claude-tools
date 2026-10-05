@@ -214,7 +214,7 @@ class CadenceTest(StrengthBase):
 
 class LogAndWeekTest(StrengthBase):
     def test_a_logged_row_carries_its_strength_and_reasons(self):
-        r = self.run_leads("log", "West Desert Roofing", "messaged", "the Hibu 404")
+        r = self.run_leads("log", "West Desert Roofing", "messaged", "the Hibu 404", "--channel", "facebook")
         self.assertEqual(r.returncode, 0, r.stderr)
         e = self.events()[-1]
         self.assertEqual(e["strength"], "strong")

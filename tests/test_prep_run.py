@@ -489,7 +489,7 @@ class FinishTest(Base):
         self.write_plan({"build": "good", "judge": "pass", "batch": "good"})
         self.approve_and_make_the_project()
         self.night(POOL, JENNA, ROSIE, n=3, publish=True)
-        r = self.run_leads("sent", "1", "2", "3")
+        r = self.run_leads("sent", "1", "2", "3", "--channel", "facebook")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         pipeline = self.rows("pipeline.jsonl")
         self.assertEqual(len(pipeline), 3)

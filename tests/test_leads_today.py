@@ -180,7 +180,7 @@ class MorningTest(Base):
 
     def test_a_next_thu_is_chased_on_thursday_and_the_cadence_leaves_it_alone(self):
         self.run_leads("kit", "--remote", "--census-only", "--segment", "services")
-        self.assertEqual(self.run_leads("sent", "2").returncode, 0)
+        self.assertEqual(self.run_leads("sent", "2", "--channel", "instagram").returncode, 0)
         r = self.run_leads("log", "Mike's Pool Care", "later", "he's on a job", "--next", "thu")
         self.assertEqual(r.returncode, 0, r.stderr)
         mike = [e for e in self.events() if e["name"] == "Mike's Pool Care"][-1]

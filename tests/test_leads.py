@@ -217,7 +217,7 @@ class KitTest(unittest.TestCase):
         run("log", "Whistle Wok", "talked", env=self.env)
         run("log", "Whistle Wok", "interested", "wants pricing", env=self.env)       # same lead, moves on
         run("log", "Off Road Mexican, American Fork", "lost", "happy with DoorDash", env=self.env)
-        run("log", "Joe's Taco Truck, Lehi", "messaged", "--next", "today", env=self.env)
+        run("log", "Joe's Taco Truck, Lehi", "messaged", "--next", "today", "--channel", "instagram", env=self.env)
         self.assertEqual(len({e["key"] for e in self.events()}), 3)
         joe = [e for e in self.events() if e["name"] == "Joe's Taco Truck"][0]
         self.assertIsNone(joe.get("place_id"), "not The Taco Truck: a wrong match is worse than none")
@@ -240,7 +240,7 @@ class KitTest(unittest.TestCase):
 
     def test_sent_marks_remote_kit_picks_as_messaged(self):
         run("kit", "--remote", "--census-only", env=self.env)
-        r = run("sent", "1", "3", env=self.env)
+        r = run("sent", "1", "3", "--channel", "instagram", env=self.env)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("Logged 2 sent", r.stdout)
         self.assertEqual([e["outcome"] for e in self.events()], ["messaged", "messaged"])
@@ -384,7 +384,7 @@ class SegmentTest(unittest.TestCase):
         again = run("kit", "--remote", "--segment", "creatives", "--census-only", "--json", "--no-save", env=self.env)
         self.assertEqual(again.returncode, 1)                      # the fixture has six; tomorrow doesn't repeat them
         self.assertIn("left to message", again.stderr)
-        r = run("sent", "1", "2", env=self.env)
+        r = run("sent", "1", "2", "--channel", "facebook", env=self.env)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("Logged 2 sent", r.stdout)
 

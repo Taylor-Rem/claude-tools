@@ -1404,6 +1404,8 @@ def run_tool(args, why):
 
 def leads_log(name, outcome, note, place_id=None, email=None, via="email", next_when=None):
     cmd = [tool_path("leads"), "log", name, outcome, note, "--via", via]
+    if via == "email":
+        cmd += ["--channel", "email"]           # B116: this lane's touches went by email; `leads log` needs it on messaged
     if place_id:
         cmd += ["--place", place_id]
     if email:
@@ -1430,7 +1432,10 @@ def log_interested(name, note, place_id=None, email=None, next_when=None):
 def leads_sent(indices, via="email"):
     if not indices:
         return True
-    return run_tool([tool_path("leads"), "sent", *[str(i) for i in indices], "--via", via], "leads sent")[0]
+    cmd = [tool_path("leads"), "sent", *[str(i) for i in indices], "--via", via]
+    if via == "email":
+        cmd += ["--channel", "email"]           # B116: `leads sent` needs the channel; this lane's is email
+    return run_tool(cmd, "leads sent")[0]
 
 
 def notify(text):

@@ -2233,10 +2233,16 @@ def register_dm(c, fs):
 
 
 def then_text(url):
-    """Message two, for when they answer yes: the link, the AI line, the price. Never in message one."""
-    return (f"{url} — nothing to sign, and I'll take it down the moment you say so. Patch, my AI, does the work and "
-            f"I'm on the hook for it; if you want it kept right after the free fix it's {HOSTING_PRICE} a month to keep it up "
-            f"on your own web address, with a few small changes by text each month.")
+    """Message two, for when they answer yes: the link, then the four things an owner asks next (the price, the web
+    address, the Google listing, what changes cost) and the AI line, ending on a question. Never in message one.
+    Codex's words (marketing/copy/2026-10-05-message-two.md, Taylor's yes 2026-10-05); the takedown promise was made
+    once in message one and is not repeated (playbook, Taylor 2026-10-05)."""
+    return (f"{url}\n\n"
+            f"It's {HOSTING_PRICE} a month, no contract, to keep this site up on your own web address. A few small changes "
+            f"by text each month are included, like changing your hours. Bigger changes need a plan up. You text Patch, "
+            f"my AI operator; I answer for its work.\n\n"
+            f"You buy the web address if you need one; I help connect it. Your Google listing can link to the site. "
+            f"Want this to be your live site?")
 
 
 def register_email(c, fs):

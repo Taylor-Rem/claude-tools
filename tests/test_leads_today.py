@@ -327,11 +327,9 @@ class MorningEmailTest(Base):
         self.assertTrue(out[cy + 1].startswith("Hi, I'm Taylor. A small business owner in American Fork."), out[cy + 1])
         self.assertTrue(out[cy + 1].endswith("So I went ahead and built you one. Want to see it?"), out[cy + 1])
         self.assertNotIn("http", out[cy + 1])                            # the link is message two, under it
-        self.assertEqual(out[cy + 2], "When they say yes: https://previews.patchlamp.com/cy-pools/ — nothing to sign, "
-                                      "and I'll take it down the moment you say so. Patch, my AI, does the work and "
-                                      "I'm on the hook for it; if you want it kept right after the free fix it's $20 "
-                                      "a month to keep it up on your own web address, with a few small changes by "
-                                      "text each month.")
+        self.assertEqual(out[cy + 2], "When they say yes: https://previews.patchlamp.com/cy-pools/")
+        self.assertTrue(out[cy + 4].startswith("It's $20 a month, no contract, to keep this site up"))   # Codex's message two, 2026-10-05
+        self.assertTrue(out[cy + 6].endswith("Want this to be your live site?"))
         bo = next(l for l in out if l.startswith("2. Bo Pools"))
         self.assertIn("call: (801) 555-0199 (the email to bo@example.test waits for the email lane)", bo)
 
@@ -754,11 +752,14 @@ class RegisterTest(unittest.TestCase):
             self.assertNotIn(word, dm)
 
     def test_message_two_is_the_link_the_ai_line_and_hosting(self):
-        self.assertEqual(self.m.then_text("https://p.example/x/"),
-                         "https://p.example/x/ — nothing to sign, and I'll take it down the moment you say so. Patch, "
-                         "my AI, does the work and I'm on the hook for it; if you want it kept right after the free "
-                         "fix it's $20 a month to keep it up on your own web address, with a few small changes by text "
-                         "each month.")
+        two = self.m.then_text("https://p.example/x/")
+        self.assertTrue(two.startswith("https://p.example/x/\n\nIt's $20 a month, no contract, to keep this site up on your own web address. "))
+        for said in ("like changing your hours", "Bigger changes need a plan up", "my AI operator; I answer for its work",
+                     "You buy the web address if you need one; I help connect it", "Your Google listing can link to the site"):
+            self.assertIn(said, two)
+        self.assertTrue(two.endswith("Want this to be your live site?"))   # ends on a question, never on the exit
+        self.assertNotIn("take it down", two)                              # the takedown promise is message one's only
+        self.assertNotIn("—", two)                                         # Taylor doesn't type em dashes
         mp = self.m.morning_pick({"name": "Summit Roofing", "segment": "services", "faults": ["no website on Google"],
                                   "reviews": 92, "rating": 4.9, "preview_url": "https://p.example/x/",
                                   "facebook": "https://facebook.com/summitroofing"}, email_on=False)

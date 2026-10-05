@@ -6,6 +6,8 @@
 # (OUTREACH_LINK_BASE + the business's token), never previews.patchlamp.com: with no link
 # base the reply goes to Taylor with the preview's address. Hashed in APPROVED.
 # Placeholders: {first} {business} {preview_url} {price_line} {phone} {address}.
+# Body by Codex (marketing/copy/2026-10-05-answer-yes.md), Taylor's yes 2026-10-05; the letter needs his
+# `outreach approve` again, like any edit here.
 
 Subject default: Re: a preview for {business}
 
@@ -14,7 +16,7 @@ Hi {first},
 
 Here it is: {preview_url}
 
-I built it from your Google listing alone, so it only knows what Google knows, and it stays up for 30 days. If you'd like to keep it, it's {price_line} to keep it up on your own web address, and a few small changes a month are a text to Patch; anything bigger is a plan up. Any questions, just reply.
+I built it from your Google listing alone, so it only knows what Google knows. The preview stays up for 30 days. Keeping it as your live site is {price_line}, on your own web address. If you already have one, I help connect it; if you need one, you buy it and I help connect it. Your Google listing can link to the site. A few small changes by text each month are included, like changing your hours. After that, you can wait for next month or move up a plan; a full redesign or a big new feature is quoted separately. You text Patch, my AI operator; I answer for its work. Want this to be your live site?
 
 Taylor Remund · Patchlamp
 {phone}

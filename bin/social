@@ -10,8 +10,11 @@
       --page ID|NAME                       # when more than one Page is connected
       --dry-run                            # prepare the image and say what would go where; post nothing
   social queue                             # house drafts waiting for "post" (~/projects/social/queue/)
-  social queue add BRAND IMAGE "caption" [--pillar P] [--topic T] [--mood M] [--art A]
+  social queue add BRAND IMAGE "caption" [--pillar P] [--topic T] [--mood M] [--art A] [--kind K] [--hold]
+      --hold                               # a bare `social post BRAND` skips it; it goes up only by `social post BRAND N`
   social queue drop N
+  social check N [--kind text|raccoon|data|pinned]   # one fresh judge looks at draft N's picture (B112)
+  social check --image FILE --kind K       #   or at any image; exit 0 pass, 1 fail, 3 unsure, 4 couldn't check
   social connect [BRAND] [--network x]     # the signed link (24h) the account's owner opens to grant it
       --x-text "…"                         # (post) the X version; default: the caption cut to 280, any link kept last
   social ls [BRAND]                        # recent posts with their links
@@ -29,6 +32,9 @@ Config, by name, never printed:
   PATCHLAMP_RELAY_SHARED_SECRET   ~/.config/claude-tools/env
   PATCHLAMP_URL                   optional; default https://patchlamp.com
   SOCIAL_DIR                      optional; default ~/projects/social (the house queue and posted.jsonl)
+  SOCIAL_JUDGE                    optional; a stand-in command for the judge (tests), prompt on stdin
+  SOCIAL_JUDGE_MODEL              optional; default opus (never Fable, always named)
+  IMG_PATCH_REF                   optional; the portrait the raccoon is compared with
 """
 
 import argparse
@@ -39,6 +45,7 @@ import os
 import shutil
 import subprocess
 import sys
+import re
 import tempfile
 import urllib.error
 import urllib.request
@@ -52,6 +59,8 @@ HOUSE = ("patchlamp",)   # the one house brand since 2026-09-23 (VISION § Decid
 NETWORKS = ("facebook", "instagram", "x", "google")
 MAX_SIDE = 1440
 IG_RATIO = (0.8, 1.91)          # Instagram's feed: 4:5 portrait to 1.91:1 landscape
+PATCH_REF = Path(os.environ.get("IMG_PATCH_REF", Path.home() / "projects/patchlamp/brand/patch-portrait.jpg"))
+KINDS = ("text", "raccoon", "data", "pinned")   # social/calendar.md § Three kinds of post, + the pinned explainer
 
 
 def die(msg, code=1):
@@ -187,6 +196,7 @@ def log_posted(brand, caption, results, draft=None):
     row = {"date": dt.date.today().isoformat(), "brand": brand, "pillar": (draft or {}).get("pillar"),
            "mood": (draft or {}).get("mood"), "art": (draft or {}).get("art"),
            "topic": (draft or {}).get("topic") or caption.split("\n")[0][:80], "status": "posted",
+           "kind": (draft or {}).get("kind"), "check": (draft or {}).get("check"),
            "path": (draft or {}).get("image"), "links": {k: v.get("url") for k, v in results.items() if v.get("ok")}}
     SOCIAL_DIR.mkdir(parents=True, exist_ok=True)
     with (SOCIAL_DIR / "posted.jsonl").open("a") as f:
@@ -237,7 +247,12 @@ def cmd_post(args):
         waiting = drafts(slug)
         if not waiting:
             die(f"nothing queued for {slug} (`social queue add {slug} IMAGE \"caption\"`)")
-        n = int(rest[0]) if rest else 1                       # `social post BRAND N` — the Nth draft of `social queue`
+        if rest:
+            n = int(rest[0])                                  # `social post BRAND N` — the Nth draft of `social queue`
+        else:                                                 # the oldest that isn't held (a held one waits for its N)
+            n = next((i for i, d in enumerate(waiting, 1) if not d.get("hold")), 0)
+            if not n:
+                die(f"every draft for {slug} is held; `social post {slug} N` puts one up")
         if not 1 <= n <= len(waiting):
             die(f"no draft {n} for {slug}; `social queue` lists {len(waiting)}")
         draft = waiting[n - 1]
@@ -341,7 +356,9 @@ def cmd_queue(args):
         if not q:
             print("no drafts queued")
         for i, d in enumerate(q, 1):
-            print(f"  {i}. {d['brand']:<10} {d.get('added', '')[:16]}  {d['caption'][:70]}  ({Path(d['image']).name})")
+            tags = "".join(f" [{t}]" for t in (d.get("kind"), "held" if d.get("hold") else None,
+                                                 (d.get("check") or {}).get("verdict")) if t)
+            print(f"  {i}. {d['brand']:<10} {d.get('added', '')[:16]}  {d['caption'][:70]}  ({Path(d['image']).name}){tags}")
         return
     if op == "add":
         if len(words) != 4 or words[1] not in HOUSE:
@@ -355,10 +372,13 @@ def cmd_queue(args):
         img = queue_dir() / f"{stamp}-{brand}{src.suffix.lower()}"
         shutil.copy2(src, img)
         item = {"brand": brand, "image": str(img), "caption": caption.strip(), "pillar": args.pillar, "topic": args.topic,
-                "mood": args.mood, "art": args.art,
+                "mood": args.mood, "art": args.art, "kind": args.kind, "hold": bool(args.hold) or None,
                 "added": dt.datetime.now().isoformat(timespec="seconds")}
+        item = {k: v for k, v in item.items() if v is not None or k in ("pillar", "topic", "mood", "art")}
         (queue_dir() / f"{stamp}-{brand}.json").write_text(json.dumps(item, indent=1) + "\n")
-        print(f"queued for {brand}: {caption.strip()[:70]} — `social post {brand}` puts it up")
+        n = len(drafts(brand))
+        print(f"queued for {brand} as draft {n}: {caption.strip()[:70]} — "
+              + (f"held: only `social post {brand} {n}` puts it up" if args.hold else f"`social post {brand}` puts it up"))
         return
     if op == "drop" and len(words) == 2 and words[1].isdigit():
         q = drafts()
@@ -372,6 +392,196 @@ def cmd_queue(args):
         print(f"dropped: {d['caption'][:70]}")
         return
     die('usage: social queue [ls | add BRAND IMAGE "caption" | drop N]')
+
+
+# ---- the check (B112, plan ~/projects/plans/48-feed-one-raccoon.md) ----------------------
+# The 2026-10-03 review: eleven posts, nine pictures of Patch as nine different animals, and no
+# tile showed a phone, a site or a listing, so the grid didn't say what we sell. The 8am run used
+# to look at its own draft; this is a second pair of eyes that has not seen the prompt. It asks
+# two questions and leaves the answers to the judge. A judge's doubt is never turned into a fail:
+# "unsure" posts with the doubt shown to Taylor, and a judge that couldn't look says why and the
+# draft goes to Taylor, instead of being asked again the same way.
+
+JUDGE_MODEL_DEFAULT = "opus"
+JUDGE_TIMEOUT = 180          # seconds: three minutes for one look at two pictures
+JUDGE_TURNS = 4              # read the draft, read the portrait, answer, one spare
+JUDGE_SCRUB = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK",
+               "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "ANTHROPIC_MODEL", "CLAUDE_CONFIG_DIR",
+               "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")
+EXIT = {"pass": 0, "fail": 1, "unsure": 3, "couldnt": 4}
+PRODUCT = ("yes", "no", "unsure")
+RACCOON = ("same", "different", "absent", "unsure")
+
+JUDGE_PROMPT = """You are looking at one picture for Patchlamp's social feed before it is posted, as a second pair of eyes. You have not seen the prompt that made it, and that is the point.
+
+In this directory: `draft{ext}` is the picture, and `portrait.jpg` is Patch, the raccoon who is the brand's one character. Read both files.
+
+Two questions. Answer each from what you see; there is no answer we are hoping for.
+
+1. Does the picture show what Patchlamp sells? It sells a small business's website and Google listing kept right by text: the owner texts a change and it is done. So the product, in a picture, is something like a phone with a text conversation on it, a website or page layout on a screen, a business listing being fixed, or a before-and-after of one of those. Screens show shapes rather than readable words, because the image generator misspells; message bubbles and a page layout as shapes count. Why it matters: the feed's pictures used to be a raccoon in a different art style each day and nothing else, so a stranger scrolling could not tell what the account sells. Answer "yes", "no" or "unsure", and say what you see in `product_what`.
+
+2. Is the raccoon in the picture the same character as the portrait? The art medium may differ (painted, clay, a flat cartoon); what should carry over is the face and its mask markings, the one notched ear, the old headset with a brass microphone boom, and the general look of him. Why it matters: one recognisable character across posts is what makes the feed read as one company. Answer "same", "different", "absent" (no raccoon in the picture) or "unsure".
+
+"unsure" is a good answer whenever you are unsure; it is passed on to Taylor as your doubt, and it does not block the post. If you could not open or see one of the images, say so: set "looked" to false and say why in "why". That is a fine outcome and goes to Taylor as it is.
+
+Your budget is a few turns and about three minutes: read the two files, then answer. No other tools are needed.
+
+Reply with one JSON object and nothing after it, with these keys:
+{{"looked": true or false, "product": one of "yes" / "no" / "unsure", "product_what": "what you see that is or isn't the product", "raccoon": one of "same" / "different" / "absent" / "unsure", "why": "one or two sentences on both answers"}}
+"""
+
+
+def judge_model():
+    m = os.environ.get("SOCIAL_JUDGE_MODEL") or JUDGE_MODEL_DEFAULT
+    if not m or "fable" in m.lower():
+        die(f"judge model {m!r}: the check never runs on Fable, and always with a model named")
+    return m
+
+
+def judge_cmd():
+    """The command that runs the judge in its directory, the prompt on stdin. SOCIAL_JUDGE stands in for it
+    in the tests (a shell command); otherwise a fresh `claude -p` that can only read, in that directory."""
+    if os.environ.get("SOCIAL_JUDGE"):
+        return ["sh", "-c", os.environ["SOCIAL_JUDGE"]]
+    exe = shutil.which("claude") or "claude"
+    return [exe, "-p", "--model", judge_model(), "--output-format", "json", "--restricted",
+            "--tools", "Read", "--allowedTools", "Read", "--permission-mode", "dontAsk",
+            "--strict-mcp-config", "--disable-slash-commands", "--max-turns", str(JUDGE_TURNS)]
+
+
+def last_json_object(text):
+    """The last {...} in a model's reply that parses as a dict, or None."""
+    if not text:
+        return None
+    for m in reversed(list(re.finditer(r"\{", text))):
+        try:
+            obj, _ = json.JSONDecoder().raw_decode(text[m.start():])
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and ("product" in obj or "raccoon" in obj or "looked" in obj):
+            return obj
+    return None
+
+
+def ask_judge(image):
+    """Run one judge on IMAGE beside the portrait. Returns (answer dict or None, why-not text)."""
+    if not PATCH_REF.exists():
+        return None, f"the portrait to compare with isn't at {PATCH_REF}"
+    tmp = tempfile.mkdtemp(prefix="social-check-")
+    try:
+        ext = Path(image).suffix.lower() or ".jpg"
+        shutil.copy2(image, Path(tmp) / f"draft{ext}")
+        shutil.copy2(PATCH_REF, Path(tmp) / "portrait.jpg")
+        env = {k: v for k, v in os.environ.items() if k not in JUDGE_SCRUB}
+        try:
+            r = subprocess.run(judge_cmd(), input=JUDGE_PROMPT.format(ext=ext), capture_output=True, text=True,
+                               cwd=tmp, env=env, timeout=JUDGE_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            return None, f"the judge did not answer within {JUDGE_TIMEOUT // 60} minutes"
+        except OSError as exc:
+            return None, f"the judge could not start ({exc})"
+        out = r.stdout or ""
+        try:                                   # claude --output-format json wraps the reply
+            wrap = json.loads(out)
+            if isinstance(wrap, dict) and isinstance(wrap.get("result"), str):
+                if wrap.get("is_error"):
+                    return None, f"the judge's session ended in an error: {wrap.get('result')[:200]}"
+                out = wrap["result"]
+        except ValueError:
+            pass
+        ans = last_json_object(out)
+        if ans is None:
+            tail = (out.strip() or r.stderr.strip())[-200:]
+            return None, f"the judge's answer had no JSON in it (exit {r.returncode}): {tail}"
+        return ans, ""
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def recent_kinds(n=6):
+    """The kinds of the last n posts. Before B112 posted.jsonl had no kind: a `room` pillar was the raccoon post,
+    a `number` pillar the data post, anything else a text post."""
+    f = SOCIAL_DIR / "posted.jsonl"
+    rows = []
+    if f.exists():
+        for line in f.read_text().splitlines():
+            try:
+                rows.append(json.loads(line))
+            except ValueError:
+                continue
+    rows = [r_ for r_ in rows if r_.get("status", "posted") == "posted"][-n:]
+    old = {"room": "raccoon", "number": "data", "pinned": "pinned"}
+    return [r_.get("kind") or old.get(r_.get("pillar"), "text") for r_ in rows]
+
+
+def verdict(kind, ans, why_not=""):
+    """(verdict, reason) from the judge's answer. Pure, so the tests can walk every branch."""
+    if kind == "raccoon" and "raccoon" in recent_kinds():
+        return "fail", ("a raccoon-only post already went up in the last six; mood-only is at most one in seven "
+                        "(calendar.md § Three kinds of post), so make this one show the product")
+    if kind == "data":
+        return "pass", "a data post: a stock photo of a real thing, no raccoon and no product picture asked for"
+    if ans is None:
+        return "couldnt", why_not or "no answer from the judge"
+    if ans.get("looked") is False:
+        return "couldnt", "the judge couldn't look: " + str(ans.get("why") or "no reason given")
+    product, raccoon = str(ans.get("product", "")).lower(), str(ans.get("raccoon", "")).lower()
+    if product not in PRODUCT or raccoon not in RACCOON:
+        return "couldnt", f"the judge's answer was not one of the choices (product={product!r}, raccoon={raccoon!r})"
+    said = f"product {product} ({ans.get('product_what') or '-'}); raccoon {raccoon}. {ans.get('why') or ''}".strip()
+    if raccoon == "different":
+        return "fail", "a different raccoon from the portrait: " + said
+    if product == "no" and kind in ("text", "pinned"):
+        return "fail", "no product in the picture: " + said
+    if kind == "raccoon" and raccoon == "absent":
+        return "fail", "the raccoon post has no raccoon in it: " + said
+    if product == "unsure" or raccoon == "unsure":
+        return "unsure", "unsure: " + said
+    return "pass", said
+
+
+def kind_of(draft):
+    if draft.get("kind") in KINDS:
+        return draft["kind"]
+    return {"room": "raccoon", "number": "data", "pinned": "pinned"}.get(draft.get("pillar"), "text")
+
+
+def cmd_check(args):
+    draft = None
+    if args.image:
+        image = Path(args.image).expanduser()
+        if not image.is_file():
+            die(f"{image}: no such file")
+        if not args.kind:
+            die("--image needs --kind (text, raccoon, data or pinned)")
+        kind = args.kind
+    else:
+        if len(args.words) != 1 or not args.words[0].isdigit():
+            die("usage: social check N [--kind K]  |  social check --image FILE --kind K")
+        q = drafts()
+        n = int(args.words[0])
+        if not 1 <= n <= len(q):
+            die(f"no draft {n}; `social queue` lists {len(q)}")
+        draft = q[n - 1]
+        image = Path(draft["image"])
+        kind = args.kind or kind_of(draft)
+    ans, why_not = (None, "")
+    if kind != "data" and not (kind == "raccoon" and "raccoon" in recent_kinds()):
+        ans, why_not = ask_judge(image)
+    v, reason = verdict(kind, ans, why_not)
+    result = {"verdict": v, "kind": kind, "reason": reason, "answer": ans,
+              "model": "stand-in (SOCIAL_JUDGE)" if os.environ.get("SOCIAL_JUDGE") else (None if ans is None else judge_model()),
+              "at": dt.datetime.now().isoformat(timespec="seconds")}
+    if draft is not None:
+        path = draft.pop("_path")
+        draft["check"], draft["kind"] = result, kind
+        path.write_text(json.dumps(draft, indent=1) + "\n")
+    if args.json:
+        print(json.dumps(result))
+    else:
+        print(f"{v}: {reason}" + ("" if v != "couldnt" else
+              "\n(send the draft and this line to Taylor and wait for post / swap / skip; don't ask the judge again)"))
+    sys.exit(EXIT[v])
 
 
 def cmd_connect(args):
@@ -416,6 +626,9 @@ def cmd_doctor(args):
     line(bool(s), "PATCHLAMP_RELAY_SHARED_SECRET in the toolbelt")
     line(bool(magick()), "ImageMagick (the JPEG Instagram takes)")
     line(bool(shutil.which("gbp")), "gbp on PATH (the Google leg)")
+    line(PATCH_REF.exists(), f"the portrait `social check` compares with: {PATCH_REF}")
+    line(bool(os.environ.get("SOCIAL_JUDGE") or shutil.which("claude")),
+         f"the judge for `social check`: claude on PATH, model {os.environ.get('SOCIAL_JUDGE_MODEL') or JUDGE_MODEL_DEFAULT}")
     if not s:
         sys.exit(1)
     slugs = [workspace_slug()] if workspace_slug() else list(HOUSE)
@@ -461,7 +674,15 @@ def main():
     q.add_argument("--topic")
     q.add_argument("--mood", help="the night-shift mood (social/calendar.md § Three dials)")
     q.add_argument("--art", help="the art style the image was made in")
+    q.add_argument("--kind", choices=KINDS, help="text, raccoon, data or pinned (what `social check` holds it to)")
+    q.add_argument("--hold", action="store_true", help="a bare `social post BRAND` skips it (the pinned explainer)")
     q.set_defaults(fn=cmd_queue)
+    k = sub.add_parser("check", help="one fresh judge looks at a draft's picture: product shown? the same raccoon?")
+    k.add_argument("words", nargs="*", help="N, the draft's number in `social queue`")
+    k.add_argument("--image", help="any image instead of a queued draft")
+    k.add_argument("--kind", choices=KINDS)
+    k.add_argument("--json", action="store_true", help="print the result as JSON")
+    k.set_defaults(fn=cmd_check)
     for name, fn in (("connect", cmd_connect), ("ls", cmd_ls)):
         c = sub.add_parser(name)
         c.add_argument("words", nargs="*")

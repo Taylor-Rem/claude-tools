@@ -53,7 +53,8 @@ BOOK = {"customers": [
     {"id": 8, "name": "Sam Smithers", "phone": "801-555-0199", "email": "sam@example.com"},
     {"id": 9, "name": "Pat Nomail", "phone": "801-555-0111", "email": ""}],
     "jobs": [{"id": 31, "customer_id": 7, "date": "2026-10-01", "what": "spring opening", "status": "done"},
-             {"id": 32, "customer_id": 7, "date": "2026-10-05", "what": "heater repair", "status": "booked"}]}
+             {"id": 32, "customer_id": 7, "date": "2026-10-05", "what": "heater repair", "status": "booked"},
+             {"id": 33, "customer_id": 7, "date": "2026-10-06", "what": "cancelled visit", "status": "cancelled"}]}
 
 DETAILS = {"id": PID, "displayName": {"text": "Juniper Flats Pool & Spa"}, "rating": 4.8, "userRatingCount": 23,
            "reviews": [{"name": f"places/{PID}/reviews/r1", "rating": 5,

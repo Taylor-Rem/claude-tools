@@ -838,8 +838,10 @@ def _mask(email):
 
 
 def _clock(ts):
+    """A time as the business reads it: America/Denver, the relay's default zone (GBP_TZ to change it)."""
+    from zoneinfo import ZoneInfo
     try:
-        t = dt.datetime.fromisoformat(ts).astimezone()
+        t = dt.datetime.fromisoformat(ts).astimezone(ZoneInfo(os.environ.get("GBP_TZ") or "America/Denver"))
     except (TypeError, ValueError):
         return ts or "?"
     return t.strftime("%-I:%M%p").lower().replace(":00", "")
@@ -980,7 +982,7 @@ def cmd_ask(args):
         if args.job:
             job = {"id": args.job}
         else:
-            open_jobs = [j for j in book_jobs(cust) if str(j.get("status") or "").lower() != "done"]
+            open_jobs = [j for j in book_jobs(cust) if str(j.get("status") or "").lower() not in ("done", "cancelled")]
             job = open_jobs[0] if open_jobs else None
         if job:
             entry["job"] = job.get("id")

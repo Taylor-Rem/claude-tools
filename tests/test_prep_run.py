@@ -489,11 +489,12 @@ class FinishTest(Base):
         self.write_plan({"build": "good", "judge": "pass", "batch": "good"})
         self.approve_and_make_the_project()
         self.night(POOL, JENNA, ROSIE, n=3, publish=True)
-        r = self.run_leads("sent", "1", "2", "3", "--channel", "facebook")
+        r = self.run_leads("sent", "1", "2", "3")   # B116: the channels come from the outline
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         pipeline = self.rows("pipeline.jsonl")
         self.assertEqual(len(pipeline), 3)
         self.assertTrue(all(e["outcome"] == "messaged" for e in pipeline))
+        self.assertTrue(all(e.get("channel") and e.get("channel_by") == "kit" for e in pipeline), pipeline)
         # the next night picks other businesses: these three are held and in the pipeline
         j = json.loads(self.run_prep("pick", "--n", "3", "--json").stdout)
         self.assertFalse(set(p["place_id"] for p in j["picks"]) & {POOL, JENNA, ROSIE}, j["picks"])

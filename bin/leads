@@ -10,7 +10,8 @@ B25 (the remote lane), B7 (the pipeline: log, follow-ups, the week).
       (each sets the stage and a default follow-up; --next overrides: tomorrow, fri, 3d, 2w, oct 3, none)
       (messaged needs --channel facebook|instagram|email|text|call|form: where it went, so the
        second touch knows where the first did; talked takes it too. B116)
-  leads sent 1 3 4 --channel instagram   # those picks from today's remote kit went out (or: sent all)
+  leads sent 1 3 4             # those picks from today's remote kit / prep outline went out (or: sent all);
+                               # each gets the channel its kit planned (channel_by "kit"); --channel X overrides
   leads channel "Max Pro" facebook --date 2026-10-02 --by cowork
                                # backfill: the channel of a messaged/talked line logged without one (B116)
   leads replies "Max Pro" 7/10 --newest 2026-09-20 --by cowork --evidence URL
@@ -224,7 +225,8 @@ The pipeline's event shape (one JSON object a line; fields are added, never rena
   ts date key place_id name city outcome stage next note who email phone via reach
   channel  where a messaged/talked touch went (facebook instagram email text call form, B116):
            required on `messaged`; a line without one reads "channel not recorded", never a guess.
-           On a `touch_due` event it is the planned channel (dm email call). `channel_by` marks a backfill.
+           On a `touch_due` event it is the planned channel (dm email call). `channel_by` is "kit" when
+           `leads sent` took it from the kit (planned, not witnessed), "backfill WHO DATE" for `leads channel`.
   source   the channel (email dm group saturday referral inbound mail), so `week --by
            channel` can cut the funnel; `--source` sets it, else it follows --via, the
            channel the lead is already on, or the reach the kit used
@@ -4413,9 +4415,49 @@ def cmd_log(args):
     print_list(today + dt.timedelta(days=1), args.n)
 
 
+PREP_STATE = Path(os.environ.get("PREP_STATE", Path.home() / ".local/state/claude-tools/prep"))
+
+
+def kit_channels(last):
+    """{place_id: (channel, why)} — how the kit behind this remote.jsonl entry planned to reach each pick (B116).
+    A prep run's outline names its channel per message (`outline.json` → `channel.kind`, matched to the place by
+    each site's content.json); a remote kit's saved envelope (state/remote/<date>[-segment].json) has the picks'
+    handles, and the kit's page says DM on Instagram when there is one, else message on Facebook. Anything else —
+    an email-only pick, a directory profile, a call — the envelope can't tell apart, so it gets no channel."""
+    out = {}
+    if last.get("mode") == "prep" and last.get("run"):
+        run = PREP_STATE / last["run"]
+        try:
+            outline = json.loads((run / "outline.json").read_text())
+        except (OSError, ValueError):
+            outline = []
+        for m in outline:
+            try:
+                pid = json.loads((run / m["slug"] / "content.json").read_text()).get("place_id")
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+            kind = ((m.get("channel") or {}).get("kind") or "").lower()
+            if pid and kind in CHANNELS:
+                out[pid] = (kind, f"prep {last['run']} outline")
+        return out
+    name = f"{last.get('for')}-{last['segment']}.json" if last.get("segment") else f"{last.get('for')}.json"
+    try:
+        env = json.loads((STATE / "remote" / name).read_text())
+    except (OSError, ValueError):
+        return out
+    for pk in env.get("picks") or []:
+        if pk.get("instagram"):
+            out[pk.get("place_id")] = ("instagram", f"remote kit {last.get('for')}")
+        elif pk.get("facebook"):
+            out[pk.get("place_id")] = ("facebook", f"remote kit {last.get('for')}")
+    return out
+
+
 def cmd_sent(args):
-    """`leads sent 1 3 4 --channel instagram` (or `all`): those picks from the last remote kit were messaged."""
-    channel = check_channel(args.channel, "messaged", f"sent {' '.join(args.which)}")
+    """`leads sent 1 3 4` (or `all`): those picks from the last remote kit or prep outline were messaged. Each pick
+    is recorded with the channel its kit planned (`channel_by: "kit"`, planned rather than witnessed); `--channel X`
+    names it for every pick instead. A pick whose kit names no channel is refused by number; the rest are logged."""
+    override = check_channel(args.channel, None, "sent")
     p = STATE / "remote.jsonl"
     last = None
     if p.exists():
@@ -4433,13 +4475,19 @@ def cmd_sent(args):
             picks = [int(x) for x in args.which]
         except ValueError:
             die("say which: leads sent 1 3 4, or leads sent all")
-    today = dt.datetime.now(TZ).date()
-    done = []
     for i in picks:
         if not 1 <= i <= len(ids):
             die(f"the last remote kit ({last['for']}) has {len(ids)} leads, not {i}")
+    planned = {} if override else kit_channels(last)
+    today = dt.datetime.now(TZ).date()
+    nxt = today + dt.timedelta(days=OUTCOMES["messaged"][1])
+    done, refused = [], []
+    for i in picks:
+        channel, by = (override, None) if override else (planned.get(ids[i - 1]) or (None, None))
+        if not channel:
+            refused.append(i)
+            continue
         row = (_census_by_id(ids[i - 1]) or [{}])[0]
-        nxt = today + dt.timedelta(days=OUTCOMES["messaged"][1])
         biz = is_business(row)
         rc = (business_reach(row) if biz else reach(row)) if row else {}
         event = {"ts": dt.datetime.now(TZ).isoformat(timespec="seconds"), "date": today.isoformat(),
@@ -4449,13 +4497,29 @@ def cmd_sent(args):
                  "reach": ((business_reach_line(rc) if biz else reach_line(rc)) or None) if row else None,
                  "email": rc.get("email"), "source": source_for(args.source, args.via, "messaged", None, row, rc),
                  "was": ("; ".join(lead_faults(row, None, today)[0][:2]) or None) if row else None,
-                 "note": f"remote kit {last['for']} #{i}", "channel": channel}
+                 "note": f"remote kit {last['for']} #{i}", "channel": channel,
+                 "channel_by": "kit" if by else None}
         event.update(strength_fields(row or None, lead={"key": event["key"], "place_id": ids[i - 1]}))
         PIPELINE.parent.mkdir(parents=True, exist_ok=True)
         with open(PIPELINE, "a") as f:
             f.write(json.dumps({k: v for k, v in event.items() if v is not None}) + "\n")
-        done.append(event["name"])
-    print(f"Logged {len(done)} sent by {channel}: {', '.join(done)}; follow up {nxt.strftime('%a %-d %b')} if they don't answer.")
+        done.append((i, event["name"], channel))
+    if done:
+        chans = {c for _, _, c in done}
+        if len(chans) == 1:
+            print(f"Logged {len(done)} sent by {chans.pop()}{' (as the kit planned)' if not override else ''}: "
+                  f"{', '.join(n for _, n, _ in done)}; follow up {nxt.strftime('%a %-d %b')} if they don't answer.")
+        else:
+            print(f"Logged {len(done)} sent (as the kit planned): "
+                  + ", ".join(f"{n} by {c}" for _, n, c in done)
+                  + f"; follow up {nxt.strftime('%a %-d %b')} if they don't answer.")
+    if refused:
+        nums = " ".join(str(i) for i in refused)
+        print(f"leads: not logged: {', '.join(f'#{i} {clean_name(names[i - 1])}' for i in refused)} — the kit names no "
+              f"Instagram or Facebook for {'it' if len(refused) == 1 else 'them'}, so the channel isn't known. Run "
+              f"`leads sent {nums} --channel facebook|instagram|email|text|call|form` with where it went; "
+              "ask Taylor if you don't know, never guess.", file=sys.stderr)
+        sys.exit(1)
 
 
 def cmd_channel(args):
@@ -7455,7 +7519,8 @@ def main():
     se.add_argument("which", nargs="+")
     se.add_argument("--via", default="dm")
     se.add_argument("--source", choices=SOURCES, help="the channel (default: from --via)")
-    se.add_argument("--channel", help="where they went: " + "|".join(CHANNELS) + " (required; B116)")
+    se.add_argument("--channel", help="where they went: " + "|".join(CHANNELS)
+                    + " (default: each pick's channel from its kit; B116)")
     se.set_defaults(fn=cmd_sent)
 
     ch = sub.add_parser("channel", help="backfill: the channel of a messaged/talked line logged without one (B116)")

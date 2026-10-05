@@ -29,14 +29,63 @@ class ChannelTest(Base):
         self.assertIn("--channel is one of", r.stderr)
         self.assertEqual(self.events(), [])
 
-    def test_sent_needs_the_channel_too(self):
+    def kit_with(self, routes):
+        """A remote kit, then its saved envelope rewritten so pick n has the handles in routes[n]."""
         self.run_leads("kit", "--remote", "--census-only", "--segment", "services")
-        r = self.run_leads("sent", "1")
-        self.assertNotEqual(r.returncode, 0)
-        self.assertIn("leads sent 1 --channel instagram", r.stderr)
-        r = self.run_leads("sent", "1", "--channel", "facebook")
+        env_path = next((self.t / "state" / "remote").glob("*-services.json"))
+        env = json.loads(env_path.read_text())
+        for n, pk in enumerate(env["picks"], 1):
+            pk["instagram"], pk["facebook"] = routes.get(n, (None, None))
+        env_path.write_text(json.dumps(env))
+        return env
+
+    def test_sent_takes_each_picks_channel_from_the_kit(self):
+        env = self.kit_with({1: ("mikespool", None), 2: (None, "https://facebook.com/x"),
+                             3: ("y", "https://facebook.com/y")})
+        r = self.run_leads("sent", "1", "2", "3")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual([e["channel"] for e in self.events()], ["facebook"])
+        names = [p["name"] for p in env["picks"]]
+        self.assertIn("Logged 3 sent (as the kit planned):", r.stdout)
+        self.assertIn(f"by facebook", r.stdout)
+        got = [(e["channel"], e["channel_by"]) for e in self.events()]
+        self.assertEqual(got, [("instagram", "kit"), ("facebook", "kit"), ("instagram", "kit")])
+        show = self.run_leads("show", names[1]).stdout
+        self.assertIn("by facebook", show)
+
+    def test_sent_channel_overrides_the_kit_for_every_pick(self):
+        self.kit_with({1: ("a", None), 2: (None, None)})
+        r = self.run_leads("sent", "1", "2", "--channel", "email")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("Logged 2 sent by email:", r.stdout)
+        self.assertEqual([(e["channel"], e.get("channel_by")) for e in self.events()],
+                         [("email", None), ("email", None)])
+
+    def test_a_pick_the_kit_has_no_channel_for_is_refused_by_number_and_the_rest_logged(self):
+        env = self.kit_with({1: ("a", None), 3: (None, "https://facebook.com/z")})
+        r = self.run_leads("sent", "1", "2", "3")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("Logged 2 sent (as the kit planned):", r.stdout)
+        self.assertIn(f"not logged: #2 ", r.stderr)
+        self.assertIn("Run `leads sent 2 --channel facebook|instagram|email|text|call|form`", r.stderr)
+        self.assertEqual([e["channel"] for e in self.events()], ["instagram", "facebook"])
+        self.assertNotIn(env["picks"][1]["place_id"], [e["place_id"] for e in self.events()])
+
+    def test_sent_after_a_prep_outline_reads_its_channels(self):
+        prep = self.t / "prep" / "2026-10-02-a"
+        for slug, pid, kind in (("one", "FX_S01", "instagram"), ("two", "FX_S08", "facebook")):
+            (prep / slug).mkdir(parents=True)
+            (prep / slug / "content.json").write_text(json.dumps({"place_id": pid}))
+        (prep / "outline.json").write_text(json.dumps([
+            {"n": 1, "slug": "two", "channel": {"kind": "facebook"}},
+            {"n": 2, "slug": "one", "channel": {"kind": "instagram"}}]))
+        (self.t / "state").mkdir(exist_ok=True)
+        (self.t / "state" / "remote.jsonl").write_text(json.dumps(
+            {"for": "2026-10-02", "place_ids": ["FX_S01", "FX_S08"], "names": ["Mike's Pool Care", "Glacier"],
+             "mode": "prep", "run": "2026-10-02-a"}) + "\n")
+        r = self.run_leads("sent", "1", "2", env={"PREP_STATE": str(self.t / "prep")})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual([(e["place_id"], e["channel"]) for e in self.events()],
+                         [("FX_S01", "instagram"), ("FX_S08", "facebook")])
 
     def test_show_and_brief_print_each_touchs_channel_and_an_old_line_says_not_recorded(self):
         self.messaged("Mike's Pool Care", ANCHOR - dt.timedelta(days=6), "FX_S01", source="dm")   # an old line

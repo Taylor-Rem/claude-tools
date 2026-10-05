@@ -63,6 +63,7 @@ class TemplateTag(unittest.TestCase):
         src = (ROOT / "bin" / "site").read_text()
         self.assertIn('"SLUG": meta["slug"]', src, "site new's values carry the workspace slug")
         self.assertEqual(site.fill(TAG, {"SLUG": "acme"}), site_chat.tag("acme"))
+        self.assertIn('"YEAR", "SLUG", "TAGLINE", "MAIL"}', src, "and `site doctor` knows it is one site new fills")
 
 
 class Helper(unittest.TestCase):

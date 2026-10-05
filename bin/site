@@ -3411,7 +3411,7 @@ def cmd_doctor(a):
                 except UnicodeDecodeError:
                     pass
         say(f"  {kind}: placeholders {', '.join(sorted(found))}")
-        unknown = found - {"NAME", "REPO", "URL", "OWNER", "YEAR", "TAGLINE", "MAIL"}
+        unknown = found - {"NAME", "REPO", "URL", "OWNER", "YEAR", "SLUG", "TAGLINE", "MAIL"}
         if unknown:
             fail(f"{kind}: placeholders `site new` doesn't fill: {', '.join(sorted(unknown))}")
         for c in kinds[kind].get("collections") or []:

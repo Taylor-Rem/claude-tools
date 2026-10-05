@@ -148,6 +148,21 @@ class SocialTest(unittest.TestCase):
         self.assertEqual(logged["pillar"], "proof")
         self.assertNotEqual(self.run_social("post", "patchlamp").returncode, 0)
 
+    def test_a_bare_post_passes_over_a_held_draft_and_the_row_carries_kind_and_check(self):
+        # B112: the pinned explainer waits in the queue for its own "post N"; the day's draft goes up
+        self.run_social("queue", "add", "patchlamp", str(self.photo), "The explainer.", "--kind", "pinned", "--hold")
+        self.run_social("queue", "add", "patchlamp", str(self.photo), "Today.", "--kind", "text")
+        qs = sorted((self.dir / "social" / "queue").glob("*.json"))
+        d = json.loads(qs[1].read_text())
+        d["check"] = {"verdict": "unsure", "reason": "unsure: product unsure"}
+        qs[1].write_text(json.dumps(d))
+        r = self.run_social("post", "patchlamp")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.posted()[0]["body"]["caption"], "Today.")
+        logged = json.loads((self.dir / "social" / "posted.jsonl").read_text().splitlines()[0])
+        self.assertEqual((logged["kind"], logged["check"]["verdict"]), ("text", "unsure"))
+        self.assertIn("The explainer.", self.run_social("queue").stdout)
+
     # -- refusals -----------------------------------------------------------------------
 
     def test_a_client_workspace_posts_only_for_itself(self):

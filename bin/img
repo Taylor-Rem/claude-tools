@@ -63,6 +63,14 @@ ENV_FILE = Path(os.environ.get("CLAUDE_TOOLS_ENV", Path.home() / ".config/claude
 STYLES_FILE = Path.home() / ".config/claude-tools/img-styles.json"
 OUT_ROOT = Path(os.environ.get("IMG_OUT_ROOT", Path.home() / ".cache/claude-tools/img"))
 LEDGER = Path(os.environ.get("IMG_LEDGER", Path.home() / ".local/state/claude-tools/ledger.jsonl"))
+# B112 (plan ~/projects/plans/48-feed-one-raccoon.md): one raccoon on the feed. The two patchlamp
+# presets bring the canonical portrait as the reference image unless the caller gives its own --ref
+# or says --no-style-ref, because eleven posts drawn as eleven different animals told nobody it was
+# one character (the 2026-10-03 review).
+PATCH_REF = Path(os.environ.get("IMG_PATCH_REF", Path.home() / "projects/patchlamp/brand/patch-portrait.jpg"))
+STYLE_REFS = {"patchlamp-night": PATCH_REF, "patchlamp-social": PATCH_REF}
+STYLE_REF_LINE = ("The raccoon is the one in the reference image: same face, markings, notched ear and headset, "
+                  "drawn in this picture's medium.")
 
 PEXELS_SEARCH = "https://api.pexels.com/v1/search"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -367,7 +375,8 @@ def default_styles():
             "lamplight from the left. The raccoon, if present: scruffy, one "
             "ear notched, 1940s headset with a brass boom, a patch cord over "
             "one shoulder, half-lidded and unimpressed. No text, no letters, "
-            "no logos, no readable screens."
+            "no logos; a phone or screen shows message bubbles and a page "
+            "layout as shapes, never readable words."
         ),
         "restaurant-social": (
             "Editorial photograph of a small independent restaurant, realistic "
@@ -623,10 +632,19 @@ def cmd_gen(args):
     if args.aspect:
         prompt += f"\n\nAspect ratio {args.aspect}."
 
-    for ref in args.ref or []:
+    refs = list(args.ref or [])
+    style_ref = STYLE_REFS.get(args.style)
+    if style_ref is not None and not refs and not getattr(args, "no_style_ref", False):
+        if not style_ref.exists():
+            die(f"the {args.style} style brings the portrait as its reference and it isn't at {style_ref} "
+                "(IMG_PATCH_REF points elsewhere; --no-style-ref goes without it)")
+        refs = [str(style_ref)]
+    if style_ref is not None and any(Path(r_).resolve() == style_ref.resolve() for r_ in refs if Path(r_).exists()):
+        prompt += f"\n\n{STYLE_REF_LINE}"     # brought by the style or passed by hand, the sentence goes with it
+    for ref in refs:
         if not Path(ref).exists():
             die(f"reference image not found: {ref}")
-    make, model, size, _, billed_to, key_name = image_call(engine, args.quality, prompt, args.aspect, args.ref or [], text_first=True)
+    make, model, size, _, billed_to, key_name = image_call(engine, args.quality, prompt, args.aspect, refs, text_first=True)
 
     # `--out DIR` (an existing directory) means "in there": before 2026-09-29 it was opened as a
     # file after the image was paid for (leads preview --hero gen, B64).
@@ -655,7 +673,7 @@ def cmd_gen(args):
             "prompt": args.prompt,
             "full_prompt": prompt,
             "aspect": args.aspect,
-            "refs": [str(Path(r_).resolve()) for r_ in (args.ref or [])],
+            "refs": [str(Path(r_).resolve()) for r_ in refs],
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         })
         if not args.no_ledger:
@@ -1361,6 +1379,7 @@ def cmd_doctor(_args):
     """Report whether each key is present and accepted, without printing values."""
     keys = load_keys()
     print(f"env file: {ENV_FILE}  ({'exists' if ENV_FILE.exists() else 'MISSING'})")
+    print(f"patch portrait (patchlamp styles' reference): {PATCH_REF}  ({'exists' if PATCH_REF.exists() else 'MISSING'})")
     for name, ping in (("PEXELS_API_KEY", _ping_pexels), ("GEMINI_API_KEY", _ping_gemini), ("XAI_API_KEY", _ping_xai)):
         src, key_name = key_source(name)
         v = os.environ.get(name) if src == "env" else keys.get(name)
@@ -1439,6 +1458,8 @@ def main():
                    help="draft (lite, 3¢) | menu (flash 1K, 7¢, default) | hero (flash 2K, 10¢) | pro (2K, 13¢)")
     g.add_argument("--aspect", choices=GEN_ASPECTS, help=", ".join(GEN_ASPECTS) + " (checked before anything is paid for)")
     g.add_argument("--ref", action="append", help="reference image(s) to guide the generation")
+    g.add_argument("--no-style-ref", action="store_true",
+                   help="leave out the reference a style brings (patchlamp-night/-social bring Patch's portrait)")
     g.add_argument("-n", type=int, default=1, help="variations to generate")
     g.add_argument("--out", help="exact output file (only with -n 1)")
     g.add_argument("--out-dir", help="directory for multiple outputs")

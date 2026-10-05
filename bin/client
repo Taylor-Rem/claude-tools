@@ -442,7 +442,9 @@ def admin_views(repo):
     if not reg.exists():
         return [], []
     coll = HERE / "templates" / "collections"
-    std = {p.stem for p in coll.glob("*/functions/_admin/*.js")}
+    # a collection's own view by name and by table: a customers.js on records is a named list (B122)
+    std = {p.stem: (re.search(r'\btable:\s*"(\w+)"', p.read_text()) or [None, ""])[1].lower()
+           for p in coll.glob("*/functions/_admin/*.js")}
     tabs = set()
     for m in coll.glob("*/migrations/*.sql"):
         tabs |= {t.lower() for t in re.findall(r"(?i)create\s+table\s+(?:if\s+not\s+exists\s+)?(\w+)", m.read_text())}
@@ -453,7 +455,7 @@ def admin_views(repo):
             missing.append(mod)
             continue
         t = (re.search(r'\btable:\s*"(\w+)"', f.read_text()) or [None, ""])[1].lower()
-        views.append((mod, "collection" if mod in std else "named list" if t in tabs else "tool"))
+        views.append((mod, "collection" if std.get(mod) == t else "named list" if t in tabs else "tool"))
     return views, missing
 
 

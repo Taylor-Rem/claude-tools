@@ -1,0 +1,4 @@
+{
+  "status": "ready",
+  "summary": "the customer book: each customer once (phone, email, address, notes, tags, last seen) and the jobs done for them, on /admin/customers"
+}

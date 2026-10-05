@@ -28,6 +28,12 @@ table of the owner's (not the sign-in or migration bookkeeping), and runs
 seed.sql. Seed rows that are dates are written relative to today
 (`date('now', '+3 days')`), so the calendar is never in the past.
 
+The site chat (B108) answers visitors from the workspace's facts.md, which a
+stranger's text can change too. `demo golden` keeps a copy of it beside this
+tool's state (~/.local/state/claude-tools/demo-facts/<slug>.md, out of the
+workspace), and `demo reset` puts it back; `demo doctor` says whether it
+matches.
+
 The reset never rewrites history: it commits golden's files back on top of
 whatever is there, so `main` only ever moves forward and nothing needs a
 force-push. `relay.py demo` is the other half (who may text it, and the
@@ -59,6 +65,10 @@ STATE = Path(os.environ.get("DEMO_STATE", Path.home() / ".local/state/claude-too
 CLIENTS = Path(os.environ.get("CLIENTS_DIR", Path.home() / "projects/clients")).expanduser()
 DB_BIN = Path(os.environ.get("DEMO_DB_BIN") or Path(__file__).resolve().parent / "db")
 GOLDEN = "golden"
+# facts.md's golden copy (B108): the site chat answers visitors from the workspace's facts.md,
+# which isn't in the site repo (the repo is published, and the file is Patch's notes, not a
+# page), so its golden copy lives beside this tool's state, out of every workspace's reach.
+FACTS_GOLDEN = Path(os.environ.get("DEMO_FACTS_DIR") or STATE.parent / "demo-facts")
 SEED = "seed.sql"
 PROJECT = None          # --project SLUG, set in main()
 
@@ -285,6 +295,41 @@ def cmd_diff(args):
         print(git(repo, "status", "--short")[1])
 
 
+def golden_facts(slug):
+    return FACTS_GOLDEN / f"{slug}.md"
+
+
+def facts_keep(ws, slug):
+    """`demo golden`: keep the workspace's facts.md as the copy a reset puts back."""
+    f = ws / "facts.md"
+    if f.is_symlink() or not f.is_file():
+        print("  facts.md: none here (a link or missing), so no golden copy of it was kept")
+        return
+    FACTS_GOLDEN.mkdir(parents=True, exist_ok=True)
+    golden_facts(slug).write_bytes(f.read_bytes())
+    print(f"  facts.md: kept as golden too ({golden_facts(slug)})")
+
+
+def facts_restore(ws, slug):
+    """`demo reset`: facts.md back to its golden copy, so a stranger's edit by text doesn't leave the
+    site chat answering the next visitor from it. Never follows a link a run left in its place."""
+    g = golden_facts(slug)
+    if not g.is_file():
+        print("  facts.md: no golden copy yet (`demo golden --yes` keeps one); left as it is")
+        return "no golden"
+    f = ws / "facts.md"
+    want = g.read_bytes()
+    if f.is_symlink():
+        f.unlink()
+    elif f.is_file() and f.read_bytes() == want:
+        return "same"
+    fd = os.open(f, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
+    with os.fdopen(fd, "wb") as out:
+        out.write(want)
+    print("  facts.md: back to the golden copy")
+    return "restored"
+
+
 def cmd_golden(args):
     ws, _ = workspace()
     repo = ws / "repos" / site_name(ws)
@@ -302,6 +347,7 @@ def cmd_golden(args):
     st["golden_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     state_write(st)
     print(f"golden is now {head[:8]} — a reset brings the site back to this")
+    facts_keep(ws, _slug())
 
 
 def cmd_reset(args):
@@ -315,6 +361,7 @@ def cmd_reset(args):
     if not changed and not args.force:
         if has_db(repo):                             # the files match, but a text may have changed rows
             reset_data(ws, name, repo)
+        facts_restore(ws, meta.get("slug") or _slug())   # facts.md isn't in the repo: checked on its own
         print("already the golden copy; nothing to undo" + (" in the files (the rows are back to the seed)" if has_db(repo) else ""))
         _record("clean")
         if getattr(args, "check", True):
@@ -335,6 +382,7 @@ def cmd_reset(args):
         print(f"{name} already matched golden in git")
     if has_db(repo):
         reset_data(ws, name, repo)
+    facts_restore(ws, meta.get("slug") or _slug())
     # A stranger's conversation is forgotten with the files: the next person who
     # texts this demo starts clean (B80 change 4b; relay-F4's wipe for the demos).
     # Never followed if it's a link (B85): a run could leave memory.md pointing at a file
@@ -431,6 +479,13 @@ def _doctor(args):
         print("  golden: NOT SET (`demo golden`)")
         ok = False
     print(f"  working tree: {'dirty' if dirty(repo) else 'clean'}")
+    g = golden_facts(meta.get("slug") or _slug())
+    f = ws / "facts.md"
+    if not g.is_file():
+        print("  facts.md golden: NOT SET (`demo golden --yes` keeps one; the site chat answers from facts.md)")
+    else:
+        same = f.is_file() and not f.is_symlink() and f.read_bytes() == g.read_bytes()
+        print(f"  facts.md: {'matches golden' if same else 'CHANGED since golden — a reset puts it back'}")
     if has_db(repo):
         seeded = (repo / SEED).exists()
         print(f"  database: yes; golden rows in {SEED}: {'yes' if seeded else 'NO — a reset cannot restore the data'}")

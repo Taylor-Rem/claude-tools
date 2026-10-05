@@ -27,6 +27,12 @@ how to change it, and how to check a change is live.
   every page you add. If the owner would rather not carry it, put `badge: off`
   on its own line in the workspace's `NOTES.md`: `site publish` then leaves it
   out of the published site and the line stays in the repo.
+- Right after the badge sits one more line, `<script src="https://patchlamp.com/site-chat.js"
+  data-site="…" defer></script>`: the site chat, which answers visitors from the
+  workspace's `facts.md`. Keep it on every page too, and copy it as it is onto a
+  page you add (the `data-site` value is this client's name on patchlamp.com).
+  Whether the bubble shows is the owner's switch on patchlamp.com, so the line
+  stays even when the chat is off; `site doctor` warns on a page without it.
 - `images/` holds the photos. `_headers` and `_redirects` are read by the
   host, not served: `_headers` makes every page `no-cache` (so nobody ever
   sees a stale page); `_redirects` is for a page that moved. Leave both

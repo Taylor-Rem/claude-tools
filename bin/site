@@ -76,6 +76,13 @@ served from the site as /<key>.txt; `--no-ping` skips it, a ping that fails
 never fails the publish, and a site that asks not to be indexed is never
 submitted.
 
+The site chat (B108, plan ~/projects/plans/45-site-bubble.md): every page of every template
+carries `<script src="https://patchlamp.com/site-chat.js" data-site="{{SLUG}}" defer>` on the line
+after the badge (before </body> on a page without one), {{SLUG}} filled by `site new` with the
+workspace's slug. Whether the bubble shows is patchlamp.com's switch (the owner's, on /account or
+by text), so the tag stays on the pages either way; `site doctor` warns on a page without it.
+The helper is lib/site_chat.py.
+
 The watch (B72, plan ~/projects/plans/30-site-watch.md): `site watch --once`, every 15 minutes from
 site-watch.timer, checks every Cloudflare site in the registry and every published preview — DNS (IPv4)
 into Cloudflare's ranges, a certificate the system trusts, the home page 200 with a template marker —
@@ -127,6 +134,7 @@ import urllib.request
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 import tenant  # noqa: E402  (shared tenant-identity check, B80)
+import site_chat  # noqa: E402  (the site chat's script tag, B108)
 
 HERE = Path(__file__).resolve().parent.parent
 SITES_DIR = HERE / "templates" / "sites"
@@ -706,6 +714,28 @@ def strip_badge(dest):
     return n
 
 
+def chat_tag_gaps(d, slug):
+    """The site chat (B108, plan 45 § Contract 1): every page should carry the script tag naming
+    this workspace's slug. Returns (pages without it, pages naming another slug), as paths
+    relative to the repo. Pages are the .html files a publish uploads (functions/ and
+    migrations/ are the server's, not pages)."""
+    missing, other = [], []
+    for p in sorted(d.rglob("*.html")):
+        rel = p.relative_to(d)
+        if rel.parts[0] in (".git", "functions", "migrations", "node_modules", "exports"):
+            continue
+        try:
+            html = p.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        found = site_chat.slugs(html)
+        if not found:
+            missing.append(str(rel))
+        elif slug not in found or len(found) > 1:
+            other.append(f"{rel} ({', '.join(found)})")
+    return missing, other
+
+
 def has_badge(d):
     """True when the repo's home page carries the badge."""
     p = d / "index.html"
@@ -904,6 +934,7 @@ def cmd_new(a):
     url = f"https://{pages_host(name)}/" if cloudflare else pages_url(o, name)
     values = {
         "NAME": meta["name"], "REPO": name, "URL": url, "OWNER": o,
+        "SLUG": meta["slug"],                        # B108: the site chat's data-site, the project patchlamp.com keys it by
         "YEAR": str(datetime.date.today().year),
         "TAGLINE": a.tagline or f"A short line about what {meta['name']} does.",
     }
@@ -3432,6 +3463,14 @@ def cmd_doctor(a):
                                               else "\"Patched by Patchlamp\" in the footer"
                                               if has_badge(d) else
                                               "MISSING from index.html and NOTES.md has no `badge: off` (B60)"))
+                gaps, other = chat_tag_gaps(d, meta["slug"])
+                say(f"  repos/{n}: site chat tag " + (
+                    f"WARN missing from {len(gaps)} page(s): {', '.join(gaps[:6])}"
+                    + (" …" if len(gaps) > 6 else "")
+                    + f" (B108: copy the <script src=\"{site_chat.SRC}\" data-site=\"{meta['slug']}\" defer> "
+                      f"line from index.html onto the line after the badge)" if gaps else
+                    f"WARN names another site on {', '.join(other[:4])}; data-site should be {meta['slug']}" if other else
+                    f"on every page (data-site={meta['slug']}; on or off is the owner's switch on patchlamp.com)"))
                 ping = entry.get("indexnow") or {}
                 say(f"  repos/{n}: IndexNow " + (f"{'accepted' if ping.get('ok') else 'refused'} "
                                                  f"{ping.get('urls')} URL(s) at {(ping.get('at') or '')[:19]}"

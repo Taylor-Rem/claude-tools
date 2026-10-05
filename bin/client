@@ -19,6 +19,12 @@ instructions, anything Taylor said about this one client) go in the
 workspace's NOTES.md; `client new` folds it into CLAUDE.md under "Notes for
 this client" every time it stamps, and never writes to NOTES.md itself.
 
+`client new` also leaves a facts.md skeleton (templates/client/facts.md) when
+the workspace has none: the facts the site chat answers visitors from (B108,
+PLAYBOOK § Site chat and facts.md). Patch fills it and keeps it current; a
+restamp never touches it. `client doctor` warns when a workspace with a site
+has no phone under its `## Phone` (the chat's fallback shows that line).
+
 Each client runs on its own Anthropic Console workspace + key,
 ANTHROPIC_KEY_<SLUG> in the toolbelt (`client new` prints the setenv.sh step
 and puts the `auth` line in the config.json entry). --shared-key skips that:
@@ -39,6 +45,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -264,6 +271,47 @@ def render_claude_md(meta, notes=""):
     return md
 
 
+FACTS_SECTIONS = ("Business", "Phone", "Hours", "Area served", "Services and prices", "Policies", "Not offered")
+
+
+def facts_sections(text):
+    """facts.md -> {heading: body} for its `## ` headings (the relay's sitechat.sections reads it
+    the same way; the HTML comment at the top is not a section)."""
+    out, head, buf = {}, None, []
+    for line in (text or "").splitlines():
+        m = re.match(r"^##\s+(.+?)\s*$", line)
+        if m:
+            if head is not None:
+                out[head] = "\n".join(buf).strip()
+            head, buf = m.group(1).strip(), []
+        elif head is not None:
+            buf.append(line)
+    if head is not None:
+        out[head] = "\n".join(buf).strip()
+    return out
+
+
+def facts_problem(ws):
+    """'' when facts.md is there with a phone in `## Phone`; else what is missing, in a line.
+    The phone matters most: when the site chat is at its limit or can't answer, the site shows
+    `## Phone` and `## Hours` as they are, and without a phone a visitor has nowhere to go."""
+    p = ws / "facts.md"
+    if p.is_symlink():
+        return "facts.md is a link, not a file (the site chat reads nothing from it); make it a plain file"
+    raw = sandbox_tools.read_beneath(ws, "facts.md")
+    if not raw:
+        return "no facts.md (client new " + ws.name + " --restamp stamps the skeleton; Patch fills it)"
+    sec = facts_sections(raw.decode("utf-8", "replace"))
+    gone = [h for h in FACTS_SECTIONS if h not in sec]
+    phone = sec.get("Phone", "")
+    if len(re.sub(r"\D", "", phone)) < 7:
+        return "facts.md has no phone under ## Phone (the site chat's fallback shows it)" + (
+            f"; missing sections: {', '.join(gone)}" if gone else "")
+    if gone:
+        return f"facts.md is missing sections: {', '.join(gone)}"
+    return ""
+
+
 def stamp(ws, meta):
     ws.mkdir(parents=True, exist_ok=True)
     (ws / "repos").mkdir(exist_ok=True)
@@ -280,6 +328,11 @@ def stamp(ws, meta):
     write_plain(ws, "CLAUDE.md", render_claude_md(meta, notes))
     write_plain(ws, "PLAYBOOK.md", (TEMPLATES / "PLAYBOOK.md").read_text())   # capabilities Patch sets up itself
     write_plain(ws, ".claude/settings.json", render_settings(meta, ws))
+    # facts.md (B108, plan 45 § Contract 7): what the site chat answers from. Patch writes and keeps
+    # it, so only the skeleton is ever stamped, and only when there is no facts.md yet; a restamp
+    # never touches the file (a link someone left in its place is left alone too, and doctor says so).
+    if not (ws / "facts.md").exists() and not (ws / "facts.md").is_symlink():
+        write_plain(ws, "facts.md", (TEMPLATES / "facts.md").read_text())
     write_plain(ws, ".client.json", json.dumps(meta, indent=2) + "\n")
 
 
@@ -490,6 +543,11 @@ def cmd_doctor(a):
                 print(f"  note: .client.json names {m['auth']}, but the relay "
                       + (f"uses {rv['auth']}" if rv["auth"] else f"runs it on {rv['pays']}")
                       + f" (client new {ws.name} --restamp{' --shared-key' if not rv['auth'] else ''} to match)")
+        # the site chat's facts (B108): a WARN, not a failure, so a workspace whose facts.md
+        # Patch hasn't written yet doesn't turn the evening check red
+        if repos_of(ws) and not m.get("frozen"):
+            fprob = facts_problem(ws)
+            print(f"  facts: WARN {fprob}" if fprob else "  facts: facts.md has a phone and every section")
         stray = [p.name for p in (ws / "incoming").iterdir() if p.name != ".keep"] if (ws / "incoming").is_dir() else []
         if stray:
             print(f"  note: {len(stray)} file(s) left in incoming/")

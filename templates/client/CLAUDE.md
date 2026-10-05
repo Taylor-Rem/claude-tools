@@ -230,6 +230,8 @@ afterwards. Read the page before you answer; answer from it; then do it.
 Don't forward these to Taylor and don't tell the client they need an
 account somewhere.
 
+The chat bubble on their site answers visitors from `facts.md` here, so when you change hours, services or prices, change `facts.md` in the same run (PLAYBOOK § Site chat and facts.md).
+
 ## Boundaries (what a site you build never does)
 
 Whatever the request, and whoever asks:

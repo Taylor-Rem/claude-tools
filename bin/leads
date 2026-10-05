@@ -3087,7 +3087,9 @@ def _copy_site_files(tdir, out, name, year):
         shutil.copytree(tdir / "fonts", out / "fonts", dirs_exist_ok=True)
     (out / "js" / "main.js").write_text(fill_preview((tdir / "js" / "main.js").read_text(), vals))
     if (tdir / "404.html").exists():
-        (out / "404.html").write_text(fill_preview((tdir / "404.html").read_text(), vals))
+        # a preview carries no site chat (plan 45, Open 5: no project, no allowance); the claim
+        # puts the tag back with the client's slug (claim_tree)
+        (out / "404.html").write_text(_site_chat().strip(fill_preview((tdir / "404.html").read_text(), vals)))
     (out / "css" / "preview.css").write_text((PREVIEW_OVERLAY / "css" / "preview.css").read_text())
 
 
@@ -4024,7 +4026,7 @@ def preview_claim(args):
     if r.returncode != 0 or not dest.exists():
         die(f"site new {repo} failed; the workspace is made — finish it by hand from {dest}", 2)
     if library:
-        claim_tree(tree, dest)
+        claim_tree(tree, dest, slug)
     else:
         has_photos = (dest / "photos.html").exists()
         (ws / "incoming").mkdir(exist_ok=True)
@@ -4074,10 +4076,23 @@ def form_actions(html_):
     return set(re.findall(r'<form[^>]*\baction="([^"]+)"', html_ or ""))
 
 
-def claim_tree(tree, dest):
-    """Copy the rendered site into the client repo (after `site new`), overlay cut, forms on."""
+def _site_chat():
+    """lib/site_chat.py: the site chat's script tag (B108), shared with `site`."""
+    lib = str(TOOLBELT / "lib")
+    if lib not in sys.path:
+        sys.path.insert(0, lib)
+    import site_chat
+    return site_chat
+
+
+def claim_tree(tree, dest, slug=None):
+    """Copy the rendered site into the client repo (after `site new`), overlay cut, forms on.
+    With `slug` (the new workspace's), every page gets the site chat's script tag naming it
+    (B108): the preview was rendered before the slug existed and carries no tag of its own."""
     files = claim_files(tree)
     pages = {f: claim_page((tree / f).read_text()) for f in files if f.endswith(".html")}
+    if slug:
+        pages = {f: _site_chat().ensure(h, slug) for f, h in pages.items()}
     for f, html_ in pages.items():
         left = re.findall(r"<!--/?[pc]:[\w-]+|noindex|class=\"demo-bar\"|disabled>", html_)
         if left:

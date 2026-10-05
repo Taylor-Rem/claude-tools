@@ -33,6 +33,12 @@ The customer book (`db add customers`, ROADMAP B122; --json on each for a machin
   db jobs add CUSTOMER "what" [--date --amount 450 --status booked|done|cancelled --source S --ref R --create]
   db jobs done JOB_ID|CUSTOMER [--amount]   db jobs set ID [--status …]   db jobs ls [CUSTOMER]
 
+Bookings that finish the job (`db add bookings`, ROADMAP B119):
+  db bookings setup                      # the booking key + the calendar feed key (Pages secrets), then site publish
+  db bookings feed [--new]               # the owner's calendar subscribe address, and how to add it
+  db bookings upgrade [--dry-run]        # an older site's bookings Functions brought up to the toolbelt's
+  db bookings status                     # what's on (never the keys)
+
 Every command takes --site NAME when the workspace has more than one site
 with a database, and --local to work on the local copy `wrangler pages dev`
 uses (repos/<site>/.wrangler/, for trying a change before it goes live).
@@ -1682,6 +1688,263 @@ def jobs_parser(p, common):
     ls.add_argument("--json", action="store_true"); ls.set_defaults(fn=cmd_jobs_ls)
 
 
+# ---------------------------------------------------------------- bookings that finish the job (B119)
+# The bookings collection's keys and upgrade. Two Pages secrets on the site:
+#   BOOKING_KEY        signs the customer's manage links and the posts to
+#                      patchlamp.com; derived, never stored: HMAC-SHA256 of
+#                      "booking-mail:<slug>" under PATCHLAMP_RELAY_SHARED_SECRET,
+#                      which is how patchlamp.com (App\Support\BookingSignature)
+#                      derives the same one. Without it the site still takes
+#                      bookings and the owner is mailed; the customer isn't.
+#   BOOKINGS_FEED_KEY  the calendar feed's key, random, kept in the site's
+#                      registry row (sites.json) as `bookings_feed_key` the way
+#                      `site` keeps `indexnow_key`. Never printed except inside
+#                      the subscribe address `db bookings feed` gives the owner.
+#
+#   db bookings setup [--dry-run]     both secrets on the Pages project (then site publish)
+#   db bookings feed [--new] [--json] the owner's subscribe address and how to add it
+#   db bookings upgrade [--dry-run]   the collection's Functions brought up to the toolbelt's
+#   db bookings status [--json]       what's on: the key, the feed, the files (no key shown)
+
+import hashlib  # noqa: E402
+import hmac  # noqa: E402
+import secrets  # noqa: E402
+
+BOOKINGS = COLLECTIONS / "bookings"
+OLD_THANKS = "Booked — we've got you down and we'll confirm by email or phone."
+NEW_THANKS = ("Got it, your request is in. We'll confirm by email or phone, and if you left an email, "
+              "a copy with a link to move or cancel it is on its way.")
+
+
+def booking_key(slug):
+    env = read_env()
+    secret = os.environ.get("PATCHLAMP_RELAY_SHARED_SECRET") or env.get("PATCHLAMP_RELAY_SHARED_SECRET")
+    if not secret:
+        die("PATCHLAMP_RELAY_SHARED_SECRET is not in the toolbelt, so there's no booking key to give the site. "
+            "Bookings still work and the owner is still mailed; the customer's mails wait on it (Taylor: setenv.sh).")
+    return hmac.new(secret.encode(), f"booking-mail:{slug}".encode(), hashlib.sha256).hexdigest()
+
+
+def bookings_site(a):
+    site = the_site(a)
+    if not any(p.name.endswith("_bookings.sql") for p in repo_migrations(site)):
+        die(f"repos/{site.name} has no bookings yet: `db add bookings` first (PLAYBOOK.md § Data)")
+    return site
+
+
+def site_url(site):
+    """The site's own address: the client's live URL, else its Pages host."""
+    live = (site.meta.get("live_url") or "").strip()
+    if live:
+        return live.rstrip("/")
+    return f"https://{site.row.get('pages_host') or (site.project or site.name) + '.pages.dev'}"
+
+
+def registry_save(reg):
+    REGISTRY.parent.mkdir(parents=True, exist_ok=True)
+    tmp = REGISTRY.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(reg, indent=2, sort_keys=True) + "\n")
+    tmp.replace(REGISTRY)
+
+
+def feed_key(site, new=False):
+    """The feed key from the registry row, made (and saved) when there's none or --new."""
+    reg = registry()
+    row = reg.setdefault(site.meta["slug"], {}).setdefault(site.name, {})
+    if new or not row.get("bookings_feed_key"):
+        row["bookings_feed_key"] = secrets.token_hex(20)
+        registry_save(reg)
+        site.row["bookings_feed_key"] = row["bookings_feed_key"]
+        return row["bookings_feed_key"], True
+    return row["bookings_feed_key"], False
+
+
+def pages_secrets(site, values, dry, say=say):
+    """Set Pages secrets on the site's project (production and preview); values never printed."""
+    names = ", ".join(sorted(values))
+    if dry or FAKE:
+        say(f"  {'would set' if dry else 'set (test stand-in: no Cloudflare call)'} Pages secrets {names} on {site.project}")
+        return
+    tok, acct = cf_creds()
+    if not (tok and acct):
+        die("CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID are not in the toolbelt (Taylor: setenv.sh)")
+    env = {k: {"type": "secret_text", "value": v} for k, v in values.items()}
+    body = json.dumps({"deployment_configs": {"production": {"env_vars": env}, "preview": {"env_vars": env}}}).encode()
+    req = urllib.request.Request(f"{CF_API}/accounts/{acct}/pages/projects/{site.project}", data=body, method="PATCH",
+                                 headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json",
+                                          "User-Agent": "claude-tools db"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            ok = json.loads(r.read().decode()).get("success")
+    except urllib.error.HTTPError as exc:
+        die(f"Cloudflare refused the secrets ({exc.code}); nothing else changed. `db doctor` shows the token's reach.")
+    except (urllib.error.URLError, OSError) as exc:
+        die(f"Cloudflare unreachable: {exc}")
+    if not ok:
+        die("Cloudflare didn't take the secrets; nothing else changed")
+    say(f"  set Pages secrets {names} on {site.project} (values never shown)")
+
+
+def pages_secret_names(site):
+    """The env var names on the Pages project (production), or None when it can't be read."""
+    if FAKE:
+        return None
+    code, res = cf_get(f"/pages/projects/{site.project}")
+    if code != 200:
+        return None
+    return set(((res.get("deployment_configs") or {}).get("production") or {}).get("env_vars") or {})
+
+
+def cmd_bookings_setup(a):
+    site = bookings_site(a)
+    say(f"bookings setup for repos/{site.name} (Pages project {site.project})")
+    values = {"BOOKING_KEY": booking_key(site.meta["slug"])}
+    if a.dry_run and not site.row.get("bookings_feed_key"):
+        say(f"  would make the calendar feed's key and keep it in {REGISTRY.name}")
+        values["BOOKINGS_FEED_KEY"] = "(new)"
+    else:
+        key, made = feed_key(site) if not a.dry_run else (site.row["bookings_feed_key"], False)
+        if made:
+            say(f"  made the calendar feed's key, kept in {REGISTRY.name} (not shown)")
+        values["BOOKINGS_FEED_KEY"] = key
+    pages_secrets(site, values, a.dry_run)
+    behind = bookings_behind(site)
+    if behind:
+        say(f"  note: {len(behind)} bookings file(s) are older than the toolbelt's: `db bookings upgrade` first")
+    say(f"next: `site publish {site.name}` (a secret reaches the Functions from the next deploy), then "
+        f"`db bookings feed` for the owner's calendar address")
+
+
+def cmd_bookings_feed(a):
+    site = bookings_site(a)
+    key, made = feed_key(site, new=a.new)
+    if made:
+        pages_secrets(site, {"BOOKINGS_FEED_KEY": key}, False,
+                      say=(lambda m: print(m, file=sys.stderr)) if a.json else say)
+    url = f"{site_url(site)}/api/bookings.ics?key={key}"
+    webcal = "webcal://" + url.split("://", 1)[1]
+    if a.json:
+        emit_json({"url": url, "webcal": webcal, "new_key": made})
+        return
+    if made:
+        say(f"(a {'new' if a.new else 'first'} feed key: it works once `site publish {site.name}` has run"
+            + ("; the old address stops working then" if a.new else "") + ")\n")
+    say(f"""Your bookings calendar. Subscribe once and every confirmed booking shows up on your phone.
+Keep this address to yourself: anyone with it can read your bookings.
+
+{url}
+
+Google Calendar (on a computer): Settings > Add calendar > From URL, paste it, Add calendar.
+  It then shows on your phone's Google Calendar too. Google refreshes it every few hours.
+iPhone: Settings > Calendar > Accounts > Add Account > Other > Add Subscribed Calendar,
+  paste it ({webcal}). Apple Calendar on a Mac: File > New Calendar Subscription.
+Outlook: Add calendar > Subscribe from web, paste it.
+
+It's one way: bookings go onto your calendar; your own appointments don't close times on the site.""")
+
+
+def bookings_files():
+    """The collection's own code: every Function but the /admin views (those are the site's to rename)."""
+    src = BOOKINGS / "functions"
+    return [f for f in sorted(src.rglob("*")) if f.is_file() and f.parent.name != "_admin"]
+
+
+def bookings_behind(site):
+    src = BOOKINGS / "functions"
+    out = []
+    for f in bookings_files():
+        dest = site.repo / "functions" / f.relative_to(src)
+        rel = f.relative_to(src)
+        if rel == Path("_lib/customers.js") and dest.exists():
+            continue                           # the customer book's own copy; `db add customers` owns it
+        if not dest.exists() or dest.read_bytes() != f.read_bytes():
+            out.append(str(Path("functions") / rel))
+    return out
+
+
+def old_thanks(site):
+    """The pages still carrying the calendar's old thanks line (it said nothing of the email)."""
+    return [p for p in sorted(site.repo.rglob("*.html")) if ".wrangler" not in p.parts and OLD_THANKS in p.read_text(errors="replace")]
+
+
+def cmd_bookings_upgrade(a):
+    site = bookings_site(a)
+    behind = bookings_behind(site)
+    pages = old_thanks(site)
+    for p in pages:
+        if not a.dry_run:
+            p.write_text(p.read_text().replace(OLD_THANKS, NEW_THANKS))
+        say(f"  {'would say' if a.dry_run else 'said'} the email and the link in the thanks line of repos/{site.name}/{p.relative_to(site.repo)}")
+    if not behind and not pages:
+        say(f"repos/{site.name}: the bookings Functions are the toolbelt's already")
+        return
+    src = BOOKINGS / "functions"
+    for rel in behind:
+        f = src / Path(rel).relative_to("functions")
+        dest = site.repo / rel
+        if not a.dry_run:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(f, dest)
+        say(f"  {'would write' if a.dry_run else 'wrote'} repos/{site.name}/{rel}")
+    if a.dry_run:
+        say("dry run: nothing written")
+        return
+    say(f"next: commit, `git -C repos/{site.name} push`, `db bookings setup`, `site publish {site.name}`")
+
+
+def cmd_bookings_status(a):
+    site = bookings_site(a)
+    names = pages_secret_names(site)
+    st = {
+        "files_behind": bookings_behind(site),
+        "feed_key_in_registry": bool(site.row.get("bookings_feed_key")),
+        "pages_secrets": None if names is None else {k: k in names for k in ("BOOKING_KEY", "BOOKINGS_FEED_KEY")},
+    }
+    if a.json:
+        emit_json(st)
+        return
+    say(f"bookings on repos/{site.name}:")
+    say(f"  files: {'up to date' if not st['files_behind'] else ', '.join(st['files_behind']) + ' behind (db bookings upgrade)'}")
+    say(f"  calendar feed: {'a key in the registry (db bookings feed gives the address)' if st['feed_key_in_registry'] else 'none yet (db bookings setup)'}")
+    if names is None:
+        say("  Pages secrets: not read (no Cloudflare access from here)")
+    else:
+        for k, on in st["pages_secrets"].items():
+            say(f"  {k}: {'set' if on else 'not set (db bookings setup)'}")
+
+
+def bookings_doctor(site, local, fail):
+    """db doctor's bookings lines: the files, the feed (that it exists, never the key), the two secrets."""
+    if not any(p.name.endswith("_bookings.sql") for p in repo_migrations(site)):
+        return
+    behind = bookings_behind(site)
+    say("  bookings: Functions " + ("up to date" if not behind else f"{len(behind)} file(s) behind (db bookings upgrade)"))
+    say("  bookings: calendar feed " + ("on (key in the registry; db bookings feed gives the address)"
+                                        if site.row.get("bookings_feed_key") else "not set up (db bookings setup)"))
+    names = None if local else pages_secret_names(site)
+    if names is not None:
+        missing = [k for k in ("BOOKING_KEY", "BOOKINGS_FEED_KEY") if k not in names]
+        if missing:
+            say(f"  note: bookings: {', '.join(missing)} not on the Pages project, so customers get no mail or the feed is "
+                f"off (db bookings setup, then site publish)")
+        else:
+            say("  bookings: BOOKING_KEY and BOOKINGS_FEED_KEY set (customers are mailed; values not shown)")
+
+
+@subcommands("bookings", "bookings: setup (the keys), feed (the owner's calendar), upgrade, status")
+def bookings_parser(p, common):
+    s = p.add_subparsers(dest="action", required=True)
+    u = s.add_parser("setup", parents=[common], help="the booking key and the feed key as Pages secrets")
+    u.add_argument("--dry-run", action="store_true"); u.set_defaults(fn=cmd_bookings_setup)
+    f = s.add_parser("feed", parents=[common], help="the owner's calendar subscribe address and how to add it")
+    f.add_argument("--new", action="store_true", help="a new key; the old address stops after the next publish")
+    f.add_argument("--json", action="store_true"); f.set_defaults(fn=cmd_bookings_feed)
+    g = s.add_parser("upgrade", parents=[common], help="the bookings Functions brought up to the toolbelt's")
+    g.add_argument("--dry-run", action="store_true"); g.set_defaults(fn=cmd_bookings_upgrade)
+    t = s.add_parser("status", parents=[common], help="the key, the feed, the files (no key shown)")
+    t.add_argument("--json", action="store_true"); t.set_defaults(fn=cmd_bookings_status)
+
+
 # ---------------------------------------------------------------- doctor
 
 def toml_binding(repo):
@@ -1786,6 +2049,7 @@ def cmd_doctor(a):
                 say("  secrets: SESSION_SECRET, ADMIN_EMAIL set on the Pages project (values not shown)")
         else:
             fail(f"Pages project {site.project}: {res}")
+    bookings_doctor(site, a.local, fail)
     owner, contact = site.d1.get("owner"), site.meta.get("contact_email")
     if owner and contact and owner.lower() != contact.lower():
         fail(f"/admin signs in {owner} but the sign-in email goes to the contact address {contact} "

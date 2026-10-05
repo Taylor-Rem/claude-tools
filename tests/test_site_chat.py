@@ -32,7 +32,7 @@ if sys_path not in _sys.path:
     _sys.path.insert(0, sys_path)
 import site_chat  # noqa: E402
 
-TAG = '<script src="https://patchlamp.com/site-chat.js" data-site="{{SLUG}}" defer></script>'
+TAG = '<script src="https://patchlamp.com/s/site-chat.js" data-site="{{SLUG}}" crossorigin="anonymous" defer></script>'
 SECTIONS = ("Business", "Phone", "Hours", "Area served", "Services and prices", "Policies", "Not offered")
 
 
@@ -75,14 +75,21 @@ class Helper(unittest.TestCase):
     def test_ensure_strip_and_find(self):
         out = site_chat.ensure(self.PAGE, "acme")
         self.assertEqual(site_chat.slugs(out), ["acme"])
-        self.assertIn('Patchlamp</a></p>\n    <script src="https://patchlamp.com/site-chat.js" data-site="acme"', out)
+        self.assertIn('Patchlamp</a></p>\n    <script src="https://patchlamp.com/s/site-chat.js" data-site="acme" crossorigin="anonymous"', out)
         self.assertEqual(site_chat.ensure(out, "acme"), out, "idempotent")
         self.assertEqual(site_chat.slugs(site_chat.ensure(out, "other")), ["other"], "a wrong slug is replaced")
         self.assertEqual(site_chat.strip(out), self.PAGE)
         bare = "<html><body>\n  <p>hi</p>\n</body></html>\n"
-        self.assertIn('  <script src="https://patchlamp.com/site-chat.js" data-site="acme" defer></script>\n</body>',
+        self.assertIn('  <script src="https://patchlamp.com/s/site-chat.js" data-site="acme" crossorigin="anonymous" defer></script>\n</body>',
                       site_chat.ensure(bare, "acme"))
         self.assertEqual(site_chat.ensure("<p>a fragment</p>", "acme"), "<p>a fragment</p>")
+        # B127: B108's form is still found, and ensure() moves it to the cookie-free path
+        old = self.PAGE.replace("  </footer>", '    <script src="https://patchlamp.com/site-chat.js" data-site="acme" defer></script>\n  </footer>')
+        self.assertEqual(site_chat.slugs(old), ["acme"])
+        self.assertFalse(site_chat.current(old, "acme"))
+        moved = site_chat.ensure(old, "acme")
+        self.assertTrue(site_chat.current(moved, "acme"))
+        self.assertNotIn('"https://patchlamp.com/site-chat.js"', moved)
 
     def test_site_doctor_names_the_pages_without_it(self):
         site = load("site_tool_chat2", ROOT / "bin" / "site")

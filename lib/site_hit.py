@@ -19,7 +19,7 @@ a claim adds it.
 import re
 
 SRC = "https://patchlamp.com/hit.js"
-CHAT_SRC = "https://patchlamp.com/site-chat.js"
+CHAT_SRCS = ("https://patchlamp.com/s/site-chat.js", "https://patchlamp.com/site-chat.js")   # B127's and B108's
 
 
 def tag(slug):
@@ -28,7 +28,8 @@ def tag(slug):
 
 LINE = re.compile(r'(?m)^[ \t]*<script\b[^>]*\bsrc="' + re.escape(SRC) + r'"[^>]*>\s*</script>[ \t]*\r?\n?')
 _SLUG = re.compile(r'<script\b[^>]*\bsrc="' + re.escape(SRC) + r'"[^>]*\bdata-site="([^"]*)"')
-_CHAT = re.compile(r'(?m)^([ \t]*)<script\b[^>]*\bsrc="' + re.escape(CHAT_SRC) + r'"[^>]*>\s*</script>[ \t]*\r?\n')
+_CHAT = re.compile(r'(?m)^([ \t]*)<script\b[^>]*\bsrc="(?:' + "|".join(re.escape(s) for s in CHAT_SRCS)
+                   + r')"[^>]*>\s*</script>[ \t]*\r?\n')
 _BADGE = re.compile(r'(?m)^([ \t]*)<(p|span|div|li)\b[^>]*class="patchlamp-badge".*?</\2>[ \t]*\r?\n')
 _BODY_END = re.compile(r'(?m)^([ \t]*)</body>')
 

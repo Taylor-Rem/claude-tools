@@ -37,7 +37,7 @@ import site_hit  # noqa: E402
 import sandbox_tools  # noqa: E402
 
 TAG = '<script src="https://patchlamp.com/hit.js" data-site="{{SLUG}}" crossorigin="anonymous" defer></script>'
-CHAT = '<script src="https://patchlamp.com/site-chat.js" data-site="{{SLUG}}" defer></script>'
+CHAT = '<script src="https://patchlamp.com/s/site-chat.js" data-site="{{SLUG}}" crossorigin="anonymous" defer></script>'
 
 
 def load(name, path):
@@ -175,6 +175,8 @@ class Site(unittest.TestCase):
         subprocess.run(["git", "init", "-q", str(d)], check=True)
         (d / "index.html").write_text(site_chat.ensure(PAGE, "acme"))
         (d / "about.html").write_text(site_hit.ensure(site_chat.ensure(PAGE, "acme"), "acme"))
+        b108 = PAGE.replace("  </footer>", '    <script src="https://patchlamp.com/site-chat.js" data-site="acme" defer></script>\n  </footer>')
+        (d / "old.html").write_text(site_hit.ensure(b108, "acme"))      # counted already, chat line in B108's form
         subprocess.run(["git", "-C", str(d), "add", "-A"], check=True)
         subprocess.run(["git", "-C", str(d), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x"], check=True)
         published = []
@@ -183,7 +185,14 @@ class Site(unittest.TestCase):
              mock.patch.object(self.site, "git", self._git_no_push(d)), contextlib.redirect_stdout(io.StringIO()) as out:
             self.site.cmd_counter(self.site.argparse.Namespace(name=None, check=False, dry_run=False))
         self.assertEqual(site_hit.slugs((d / "index.html").read_text()), ["acme"])
-        self.assertIn("added the count line to 1 page(s)", out.getvalue())
+        old = (d / "old.html").read_text()
+        self.assertTrue(site_chat.current(old, "acme"), "the chat line moved in the same pass")
+        lines = old.splitlines()
+        i = next(n for n, line in enumerate(lines) if "hit.js" in line)
+        self.assertIn("/s/site-chat.js", lines[i - 1])
+        self.assertEqual(old.count("hit.js"), 1)
+        self.assertIn("put the count line and the current chat line on 2 page(s)", out.getvalue())
+        self.assertEqual(self.site.tags_behind(d, "acme"), [])
         self.assertEqual(published, ["acme-site"])
         log = subprocess.run(["git", "-C", str(d), "log", "--format=%s", "-1"], capture_output=True, text=True).stdout
         self.assertIn("page-load count", log)
@@ -196,6 +205,15 @@ class Site(unittest.TestCase):
                 return 0, ""
             return real(repo, *args, check=check)
         return git
+
+
+class TemplateChatTag(unittest.TestCase):
+    def test_no_template_page_carries_the_old_chat_path(self):
+        for t in TYPES:
+            for p in sorted((SITES / t).glob("*.html")):
+                with self.subTest(page=f"{t}/{p.name}"):
+                    self.assertNotIn('"https://patchlamp.com/site-chat.js"', p.read_text())
+                    self.assertIn(CHAT, p.read_text())
 
 
 class Broker(unittest.TestCase):

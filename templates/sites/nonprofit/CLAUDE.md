@@ -30,8 +30,8 @@ how to change it, and how to check a change is live.
   every page you add. If the owner would rather not carry it, put `badge: off`
   on its own line in the workspace's `NOTES.md`: `site publish` then leaves it
   out of the published site and the line stays in the repo.
-- Right after the badge sits one more line, `<script src="https://patchlamp.com/site-chat.js"
-  data-site="…" defer></script>`: the site chat, which answers visitors from the
+- Right after the badge sits one more line, `<script src="https://patchlamp.com/s/site-chat.js"
+  data-site="…" crossorigin="anonymous" defer></script>`: the site chat, which answers visitors from the
   workspace's `facts.md`. Keep it on every page too, and copy it as it is onto a
   page you add (the `data-site` value is this client's name on patchlamp.com).
   Whether the bubble shows is the owner's switch on patchlamp.com, so the line

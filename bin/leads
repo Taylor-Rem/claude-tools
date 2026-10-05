@@ -8,7 +8,15 @@ B25 (the remote lane), B7 (the pipeline: log, follow-ups, the week).
       (held: not messaged, kept on file with a note — researching, or a weak fit)
       (inbound is the relay's lane: they came to us — the site form, the demo line, a reply)
       (each sets the stage and a default follow-up; --next overrides: tomorrow, fri, 3d, 2w, oct 3, none)
-  leads sent 1 3 4             # those picks from today's remote kit went out (or: sent all)
+      (messaged needs --channel facebook|instagram|email|text|call|form: where it went, so the
+       second touch knows where the first did; talked takes it too. B116)
+  leads sent 1 3 4             # those picks from today's remote kit / prep outline went out (or: sent all);
+                               # each gets the channel its kit planned (channel_by "kit"); --channel X overrides
+  leads channel "Max Pro" facebook --date 2026-10-02 --by cowork
+                               # backfill: the channel of a messaged/talked line logged without one (B116)
+  leads replies "Max Pro" 7/10 --newest 2026-09-20 --by cowork --evidence URL
+                               # how often the owner answers Google reviews, as a person read it (B116);
+                               # `brief` prints it. Places carries no owner replies, so nothing else can.
   leads next [fri]             # the day's list (default tomorrow): follow-ups due, then new leads
   leads due                    # follow-ups due today (the 8am report)
   leads show "Whistle Wok"     # one lead's history
@@ -215,6 +223,10 @@ or says the table isn't there yet. Nothing here writes to it.
 
 The pipeline's event shape (one JSON object a line; fields are added, never renamed):
   ts date key place_id name city outcome stage next note who email phone via reach
+  channel  where a messaged/talked touch went (facebook instagram email text call form, B116):
+           required on `messaged`; a line without one reads "channel not recorded", never a guess.
+           On a `touch_due` event it is the planned channel (dm email call). `channel_by` is "kit" when
+           `leads sent` took it from the kit (planned, not witnessed), "backfill WHO DATE" for `leads channel`.
   source   the channel (email dm group saturday referral inbound mail), so `week --by
            channel` can cut the funnel; `--source` sets it, else it follows --via, the
            channel the lead is already on, or the reach the kit used
@@ -3813,7 +3825,7 @@ def press_answer(args):
             out["logged"] = False
         else:
             note = f"pressed the link in the letter; preview: {url}" if url else f"pressed the link in the letter; the build failed: {why}"
-            code, _, err = press_self("log", name, "interested", note, "--place", pid, "--source", "email", "--next", "tomorrow")
+            code, _, err = press_self("log", name, "interested", note, "--place", pid, "--source", "email", "--channel", "email", "--next", "tomorrow")
             out["logged"] = code == 0
             if code != 0:
                 print(f"leads: the pipeline line wasn't written ({err[-160:]})", file=sys.stderr)
@@ -4163,6 +4175,41 @@ VIA_SOURCE = {"email": "email", "dm": "dm", "instagram": "dm", "facebook": "dm",
               "group": "group", "counter": "saturday", "visit": "saturday", "door": "saturday",
               "referral": "referral", "mail": "mail", "postcard": "mail",
               "inbound": "inbound", "form": "inbound", "text": "inbound", "web": "inbound"}
+# Where one touch went (B116, from Cowork's reach research 2026-10-05: a thread on Facebook recorded as Instagram).
+# `source` is how the lead came to us; `channel` is where this message went. Both stay.
+CHANNELS = ("facebook", "instagram", "email", "text", "call", "form")
+CHANNEL_NEEDED = ("messaged",)               # refused without one; `talked` records it when given
+CHANNEL_SHOWN = ("messaged", "talked")       # these say "channel not recorded" when they have none
+NO_CHANNEL = "channel not recorded"
+
+
+def event_channel(e):
+    """'by facebook' / 'channel not recorded' for a messaged or talked line, else None. Never a guess."""
+    if e.get("kind") == "touch_due" or e.get("outcome") not in CHANNEL_SHOWN:
+        return None
+    return f"by {e['channel']}" if e.get("channel") in CHANNELS else NO_CHANNEL
+
+
+def check_channel(channel, outcome, cmd):
+    """The channel as given, lowercased, or a refusal that says the one thing to add."""
+    c = (channel or "").strip().lower() or None
+    if c and c not in CHANNELS:
+        die(f"--channel is one of: {', '.join(CHANNELS)} (got \"{channel}\")")
+    if not c and outcome in CHANNEL_NEEDED:
+        die(f"a `{outcome}` line needs the channel it went by. Add --channel facebook|instagram|email|text|call|form "
+            f"to the same command (e.g. `leads {cmd} --channel instagram`) and run it again; nothing was written. "
+            "If you don't know where it went, ask Taylor rather than guess: the next touch is planned from it.")
+    return c
+
+
+def first_channel(lead):
+    """The channel the first message went by, or None when it wasn't recorded."""
+    for e in lead.get("history") or []:
+        if e.get("outcome") == "messaged":
+            return e.get("channel") if e.get("channel") in CHANNELS else None
+    return None
+
+
 # A conversation is a real exchange: the outcomes that mean somebody talked back (or came to us).
 CONVERSATION = ("visited", "talked", "inbound", "interested", "demo", "later", "trial", "won", "lost")
 # § 5.5: day 0 the fault and the preview, then these, and back in the pool at 90 — a good lead's (B73: STRENGTH_CADENCE).
@@ -4332,6 +4379,7 @@ def cmd_log(args):
     outcome = args.outcome.lower()
     if outcome not in OUTCOMES:
         die(f"outcome is one of: {', '.join(OUTCOMES)}")
+    channel = check_channel(getattr(args, "channel", None), outcome, f"log \"{' '.join(args.name)}\" {outcome} …")
     key, pid, name, city, row, others = resolve_lead(" ".join(args.name), args.place)
     stage, days, _ = OUTCOMES[outcome]
     nxt = parse_when(args.next, today) if args.next is not None else (today + dt.timedelta(days=days) if days else None)
@@ -4341,7 +4389,8 @@ def cmd_log(args):
     event = {"ts": dt.datetime.now(TZ).isoformat(timespec="seconds"), "date": today.isoformat(), "key": key,
              "place_id": pid, "name": name, "city": city, "outcome": outcome, "stage": stage,
              "next": nxt.isoformat() if nxt else None, "note": " ".join(args.note).strip() or None,
-             "who": args.who, "email": args.email, "phone": args.phone or (row or {}).get("phone"), "via": args.via}
+             "who": args.who, "email": args.email, "phone": args.phone or (row or {}).get("phone"), "via": args.via,
+             "channel": channel}
     if args.next is not None and nxt:
         event["next_by"] = "hand"          # a date Taylor named; the cadence never writes over it
     rc = None
@@ -4357,7 +4406,7 @@ def cmd_log(args):
     with open(PIPELINE, "a") as f:
         f.write(json.dumps({k: v for k, v in event.items() if v is not None or k == "next"}) + "\n")
     when = f"follow up {nxt.strftime('%a %-d %b')}" if nxt else "no follow-up"
-    print(f"Logged: {name}{' (' + city + ')' if city else ''} — {outcome} → {stage}; {when}."
+    print(f"Logged: {name}{' (' + city + ')' if city else ''} — {outcome}{' by ' + channel if channel else ''} → {stage}; {when}."
           + ("" if row or pid else " (not in the census; logged by name)"))
     if others:
         print("  (matched the census's " + name + (f" in {city}" if city else "")
@@ -4366,8 +4415,49 @@ def cmd_log(args):
     print_list(today + dt.timedelta(days=1), args.n)
 
 
+PREP_STATE = Path(os.environ.get("PREP_STATE", Path.home() / ".local/state/claude-tools/prep"))
+
+
+def kit_channels(last):
+    """{place_id: (channel, why)} — how the kit behind this remote.jsonl entry planned to reach each pick (B116).
+    A prep run's outline names its channel per message (`outline.json` → `channel.kind`, matched to the place by
+    each site's content.json); a remote kit's saved envelope (state/remote/<date>[-segment].json) has the picks'
+    handles, and the kit's page says DM on Instagram when there is one, else message on Facebook. Anything else —
+    an email-only pick, a directory profile, a call — the envelope can't tell apart, so it gets no channel."""
+    out = {}
+    if last.get("mode") == "prep" and last.get("run"):
+        run = PREP_STATE / last["run"]
+        try:
+            outline = json.loads((run / "outline.json").read_text())
+        except (OSError, ValueError):
+            outline = []
+        for m in outline:
+            try:
+                pid = json.loads((run / m["slug"] / "content.json").read_text()).get("place_id")
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+            kind = ((m.get("channel") or {}).get("kind") or "").lower()
+            if pid and kind in CHANNELS:
+                out[pid] = (kind, f"prep {last['run']} outline")
+        return out
+    name = f"{last.get('for')}-{last['segment']}.json" if last.get("segment") else f"{last.get('for')}.json"
+    try:
+        env = json.loads((STATE / "remote" / name).read_text())
+    except (OSError, ValueError):
+        return out
+    for pk in env.get("picks") or []:
+        if pk.get("instagram"):
+            out[pk.get("place_id")] = ("instagram", f"remote kit {last.get('for')}")
+        elif pk.get("facebook"):
+            out[pk.get("place_id")] = ("facebook", f"remote kit {last.get('for')}")
+    return out
+
+
 def cmd_sent(args):
-    """`leads sent 1 3 4` (or `all`): those picks from the last remote kit were messaged."""
+    """`leads sent 1 3 4` (or `all`): those picks from the last remote kit or prep outline were messaged. Each pick
+    is recorded with the channel its kit planned (`channel_by: "kit"`, planned rather than witnessed); `--channel X`
+    names it for every pick instead. A pick whose kit names no channel is refused by number; the rest are logged."""
+    override = check_channel(args.channel, None, "sent")
     p = STATE / "remote.jsonl"
     last = None
     if p.exists():
@@ -4385,13 +4475,19 @@ def cmd_sent(args):
             picks = [int(x) for x in args.which]
         except ValueError:
             die("say which: leads sent 1 3 4, or leads sent all")
-    today = dt.datetime.now(TZ).date()
-    done = []
     for i in picks:
         if not 1 <= i <= len(ids):
             die(f"the last remote kit ({last['for']}) has {len(ids)} leads, not {i}")
+    planned = {} if override else kit_channels(last)
+    today = dt.datetime.now(TZ).date()
+    nxt = today + dt.timedelta(days=OUTCOMES["messaged"][1])
+    done, refused = [], []
+    for i in picks:
+        channel, by = (override, None) if override else (planned.get(ids[i - 1]) or (None, None))
+        if not channel:
+            refused.append(i)
+            continue
         row = (_census_by_id(ids[i - 1]) or [{}])[0]
-        nxt = today + dt.timedelta(days=OUTCOMES["messaged"][1])
         biz = is_business(row)
         rc = (business_reach(row) if biz else reach(row)) if row else {}
         event = {"ts": dt.datetime.now(TZ).isoformat(timespec="seconds"), "date": today.isoformat(),
@@ -4401,13 +4497,139 @@ def cmd_sent(args):
                  "reach": ((business_reach_line(rc) if biz else reach_line(rc)) or None) if row else None,
                  "email": rc.get("email"), "source": source_for(args.source, args.via, "messaged", None, row, rc),
                  "was": ("; ".join(lead_faults(row, None, today)[0][:2]) or None) if row else None,
-                 "note": f"remote kit {last['for']} #{i}"}
+                 "note": f"remote kit {last['for']} #{i}", "channel": channel,
+                 "channel_by": "kit" if by else None}
         event.update(strength_fields(row or None, lead={"key": event["key"], "place_id": ids[i - 1]}))
         PIPELINE.parent.mkdir(parents=True, exist_ok=True)
         with open(PIPELINE, "a") as f:
             f.write(json.dumps({k: v for k, v in event.items() if v is not None}) + "\n")
-        done.append(event["name"])
-    print(f"Logged {len(done)} sent: {', '.join(done)}; follow up {nxt.strftime('%a %-d %b')} if they don't answer.")
+        done.append((i, event["name"], channel))
+    if done:
+        chans = {c for _, _, c in done}
+        if len(chans) == 1:
+            print(f"Logged {len(done)} sent by {chans.pop()}{' (as the kit planned)' if not override else ''}: "
+                  f"{', '.join(n for _, n, _ in done)}; follow up {nxt.strftime('%a %-d %b')} if they don't answer.")
+        else:
+            print(f"Logged {len(done)} sent (as the kit planned): "
+                  + ", ".join(f"{n} by {c}" for _, n, c in done)
+                  + f"; follow up {nxt.strftime('%a %-d %b')} if they don't answer.")
+    if refused:
+        nums = " ".join(str(i) for i in refused)
+        print(f"leads: not logged: {', '.join(f'#{i} {clean_name(names[i - 1])}' for i in refused)} — the kit names no "
+              f"Instagram or Facebook for {'it' if len(refused) == 1 else 'them'}, so the channel isn't known. Run "
+              f"`leads sent {nums} --channel facebook|instagram|email|text|call|form` with where it went; "
+              "ask Taylor if you don't know, never guess.", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_channel(args):
+    """B116 backfill: set the channel on one lead's messaged/talked line of `--date` that was logged without one.
+    The only command that edits a line already written, and it adds two fields only (`channel`, and `channel_by`
+    naming who knew); a line that already has a channel is left alone. A copy of the file goes beside it first."""
+    channel = check_channel(args.channel, None, "channel")
+    if not channel:
+        die(f"say the channel: {'|'.join(CHANNELS)}")
+    try:
+        day = dt.date.fromisoformat(args.date).isoformat()
+    except ValueError:
+        die(f"--date is YYYY-MM-DD (got {args.date})")
+    key, _, name, _, _, _ = resolve_lead(" ".join(args.name), args.place)
+    if key not in pipeline_state():
+        die(f"{name} isn't in the pipeline")
+    lines = PIPELINE.read_text().splitlines()
+    hits = []
+    for i, line in enumerate(lines):
+        try:
+            e = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if e.get("key") == key and e.get("date") == day and e.get("outcome") in CHANNEL_SHOWN \
+                and e.get("kind") != "touch_due":
+            hits.append((i, e))
+    if not hits:
+        die(f"{name} has no messaged/talked line on {day}; `leads show \"{name}\"` lists its dates")
+    todo = [(i, e) for i, e in hits if e.get("channel") not in CHANNELS]
+    if not todo:
+        print(f"{name} {day}: already recorded ({', '.join(event_channel(e) for _, e in hits)}); nothing changed.")
+        return
+    if len(todo) > 1:
+        die(f"{name} has {len(todo)} lines on {day} without a channel; fill them by hand, this won't pick one")
+    i, e = todo[0]
+    e["channel"], e["channel_by"] = channel, f"backfill {args.by.strip()} {now_date().isoformat()}"
+    if args.dry_run:
+        print(f"{name} {day} {e['outcome']}: would record by {channel} ({e['channel_by']}); nothing written.")
+        return
+    shutil.copy2(PIPELINE, PIPELINE.with_name(PIPELINE.name + ".bak"))
+    lines[i] = json.dumps(e)
+    tmp = PIPELINE.with_name(PIPELINE.name + ".tmp")
+    tmp.write_text("\n".join(lines) + "\n")
+    os.replace(tmp, PIPELINE)
+    print(f"{name} {day} {e['outcome']}: by {channel} ({e['channel_by']}).")
+
+
+# ---- owner replies to reviews, as a person read them (B116) -------------------------------------------
+# Google's Places API returns at most five reviews and none of the owner's answers (checked 2026-10-05 over the
+# kit's 98 cached listings: name, rating, text, author, publishTime, links; no reply field), so the count can't
+# come from what the kit fetches. A person who looked at the listing records it here and `brief` prints it with
+# who read it and when. Nothing is ever inferred: no reading, no line.
+
+LISTING_READS = STATE / "listing_reads.jsonl"
+READ_STALE_DAYS = 60
+
+
+def owner_replies_read(place_id, key=None):
+    """The latest reading for this place (or pipeline key), or None."""
+    if not LISTING_READS.exists():
+        return None
+    last = None
+    for line in LISTING_READS.read_text().splitlines():
+        try:
+            r = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if (place_id and r.get("place_id") == place_id) or (key and r.get("key") == key):
+            last = r
+    return last
+
+
+def owner_replies_line(r, today):
+    """'7 of the last 10 Google reviews, newest reply 2026-09-20 (read by cowork 5 Oct: URL)', or None."""
+    if not r:
+        return None
+    n, m = r["replied"], r["of"]
+    if r.get("sort") == "relevant":          # Google's default order is "most relevant", not newest
+        what = f"{n} of the first {m} Google reviews in Google's default order"
+    else:
+        what = f"{n} of the last {m} Google reviews" if m == 10 else f"{n} of {m} Google reviews"
+    newest = (f", newest reply {r['newest']}" if r.get("newest") else
+              ", no reply to read" if n == 0 else ", newest reply's date not recorded")
+    read_on = dt.date.fromisoformat(r["date"])
+    stale = " — over two months old, look again" if (today - read_on).days > READ_STALE_DAYS else ""
+    return f"{what}{newest} (read by {r['by']} {read_on.strftime('%-d %b')}: {r['evidence']}){stale}"
+
+
+def cmd_replies(args):
+    m = re.fullmatch(r"\s*(\d+)\s*/\s*(\d+)\s*", args.count or "")
+    if not m or not (0 <= int(m.group(1)) <= int(m.group(2)) <= 10) or int(m.group(2)) == 0:
+        die("say it as N/M from the newest reviews: 7/10, or 2/4 when the listing has four (M is at most 10)")
+    if not re.match(r"^https?://\S+\.\S+", args.evidence or ""):
+        die("--evidence is the URL of the listing you read (its Google Maps link)")
+    newest = None
+    if args.newest:
+        try:
+            newest = dt.date.fromisoformat(args.newest).isoformat()
+        except ValueError:
+            die(f"--newest is YYYY-MM-DD (got {args.newest})")
+    key, pid, name, city, row, _ = resolve_lead(" ".join(args.name), args.place)
+    if not pid and key not in pipeline_state():
+        die(f"{name} isn't in the census or the pipeline; --place PLACE_ID names it")
+    rec = {"ts": dt.datetime.now(TZ).isoformat(timespec="seconds"), "date": now_date().isoformat(), "key": key,
+           "place_id": pid, "name": name, "replied": int(m.group(1)), "of": int(m.group(2)), "newest": newest,
+           "by": args.by.strip(), "evidence": args.evidence.strip(), "sort": args.sort}
+    LISTING_READS.parent.mkdir(parents=True, exist_ok=True)
+    with open(LISTING_READS, "a") as f:
+        f.write(json.dumps({k: v for k, v in rec.items() if v is not None}) + "\n")
+    print(f"{name}: owner replies {owner_replies_line(rec, now_date())}")
 
 
 def due_by(day):
@@ -4422,7 +4644,9 @@ def lead_line(l, day):
     tag = f" · {late}d late" if late > 0 else ""
     last = l["history"][-1]
     what = (f"day {last.get('touch')} touch by {last.get('channel')}" if last.get("kind") == "touch_due"
-            else f"{last['outcome']} {last['date'][5:]}")
+            else f"{last['outcome']} {last['date'][5:]}" + (f" {event_channel(last)}" if event_channel(last) else ""))
+    if last.get("kind") == "touch_due" and first_message(l):
+        what += f" (first went {event_channel(first_message(l))})"
     note = f" — \"{last['note']}\"" if last.get("note") else ""
     parts = [l.get("who"), l.get("phone"), l.get("reach")]
     if l.get("email") and l["email"] not in (l.get("reach") or ""):
@@ -4494,7 +4718,8 @@ def cmd_show(args):
             shown = shown_reach(lead[x], judged) if x in ("email", "reach") else lead[x]
             print(f"  {x}: {shown}")
     for e in lead["history"]:
-        print(f"  {e['date']}  {e['outcome']:<10} {e.get('note') or ''}")
+        ch = event_channel(e) or (f"by {e['channel']}" if e.get("kind") == "touch_due" and e.get("channel") else "")
+        print(f"  {e['date']}  {e['outcome']:<10} {ch + ' · ' if ch else ''}{e.get('note') or ''}".rstrip())
 
 
 def reach_bit_field(bit):
@@ -4673,7 +4898,12 @@ def week_numbers(start, end):
             by.setdefault(lead_source(lead) or "unknown", dict.fromkeys(CHANNEL_COLS, 0))["fixes"] += 1
     total = {c: sum(r[c] for r in by.values()) for c in CHANNEL_COLS}
     due, done = followups(start, end, state)
-    return {"week_of": start.isoformat(), "by_channel": by, "total": total,
+    went = {}                                    # B116: where this week's messages actually went
+    for e in evs:
+        if e.get("outcome") in CHANNEL_SHOWN and e.get("kind") != "touch_due":
+            k = e.get("channel") if e.get("channel") in CHANNELS else NO_CHANNEL
+            went.setdefault(k, {"messaged": 0, "talked": 0})[e["outcome"]] += 1
+    return {"week_of": start.isoformat(), "by_channel": by, "total": total, "went_by": went,
             "indicators": {"messages sent": total["sent"], "previews built": len(previews),
                            "previews linked": len(linked), "replies": total["replies"],
                            "conversations": total["conversations"], "fixes / claims": total["fixes"],
@@ -4695,6 +4925,11 @@ def week_by_channel(w, start):
     lines.append(f"  {'total':<9} " + " · ".join(str(w['total'][c]) for c in CHANNEL_COLS))
     if not order:
         lines.append("  (nothing logged this week — `leads log` after every conversation)")
+    went = w.get("went_by") or {}
+    if went:
+        keys = sorted(went, key=lambda k: (k == NO_CHANNEL, -went[k]["messaged"], k))
+        lines.append("Where they went (B116): " + " · ".join(
+            f"{k} {went[k]['messaged']}" + (f" (+{went[k]['talked']} talked)" if went[k]["talked"] else "") for k in keys))
     lines.append("Indicators (GROWTH § 2.4, week 1 in brackets):")
     ind = w["indicators"]
     shown = [f"{k} {v}" + (f" [{WEEK1_TARGET[k]}]" if k in WEEK1_TARGET else "")
@@ -4872,7 +5107,9 @@ def touch_channel(lead, touch):
         return "call" if lead.get("phone") else ("dm" if has_dm else "email" if has_mail else "call")
     if touch == 45:                  # the other channel from the first message, like day 3
         touch = 3
-    want = ("dm" if lead_source(lead) == "email" else "email") if touch == 3 else "email"
+    first = first_channel(lead)              # B116: where the first message went, when it was recorded
+    went_email = first == "email" if first else lead_source(lead) == "email"
+    want = ("dm" if went_email else "email") if touch == 3 else "email"
     if want == "email" and has_mail:
         return "email"
     if want == "dm" and has_dm:
@@ -5323,6 +5560,9 @@ def cmd_brief(args):
     li = language_info(pid) if pid else None
     if li and li["language"] != "unknown":
         print(f"  Language: {li['language']} — {li['why']}")
+    replies = owner_replies_line(owner_replies_read(pid, key), today)     # B116: a person's reading, or nothing
+    if replies:
+        print(f"  Owner replies: {replies}")
     print(f"  Preview: {pv['url']} (down {dt.date.fromisoformat(pv['expires']).strftime('%-d %b')})" if pv
           else "  Preview: none yet — `leads preview \"" + name + "\"`")
     if lead:
@@ -5331,7 +5571,8 @@ def cmd_brief(args):
         for e in lead["history"]:
             what = (f"day {e.get('touch')} touch ({e.get('channel')})" if e.get("kind") == "touch_due"
                     else e.get("outcome") or "")
-            print(f"    {e['date']}  {what:<16} {e.get('note') or ''}".rstrip())
+            ch = event_channel(e)
+            print(f"    {e['date']}  {what:<16} {ch + ' · ' if ch else ''}{e.get('note') or ''}".rstrip())
     else:
         print("  Stage: not in the pipeline yet — this is a cold call")
     print()
@@ -7263,6 +7504,8 @@ def main():
     lg.add_argument("--source", choices=SOURCES, help="the channel, for the week's cut (default: from --via, "
                                                       "the channel this lead is already on, or the reach the kit used)")
     lg.add_argument("--place", help="census place id, when the name matched the wrong one")
+    lg.add_argument("--channel", help="where this touch went: " + "|".join(CHANNELS)
+                                       + " (required on messaged; B116)")
     lg.add_argument("--n", type=int, default=6, help="size of tomorrow's list")
     lg.set_defaults(fn=cmd_log)
 
@@ -7276,7 +7519,30 @@ def main():
     se.add_argument("which", nargs="+")
     se.add_argument("--via", default="dm")
     se.add_argument("--source", choices=SOURCES, help="the channel (default: from --via)")
+    se.add_argument("--channel", help="where they went: " + "|".join(CHANNELS)
+                    + " (default: each pick's channel from its kit; B116)")
     se.set_defaults(fn=cmd_sent)
+
+    ch = sub.add_parser("channel", help="backfill: the channel of a messaged/talked line logged without one (B116)")
+    ch.add_argument("name", nargs=1, help='"Name" or "Name, City"')
+    ch.add_argument("channel", help="|".join(CHANNELS))
+    ch.add_argument("--date", required=True, help="the date of the line to fill, YYYY-MM-DD")
+    ch.add_argument("--by", required=True, help="who looked and knows, e.g. cowork, taylor")
+    ch.add_argument("--place", help="census place id, when the name matched the wrong one")
+    ch.add_argument("--dry-run", action="store_true", help="say what would change, write nothing")
+    ch.set_defaults(fn=cmd_channel)
+
+    rp = sub.add_parser("replies", help="how often the owner answers Google reviews, as a person read it (B116)")
+    rp.add_argument("name", nargs=1, help='"Name" or "Name, City"')
+    rp.add_argument("count", help="N/M: replies among the newest M reviews, M at most 10 (7/10, 2/4)")
+    rp.add_argument("--newest", help="the date of the newest owner reply, YYYY-MM-DD")
+    rp.add_argument("--by", required=True, help="who read the listing, e.g. cowork, taylor")
+    rp.add_argument("--evidence", required=True, help="the listing's URL")
+    rp.add_argument("--sort", choices=("newest", "relevant"), default="newest",
+                    help="how the reviews were sorted when counted: newest (Sort → Newest; the default) or "
+                         "relevant (Google's default order)")
+    rp.add_argument("--place", help="census place id, when the name matched the wrong one")
+    rp.set_defaults(fn=cmd_replies)
 
     du = sub.add_parser("due", help="follow-ups due today")
     du.set_defaults(fn=cmd_due)

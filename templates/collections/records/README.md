@@ -1,19 +1,23 @@
 # records — the generic list
 
-**Status: ready.** The texts it answers: "I want to see my customers", "keep
-a list of the jobs we've got on", "somewhere I can note who's paid".
+**Status: ready.** The texts it answers: "keep a list of our suppliers",
+"somewhere I can note the parts on order" — a list kept by hand that isn't
+customers. **Customers and the jobs done for them are the `customers`
+collection** (the customer book, B122): found by phone or email, a last
+visit, the jobs under each. A site that already keeps customers here moves
+them with `db add customers` then `db customers import --from-records`.
 
 One table, `records` (`kind`, `title`, `status`, `notes`, `data` as JSON),
 shown and edited on `/admin/records`. There is no public form: the owner
 adds and edits entries on `/admin`, and Patch can by text:
 
-    db exec "INSERT INTO records (kind, title, notes) VALUES ('customer', 'Dana Ruiz', 'weekly service, Tuesdays')"
-    db query "SELECT id, title, status FROM records WHERE kind = 'customer' ORDER BY id DESC"
+    db exec "INSERT INTO records (kind, title, notes) VALUES ('supplier', 'Pool Parts West', 'net 30')"
+    db query "SELECT id, title, status FROM records WHERE kind = 'supplier' ORDER BY id DESC"
 
 **A named list** (what the owner will actually ask for): copy
-`functions/_admin/records.js` to `functions/_admin/customers.js`, set
-`title: "Customers"`, `singular: "customer"`, `filter: { kind: "customer" }`,
-and add `import customers from "./customers.js";` plus `customers` to the
+`functions/_admin/records.js` to `functions/_admin/suppliers.js`, set
+`title: "Suppliers"`, `singular: "supplier"`, `filter: { kind: "supplier" }`,
+and add `import suppliers from "./suppliers.js";` plus `suppliers` to the
 object in `functions/_admin/collections.js`. The list shows only that kind,
 and entries added there get it. Commit, push, `site publish`.
 

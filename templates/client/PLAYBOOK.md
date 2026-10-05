@@ -258,12 +258,25 @@ their email, works once, for 15 minutes.
   read it to them in plain words.
 - "mark the Johnson one done" → `db exec "UPDATE submissions SET
   status = 'done' WHERE id = <id>"` (they can do it on `/admin` too).
-- "a list of my customers" → `db add records`, then a named list as the
-  records README says (a copy of the view with `filter: { kind:
-  "customer" }`).
-- a spreadsheet of customers they already have → `db import records
-  incoming/<file>.csv` (the header row must match the columns; `--dry-run`
-  first).
+- "keep my customers" / "a list of my customers" → `db add customers`, the
+  customer book (`claude-tools/templates/collections/customers/README.md`
+  has every text): `/admin/customers` with the jobs under each customer and
+  a CSV in and out. A site that kept customers on `records` moves them with
+  `db customers import --from-records`. `records` stays for lists that
+  aren't customers (suppliers, parts on order).
+- a spreadsheet of customers → `db customers import incoming/<file>
+  --dry-run`, say the mapping it prints back to them, then without
+  `--dry-run`. It reads their own headers and merges anyone already in the
+  book by phone or email.
+- "who is 801-555-0134" → `db customers find 801-555-0134`; "when did we
+  last do the Smiths" → `db customers show Smith`; "who haven't I seen in
+  90 days" → `db customers lapsed`. Answer with names and dates in a line
+  or two, not the table. "Did the Smith pool, $85" → `db jobs add Smith
+  "Weekly service" --status done --amount 85`; "done with the Smith job"
+  → `db jobs done Smith`. "Dana doesn't want to hear from us" → `db
+  customers set Dana --contact stop`, and say it's noted. The lapsed list
+  is for the owner to read; sending to it is a separate thing nobody has
+  built yet, so say so if they ask.
 - "add a booking calendar" / "let people book a time" → `db add bookings`
   (it needs the database above), paste the calendar block it prints into a
   section of the home page, open the first times the owner names, commit,
@@ -288,7 +301,8 @@ their email, works once, for 15 minutes.
   it. "The pho
   is $14 now", "we're out of the cake", "we close at 8 Sundays" are one
   `db exec` each, no publish. Never quote a percentage or a fee for orders.
-- "send me all of it" / "I'm moving the site" → `db export`, then
+- "send me all of it" / "I'm moving the site" → `db export` (the customer
+  book is the `customers` and `jobs` files), then
   `SEND-FILE: exports/<date>/<table>.csv | everything in <list>`. The CSVs
   and JSON are the handover.
 - "I can't get in" → the link goes to the owner address only (`db

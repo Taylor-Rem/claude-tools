@@ -10,6 +10,8 @@ The clock is OUTREACH_NOW, so a day of five-minute ticks runs in a few seconds.
 import sys as _sys, pathlib as _pathlib  # noqa: E401
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parent))
 import _offline  # noqa: F401,E402  first, before any tool loads (tests/_offline.py)
+_sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parent.parent / "lib"))
+from prices import letter_sha  # noqa: E402  the hash outreach keeps Taylor's approval against (lib/prices.py)
 
 import base64
 import datetime as dt
@@ -380,7 +382,7 @@ class Letters(Base):
                 self.assertIn("advertisement", text)
                 self.assertIn(f"I can build you a preview of a site for {pick['name']} from your Google listing, "
                               "free, nothing to sign. Want to see it? Just reply.", text)
-                self.assertIn("$10 a month, no contract", text)
+                self.assertIn("$20 a month, no contract", text)
                 self.assertNotRegex(text, r"https?://|www\.|\.com\b")
         self.assertEqual([], Mail.sent)
         self.assertEqual([], self.seqs())
@@ -542,7 +544,7 @@ class NeverClaimsASite(Base):
         self.assertEqual([], Mail.sent)
 
     def approve_by_hash(self):
-        lines = [f"{n} {hashlib.sha256((self.tpl / (n + '.md')).read_bytes()).hexdigest()}"
+        lines = [f"{n} {letter_sha((self.tpl / (n + '.md')).read_text())}"
                  for n in ("batch-first", "batch-second", "batch-third")]
         (self.tpl / "APPROVED").write_text("\n".join(lines) + "\n")
 

@@ -2131,7 +2131,10 @@ def segment_email(c, fs):
 
 DM_HELLO = "Hi, I'm Taylor. A small business owner in American Fork."
 REVIEWS_MIN, RATING_MIN = 10, 4.5
-HOSTING_PRICE = "$10"          # Hosting on patchlamp.com/pricing (patchlamp/CLAIMS.md, Prices::TIERS); small plans first, 2026-10-02
+# Hosting on patchlamp.com/pricing (patchlamp/CLAIMS.md, Prices::TIERS); small plans first, 2026-10-02. The number
+# and the letter hash live in lib/prices.py, shared with `outreach`, so both say the same price.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+from prices import HOSTING_PRICE, letter_sha  # noqa: E402
 
 
 def pick_reviews(c):
@@ -4790,7 +4793,7 @@ OBJECTIONS = {
            "it's AI if anyone asks."),
     "price": ('"$99 is a lot."',
               "It's a website, hosting, the changes and someone to call, on one bill. The $50 plan is the same "
-              "thing for a menu or a price list that changes now and then; the $10 plan keeps a site up with a few small changes a month by text. "
+              f"thing for a menu or a price list that changes now and then; the {HOSTING_PRICE} plan keeps a site up with a few small changes a month by text. "
               "Start where you're comfortable; moving up is a text."),
     "think": ('"Let me think about it."',
               "Sure. What day should I text you? — a date, logged; the day-10 preview expiry does the rest."),
@@ -5087,12 +5090,13 @@ def today_data(args, today):
 
 
 def first_letter_approved():
-    """Taylor's word on the day-0 letter, read the way `outreach send` reads it: the hash of first.md in APPROVED."""
+    """Taylor's word on the day-0 letter, read the way `outreach send` reads it: first.md's hash (with its price
+    sentence, lib/prices.py) in APPROVED."""
     folder = Path(os.environ.get("OUTREACH_TEMPLATES", TOOLBELT / "templates" / "outreach"))
     t, a = folder / "first.md", folder / "APPROVED"
     if not (t.exists() and a.exists()):
         return False
-    sha = hashlib.sha256(t.read_text().encode()).hexdigest()
+    sha = letter_sha(t.read_text())
     return any(l.split()[:2] == ["first", sha] for l in a.read_text().splitlines() if not l.startswith("#"))
 
 

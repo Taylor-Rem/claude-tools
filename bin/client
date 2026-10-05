@@ -89,7 +89,7 @@ def relay_tiers():
 
 
 def plan_line(tier_key):
-    """'Hosting $10/mo · $10 usage/mo ($20 first) · 1 texter · no schedules', or '' when unknown."""
+    """'Hosting $20/mo · $10 usage/mo ($20 first) · 1 texter · no schedules', or '' when unknown."""
     tiers = relay_tiers()
     t = tiers.get(tier_key) if tiers else None
     if not t:

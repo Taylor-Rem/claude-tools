@@ -14,6 +14,8 @@ footer, a reply answered in one tick, a "no thanks" suppressed before the next r
 import sys as _sys, pathlib as _pathlib  # noqa: E401
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parent))
 import _offline  # noqa: F401,E402  first, before any tool loads: the suite stays off production (tests/_offline.py)
+_sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parent.parent / "lib"))
+from prices import letter_sha  # noqa: E402  the hash outreach keeps Taylor's approval against (lib/prices.py)
 
 import json
 import os
@@ -219,7 +221,7 @@ class Templates(Base):
         letter = r.stdout.split("───── first.md ─────")[1].split("─────")[0]
         self.assertIn("American Fork", letter)
         self.assertIn("Taylor Remund", letter)
-        self.assertIn("$10 a month, no contract", letter)
+        self.assertIn("$20 a month, no contract", letter)
         self.assertIn(ADDRESS, letter)
         self.assertIn(BOOKING, letter)
         self.assertIn("801-555-0100", letter)
@@ -269,7 +271,7 @@ class Templates(Base):
         import hashlib
         p = self.tpl / "first.md"
         p.write_text(p.read_text().replace("{address}", "American Fork, Utah"))
-        (self.tpl / "APPROVED").write_text(f"first  {hashlib.sha256(p.read_bytes()).hexdigest()}\n")
+        (self.tpl / "APPROVED").write_text(f"first  {letter_sha(p.read_text())}\n")
         r = self.send(expect=1)
         self.assertIn("breaks its own rules", r.stderr)
         self.assertIn("postal address", r.stderr)
@@ -292,7 +294,7 @@ class Send(Base):
             self.assertIn('"no thanks"', row["text"])
             self.assertIn("advertisement", row["text"])
             self.assertIn("Patch, my AI operator", row["text"])
-            self.assertIn("$10 a month, no contract", row["text"])
+            self.assertIn("$20 a month, no contract", row["text"])
             self.assertTrue(row["subject"].strip())
             self.assertEqual(MAILBOX, row["from"])
 
@@ -650,7 +652,7 @@ class InboxWithClassifier(Base):
         self.assertIn("answering:", r.stdout)
         out = self.sent_replies()
         self.assertEqual(1, len(out))
-        self.assertIn("$10 a month, no contract", out[0]["text"])
+        self.assertIn("$20 a month, no contract", out[0]["text"])
         self.assertIn("435-901-7141", out[0]["text"])            # text it yourself
         self.assertIn(BOOKING, out[0]["text"])
         self.assertIn(ADDRESS, out[0]["text"])
@@ -847,7 +849,7 @@ class InstantlyProvider(Base):
         self.assertEqual(1, len(rep))
         self.assertEqual("e9", rep[0]["body"]["reply_to_uuid"])
         self.assertEqual(MAILBOX, rep[0]["body"]["eaccount"])
-        self.assertIn("$10 a month", rep[0]["body"]["body"]["text"])
+        self.assertIn("$20 a month", rep[0]["body"]["body"]["text"])
         self.assertIn("<br/>", rep[0]["body"]["body"]["html"])
 
     def test_the_bounce_rate_comes_from_the_campaign_analytics(self):
@@ -932,6 +934,35 @@ class StatusAndDoctor(Base):
         r = self.run_it("send", "--kit", str(old), "--go", expect=0)
         self.assertIn("Nothing to send:", r.stdout)
         self.assertEqual([], self.outbox())
+
+
+class PriceInTheApproval(unittest.TestCase):
+    """B115: Taylor approved letters that said $10; the price is part of the text he read, so a new price
+    un-approves a letter that carries it, and a letter without a price sentence keeps its hash."""
+
+    def test_a_priced_letter_hashes_with_its_price(self):
+        import hashlib
+        import prices
+        raw = "Subject default: hi\n---\nIt's {price_line}.\n"
+        self.assertNotEqual(hashlib.sha256(raw.encode()).hexdigest(), prices.letter_sha(raw))
+        old = prices.PRICE_LINE
+        try:
+            before = prices.letter_sha(raw)
+            prices._PRICED = (("price_line", "$10 a month, no contract"), ("prices_line", prices.PRICES_LINE))
+            self.assertNotEqual(before, prices.letter_sha(raw))
+        finally:
+            prices._PRICED = (("price_line", old), ("prices_line", prices.PRICES_LINE))
+
+    def test_a_letter_without_a_price_keeps_its_plain_hash(self):
+        import hashlib
+        raw = "Subject default: hi\n---\nNo money here.\n"
+        self.assertEqual(hashlib.sha256(raw.encode()).hexdigest(), letter_sha(raw))
+
+    def test_hosting_is_twenty(self):
+        import prices
+        self.assertEqual("$20", prices.HOSTING_PRICE)
+        self.assertEqual("$20 a month, no contract", prices.PRICE_LINE)
+        self.assertTrue(prices.PRICES_LINE.startswith("The full range is $20, $50, $99, $250, $400 and $1,000"))
 
 
 if __name__ == "__main__":

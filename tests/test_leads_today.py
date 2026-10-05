@@ -9,6 +9,8 @@ written by hand, so no Google call is made and no real lead is touched. The cloc
 import sys as _sys, pathlib as _pathlib  # noqa: E401
 _sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parent))
 import _offline  # noqa: F401,E402  first, before any tool loads: the suite stays off production (tests/_offline.py)
+_sys.path.insert(0, str(_pathlib.Path(__file__).resolve().parent.parent / "lib"))
+from prices import letter_sha  # noqa: E402  the hash outreach keeps Taylor's approval against (lib/prices.py)
 
 import datetime as dt
 import json
@@ -281,7 +283,7 @@ class MorningEmailTest(Base):
         first = (LEADS.parent.parent / "templates" / "outreach" / "first.md").read_text()
         (tpl / "first.md").write_text(first)
         import hashlib
-        (tpl / "APPROVED").write_text(f"# test\nfirst          {hashlib.sha256(first.encode()).hexdigest()}\n")
+        (tpl / "APPROVED").write_text(f"# test\nfirst          {letter_sha(first)}\n")
         self.open = {"LEADS_MAIL_ADDRESS": "PO Box 1, American Fork, UT", "OUTREACH_TEMPLATES": str(tpl),
                      "OUTREACH_PROVIDER": "fake", "OUTREACH_PER_DAY": "5"}
         pick = {"category": "pool service", "segment": "services", "city": "Lehi", "phone": "(801) 555-0199",
@@ -327,7 +329,7 @@ class MorningEmailTest(Base):
         self.assertNotIn("http", out[cy + 1])                            # the link is message two, under it
         self.assertEqual(out[cy + 2], "When they say yes: https://previews.patchlamp.com/cy-pools/ — nothing to sign, "
                                       "and I'll take it down the moment you say so. Patch, my AI, does the work and "
-                                      "I'm on the hook for it; if you want it kept right after the free fix it's $10 "
+                                      "I'm on the hook for it; if you want it kept right after the free fix it's $20 "
                                       "a month to keep it up on your own web address, with a few small changes by "
                                       "text each month.")
         bo = next(l for l in out if l.startswith("2. Bo Pools"))
@@ -755,7 +757,7 @@ class RegisterTest(unittest.TestCase):
         self.assertEqual(self.m.then_text("https://p.example/x/"),
                          "https://p.example/x/ — nothing to sign, and I'll take it down the moment you say so. Patch, "
                          "my AI, does the work and I'm on the hook for it; if you want it kept right after the free "
-                         "fix it's $10 a month to keep it up on your own web address, with a few small changes by text "
+                         "fix it's $20 a month to keep it up on your own web address, with a few small changes by text "
                          "each month.")
         mp = self.m.morning_pick({"name": "Summit Roofing", "segment": "services", "faults": ["no website on Google"],
                                   "reviews": 92, "rating": 4.9, "preview_url": "https://p.example/x/",

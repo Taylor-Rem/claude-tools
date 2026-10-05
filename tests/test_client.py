@@ -55,14 +55,14 @@ class ClientTiers(unittest.TestCase):
     def test_ls_names_the_new_tiers(self):
         out = self.run_client("ls").stdout
         self.assertIn("on Hosting", out)
-        self.assertIn("plan: Hosting $10/mo · $10 usage/mo ($20 first) · 1 texter · no schedules", out)
+        self.assertIn("plan: Hosting $20/mo · $10 usage/mo ($20 first) · 1 texter · no schedules", out)
         self.assertIn("on Light", out)
         self.assertIn("plan: Light $50/mo · $40 usage/mo ($80 first) · 1 texter · no schedules", out)
 
     def test_doctor_shows_the_plan(self):
         out = self.run_client("doctor", "hostco").stdout
         self.assertIn("relay: on Hosting;", out)
-        self.assertIn("plan: Hosting $10/mo", out)
+        self.assertIn("plan: Hosting $20/mo", out)
 
     def test_doctor_counts_doc_inside_the_wall(self):
         out = self.run_client("doctor", "hostco").stdout

@@ -47,7 +47,8 @@ decided: Patch found it and drafted it, Taylor reads every one before it goes.
 
 The letters live in templates/outreach/ and Taylor approves their exact text once:
 APPROVED holds a sha256 per template and `send` refuses while one is missing or
-stale, so editing a letter un-approves it. The subjects come from the same file.
+stale, so editing a letter un-approves it; the hash covers the price sentences a
+letter carries too (lib/prices.py), so a new price un-approves it the same way. The subjects come from the same file.
 `outreach doctor` renders a sample of each and checks the rules (four to six
 sentences, one link in the letter — the preview; the booking link, the phone and
 the address sit in the signature, which is not the pitch — the ad identification,
@@ -223,14 +224,13 @@ DISCLOSURE_BATCH = "Patch, my AI operator, found this and drafted it; I approve 
 OFFER_SENTENCE = ("I can build you a preview of a site for {business} from your Google listing, free, "
                   "nothing to sign. Want to see it? Just reply.")
 
-# The only price sentences that may leave this tool. Hosting, exactly as /pricing and
+# The only price sentences that may leave this tool: Hosting, exactly as /pricing and
 # patchlamp/CLAIMS.md state it (small plans first: Taylor 2026-10-01, the first quote settled
 # 2026-10-02 — a lead whose site is broken or missing meets the small plan; the letters carry
-# the one clause that keeps $10 from surprising anyone later); change these only with a
-# CLAIMS.md row in hand.
-PRICE_LINE = "$10 a month, no contract"
-PRICES_LINE = ("The full range is $10, $50, $99, $250, $400 and $1,000 a month as the amount of work "
-               "goes up; all six are on the pricing page.")
+# the one clause that keeps the small plan from surprising anyone later). They live in
+# lib/prices.py, shared with `leads`; change them there, only with a CLAIMS.md row in hand.
+from prices import PRICE_LINE, PRICES_LINE, letter_sha  # noqa: E402
+
 DEMO_NUMBER_DEFAULT = "435-901-7141"
 
 # The classifier. Haiku, no thinking, a couple of hundred tokens out.
@@ -466,7 +466,7 @@ class Template:
 
     @property
     def sha(self):
-        return hashlib.sha256(self.raw.encode()).hexdigest()
+        return letter_sha(self.raw)      # the text plus the price sentences it carries (lib/prices.py)
 
     def subject_for(self, fault):
         f = (fault or "").lower()

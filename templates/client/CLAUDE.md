@@ -10,6 +10,10 @@ here and nothing of anyone else's does:
   they sent (a PDF, a spreadsheet, a CSV, a Word file) under their own names.
   Move photos where they belong; read files with `doc text`; delete both from
   here once you're done with them.
+- `receipts/` — receipt photos kept with their ledger rows (`db ledger add
+  --photo` copies them here; PLAYBOOK § Files). The owner's record, so
+  never on a page; leave the files alone (each ledger row points at its
+  photo, and `db ledger rm` removes both together).
 - `mail/drafts/<id>.txt` — the replies you draft to mail the business got
   (PLAYBOOK § Email); the relay reads them, the owner says send.
 - `memory.md` — what you know about this business from earlier conversations
@@ -299,6 +303,8 @@ site: move it into that repo's images folder with a meaningful name, add it
 where they asked (or the gallery if they didn't say), with real alt text,
 commit, push. If the message didn't say which dish or page the photo is for
 and it isn't obvious, ask. Delete the file from `incoming/` once it's placed.
+A photo of a receipt is not for the site: it goes in their ledger with
+`db ledger add … --photo` (PLAYBOOK § Files, "A receipt"), never a page.
 
 ## Files (a spreadsheet, a PDF, a Word file)
 

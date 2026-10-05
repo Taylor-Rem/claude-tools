@@ -33,6 +33,12 @@ The customer book (`db add customers`, ROADMAP B122; --json on each for a machin
   db jobs add CUSTOMER "what" [--date --amount 450 --status booked|done|cancelled --source S --ref R --create]
   db jobs done JOB_ID|CUSTOMER [--amount]   db jobs set ID [--status …]   db jobs ls [CUSTOMER]
 
+The ledger, receipts by photo (`db add ledger`, ROADMAP B124; --json on add, ls, set):
+  db ledger add VENDOR AMOUNT [--date --category --note --photo incoming/x.jpg]   # keeps the photo in receipts/
+  db ledger ls [--month september|2026-09|last] [--search truck] [--vendor --category --days]   # rows + the total
+  db ledger set ID [--date --vendor --amount --category --note --photo]   db ledger rm ID
+  db ledger export                       # ledger.csv/.json + receipts.zip (plain `db export` zips them too)
+
 Every command takes --site NAME when the workspace has more than one site
 with a database, and --local to work on the local copy `wrangler pages dev`
 uses (repos/<site>/.wrangler/, for trying a change before it goes live).
@@ -426,6 +432,11 @@ def columns(site, local, table):
     return [r["name"] for r in rows_of(d1(site, local, command=f"PRAGMA table_info({ident(table)})"))]
 
 
+# Run after `db export` writes its tables: hook(site, out_dir, table_names). A collection
+# with files beside its rows (the ledger's receipt photos, B124) adds one in its own block.
+EXPORT_HOOKS = []
+
+
 def cmd_export(a, only=None):
     site = the_site(a)
     day = datetime.date.today().isoformat()
@@ -450,6 +461,8 @@ def cmd_export(a, only=None):
             w.writerows(rows)
         (out / f"{t}.json").write_text(json.dumps(rows, indent=2, ensure_ascii=False) + "\n")
         say(f"  {t}: {len(rows)} row{'s' if len(rows) != 1 else ''} -> exports/{day}/{t}.csv, .json")
+    for hook in EXPORT_HOOKS:
+        hook(site, out, names)
     say(f"exported {len(names)} table{'s' if len(names) != 1 else ''} to exports/{day}/ "
         + (f"(left out: {', '.join(SYSTEM_TABLES)}, the sign-in and migration bookkeeping)" if not only else ""))
 
@@ -1680,6 +1693,335 @@ def jobs_parser(p, common):
     ls.add_argument("customer", nargs="?"); ls.add_argument("--status", choices=JOB_STATUSES)
     ls.add_argument("--days", type=int); ls.add_argument("--limit", type=int, default=50)
     ls.add_argument("--json", action="store_true"); ls.set_defaults(fn=cmd_jobs_ls)
+
+
+# ---------------------------------------------------------------- the ledger (B124)
+# Receipts by photo, from templates/collections/ledger: Patch reads a receipt
+# (vendor, date, total) and files it with `db ledger add`, which also keeps the
+# photo at receipts/<YYYY-MM>/<date>-<vendor>-<id>.<ext> in the workspace — the
+# workspace, because incoming/ is emptied once a photo is used, the relay's own
+# archive is outside the client's wall, and the site is public. `db export`
+# zips receipts/ into exports/<date>/receipts.zip beside ledger.csv, with the
+# same paths the `photo` column holds, so `site handover` carries both.
+#
+# For machines (the weekly report, relay/weekly.py):
+#   db ledger ls --month 2026-10 --json  -> {"month", "count", "total_cents", "by_category": [{category, count,
+#                                           total_cents}], "rows": [receipt, …]}   (rows capped by --limit)
+#   db ledger add VENDOR AMOUNT … --json -> {"receipt": …, "month": {month, count, total_cents}}; exit 3 +
+#                                           {"error", "existing"} when the same vendor, date and amount is there
+# A receipt is {id, date, month, vendor, amount_cents, category, note, photo, source, created_at, updated_at}.
+
+LEDGER_COLS = ("id", "date", "month", "vendor", "amount_cents", "category", "note", "photo", "source",
+               "created_at", "updated_at")
+RECEIPTS_DIR = "receipts"
+RECEIPT_TYPES = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".gif", ".pdf"}
+RECEIPT_MAX_BYTES = 20 * 1024 * 1024
+MONTH_NAMES = {m.lower(): i for i, m in enumerate(
+    ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
+     "November", "December"), 1)}
+
+
+def the_ledger(a):
+    site = the_site(a)
+    if not has_table(site, a.local, "ledger"):
+        die("this site has no ledger yet: `db add ledger` (PLAYBOOK.md § Files, receipts). Until then a receipt "
+            "can't be filed; say so, and that it's one step to add.")
+    return site
+
+
+def month_arg(v, today=None):
+    """'2026-09', '9/2026', 'september', 'sep 2026', 'this', 'last' -> '2026-09'; '' when it isn't a month.
+    A month named without a year is the latest one that isn't in the future."""
+    today = today or datetime.date.today()
+    s = str(v or "").strip().lower()
+    if s in ("this", "this month", "now"):
+        return today.strftime("%Y-%m")
+    if s in ("last", "last month"):
+        return (today.replace(day=1) - datetime.timedelta(days=1)).strftime("%Y-%m")
+    if m := re.fullmatch(r"(\d{4})-(\d{1,2})", s):
+        y, mo = int(m.group(1)), int(m.group(2))
+    elif m := re.fullmatch(r"(\d{1,2})/(\d{4})", s):
+        mo, y = int(m.group(1)), int(m.group(2))
+    elif m := re.fullmatch(r"([a-z]+)\.?(?:,?\s+(\d{4}))?", s):
+        mo = next((i for name, i in MONTH_NAMES.items() if len(m.group(1)) >= 3 and name.startswith(m.group(1))), 0)
+        y = int(m.group(2)) if m.group(2) else (today.year if mo <= today.month else today.year - 1)
+    else:
+        return ""
+    return f"{y:04d}-{mo:02d}" if 1 <= mo <= 12 and 2000 <= y <= 2100 else ""
+
+
+def month_label(month):
+    try:
+        return datetime.date.fromisoformat(month + "-01").strftime("%B %Y")
+    except ValueError:
+        return month
+
+
+def receipt_line(r):
+    try:
+        day = datetime.date.fromisoformat(r["date"]).strftime("%b %-d, %Y")
+    except (TypeError, ValueError):
+        day = r.get("date") or "no date"
+    return (f"#{r['id']} {day} {r['vendor']} {money_text(r['amount_cents'])}"
+            + (f" ({r['category']})" if r.get("category") else "")
+            + (f" — {r['note']}" if r.get("note") else "")
+            + ("" if r.get("photo") else " [no photo]"))
+
+
+def vendor_slug(vendor):
+    return re.sub(r"[^a-z0-9]+", "-", str(vendor).lower()).strip("-")[:40] or "receipt"
+
+
+def ws_file(site, path):
+    """A file the run named, as a resolved path inside the workspace that is a regular file and no link."""
+    p = Path(path)
+    p = p if p.is_absolute() else Path.cwd() / p
+    ws = site.ws.resolve()
+    try:
+        real = p.resolve(strict=True)
+    except (OSError, RuntimeError):
+        die(f"no such file: {path}")
+    if not real.is_relative_to(ws):
+        die(f"{path} is outside this workspace; a receipt photo is one sent here (incoming/…)")
+    if p.is_symlink() or not real.is_file():
+        die(f"{path} isn't a plain file")
+    return real
+
+
+def receipts_root(site, make=False):
+    """The workspace's receipts/ (made when asked); refuses a receipts/ that is a link."""
+    root = site.ws / RECEIPTS_DIR
+    if root.is_symlink() or (root.exists() and not root.is_dir()):
+        die(f"{RECEIPTS_DIR}/ in this workspace is not a plain folder; tell Taylor (FORWARD-TO-TAYLOR) and file the row without the photo")
+    if make:
+        root.mkdir(exist_ok=True)
+    return root
+
+
+def keep_photo(site, src, day, vendor, rid):
+    """Copy the receipt into receipts/<YYYY-MM>/ -> its workspace-relative path."""
+    real = ws_file(site, src)
+    ext = real.suffix.lower()
+    if ext not in RECEIPT_TYPES:
+        die(f"{src}: a receipt is a photo or a PDF ({', '.join(sorted(RECEIPT_TYPES))})")
+    if real.stat().st_size > RECEIPT_MAX_BYTES:
+        die(f"{src} is over {RECEIPT_MAX_BYTES // (1024 * 1024)} MB")
+    folder = receipts_root(site, make=True) / day[:7]
+    if folder.is_symlink():
+        die(f"{RECEIPTS_DIR}/{day[:7]} is a link, not a folder; file the row without the photo and tell Taylor")
+    folder.mkdir(exist_ok=True)
+    dest = folder / f"{day}-{vendor_slug(vendor)}-{rid}{'.jpg' if ext == '.jpeg' else ext}"
+    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o644)
+    with os.fdopen(fd, "wb") as out, open(real, "rb") as inp:
+        shutil.copyfileobj(inp, out)
+    return str(dest.relative_to(site.ws))
+
+
+def receipt(site, local, rid):
+    got = rows(site, local, f"SELECT {', '.join(LEDGER_COLS)} FROM ledger WHERE id = {int(rid)}")
+    return got[0] if got else None
+
+
+def month_total(site, local, month):
+    r = rows(site, local, f"SELECT COUNT(*) AS n, COALESCE(SUM(amount_cents), 0) AS t FROM ledger WHERE month = {lit(month)}")[0]
+    return {"month": month, "count": r["n"], "total_cents": r["t"]}
+
+
+def cmd_ledger_add(a):
+    site = the_ledger(a)
+    vendor = " ".join(str(a.vendor).split())[:200]
+    if not vendor:
+        die("a receipt needs the vendor's name (as the receipt says it)")
+    cents = money_cents(a.amount)
+    if not cents:
+        die(f"{a.amount!r}: a receipt needs its total (42.18); a refund is negative (-12.50)")
+    day = iso_date(a.date) if a.date else datetime.date.today().isoformat()
+    if not day:
+        die(f"--date {a.date!r} isn't a date (2026-10-03, 10/3/2026, Oct 3, 2026)")
+    if day > (datetime.date.today() + datetime.timedelta(days=1)).isoformat() and not a.force:
+        die(f"--date {day} is after today. Check the date on the receipt (a misread year?); --force if it's right")
+    if a.photo:
+        ws_file(site, a.photo)                              # refuse a bad photo before anything is written
+    same = rows(site, a.local, f"SELECT {', '.join(LEDGER_COLS)} FROM ledger WHERE date = {lit(day)} "
+                               f"AND lower(vendor) = {lit(vendor.lower())} AND amount_cents = {cents} LIMIT 1")
+    if same and not a.force:
+        if a.json:
+            emit_json({"error": "already filed", "existing": same[0]})
+        else:
+            print("db: already filed (the same vendor, date and amount): " + receipt_line(same[0])
+                  + "\n  a second receipt like it really is two: add --force", file=sys.stderr)
+        sys.exit(3)
+    note = (a.note or "").strip()[:500] or None
+    category = (a.category or "").strip().lower()[:60] or None
+    res = d1(site, a.local, command=(
+        "INSERT INTO ledger (date, vendor, amount_cents, category, note, source) VALUES ("
+        + ", ".join(lit(v) for v in (day, vendor, cents, category, note, a.source or "text")) + ")"))
+    rid = (res[-1].get("meta") or {}).get("last_row_id") or rows(site, a.local, "SELECT MAX(id) AS id FROM ledger")[0]["id"]
+    if a.photo:
+        path = keep_photo(site, a.photo, day, vendor, rid)
+        d1(site, a.local, command=f"UPDATE ledger SET photo = {lit(path)} WHERE id = {int(rid)}")
+    r = receipt(site, a.local, rid)
+    m = month_total(site, a.local, day[:7])
+    if a.json:
+        emit_json({"receipt": r, "month": m})
+        return
+    say("filed " + receipt_line(r) + (f"\n  photo kept at {r['photo']}" if r.get("photo") else ""))
+    say(f"  {month_label(m['month'])} so far: {money_text(m['total_cents'])} over {m['count']} receipt{'s' if m['count'] != 1 else ''}")
+    if day < (datetime.date.today() - datetime.timedelta(days=400)).isoformat():
+        say(f"  (the date is over a year ago: {day}. If the receipt is newer, fix it: db ledger set {rid} --date …)")
+
+
+def ledger_where(a):
+    where = []
+    if a.month:
+        m = month_arg(a.month)
+        if not m:
+            die(f"--month {a.month!r} isn't a month (2026-09, september, last)")
+        where.append(f"month = {lit(m)}")
+    if a.days:
+        where.append(f"date >= {lit((datetime.date.today() - datetime.timedelta(days=a.days)).isoformat())}")
+    if a.vendor:
+        where.append(f"lower(vendor) LIKE {lit('%' + a.vendor.lower() + '%')}")
+    if a.category:
+        where.append(f"lower(category) = {lit(a.category.lower())}")
+    if a.search:
+        like = lit("%" + a.search.lower() + "%")
+        where.append(f"(lower(vendor) LIKE {like} OR lower(COALESCE(note, '')) LIKE {like} "
+                     f"OR lower(COALESCE(category, '')) LIKE {like})")
+    return " WHERE " + " AND ".join(where) if where else ""
+
+
+def cmd_ledger_ls(a):
+    site = the_ledger(a)
+    w = ledger_where(a)
+    tot = rows(site, a.local, f"SELECT COUNT(*) AS n, COALESCE(SUM(amount_cents), 0) AS t FROM ledger{w}")[0]
+    cats = rows(site, a.local, f"SELECT COALESCE(category, '') AS category, COUNT(*) AS count, "
+                               f"SUM(amount_cents) AS total_cents FROM ledger{w} GROUP BY 1 ORDER BY 3 DESC")
+    got = rows(site, a.local, f"SELECT {', '.join(LEDGER_COLS)} FROM ledger{w} ORDER BY date DESC, id DESC "
+                              f"LIMIT {max(0, int(a.limit))}")
+    month = month_arg(a.month) if a.month else None
+    if a.json:
+        emit_json({"month": month, "count": tot["n"], "total_cents": tot["t"], "by_category": cats, "rows": got})
+        return
+    what = month_label(month) if month else ("these" if w else "everything in the ledger")
+    if not tot["n"]:
+        say(f"no receipts {'like that' if w else 'yet'}" + (f" in {what}" if month else ""))
+        return
+    for r in got:
+        say(receipt_line(r))
+    if tot["n"] > len(got):
+        say(f"… and {tot['n'] - len(got)} more (--limit)")
+    say(f"{what}: {money_text(tot['t'])} over {tot['n']} receipt{'s' if tot['n'] != 1 else ''}")
+    if len(cats) > 1:
+        say("  by category: " + "; ".join(f"{c['category'] or 'none'} {money_text(c['total_cents'])}" for c in cats))
+
+
+def cmd_ledger_set(a):
+    site = the_ledger(a)
+    r = receipt(site, a.local, a.id)
+    if not r:
+        die(f"no receipt #{a.id} (db ledger ls)", 4)
+    sets = []
+    if a.date:
+        d = iso_date(a.date)
+        if not d:
+            die(f"--date {a.date!r} isn't a date")
+        sets.append(f"date = {lit(d)}")
+    if a.amount:
+        c = money_cents(a.amount)
+        if not c:
+            die(f"{a.amount!r} isn't a total")
+        sets.append(f"amount_cents = {c}")
+    for k in ("vendor", "category", "note"):
+        v = getattr(a, k)
+        if v is not None:
+            v = v.strip()
+            sets.append(f"{k} = {lit((v.lower() if k == 'category' else v) or None)}")
+    if a.photo:
+        path = keep_photo(site, a.photo, iso_date(a.date) if a.date else r["date"], a.vendor or r["vendor"], r["id"])
+        sets.append(f"photo = {lit(path)}")
+    if not sets:
+        die("nothing to change: --date, --vendor, --amount, --category, --note or --photo")
+    d1(site, a.local, command=f"UPDATE ledger SET {', '.join(sets)}, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
+                              f"WHERE id = {int(r['id'])}")
+    r = receipt(site, a.local, r["id"])
+    emit_json(r) if a.json else say("changed " + receipt_line(r))
+
+
+def cmd_ledger_rm(a):
+    site = the_ledger(a)
+    r = receipt(site, a.local, a.id)
+    if not r:
+        die(f"no receipt #{a.id} (db ledger ls)", 4)
+    d1(site, a.local, command=f"DELETE FROM ledger WHERE id = {int(r['id'])}")
+    gone = ""
+    if r.get("photo"):
+        p = site.ws / r["photo"]
+        root = receipts_root(site).resolve()
+        others = rows(site, a.local, f"SELECT COUNT(*) AS n FROM ledger WHERE photo = {lit(r['photo'])}")[0]["n"]
+        if not others and not p.is_symlink() and p.is_file() and p.resolve().is_relative_to(root):
+            p.unlink()
+            gone = f" and its photo ({r['photo']})"
+    say(f"removed {receipt_line(r)}{gone}")
+
+
+def zip_receipts(site, out, names):
+    """EXPORT_HOOKS: with the ledger exported, receipts/ -> out/receipts.zip (plain files only, no links)."""
+    if "ledger" not in names:
+        return
+    root = site.ws / RECEIPTS_DIR
+    if not root.is_dir() or root.is_symlink():
+        say("  receipts: no photos kept yet")
+        return
+    import zipfile
+    n = 0
+    with zipfile.ZipFile(out / "receipts.zip", "w", zipfile.ZIP_DEFLATED) as z:
+        for d, dirs, files in os.walk(root, followlinks=False):
+            dirs[:] = sorted(x for x in dirs if not (Path(d) / x).is_symlink())
+            for f in sorted(files):
+                p = Path(d) / f
+                if p.is_symlink() or not p.is_file():
+                    continue
+                z.write(p, str(p.relative_to(site.ws)))
+                n += 1
+    say(f"  receipts: {n} photo{'s' if n != 1 else ''} -> exports/{out.name}/receipts.zip "
+        f"(the paths inside match ledger.csv's photo column)")
+
+
+EXPORT_HOOKS.append(zip_receipts)
+
+
+def cmd_ledger_export(a):
+    the_ledger(a)
+    cmd_export(a, only=("ledger",))
+
+
+@subcommands("ledger", "receipts by photo: add, ls, set, rm, export")
+def ledger_parser(p, common):
+    s = p.add_subparsers(dest="action", required=True)
+    d = s.add_parser("add", parents=[common], help="file a receipt (and keep its photo)")
+    d.add_argument("vendor", help="who was paid, as the receipt says it"); d.add_argument("amount", help="the total: 42.18")
+    d.add_argument("--date", help="the date on the receipt (default today)")
+    d.add_argument("--category", help="the owner's word: fuel, supplies, equipment, vehicle, meals, other")
+    d.add_argument("--note", help="what it was for: \"truck: oil change\"")
+    d.add_argument("--photo", help="the photo or PDF in this workspace (incoming/…); a copy goes to receipts/")
+    d.add_argument("--source", help="text (default), email, admin, import")
+    d.add_argument("--force", action="store_true", help="file it even if the same one is there, or the date is ahead")
+    d.add_argument("--json", action="store_true"); d.set_defaults(fn=cmd_ledger_add)
+    ls = s.add_parser("ls", parents=[common], help="receipts and their total: --month, --vendor, --search …")
+    ls.add_argument("--month", help="2026-09, september, last, this"); ls.add_argument("--days", type=int)
+    ls.add_argument("--vendor"); ls.add_argument("--category")
+    ls.add_argument("--search", help="vendor, note or category: \"truck\"")
+    ls.add_argument("--limit", type=int, default=50); ls.add_argument("--json", action="store_true")
+    ls.set_defaults(fn=cmd_ledger_ls)
+    t = s.add_parser("set", parents=[common], help="fix one: --date, --vendor, --amount, --category, --note, --photo")
+    t.add_argument("id", type=int)
+    for k in ("date", "vendor", "amount", "category", "note", "photo"):
+        t.add_argument(f"--{k}")
+    t.add_argument("--json", action="store_true"); t.set_defaults(fn=cmd_ledger_set)
+    r = s.add_parser("rm", parents=[common], help="remove one filed by mistake (its photo too)")
+    r.add_argument("id", type=int); r.set_defaults(fn=cmd_ledger_rm)
+    s.add_parser("export", parents=[common], help="the ledger and receipts.zip to exports/<date>/").set_defaults(fn=cmd_ledger_export)
 
 
 # ---------------------------------------------------------------- doctor

@@ -36,7 +36,7 @@ import site_chat  # noqa: E402
 import site_hit  # noqa: E402
 import sandbox_tools  # noqa: E402
 
-TAG = '<script src="https://patchlamp.com/hit.js" data-site="{{SLUG}}" defer></script>'
+TAG = '<script src="https://patchlamp.com/hit.js" data-site="{{SLUG}}" crossorigin="anonymous" defer></script>'
 CHAT = '<script src="https://patchlamp.com/site-chat.js" data-site="{{SLUG}}" defer></script>'
 
 
@@ -78,7 +78,9 @@ class Helper(unittest.TestCase):
     def test_ensure_strip_and_find(self):
         out = site_hit.ensure(PAGE, "acme")
         self.assertEqual(site_hit.slugs(out), ["acme"])
-        self.assertIn('Patchlamp</a></p>\n    <script src="https://patchlamp.com/hit.js" data-site="acme" defer>', out)
+        self.assertIn('Patchlamp</a></p>\n    <script src="https://patchlamp.com/hit.js" data-site="acme" crossorigin="anonymous" defer>', out)
+        old_form = PAGE.replace("</footer>", '<script src="https://patchlamp.com/hit.js" data-site="acme" defer></script>\n  </footer>')
+        self.assertIn('crossorigin="anonymous"', site_hit.ensure(old_form, "acme"), "a tag without crossorigin is rewritten")
         self.assertEqual(site_hit.ensure(out, "acme"), out, "idempotent")
         self.assertEqual(site_hit.slugs(site_hit.ensure(out, "other")), ["other"])
         self.assertEqual(site_hit.strip(out), PAGE)
@@ -86,7 +88,7 @@ class Helper(unittest.TestCase):
         lines = both.splitlines()
         i = next(n for n, line in enumerate(lines) if "hit.js" in line)
         self.assertIn("site-chat.js", lines[i - 1], "after the chat line when there is one")
-        self.assertIn('  <script src="https://patchlamp.com/hit.js" data-site="acme" defer></script>\n</body>',
+        self.assertIn('  <script src="https://patchlamp.com/hit.js" data-site="acme" crossorigin="anonymous" defer></script>\n</body>',
                       site_hit.ensure("<html><body>\n  <p>hi</p>\n</body></html>\n", "acme"))
         self.assertEqual(site_hit.ensure("<p>a fragment</p>", "acme"), "<p>a fragment</p>")
 

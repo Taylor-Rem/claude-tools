@@ -36,7 +36,7 @@ how to change it, and how to check a change is live.
   Whether the bubble shows is the owner's switch on patchlamp.com, so the line
   stays even when the chat is off; `site doctor` warns on a page without it.
 - After that line sits `<script src="https://patchlamp.com/hit.js" data-site="…"
-  defer></script>`: the page-load count (what it keeps is below). Keep it on every
+  crossorigin="anonymous" defer></script>`: the page-load count (what it keeps is below). Keep it on every
   page and copy it onto a page you add, like the chat's line; `site stats` reads the
   numbers back and `site doctor` warns on a page without it.
 - `images/` holds the photos. `_headers` and `_redirects` are read by the

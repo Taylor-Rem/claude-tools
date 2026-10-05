@@ -84,7 +84,8 @@ by text), so the tag stays on the pages either way; `site doctor` warns on a pag
 The helper is lib/site_chat.py.
 
 The count (B127, plan ~/projects/plans/50-site-numbers.md): every page also carries
-`<script src="https://patchlamp.com/hit.js" data-site="{{SLUG}}" defer>` on the line after the chat's.
+`<script src="https://patchlamp.com/hit.js" data-site="{{SLUG}}" crossorigin="anonymous" defer>` on the line
+after the chat's (crossorigin: fetched without cookies, none kept).
 It counts page loads on patchlamp.com: the path, the referring host and the day, nothing about the
 visitor (no cookie, no address, no identifier). `site stats [--days N]` prints this workspace's week
 by day, pages and referrers (the slug is .client.json's, never an argument); `site counter [<name>]`

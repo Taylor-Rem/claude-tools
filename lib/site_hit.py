@@ -2,7 +2,11 @@
 
 Every page of a client site carries, on its own line after the site chat's tag:
 
-    <script src="https://patchlamp.com/hit.js" data-site="SLUG" defer></script>
+    <script src="https://patchlamp.com/hit.js" data-site="SLUG" crossorigin="anonymous" defer></script>
+
+crossorigin="anonymous" makes the browser fetch the script without cookies and keep none
+from the answer (Cloudflare adds a __cf_bm cookie to every patchlamp.com response); the
+app serves it with Access-Control-Allow-Origin so that works.
 
 SLUG is the workspace's slug (`.client.json`). The script sends patchlamp.com the
 page's path and the referrer once per page load, with no cookie; patchlamp.com keeps
@@ -19,7 +23,7 @@ CHAT_SRC = "https://patchlamp.com/site-chat.js"
 
 
 def tag(slug):
-    return f'<script src="{SRC}" data-site="{slug}" defer></script>'
+    return f'<script src="{SRC}" data-site="{slug}" crossorigin="anonymous" defer></script>'
 
 
 LINE = re.compile(r'(?m)^[ \t]*<script\b[^>]*\bsrc="' + re.escape(SRC) + r'"[^>]*>\s*</script>[ \t]*\r?\n?')
@@ -48,8 +52,8 @@ def ensure(html, slug):
     """The page with exactly one tag naming `slug`: on the line after the site chat's
     tag, else after the footer badge, else before </body>, at that line's indent. A page
     with none of them is returned as it was (a fragment, not a page)."""
-    if slugs(html) == [slug]:
-        return html
+    if slugs(html) == [slug] and tag(slug) in html:
+        return html                  # already exactly right (an older form of the tag is rewritten)
     html = strip(html)
     for rx in (_CHAT, _BADGE):
         m = rx.search(html)

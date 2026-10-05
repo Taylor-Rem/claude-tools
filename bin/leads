@@ -13,6 +13,9 @@ B25 (the remote lane), B7 (the pipeline: log, follow-ups, the week).
   leads sent 1 3 4 --channel instagram   # those picks from today's remote kit went out (or: sent all)
   leads channel "Max Pro" facebook --date 2026-10-02 --by cowork
                                # backfill: the channel of a messaged/talked line logged without one (B116)
+  leads replies "Max Pro" 7/10 --newest 2026-09-20 --by cowork --evidence URL
+                               # how often the owner answers Google reviews, as a person read it (B116);
+                               # `brief` prints it. Places carries no owner replies, so nothing else can.
   leads next [fri]             # the day's list (default tomorrow): follow-ups due, then new leads
   leads due                    # follow-ups due today (the 8am report)
   leads show "Whistle Wok"     # one lead's history
@@ -4500,6 +4503,68 @@ def cmd_channel(args):
     print(f"{name} {day} {e['outcome']}: by {channel} ({e['channel_by']}).")
 
 
+# ---- owner replies to reviews, as a person read them (B116) -------------------------------------------
+# Google's Places API returns at most five reviews and none of the owner's answers (checked 2026-10-05 over the
+# kit's 98 cached listings: name, rating, text, author, publishTime, links; no reply field), so the count can't
+# come from what the kit fetches. A person who looked at the listing records it here and `brief` prints it with
+# who read it and when. Nothing is ever inferred: no reading, no line.
+
+LISTING_READS = STATE / "listing_reads.jsonl"
+READ_STALE_DAYS = 60
+
+
+def owner_replies_read(place_id, key=None):
+    """The latest reading for this place (or pipeline key), or None."""
+    if not LISTING_READS.exists():
+        return None
+    last = None
+    for line in LISTING_READS.read_text().splitlines():
+        try:
+            r = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if (place_id and r.get("place_id") == place_id) or (key and r.get("key") == key):
+            last = r
+    return last
+
+
+def owner_replies_line(r, today):
+    """'7 of the last 10 Google reviews, newest reply 2026-09-20 (read by cowork 5 Oct: URL)', or None."""
+    if not r:
+        return None
+    n, m = r["replied"], r["of"]
+    what = f"{n} of the last {m} Google reviews" if m == 10 else f"{n} of {m} Google reviews"
+    newest = (f", newest reply {r['newest']}" if r.get("newest") else
+              ", no reply to read" if n == 0 else ", newest reply's date not recorded")
+    read_on = dt.date.fromisoformat(r["date"])
+    stale = " — over two months old, look again" if (today - read_on).days > READ_STALE_DAYS else ""
+    return f"{what}{newest} (read by {r['by']} {read_on.strftime('%-d %b')}: {r['evidence']}){stale}"
+
+
+def cmd_replies(args):
+    m = re.fullmatch(r"\s*(\d+)\s*/\s*(\d+)\s*", args.count or "")
+    if not m or not (0 <= int(m.group(1)) <= int(m.group(2)) <= 10) or int(m.group(2)) == 0:
+        die("say it as N/M from the newest reviews: 7/10, or 2/4 when the listing has four (M is at most 10)")
+    if not re.match(r"^https?://\S+\.\S+", args.evidence or ""):
+        die("--evidence is the URL of the listing you read (its Google Maps link)")
+    newest = None
+    if args.newest:
+        try:
+            newest = dt.date.fromisoformat(args.newest).isoformat()
+        except ValueError:
+            die(f"--newest is YYYY-MM-DD (got {args.newest})")
+    key, pid, name, city, row, _ = resolve_lead(" ".join(args.name), args.place)
+    if not pid and key not in pipeline_state():
+        die(f"{name} isn't in the census or the pipeline; --place PLACE_ID names it")
+    rec = {"ts": dt.datetime.now(TZ).isoformat(timespec="seconds"), "date": now_date().isoformat(), "key": key,
+           "place_id": pid, "name": name, "replied": int(m.group(1)), "of": int(m.group(2)), "newest": newest,
+           "by": args.by.strip(), "evidence": args.evidence.strip()}
+    LISTING_READS.parent.mkdir(parents=True, exist_ok=True)
+    with open(LISTING_READS, "a") as f:
+        f.write(json.dumps({k: v for k, v in rec.items() if v is not None}) + "\n")
+    print(f"{name}: owner replies {owner_replies_line(rec, now_date())}")
+
+
 def due_by(day):
     """Leads whose follow-up is on or before `day`, oldest first (won and lost never come back)."""
     rows = [l for l in pipeline_state().values()
@@ -5428,6 +5493,9 @@ def cmd_brief(args):
     li = language_info(pid) if pid else None
     if li and li["language"] != "unknown":
         print(f"  Language: {li['language']} — {li['why']}")
+    replies = owner_replies_line(owner_replies_read(pid, key), today)     # B116: a person's reading, or nothing
+    if replies:
+        print(f"  Owner replies: {replies}")
     print(f"  Preview: {pv['url']} (down {dt.date.fromisoformat(pv['expires']).strftime('%-d %b')})" if pv
           else "  Preview: none yet — `leads preview \"" + name + "\"`")
     if lead:
@@ -7395,6 +7463,15 @@ def main():
     ch.add_argument("--place", help="census place id, when the name matched the wrong one")
     ch.add_argument("--dry-run", action="store_true", help="say what would change, write nothing")
     ch.set_defaults(fn=cmd_channel)
+
+    rp = sub.add_parser("replies", help="how often the owner answers Google reviews, as a person read it (B116)")
+    rp.add_argument("name", nargs=1, help='"Name" or "Name, City"')
+    rp.add_argument("count", help="N/M: replies among the newest M reviews, M at most 10 (7/10, 2/4)")
+    rp.add_argument("--newest", help="the date of the newest owner reply, YYYY-MM-DD")
+    rp.add_argument("--by", required=True, help="who read the listing, e.g. cowork, taylor")
+    rp.add_argument("--evidence", required=True, help="the listing's URL")
+    rp.add_argument("--place", help="census place id, when the name matched the wrong one")
+    rp.set_defaults(fn=cmd_replies)
 
     du = sub.add_parser("due", help="follow-ups due today")
     du.set_defaults(fn=cmd_due)

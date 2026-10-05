@@ -94,5 +94,32 @@ class ChannelTest(Base):
         self.assertNotEqual(r.returncode, 0)
 
 
+class OwnerRepliesTest(Base):
+    """B116 (c): Places carries no owner replies, so the line is a person's reading or nothing."""
+
+    def test_brief_prints_nothing_without_a_reading_and_the_reading_with_one(self):
+        self.messaged("Mike's Pool Care", ANCHOR - dt.timedelta(days=4), "FX_S01", source="dm", channel="facebook")
+        brief = self.run_leads("brief", "Mike's Pool Care", now=ANCHOR).stdout
+        self.assertNotIn("Owner replies", brief)
+        r = self.run_leads("replies", "Mike's Pool Care", "7/10", "--newest", "2026-09-20", "--by", "cowork",
+                           "--evidence", "https://maps.google.com/?cid=1", now=ANCHOR)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        brief = self.run_leads("brief", "Mike's Pool Care", now=ANCHOR).stdout
+        self.assertIn("  Owner replies: 7 of the last 10 Google reviews, newest reply 2026-09-20 "
+                      "(read by cowork 28 Sep: https://maps.google.com/?cid=1)", brief)
+        self.run_leads("replies", "Mike's Pool Care", "2/4", "--by", "taylor",
+                       "--evidence", "https://maps.google.com/?cid=1", now=ANCHOR)
+        brief = self.run_leads("brief", "Mike's Pool Care", now=ANCHOR + dt.timedelta(days=61)).stdout
+        self.assertIn("Owner replies: 2 of 4 Google reviews, newest reply's date not recorded (read by taylor", brief)
+        self.assertIn("over two months old, look again", brief)
+
+    def test_a_reading_needs_a_count_a_reader_and_the_listing(self):
+        for args in (("11/10",), ("7/10", "--by", "cowork", "--evidence", "the listing"),
+                     ("7/10", "--evidence", "https://maps.google.com/?cid=1"), ("seven",)):
+            r = self.run_leads("replies", "Mike's Pool Care", *args, "--by", "x", "--evidence", "https://g.co/x"
+                               ) if args in (("11/10",), ("seven",)) else self.run_leads("replies", "Mike's Pool Care", *args)
+            self.assertNotEqual(r.returncode, 0, args)
+
+
 if __name__ == "__main__":
     unittest.main()

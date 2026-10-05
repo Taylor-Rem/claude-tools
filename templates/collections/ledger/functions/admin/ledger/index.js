@@ -41,7 +41,7 @@ export async function onRequestGet(ctx) {
     ${by.map((r) => `<tr><td data-label="Month"><a href="/admin/ledger?month=${esc(r.month)}">${esc(monthName(r.month))}</a></td><td data-label="Receipts" class="num">${r.n}</td><td data-label="Total" class="num">${esc(money(r.total))}</td></tr>`).join("")}
     </tbody></table></div>` : "";
   const intro = `<p class="note">${esc(NOT_ADVICE)}</p>
-    <p class="note">The receipt photos stay with Patch, not on this website: text for one and Patch sends it back. An export (ask Patch for one any time; you get one if you leave) carries them all, zipped, beside this list.</p>`;
+    <p class="note">The receipt photos stay with Patch, not on this website: ask Patch for one and it sends it back. An export (ask Patch for one any time; you get one if you leave) carries them all, zipped, beside this list.</p>`;
   const add = `<h2>Add a receipt</h2>
     <form class="edit" method="post" action="/admin/ledger">
       <label>Date <input name="date" type="date" required></label>

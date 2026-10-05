@@ -113,6 +113,13 @@ class OwnerRepliesTest(Base):
         self.assertIn("Owner replies: 2 of 4 Google reviews, newest reply's date not recorded (read by taylor", brief)
         self.assertIn("over two months old, look again", brief)
 
+    def test_a_reading_in_googles_default_order_says_so(self):
+        self.messaged("Mike's Pool Care", ANCHOR - dt.timedelta(days=4), "FX_S01", source="dm", channel="facebook")
+        self.run_leads("replies", "Mike's Pool Care", "8/10", "--sort", "relevant", "--by", "cowork",
+                       "--evidence", "https://maps.google.com/?cid=1", now=ANCHOR)
+        brief = self.run_leads("brief", "Mike's Pool Care", now=ANCHOR).stdout
+        self.assertIn("Owner replies: 8 of the first 10 Google reviews in Google's default order", brief)
+
     def test_a_reading_needs_a_count_a_reader_and_the_listing(self):
         for args in (("11/10",), ("7/10", "--by", "cowork", "--evidence", "the listing"),
                      ("7/10", "--evidence", "https://maps.google.com/?cid=1"), ("seven",)):

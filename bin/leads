@@ -4533,7 +4533,10 @@ def owner_replies_line(r, today):
     if not r:
         return None
     n, m = r["replied"], r["of"]
-    what = f"{n} of the last {m} Google reviews" if m == 10 else f"{n} of {m} Google reviews"
+    if r.get("sort") == "relevant":          # Google's default order is "most relevant", not newest
+        what = f"{n} of the first {m} Google reviews in Google's default order"
+    else:
+        what = f"{n} of the last {m} Google reviews" if m == 10 else f"{n} of {m} Google reviews"
     newest = (f", newest reply {r['newest']}" if r.get("newest") else
               ", no reply to read" if n == 0 else ", newest reply's date not recorded")
     read_on = dt.date.fromisoformat(r["date"])
@@ -4558,7 +4561,7 @@ def cmd_replies(args):
         die(f"{name} isn't in the census or the pipeline; --place PLACE_ID names it")
     rec = {"ts": dt.datetime.now(TZ).isoformat(timespec="seconds"), "date": now_date().isoformat(), "key": key,
            "place_id": pid, "name": name, "replied": int(m.group(1)), "of": int(m.group(2)), "newest": newest,
-           "by": args.by.strip(), "evidence": args.evidence.strip()}
+           "by": args.by.strip(), "evidence": args.evidence.strip(), "sort": args.sort}
     LISTING_READS.parent.mkdir(parents=True, exist_ok=True)
     with open(LISTING_READS, "a") as f:
         f.write(json.dumps({k: v for k, v in rec.items() if v is not None}) + "\n")
@@ -7470,6 +7473,9 @@ def main():
     rp.add_argument("--newest", help="the date of the newest owner reply, YYYY-MM-DD")
     rp.add_argument("--by", required=True, help="who read the listing, e.g. cowork, taylor")
     rp.add_argument("--evidence", required=True, help="the listing's URL")
+    rp.add_argument("--sort", choices=("newest", "relevant"), default="newest",
+                    help="how the reviews were sorted when counted: newest (Sort → Newest; the default) or "
+                         "relevant (Google's default order)")
     rp.add_argument("--place", help="census place id, when the name matched the wrong one")
     rp.set_defaults(fn=cmd_replies)
 

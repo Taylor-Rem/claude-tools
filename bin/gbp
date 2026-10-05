@@ -947,10 +947,10 @@ def cmd_ask(args):
             print(f"would add {name} ({_mask(email)}) to the do-not-contact list")
             return
         _append_queue(dict(entry, op="stop", why=args.why or "asked not to be contacted"), ws)
-        if cust.get("id") is not None:
-            book_set_stop(cust["id"])                 # the book's own contact column (B122) says it too
+        # the book's contact column (B122) is what the owner sees on /admin/customers; the relay sets it too
+        err = book_set_stop(cust["id"] if cust.get("id") is not None else email)
         print(f"Done: {name} won't be written to again from this business — no review asks, no reminders, "
-              f"nothing. The relay files it within five minutes.")
+              f"nothing." + ("" if err else " The customer book shows it too."))
         return
     if args.cancel:
         if args.dry_run:

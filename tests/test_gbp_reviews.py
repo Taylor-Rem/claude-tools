@@ -185,7 +185,7 @@ class ReviewLoopTest(unittest.TestCase):
         self.assertEqual(ops, [("cancel", "jo@example.com"), ("stop", "someone@else.com")])
         self.assertEqual(self.queue()[1]["why"], "replied STOP")
         self.assertEqual(self.run_gbp("ask", "Jo Smith", "--stop").returncode, 0)
-        self.assertEqual(Path(str(self.book) + ".set").read_text(), "7 --contact stop\n", "the book says stop too")
+        self.assertEqual(Path(str(self.book) + ".set").read_text(), "someone@else.com --contact stop\n7 --contact stop\n", "the book says stop too")
 
     def test_the_books_contact_stop_is_honoured(self):
         r = self.run_gbp("ask", "Lee Stopped")

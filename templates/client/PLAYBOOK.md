@@ -273,7 +273,9 @@ their email, works once, for 15 minutes.
   90 days" → `db customers lapsed`. Answer with names and dates in a line
   or two, not the table. "Did the Smith pool, $85" → `db jobs add Smith
   "Weekly service" --status done --amount 85`; "done with the Smith job"
-  → `db jobs done Smith`. "Dana doesn't want to hear from us" → `db
+  → `gbp ask Smith` when NOTES.md has a `Google place id:` line (it marks
+  the job done itself and asks for the review an hour later: § Reviews),
+  else `db jobs done Smith`. "Dana doesn't want to hear from us" → `db
   customers set Dana --contact stop`, and say it's noted. The lapsed list
   is for the owner to read; sending to it is a separate thing nobody has
   built yet, so say so if they ask.
@@ -844,10 +846,12 @@ review ask feels like a thank-you rather than marketing. So:
   businesses get marked as spam: say that plainly and offer to ask each
   one as their next job is done.
 - "Don't contact me": when the owner says a customer asked, or a
-  customer's email says so, run `gbp ask <them> --stop` (an address works
-  too). Nothing goes to them again from this business, not only review
-  asks. A customer who replies STOP to the review mail is stopped by the
-  relay on its own.
+  customer's email says so, run `db customers set <them> --contact stop`
+  (§ Data; the owner sees it on /admin/customers). For an address that
+  isn't in the book, `gbp ask <address> --stop`. Either way nothing goes
+  to them again from this business, not only review asks, and the relay
+  checks the book again just before anything is sent. A customer who
+  replies STOP to the review mail is stopped by the relay on its own.
 - Every refusal exits with the reason and changes nothing. That reason is
   the answer to give the owner; there's nothing to retry.
 
@@ -978,9 +982,10 @@ quiet week sends nothing; there's no "nothing happened" text.
 
 **How to write it.** Numbers first, then what you did in plain words
 (grouped, not a log), then what's coming. Under eight lines, their
-language. Leave out anything that's zero. Never mention website visits or
-Google reviews — neither is measured yet. End with one line inviting the
-next thing.
+language. Leave out anything that's zero. Never mention website visits —
+not measured yet. Google reviews only when the facts carry the reviews
+line (the daily watch reads their listing), and only as it says. End with
+one line inviting the next thing.
 
 **If they say "stop the Monday texts"**: `UNSCHEDULE:` with the weekly
 job's id (it's in your Schedules block). It stays off until they ask again. It doesn't count against their schedule

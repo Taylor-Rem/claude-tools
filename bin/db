@@ -22,6 +22,17 @@ workspace), never from an argument.
   db tools                               # every list /admin shows: collection, named list or web tool
   db doctor                              # token, binding, migrations applied, secrets, /admin wiring
 
+The customer book (`db add customers`, ROADMAP B122; --json on each for a machine):
+  db customers find PHONE|EMAIL|NAME     # who is 801-555-0134; "the Smiths" finds Smith
+  db customers show ID|PHONE|NAME        # one customer and their jobs
+  db customers add NAME [--phone --email --address --notes --tags --seen DATE]
+  db customers set ID [--phone … --add-tag weekly --contact stop]
+  db customers lapsed [--days 90]        # who haven't I seen in 90 days
+  db customers import FILE.csv|.xlsx [--dry-run] | --from-records
+  db customers export                    # customers + jobs -> exports/<date>/
+  db jobs add CUSTOMER "what" [--date --amount 450 --status booked|done|cancelled --source S --ref R --create]
+  db jobs done JOB_ID|CUSTOMER [--amount]   db jobs set ID [--status …]   db jobs ls [CUSTOMER]
+
 Every command takes --site NAME when the workspace has more than one site
 with a database, and --local to work on the local copy `wrangler pages dev`
 uses (repos/<site>/.wrangler/, for trying a change before it goes live).
@@ -415,12 +426,12 @@ def columns(site, local, table):
     return [r["name"] for r in rows_of(d1(site, local, command=f"PRAGMA table_info({ident(table)})"))]
 
 
-def cmd_export(a):
+def cmd_export(a, only=None):
     site = the_site(a)
     day = datetime.date.today().isoformat()
     out = site.ws / "exports" / day
     out.mkdir(parents=True, exist_ok=True)
-    names = tables(site, a.local)
+    names = [t for t in tables(site, a.local) if not only or t in only]
     if not names:
         say("the database has no tables yet (db add <collection>)")
         return
@@ -440,7 +451,7 @@ def cmd_export(a):
         (out / f"{t}.json").write_text(json.dumps(rows, indent=2, ensure_ascii=False) + "\n")
         say(f"  {t}: {len(rows)} row{'s' if len(rows) != 1 else ''} -> exports/{day}/{t}.csv, .json")
     say(f"exported {len(names)} table{'s' if len(names) != 1 else ''} to exports/{day}/ "
-        f"(left out: {', '.join(SYSTEM_TABLES)}, the sign-in and migration bookkeeping)")
+        + (f"(left out: {', '.join(SYSTEM_TABLES)}, the sign-in and migration bookkeeping)" if not only else ""))
 
 
 def cmd_import(a):
@@ -457,6 +468,9 @@ def cmd_import(a):
         die("import takes a .csv (with a header row) or a .json file")
     if not data:
         die("the file has no rows")
+    if a.table == "customers":
+        die("customers go in with `db customers import FILE` (it matches phones and emails to the ones "
+            "already there, reads the owner's own headers, and keeps the phone searchable)")
     site = the_site(a)
     table = ident(a.table)
     have = columns(site, a.local, table)
@@ -542,6 +556,17 @@ def cmd_add(a):
     added = []
     # the migration(s), numbered after what's there
     existing = repo_migrations(site)
+    ours = {m.name.split("_", 1)[-1] for m in (src / "migrations").glob("*.sql")}
+    mine = {t.lower() for m in (src / "migrations").glob("*.sql")
+            for t in re.findall(r"(?i)create\s+table\s+(?:if\s+not\s+exists\s+)?(\w+)", m.read_text())}
+    for p in existing:
+        if p.name.split("_", 1)[-1] in ours:
+            continue
+        clash = mine & {t.lower() for t in re.findall(r"(?i)create\s+table\s+(?:if\s+not\s+exists\s+)?(\w+)", p.read_text())}
+        if clash:
+            die(f"repos/{site.name}/migrations/{p.name} already makes a {', '.join(sorted(clash))} table of this site's own "
+                f"(a web tool), and {a.collection} needs that name. Nothing written. Tell the owner, and FORWARD-TO-TAYLOR "
+                f"if they want both: the tool's table needs renaming by hand first.")
     if any(p.name.split("_", 1)[-1] == m.name.split("_", 1)[-1] for p in existing for m in (src / "migrations").glob("*.sql")):
         say(f"  migration for {a.collection} already in repos/{site.name}/migrations/")
     else:
@@ -561,6 +586,14 @@ def cmd_add(a):
                 continue
             dest = repo / "functions" / f.relative_to(fsrc)
             if dest.exists():
+                was, now_ = view_table(dest), view_table(f)
+                if dest.parent.name == "_admin" and was and now_ and was != now_:
+                    # a named list of the same name on another table (customers on records): the
+                    # collection's own view takes its place; the old rows stay where they were
+                    if not a.dry_run:
+                        shutil.copy(f, dest)
+                    added.append(f"{dest.relative_to(site.ws)} (replaced: it was a list on {was}; those rows are still in {was})")
+                    continue
                 say(f"  kept {dest.relative_to(site.ws)} (already there)")
                 continue
             if not a.dry_run:
@@ -823,6 +856,12 @@ def cmd_add_sheet(a):
         f"`site publish {site.name}`, then open /admin/{table} and tell the owner where it is.")
 
 
+def view_table(path):
+    """The `table: "…"` a view file names, or None."""
+    m = re.search(r'\btable:\s*"([^"]*)"', path.read_text()) if path.exists() else None
+    return m.group(1) if m else None
+
+
 def view_meta(repo, mod):
     p = repo / "functions" / "_admin" / f"{mod}.js"
     text = p.read_text() if p.exists() else ""
@@ -845,12 +884,13 @@ def view_kinds(repo):
     """[(module, meta, kind)] for every view /admin shows: kind is 'collection' (a
     collection's own view), 'named list' (a copy on a collection's table, like
     customers on records) or 'tool' (a table of this site's own: a web tool)."""
-    std = {p.stem for p in COLLECTIONS.glob("*/functions/_admin/*.js")}
+    std = {p.stem: (view_table(p) or "").lower() for p in COLLECTIONS.glob("*/functions/_admin/*.js")}
     tabs = collection_tables()
     out = []
     for _, mod in registered_views(repo):
         m = view_meta(repo, mod)
-        kind = "collection" if mod in std else "named list" if (m["table"] or "").lower() in tabs else "tool"
+        t = (m["table"] or "").lower()
+        kind = "collection" if std.get(mod) == t else "named list" if t in tabs else "tool"
         out.append((mod, m, kind))
     return out
 
@@ -875,6 +915,771 @@ def cmd_tools(a):
     n = sum(1 for _, _, k in views if k == "tool")
     say(f"\n{n} web tool{'s' if n != 1 else ''} of this site's own; worked examples: "
         + ", ".join(sorted(p.name for p in TOOLS.iterdir() if p.is_dir())) + f" in claude-tools/templates/tools/ (PLAYBOOK.md § Web tools)")
+
+
+# ---------------------------------------------------------------- collection commands (B122 on)
+# A collection with its own everyday commands registers them here: one
+# @subcommands("name", "help") on a function that adds its actions to the
+# parser it's given. main() adds each, in the order they're defined. A later
+# collection (ledger, estimates, signatures) adds its own block like the
+# customer book's below and touches nothing above it.
+
+SUBCOMMANDS = {}
+
+
+def subcommands(name, help):
+    def deco(fn):
+        SUBCOMMANDS[name] = (help, fn)
+        return fn
+    return deco
+
+
+def rows(site, local, sql):
+    return rows_of(d1(site, local, command=sql))
+
+
+def has_table(site, local, name):
+    return bool(rows(site, local, f"SELECT name FROM sqlite_master WHERE type='table' AND name={lit(name)}"))
+
+
+def emit_json(obj):
+    say(json.dumps(obj, indent=2, ensure_ascii=False))
+
+
+# ---------------------------------------------------------------- the customer book (B122)
+# customers (one row a customer) and jobs (what was done for them), from
+# templates/collections/customers. The same matching as the site's own
+# functions/_lib/customers.js: the same phone (last ten digits) or email (any
+# case) is the same customer; a name alone never merges two people.
+#
+# For machines (the review loop, B118; bookings, B119; estimates, B123; pay):
+#   db customers find PHONE|EMAIL|NAME --json   -> [customer, …] (empty when none)
+#   db customers show ID|PHONE|EMAIL|NAME --json -> customer with "jobs"; exit 3 + {"error","matches"} when
+#                                                  it names several, exit 4 + {"error"} when none
+#   db jobs add CUSTOMER "what" [--status done] [--source S --ref R] --json -> {"job": …, "customer": …}
+#   db jobs done JOB_ID --json                   -> {"job": …, "customer": …}
+# A customer is {id, name, phone, email, address, notes, tags, contact ("ok"|"stop"), source,
+# last_seen (YYYY-MM-DD), created_at, updated_at}; a job {id, customer_id, customer_name, date, what,
+# amount_cents, status ("booked"|"done"|"cancelled"), notes, source, ref, created_at, updated_at}.
+
+JOB_STATUSES = ("booked", "done", "cancelled")
+CUSTOMER_COLS = ("id", "name", "phone", "email", "address", "notes", "tags", "contact", "source",
+                 "last_seen", "created_at", "updated_at")
+# the header words a spreadsheet of customers is read by (the same as the site's
+# functions/_lib/customers.js HEADERS, which the /admin import uses)
+CUSTOMER_HEADERS = {
+    "name": ["name", "full name", "customer", "customer name", "client", "client name", "contact", "contact name"],
+    "first": ["first", "first name", "firstname", "given name"],
+    "last": ["last", "last name", "lastname", "surname", "family name"],
+    "phone": ["phone", "phone number", "mobile", "mobile phone", "cell", "cell phone", "tel", "telephone", "number"],
+    "email": ["email", "e-mail", "email address", "e-mail address", "mail"],
+    "address": ["address", "street", "street address", "service address", "address 1", "address line 1"],
+    "city": ["city", "town"],
+    "state": ["state", "province", "region"],
+    "zip": ["zip", "zip code", "zipcode", "postal code", "postcode"],
+    "notes": ["notes", "note", "comments", "comment", "details"],
+    "tags": ["tags", "tag", "labels", "label", "group", "groups", "type"],
+    "last_seen": ["last seen", "last visit", "last service", "last job", "last appointment", "last contact",
+                  "last done", "last serviced", "date"],
+}
+
+
+def phone_key(phone):
+    d = re.sub(r"\D", "", str(phone or ""))
+    if len(d) < 7:
+        return ""
+    return d[-10:] if len(d) > 10 else d
+
+
+def phone_shown(phone):
+    raw = str(phone or "").strip()
+    d = re.sub(r"\D", "", raw)
+    ten = d[1:] if len(d) == 11 and d[0] == "1" else d
+    return f"{ten[:3]}-{ten[3:6]}-{ten[6:]}" if len(ten) == 10 else (raw or None)
+
+
+def email_key(email):
+    return str(email or "").strip().lower()
+
+
+def iso_date(v):
+    """'3/14/2026', '2026-03-14', '03/14/26', 'Mar 14, 2026', 'today', 'yesterday' -> '2026-03-14'; '' otherwise."""
+    s = str(v or "").strip()
+    low = s.lower()
+    today = datetime.date.today()
+    if low == "today":
+        return today.isoformat()
+    if low == "yesterday":
+        return (today - datetime.timedelta(days=1)).isoformat()
+    if m := re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})", s):
+        y, mo, d = map(int, m.groups())
+    elif m := re.match(r"^(\d{1,2})/(\d{1,2})/(\d{2}|\d{4})$", s):
+        mo, d, y = int(m.group(1)), int(m.group(2)), int(m.group(3)) + (2000 if len(m.group(3)) == 2 else 0)
+    else:
+        for fmt in ("%b %d, %Y", "%b %d %Y", "%B %d, %Y", "%B %d %Y", "%d %b %Y", "%d %B %Y"):
+            try:
+                return datetime.datetime.strptime(s, fmt).date().isoformat()
+            except ValueError:
+                pass
+        return ""
+    try:
+        return datetime.date(y, mo, d).isoformat()
+    except ValueError:
+        return ""
+
+
+def money_cents(v):
+    s = re.sub(r"[$,\s]", "", str(v or ""))
+    if not s:
+        return None
+    try:
+        return int(round(float(s) * 100))
+    except ValueError:
+        die(f"{v!r} isn't an amount (450, 450.00, $1,200)")
+
+
+def the_book(a):
+    site = the_site(a)
+    if not has_table(site, a.local, "customers"):
+        die("this site has no customer book yet: `db add customers` (PLAYBOOK.md § Data). "
+            "Customers kept as records (kind = customer) move in with `db customers import --from-records`.")
+    return site
+
+
+def days_ago(day):
+    try:
+        return (datetime.date.today() - datetime.date.fromisoformat(str(day)[:10])).days
+    except ValueError:
+        return None
+
+
+def find_customers(site, local, term, limit=20):
+    """Customers a phone, email, #id or name points at, best first."""
+    t = str(term or "").strip().lstrip("#")
+    cols = ", ".join(CUSTOMER_COLS)
+    if re.fullmatch(r"\d{1,6}", t):
+        return rows(site, local, f"SELECT {cols} FROM customers WHERE id = {int(t)}")
+    if "@" in t:
+        return rows(site, local, f"SELECT {cols} FROM customers WHERE email = {lit(email_key(t))} ORDER BY id")
+    key = phone_key(t)
+    if key and not re.search(r"[A-Za-z]", t):
+        cond = f"phone_key = {lit(key)}" if len(key) == 10 else f"phone_key LIKE {lit('%' + key)}"
+        return rows(site, local, f"SELECT {cols} FROM customers WHERE {cond} ORDER BY id LIMIT {limit}")
+    words = [w for w in re.split(r"\s+", t.lower()) if w and w not in ("the", "and", "&")]
+    if not words:
+        return []
+    # "the Smiths" finds Smith: a plural family name is the name
+    like = lambda w: f"(lower(name) LIKE {lit('%' + w + '%')}" + (
+        f" OR lower(name) LIKE {lit('%' + w[:-1] + '%')}" if len(w) > 3 and w.endswith("s") else "") + ")"
+    exact = f"lower(name) = {lit(t.lower())}"
+    return rows(site, local, f"SELECT {cols} FROM customers WHERE {' AND '.join(like(w) for w in words)} "
+                             f"ORDER BY ({exact}) DESC, last_seen DESC, id LIMIT {limit}")
+
+
+def jobs_of(site, local, ids, per=200):
+    if not ids:
+        return {}
+    got = rows(site, local, f"SELECT * FROM jobs WHERE customer_id IN ({', '.join(str(int(i)) for i in ids)}) "
+                            f"ORDER BY date DESC, id DESC")
+    out = {}
+    for j in got:
+        out.setdefault(j["customer_id"], []).append(j)
+    return {k: v[:per] for k, v in out.items()}
+
+
+def customer_line(c, jobs=()):
+    bits = [f"#{c['id']} {c['name']}"] + [x for x in (c.get("phone"), c.get("email")) if x]
+    if c.get("last_seen"):
+        n = days_ago(c["last_seen"])
+        bits.append(f"last seen {c['last_seen']}" + (f" ({n} days ago)" if n is not None and n > 1 else ""))
+    if jobs:
+        j = jobs[0]
+        bits.append(f"{len(jobs)} job{'s' if len(jobs) != 1 else ''}, last: {j['what']} {j.get('date') or ''} {j['status']}".rstrip())
+    if c.get("contact") == "stop":
+        bits.append("ASKED NOT TO BE CONTACTED")
+    return " · ".join(bits)
+
+
+def money_text(cents):
+    return "" if cents is None else f"${cents / 100:,.2f}"
+
+
+def cmd_customers_find(a):
+    site = the_book(a)
+    found = find_customers(site, a.local, a.term)
+    jobs = jobs_of(site, a.local, [c["id"] for c in found])
+    if a.json:
+        emit_json([dict(c, jobs_count=len(jobs.get(c["id"], [])), last_job=(jobs.get(c["id"]) or [None])[0])
+                   for c in found])
+        return
+    if not found:
+        say(f"no customer matches {a.term!r}")
+        return
+    for c in found:
+        say(customer_line(c, jobs.get(c["id"], [])))
+
+
+def one_customer(site, local, term, as_json):
+    found = find_customers(site, local, term)
+    if len(found) == 1:
+        return found[0]
+    if as_json:
+        emit_json({"error": "not found" if not found else "more than one customer matches", "matches": found})
+    elif not found:
+        say(f"no customer matches {term!r} (db customers find, or db customers add)")
+    else:
+        say(f"{len(found)} customers match {term!r}; say which by number:")
+        for c in found:
+            say("  " + customer_line(c))
+    sys.exit(4 if not found else 3)
+
+
+def cmd_customers_show(a):
+    site = the_book(a)
+    c = one_customer(site, a.local, a.term, a.json)
+    jobs = jobs_of(site, a.local, [c["id"]]).get(c["id"], [])
+    if a.json:
+        emit_json(dict(c, jobs=jobs))
+        return
+    say(f"#{c['id']} {c['name']}")
+    for k in ("phone", "email", "address", "tags", "last_seen", "notes", "source"):
+        if c.get(k):
+            say(f"  {k.replace('_', ' ')}: {c[k]}")
+    if c.get("contact") == "stop":
+        say("  contact: STOP — asked not to be contacted; nothing goes to them")
+    if not jobs:
+        say("  no jobs yet")
+    for j in jobs:
+        say(f"  job #{j['id']}  {j.get('date') or '':<10}  {j['status']:<9}  {money_text(j.get('amount_cents')):>10}  {j['what']}")
+
+
+def upsert_customer(site, local, *, name="", phone="", email="", address="", notes="", tags="", source=None, seen=None):
+    """Find-or-make, the way the site's recordCustomer does. -> (customer, created)."""
+    key, em = phone_key(phone), email_key(email)
+    found = []
+    if key:
+        found = rows(site, local, f"SELECT id FROM customers WHERE phone_key = {lit(key)} ORDER BY id LIMIT 1")
+    if not found and em:
+        found = rows(site, local, f"SELECT id FROM customers WHERE email = {lit(em)} ORDER BY id LIMIT 1")
+    opt = lambda v: str(v).strip()[:5000] if v is not None and str(v).strip() else None
+    shown = phone_shown(phone) if key else None
+    if found:
+        cid = found[0]["id"]
+        d1(site, local, command=(
+            f"UPDATE customers SET name = CASE WHEN name = '' THEN {lit(opt(name) or '')} ELSE name END, "
+            f"phone = COALESCE(phone, {lit(shown)}), phone_key = COALESCE(phone_key, {lit(key or None)}), "
+            f"email = COALESCE(email, {lit(em or None)}), address = COALESCE(address, {lit(opt(address))}), "
+            f"notes = COALESCE(notes, {lit(opt(notes))}), tags = COALESCE(tags, {lit(opt(tags))}), "
+            + (f"last_seen = CASE WHEN last_seen IS NULL OR last_seen < {lit(seen)} THEN {lit(seen)} ELSE last_seen END, " if seen else "")
+            + f"updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = {cid}"))
+        created = False
+    else:
+        if not (opt(name) or key or em):
+            die("a customer needs a name, a phone or an email")
+        res = d1(site, local, command=(
+            "INSERT INTO customers (name, phone, phone_key, email, address, notes, tags, source, last_seen) VALUES ("
+            + ", ".join(lit(v) for v in (opt(name) or em or shown, shown, key or None, em or None, opt(address),
+                                         opt(notes), opt(tags), source, seen)) + ")"))
+        cid = (res[-1].get("meta") or {}).get("last_row_id")
+        if not cid:
+            cid = rows(site, local, "SELECT MAX(id) AS id FROM customers")[0]["id"]
+        created = True
+    return rows(site, local, f"SELECT {', '.join(CUSTOMER_COLS)} FROM customers WHERE id = {int(cid)}")[0], created
+
+
+def seen_arg(v):
+    if v is None:
+        return None
+    d = iso_date(v)
+    if not d:
+        die(f"--seen {v!r} isn't a date (2026-10-05, 10/5/2026, today)")
+    return d
+
+
+def cmd_customers_add(a):
+    site = the_book(a)
+    c, created = upsert_customer(site, a.local, name=a.name, phone=a.phone, email=a.email, address=a.address,
+                                 notes=a.notes, tags=a.tags, source=a.source, seen=seen_arg(a.seen))
+    if a.json:
+        emit_json({"customer": c, "created": created})
+        return
+    say(("added " if created else "already in the book (same phone or email), filled in: ") + customer_line(c))
+
+
+def cmd_customers_set(a):
+    site = the_book(a)
+    c = one_customer(site, a.local, a.id, a.json)
+    sets = []
+    for k in ("name", "address", "notes"):
+        v = getattr(a, k)
+        if v is not None:
+            sets.append(f"{k} = {lit(v.strip() or None) if k != 'name' else lit(v.strip() or c['name'])}")
+    if a.phone is not None:
+        key = phone_key(a.phone)
+        sets += [f"phone = {lit(phone_shown(a.phone) if key else (a.phone.strip() or None))}", f"phone_key = {lit(key or None)}"]
+    if a.email is not None:
+        sets.append(f"email = {lit(email_key(a.email) or None)}")
+    tags = [t.strip() for t in (c.get("tags") or "").split(",") if t.strip()]
+    if a.tags is not None:
+        tags = [t.strip() for t in a.tags.split(",") if t.strip()]
+    for t in a.add_tag or []:
+        if t.strip() and t.strip().lower() not in {x.lower() for x in tags}:
+            tags.append(t.strip())
+    if a.tags is not None or a.add_tag:
+        sets.append(f"tags = {lit(', '.join(tags) or None)}")
+    if a.contact:
+        sets.append(f"contact = {lit(a.contact)}")
+    if a.seen:
+        sets.append(f"last_seen = {lit(seen_arg(a.seen))}")
+    if not sets:
+        die("nothing to change (--name, --phone, --email, --address, --notes, --tags, --add-tag, --contact, --seen)")
+    sets.append("updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')")
+    d1(site, a.local, command=f"UPDATE customers SET {', '.join(sets)} WHERE id = {c['id']}")
+    if a.name and a.name.strip() and a.name.strip() != c["name"]:
+        d1(site, a.local, command=f"UPDATE jobs SET customer_name = {lit(a.name.strip())} WHERE customer_id = {c['id']}")
+    c = rows(site, a.local, f"SELECT {', '.join(CUSTOMER_COLS)} FROM customers WHERE id = {c['id']}")[0]
+    if a.json:
+        emit_json({"customer": c})
+    else:
+        say("changed: " + customer_line(c))
+
+
+def lapsed(site, local, days):
+    cut = (datetime.date.today() - datetime.timedelta(days=days)).isoformat()
+    today = datetime.date.today().isoformat()
+    cols = ", ".join(CUSTOMER_COLS)
+    booked = f"SELECT customer_id FROM jobs WHERE status = 'booked' AND date >= {lit(today)}"
+    gone = rows(site, local, f"SELECT {cols} FROM customers WHERE last_seen IS NOT NULL AND last_seen < {lit(cut)} "
+                             f"AND id NOT IN ({booked}) ORDER BY last_seen DESC, name")
+    unknown = rows(site, local, f"SELECT {cols} FROM customers WHERE last_seen IS NULL AND id NOT IN ({booked}) ORDER BY name")
+    return cut, gone, unknown
+
+
+def cmd_customers_lapsed(a):
+    site = the_book(a)
+    cut, gone, unknown = lapsed(site, a.local, a.days)
+    if a.json:
+        emit_json({"days": a.days, "before": cut, "customers": gone, "never_seen": unknown if a.unknown else len(unknown)})
+        return
+    if not gone:
+        say(f"everyone with a visit on record has been seen in the last {a.days} days")
+    else:
+        say(f"{len(gone)} not seen in {a.days} days (since before {cut}), most recent first:")
+        for c in gone:
+            say("  " + customer_line(c))
+    stop = sum(1 for c in gone if c.get("contact") == "stop")
+    if stop:
+        say(f"({stop} of them asked not to be contacted: never on a message list)")
+    if unknown:
+        if a.unknown:
+            say(f"\n{len(unknown)} with no visit on record:")
+            for c in unknown:
+                say("  " + customer_line(c))
+        else:
+            say(f"(and {len(unknown)} with no visit on record: --unknown lists them)")
+    say("(anyone with a job booked from today on is left out)")
+
+
+def read_customer_sheet(path, sheet=None):
+    """(header mapping {field: index}, extra [(label, index)], rows) from a CSV or Excel file."""
+    if path.resolve().is_relative_to(Path.home() / ".config"):
+        die(f"no such file: {path}")
+    _, _, header, body = read_sheet(path, sheet)
+    norm = lambda h: re.sub(r"\s+", " ", re.sub(r"[_\-.]+", " ", h.lower())).strip()
+    fmap, extra = {}, []
+    for i, h in enumerate(header):
+        f = next((k for k, words in CUSTOMER_HEADERS.items() if norm(h) in words), None)
+        if f and f not in fmap:
+            fmap[f] = i
+        elif h.strip():
+            extra.append((h.strip(), i))
+    return fmap, extra, header, body
+
+
+def customer_from_row(fmap, extra, r):
+    at = lambda f: r[fmap[f]].strip() if f in fmap and fmap[f] < len(r) else ""
+    name = at("name") or " ".join(x for x in (at("first"), at("last")) if x)
+    place = ", ".join(x for x in (at("address"), at("city"), " ".join(x for x in (at("state"), at("zip")) if x)) if x)
+    raw_seen = at("last_seen")
+    seen = iso_date(raw_seen) if raw_seen else ""
+    more = [f"{label}: {r[i].strip()}" for label, i in extra if i < len(r) and r[i].strip()]
+    if raw_seen and not seen:
+        more.append(f"Last seen: {raw_seen}")
+    if not (name or phone_key(at("phone")) or at("email")):
+        return None
+    return {"name": name, "phone": at("phone"), "email": at("email"), "address": place,
+            "notes": "\n".join(x for x in [at("notes"), *more] if x), "tags": at("tags"), "seen": seen or None,
+            "unread_date": bool(raw_seen and not seen)}
+
+
+def plan_import(existing, incoming):
+    """Match incoming customers against the book (and each other): -> (inserts, updates {id: fields}, merged_in_file)."""
+    by_key = {c["phone_key"]: c["id"] for c in existing if c.get("phone_key")}
+    by_mail = {c["email"]: c["id"] for c in existing if c.get("email")}
+    inserts, updates, dup = [], {}, 0
+    new_key, new_mail = {}, {}
+    for c in incoming:
+        key, em = phone_key(c["phone"]), email_key(c["email"])
+        cid = (by_key.get(key) if key else None) or (by_mail.get(em) if em else None)
+        if cid:
+            u = updates.setdefault(cid, {})
+            for k, v in c.items():
+                if v and not u.get(k):
+                    u[k] = v
+                elif k == "seen" and v and u.get(k) and v > u[k]:
+                    u[k] = v
+            continue
+        j = (new_key.get(key) if key else None)
+        if j is None and em:
+            j = new_mail.get(em)
+        if j is not None:
+            dup += 1
+            prev = inserts[j]
+            for k, v in c.items():
+                if v and not prev.get(k):
+                    prev[k] = v
+                elif k == "seen" and v and prev.get(k) and v > prev[k]:
+                    prev[k] = v
+            continue
+        inserts.append(dict(c))
+        if key:
+            new_key[key] = len(inserts) - 1
+        if em:
+            new_mail[em] = len(inserts) - 1
+    return inserts, updates, dup
+
+
+def import_sql(inserts, updates, source):
+    stmts = []
+    opt = lambda v: str(v).strip()[:5000] if v is not None and str(v).strip() else None
+    for c in inserts:
+        key = phone_key(c.get("phone"))
+        em = email_key(c.get("email"))
+        shown = phone_shown(c.get("phone")) if key else None
+        stmts.append("INSERT INTO customers (name, phone, phone_key, email, address, notes, tags, source, last_seen) VALUES ("
+                     + ", ".join(lit(v) for v in (opt(c.get("name")) or em or shown, shown, key or None, em or None,
+                                                  opt(c.get("address")), opt(c.get("notes")), opt(c.get("tags")),
+                                                  source, c.get("seen"))) + ");")
+    for cid, c in updates.items():
+        key = phone_key(c.get("phone"))
+        sets = [f"phone = COALESCE(phone, {lit(phone_shown(c.get('phone')) if key else None)})",
+                f"phone_key = COALESCE(phone_key, {lit(key or None)})",
+                f"email = COALESCE(email, {lit(email_key(c.get('email')) or None)})"]
+        sets += [f"{k} = COALESCE({k}, {lit(opt(c.get(k)))})" for k in ("address", "notes", "tags")]
+        if c.get("seen"):
+            sets.append(f"last_seen = CASE WHEN last_seen IS NULL OR last_seen < {lit(c['seen'])} THEN {lit(c['seen'])} ELSE last_seen END")
+        sets.append("updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')")
+        stmts.append(f"UPDATE customers SET {', '.join(sets)} WHERE id = {int(cid)};")
+    return stmts
+
+
+def cmd_customers_import(a):
+    if a.from_records:
+        return import_from_records(a)
+    if not a.file:
+        die("db customers import FILE (a .csv or .xlsx with a header row), or --from-records")
+    path = Path(a.file)
+    if not path.is_file():
+        die(f"no such file: {a.file}")
+    fmap, extra, header, body = read_customer_sheet(path, a.sheet)
+    if not ({"name", "first", "phone", "email"} & set(fmap)):
+        die(f"I can't find a name, phone or email column in the header row ({', '.join(header)}). "
+            f"Ask the owner which column is which, or rename the header to Name / Phone / Email.")
+    incoming, skipped = [], 0
+    for r in body:
+        c = customer_from_row(fmap, extra, r)
+        if c:
+            incoming.append(c)
+        else:
+            skipped += 1
+    site = the_book(a)
+    existing = rows(site, a.local, "SELECT id, phone_key, email FROM customers")
+    inserts, updates, dup = plan_import(existing, incoming)
+    labels = {f: header[i] for f, i in fmap.items()}
+    say(f"{path.name}: {len(body)} row{'s' if len(body) != 1 else ''}")
+    for f, h in labels.items():
+        say(f"  {h!r} -> {f.replace('_', ' ')}")
+    if extra:
+        say(f"  into the notes: {', '.join(repr(h) for h, _ in extra)}")
+    undated = sum(1 for c in incoming if c.get("unread_date"))
+    blank = sum(1 for c in incoming if not c["seen"] and not c.get("unread_date"))
+    say(f"{len(inserts)} new, {len(updates)} already in the book (filled in, never overwritten)"
+        + (f", {dup} repeated in the file (merged)" if dup else "")
+        + (f", {skipped} skipped (no name, phone or email)" if skipped else ""))
+    if "last_seen" in fmap and undated:
+        say(f"{undated} with a date I couldn't read in {labels['last_seen']!r} (kept in their notes)")
+    if "last_seen" in fmap and blank:
+        say(f"{blank} with no date in {labels['last_seen']!r}: \"who haven't I seen\" lists them apart")
+    elif "last_seen" not in fmap:
+        say("no last-visit column: \"who haven't I seen\" won't know these until a job or booking")
+    stmts = import_sql(inserts, updates, "import")
+    if a.dry_run:
+        for c in inserts[:5]:
+            say(f"  + {c['name'] or c['email'] or c['phone']}" + (f" (last seen {c['seen']})" if c["seen"] else ""))
+        if len(inserts) > 5:
+            say(f"  … {len(inserts) - 5} more")
+        say("dry run: nothing written. Say the mapping back to the owner, then run it without --dry-run.")
+        return
+    for i in range(0, len(stmts), 200):
+        run_sql(site, a.local, "\n".join(stmts[i:i + 200]) + "\n")
+    n = rows(site, a.local, "SELECT COUNT(*) AS n FROM customers")[0]["n"]
+    say(f"imported: the book has {n} customer{'s' if n != 1 else ''} now (/admin/customers)")
+
+
+def import_from_records(a):
+    """records rows kept as customers and jobs (the named lists before B122) into the book. The records rows stay."""
+    site = the_book(a)
+    if not has_table(site, a.local, "records"):
+        die("this site has no records table: nothing to move")
+    recs = rows(site, a.local, "SELECT id, kind, title, status, notes, data, created_at FROM records "
+                               "WHERE kind IN ('customer', 'job') ORDER BY id")
+    custs = [r for r in recs if r["kind"] == "customer"]
+    jobs = [r for r in recs if r["kind"] == "job"]
+    incoming = []
+    for r in custs:
+        try:
+            d = json.loads(r.get("data") or "{}")
+        except ValueError:
+            d = {}
+        d = d if isinstance(d, dict) else {}
+        incoming.append({"name": r["title"], "phone": d.get("phone") or "", "email": d.get("email") or "",
+                         "address": d.get("address") or "", "notes": r.get("notes") or "",
+                         "tags": d.get("tags") or "", "seen": iso_date(d.get("last_seen") or "") or None})
+    existing = rows(site, a.local, "SELECT id, name, phone_key, email FROM customers")
+    have_names = {(c.get("name") or "").lower() for c in existing}
+    incoming = [c for c in incoming if phone_key(c["phone"]) or email_key(c["email"]) or c["name"].lower() not in have_names]
+    inserts, updates, _ = plan_import(existing, incoming)
+    say(f"records: {len(custs)} customer{'s' if len(custs) != 1 else ''}, {len(jobs)} job{'s' if len(jobs) != 1 else ''}")
+    say(f"{len(inserts)} new customer{'s' if len(inserts) != 1 else ''}, {len(updates)} already in the book")
+    if a.dry_run:
+        say("dry run: nothing written")
+        return
+    stmts = import_sql(inserts, updates, "records")
+    if stmts:
+        run_sql(site, a.local, "\n".join(stmts) + "\n")
+    names = {(c["name"] or "").lower(): c["id"] for c in rows(site, a.local, "SELECT id, name FROM customers")}
+    status = {"open": "booked", "done": "done", "archived": "cancelled"}
+    done, unmatched = [], []
+    for j in jobs:
+        parts = re.split(r"\s+[—–-]\s+", j["title"], maxsplit=1)
+        what, who = (parts[0], parts[1]) if len(parts) == 2 else (j["title"], "")
+        cid = names.get(who.strip().lower())
+        if not cid:
+            unmatched.append(j["title"])
+            continue
+        exists = rows(site, a.local, f"SELECT id FROM jobs WHERE source = 'records' AND ref = {lit(str(j['id']))}")
+        if exists:
+            continue
+        done.append(f"INSERT INTO jobs (customer_id, customer_name, date, what, status, notes, source, ref) "
+                    f"SELECT id, name, {lit((j.get('created_at') or '')[:10] or None)}, {lit(what.strip())}, "
+                    f"{lit(status.get(j['status'], 'booked'))}, {lit(j.get('notes'))}, 'records', {lit(str(j['id']))} "
+                    f"FROM customers WHERE id = {cid};")
+    if done:
+        run_sql(site, a.local, "\n".join(done) + "\n")
+    say(f"moved {len(inserts)} customer{'s' if len(inserts) != 1 else ''} and {len(done)} job{'s' if len(done) != 1 else ''} into the book")
+    if unmatched:
+        say(f"{len(unmatched)} job{'s' if len(unmatched) != 1 else ''} not moved (no customer named in the title, "
+            f"\"What — Customer Name\"): " + "; ".join(unmatched[:5]))
+    say("the records rows are still there; once the owner is happy, "
+        "`db exec \"DELETE FROM records WHERE kind IN ('customer', 'job')\"`")
+
+
+def cmd_customers_export(a):
+    the_book(a)
+    cmd_export(a, only=("customers", "jobs"))
+
+
+def job_out(site, local, jid):
+    j = rows(site, local, f"SELECT * FROM jobs WHERE id = {int(jid)}")[0]
+    c = rows(site, local, f"SELECT {', '.join(CUSTOMER_COLS)} FROM customers WHERE id = {int(j['customer_id'])}")[0]
+    return j, c
+
+
+def job_line(j):
+    return (f"job #{j['id']} for {j.get('customer_name')}: {j['what']}, {j.get('date') or 'no date'}, {j['status']}"
+            + (f", {money_text(j['amount_cents'])}" if j.get("amount_cents") is not None else ""))
+
+
+def bump_seen(site, local, cid, day):
+    d1(site, local, command=f"UPDATE customers SET last_seen = {lit(day)}, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
+                            f"WHERE id = {int(cid)} AND (last_seen IS NULL OR last_seen < {lit(day)})")
+
+
+def cmd_jobs_add(a):
+    site = the_book(a)
+    if a.create:
+        term = a.customer
+        c, _ = upsert_customer(site, a.local, name=a.name or ("" if (phone_key(term) or "@" in term) else term),
+                               phone=a.phone or (term if phone_key(term) and not re.search(r"[A-Za-z]", term) else ""),
+                               email=a.email or (term if "@" in term else ""), source=a.source or "text")
+    else:
+        c = one_customer(site, a.local, a.customer, a.json)
+    day = iso_date(a.date) if a.date else datetime.date.today().isoformat()
+    if not day:
+        die(f"--date {a.date!r} isn't a date (2026-10-05, 10/5/2026, today)")
+    cents = money_cents(a.amount)
+    same = rows(site, a.local, f"SELECT id FROM jobs WHERE source = {lit(a.source)} AND ref = {lit(a.ref)}") if a.source and a.ref else []
+    if same:
+        jid = same[0]["id"]
+        d1(site, a.local, command=f"UPDATE jobs SET date = {lit(day)}, what = {lit(a.what)}, status = {lit(a.status)}, "
+                                  + (f"amount_cents = {cents}, " if cents is not None else "")
+                                  + f"updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = {jid}")
+    else:
+        res = d1(site, a.local, command=(
+            "INSERT INTO jobs (customer_id, customer_name, date, what, amount_cents, status, notes, source, ref) "
+            f"SELECT id, name, {lit(day)}, {lit(a.what)}, {lit(cents)}, {lit(a.status)}, {lit(a.notes)}, "
+            f"{lit(a.source or 'text')}, {lit(a.ref)} FROM customers WHERE id = {int(c['id'])}"))
+        jid = (res[-1].get("meta") or {}).get("last_row_id") or rows(site, a.local, "SELECT MAX(id) AS id FROM jobs")[0]["id"]
+    if a.status == "done":
+        bump_seen(site, a.local, c["id"], day)
+    j, c = job_out(site, a.local, jid)
+    if a.json:
+        emit_json({"job": j, "customer": c, "updated": bool(same)})
+    else:
+        say(("updated " if same else "added ") + job_line(j))
+
+
+def cmd_jobs_done(a):
+    site = the_book(a)
+    t = str(a.job).strip().lstrip("#")
+    if re.fullmatch(r"\d{1,6}", t):
+        got = rows(site, a.local, f"SELECT * FROM jobs WHERE id = {int(t)}")
+        if not got:
+            die(f"no job #{t} (db jobs ls)")
+        j = got[0]
+    else:
+        c = one_customer(site, a.local, t, a.json)
+        open_ = rows(site, a.local, f"SELECT * FROM jobs WHERE customer_id = {c['id']} AND status = 'booked' ORDER BY date, id")
+        if len(open_) != 1:
+            msg = (f"{c['name']} has no booked job: `db jobs add {c['id']} \"what\" --status done` records one done"
+                   if not open_ else f"{c['name']} has {len(open_)} booked jobs; say which by number:\n"
+                   + "\n".join("  " + job_line(x) for x in open_))
+            if a.json:
+                emit_json({"error": msg, "jobs": open_})
+                sys.exit(3)
+            die(msg, 3)
+        j = open_[0]
+    day = iso_date(a.date) if a.date else (j.get("date") or datetime.date.today().isoformat())
+    if day > datetime.date.today().isoformat() and not a.date:
+        day = datetime.date.today().isoformat()          # done early: done today, not on the booked day
+    cents = money_cents(a.amount)
+    d1(site, a.local, command=f"UPDATE jobs SET status = 'done', date = {lit(day)}, "
+                              + (f"amount_cents = {cents}, " if cents is not None else "")
+                              + f"updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = {j['id']}")
+    bump_seen(site, a.local, j["customer_id"], day)
+    j, c = job_out(site, a.local, j["id"])
+    if a.json:
+        emit_json({"job": j, "customer": c})
+    else:
+        say("done: " + job_line(j))
+
+
+def cmd_jobs_set(a):
+    site = the_book(a)
+    got = rows(site, a.local, f"SELECT * FROM jobs WHERE id = {int(a.id)}")
+    if not got:
+        die(f"no job #{a.id}")
+    if a.status == "done":
+        return cmd_jobs_done(argparse.Namespace(**{**vars(a), "job": str(a.id)}))
+    sets = []
+    if a.status:
+        sets.append(f"status = {lit(a.status)}")
+    if a.date:
+        sets.append(f"date = {lit(iso_date(a.date) or die(f'--date {a.date!r} is not a date'))}")
+    if a.what:
+        sets.append(f"what = {lit(a.what)}")
+    if a.amount is not None:
+        sets.append(f"amount_cents = {lit(money_cents(a.amount))}")
+    if a.notes is not None:
+        sets.append(f"notes = {lit(a.notes or None)}")
+    if not sets:
+        die("nothing to change (--status, --date, --what, --amount, --notes)")
+    d1(site, a.local, command=f"UPDATE jobs SET {', '.join(sets)}, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = {int(a.id)}")
+    j, c = job_out(site, a.local, a.id)
+    if a.json:
+        emit_json({"job": j, "customer": c})
+    else:
+        say("changed: " + job_line(j))
+
+
+def cmd_jobs_ls(a):
+    site = the_book(a)
+    where = []
+    if a.customer:
+        c = one_customer(site, a.local, a.customer, a.json)
+        where.append(f"customer_id = {c['id']}")
+    if a.status:
+        where.append(f"status = {lit(a.status)}")
+    if a.days:
+        where.append(f"date >= {lit((datetime.date.today() - datetime.timedelta(days=a.days)).isoformat())}")
+    got = rows(site, a.local, "SELECT * FROM jobs" + (f" WHERE {' AND '.join(where)}" if where else "")
+               + f" ORDER BY date DESC, id DESC LIMIT {int(a.limit)}")
+    if a.json:
+        emit_json(got)
+        return
+    if not got:
+        say("no jobs" + (" like that" if where else " yet"))
+    for j in got:
+        say(job_line(j))
+    total = sum(j["amount_cents"] or 0 for j in got if j["status"] == "done")
+    if total:
+        say(f"({money_text(total)} done in these {len(got)})")
+
+
+@subcommands("customers", "the customer book: find, show, add, set, lapsed, import, export")
+def customers_parser(p, common):
+    s = p.add_subparsers(dest="action", required=True)
+    f = s.add_parser("find", parents=[common], help="customers by phone, email, #id or name")
+    f.add_argument("term"); f.add_argument("--json", action="store_true"); f.set_defaults(fn=cmd_customers_find)
+    w = s.add_parser("show", parents=[common], help="one customer and their jobs")
+    w.add_argument("term"); w.add_argument("--json", action="store_true"); w.set_defaults(fn=cmd_customers_show)
+    d = s.add_parser("add", parents=[common], help="add one (the same phone or email fills in the one there)")
+    d.add_argument("name")
+    for k in ("phone", "email", "address", "notes", "tags"):
+        d.add_argument(f"--{k}", default="")
+    d.add_argument("--seen", help="a visit date to record (default: none)")
+    d.add_argument("--source", default="text"); d.add_argument("--json", action="store_true")
+    d.set_defaults(fn=cmd_customers_add)
+    t = s.add_parser("set", parents=[common], help="change one: --phone, --tags, --add-tag, --contact stop …")
+    t.add_argument("id", help="#id (or a phone, email or name that names one)")
+    for k in ("name", "phone", "email", "address", "notes", "tags"):
+        t.add_argument(f"--{k}")
+    t.add_argument("--add-tag", action="append"); t.add_argument("--contact", choices=("ok", "stop"))
+    t.add_argument("--seen"); t.add_argument("--json", action="store_true"); t.set_defaults(fn=cmd_customers_set)
+    g = s.add_parser("lapsed", parents=[common], help="who hasn't been seen in --days (90)")
+    g.add_argument("--days", type=int, default=90); g.add_argument("--unknown", action="store_true",
+                                                                    help="also list those with no visit on record")
+    g.add_argument("--json", action="store_true"); g.set_defaults(fn=cmd_customers_lapsed)
+    i = s.add_parser("import", parents=[common], help="a CSV or Excel sheet of customers (merged by phone/email)")
+    i.add_argument("file", nargs="?"); i.add_argument("--sheet"); i.add_argument("--dry-run", action="store_true")
+    i.add_argument("--from-records", action="store_true", help="move records kept as customers/jobs into the book")
+    i.set_defaults(fn=cmd_customers_import)
+    s.add_parser("export", parents=[common], help="customers and jobs to exports/<date>/").set_defaults(fn=cmd_customers_export)
+
+
+@subcommands("jobs", "jobs in the customer book: add, done, set, ls")
+def jobs_parser(p, common):
+    s = p.add_subparsers(dest="action", required=True)
+    d = s.add_parser("add", parents=[common], help="a job for a customer")
+    d.add_argument("customer", help="#id, phone, email or name (one customer)"); d.add_argument("what")
+    d.add_argument("--date", help="default today"); d.add_argument("--amount", help="dollars: 450, 450.00")
+    d.add_argument("--status", choices=JOB_STATUSES, default="booked"); d.add_argument("--notes")
+    d.add_argument("--source", help="who wrote it: text (default), booking, estimate, pay")
+    d.add_argument("--ref", help="the source's own id: the same source+ref again updates that job")
+    d.add_argument("--create", action="store_true", help="make the customer when none matches")
+    d.add_argument("--name"); d.add_argument("--phone"); d.add_argument("--email")
+    d.add_argument("--json", action="store_true"); d.set_defaults(fn=cmd_jobs_add)
+    n = s.add_parser("done", parents=[common], help="mark a job done (a job #, or a customer with one booked)")
+    n.add_argument("job"); n.add_argument("--date"); n.add_argument("--amount")
+    n.add_argument("--json", action="store_true"); n.set_defaults(fn=cmd_jobs_done)
+    t = s.add_parser("set", parents=[common], help="change a job: --status, --date, --what, --amount, --notes")
+    t.add_argument("id", type=int); t.add_argument("--status", choices=JOB_STATUSES); t.add_argument("--date")
+    t.add_argument("--what"); t.add_argument("--amount"); t.add_argument("--notes")
+    t.add_argument("--json", action="store_true"); t.set_defaults(fn=cmd_jobs_set)
+    ls = s.add_parser("ls", parents=[common], help="jobs, newest first")
+    ls.add_argument("customer", nargs="?"); ls.add_argument("--status", choices=JOB_STATUSES)
+    ls.add_argument("--days", type=int); ls.add_argument("--limit", type=int, default=50)
+    ls.add_argument("--json", action="store_true"); ls.set_defaults(fn=cmd_jobs_ls)
 
 
 # ---------------------------------------------------------------- doctor
@@ -1021,6 +1826,8 @@ def main():
     sub.add_parser("collections", parents=[common], help="what can be added; what this site has").set_defaults(fn=cmd_collections)
     sub.add_parser("tools", parents=[common], help="every list /admin shows: collection, named list or web tool").set_defaults(fn=cmd_tools)
     sub.add_parser("doctor", parents=[common], help="token, binding, migrations, secrets, /admin").set_defaults(fn=cmd_doctor)
+    for name, (hlp, build) in SUBCOMMANDS.items():
+        build(sub.add_parser(name, help=hlp), common)
     a = ap.parse_args()
     a.fn(a)
 

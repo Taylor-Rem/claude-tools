@@ -41,6 +41,8 @@ if a[:2] == ["customers", "find"]:
 elif a[:2] == ["customers", "show"]:
     c = next(c for c in book["customers"] if str(c["id"]) == a[2])
     print(json.dumps(dict(c, jobs=[j for j in book["jobs"] if str(j["customer_id"]) == a[2]])))
+elif a[:2] == ["customers", "set"]:
+    open(os.environ["FAKE_BOOK"] + ".set", "a").write(" ".join(a[2:]) + "\n")
 elif a[:2] == ["jobs", "done"]:
     open(os.environ["FAKE_BOOK"] + ".done", "a").write(a[2] + "\n")
     print("job " + a[2] + " done")
@@ -51,7 +53,8 @@ else:
 BOOK = {"customers": [
     {"id": 7, "name": "Jo Smith", "phone": "801-555-0134", "email": "Jo@Example.com"},
     {"id": 8, "name": "Sam Smithers", "phone": "801-555-0199", "email": "sam@example.com"},
-    {"id": 9, "name": "Pat Nomail", "phone": "801-555-0111", "email": ""}],
+    {"id": 9, "name": "Pat Nomail", "phone": "801-555-0111", "email": ""},
+    {"id": 10, "name": "Lee Stopped", "phone": "801-555-0122", "email": "lee@example.com", "contact": "stop"}],
     "jobs": [{"id": 31, "customer_id": 7, "date": "2026-10-01", "what": "spring opening", "status": "done"},
              {"id": 32, "customer_id": 7, "date": "2026-10-05", "what": "heater repair", "status": "booked"},
              {"id": 33, "customer_id": 7, "date": "2026-10-06", "what": "cancelled visit", "status": "cancelled"}]}
@@ -131,7 +134,7 @@ class ReviewLoopTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
         [q] = self.queue()
         self.assertEqual(q["op"], "ask")
-        self.assertEqual(q["customer"], {"id": 7, "name": "Jo Smith", "email": "jo@example.com"})
+        self.assertEqual(q["customer"], {"id": 7, "name": "Jo Smith", "email": "jo@example.com", "contact": "ok"})
         self.assertEqual(q["job"], 32, "the newest job that isn't done")
         self.assertEqual(q["place_id"], PID)
         self.assertIn("due", q)
@@ -181,6 +184,14 @@ class ReviewLoopTest(unittest.TestCase):
         ops = [(q["op"], q["customer"]["email"]) for q in self.queue()]
         self.assertEqual(ops, [("cancel", "jo@example.com"), ("stop", "someone@else.com")])
         self.assertEqual(self.queue()[1]["why"], "replied STOP")
+        self.assertEqual(self.run_gbp("ask", "Jo Smith", "--stop").returncode, 0)
+        self.assertEqual(Path(str(self.book) + ".set").read_text(), "7 --contact stop\n", "the book says stop too")
+
+    def test_the_books_contact_stop_is_honoured(self):
+        r = self.run_gbp("ask", "Lee Stopped")
+        self.assertEqual(r.returncode, 3)
+        self.assertIn("asked not to be contacted", r.stdout)
+        self.assertEqual(self.queue(), [])
 
     def test_dry_run_files_nothing_and_marks_nothing(self):
         r = self.run_gbp("--dry-run", "ask", "Jo Smith")

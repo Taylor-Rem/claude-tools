@@ -232,7 +232,7 @@ class Templates(Base):
         # Since 2026-10-05 (Codex's density pass) the letter is several short paragraphs, measured in words.
         self.assertEqual(1, len(re.findall(r"https?://", body)), f"one link in the letter, not\n{body}")
         self.assertTrue(40 <= len(body.split()) <= 130, len(body.split()))
-        self.assertTrue(body.strip().endswith("Want to take a look?"))                # one ask, last
+        self.assertTrue(body.strip().endswith("Take a look and let me know what you think."))   # one ask, last
         self.assertNotIn("Hibu", body)                                                # one hook: the fault
 
     def test_the_sample_fault_is_a_leads_fault_said_to_the_owner(self):
@@ -255,7 +255,7 @@ class Templates(Base):
     def test_editing_a_letter_unapproves_it(self):
         self.approve()
         p = self.tpl / "first.md"
-        p.write_text(p.read_text().replace("Want to take a look?", "Want to take a look? Free forever."))
+        p.write_text(p.read_text().replace("let me know what you think.", "let me know what you think. Free forever."))
         r = self.send(expect=1)
         self.assertIn("changed since Taylor approved it", r.stderr)
         self.assertEqual([], self.outbox())

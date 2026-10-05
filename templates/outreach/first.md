@@ -46,7 +46,7 @@ If you want to keep it, I'll put it on your own web address for {price_line}. A 
 
 If you don't want it, just say so and I'll take the preview down.
 
-Want to take a look?
+Take a look and let me know what you think.
 
 Taylor Remund · Patchlamp
 {phone}

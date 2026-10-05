@@ -4,8 +4,11 @@ img — Claude's image toolbelt. Stock photos (Pexels) and generation (Gemini).
 
     img stock "chicken tikka masala" [-n 5] [--orientation landscape] [--out DIR] [--page 2]
     img stock "pool deck" -n 1 --seed SLUG --skip-file used.txt --width 1600 --json   # one pick, never a used id
-    img gen "prompt" [--style menu] [--quality menu|hero|pro|draft] [--aspect 4:3] [--ref photo.jpg] [--out FILE]
-    img edit photo.jpg "put a party hat on him" [--quality ...] [--out FILE]   # instructed edit of a real photo
+    img gen "prompt" [--engine gemini|grok] [--style menu] [--quality menu|hero|pro|draft] [--aspect 4:3] [--ref photo.jpg] [--out FILE]
+    img edit photo.jpg "put a party hat on him" [--engine gemini|grok] [--quality ...] [--out FILE]   # instructed edit of a real photo
+        engine: gemini is the default (the style presets were tuned on it); grok (xAI Grok
+        Imagine, XAI_API_KEY) when --engine or IMG_GEN_ENGINE says so — the relay sets that
+        for the chat rooms.
     img video "prompt" [--engine grok|veo] [--quality draft|good|pro] [--seconds N] [--aspect 16:9|9:16] [--ref first-frame.jpg] [--dry-run]
     img video "prompt" --length 22 [--then "..." --then "..."]   # veo: 8s + extensions, stitched by Veo
         engine: grok (xAI Grok Imagine, XAI_API_KEY) is the default when its key is set — it does
@@ -78,6 +81,35 @@ QUALITY = {
     "pro":   {"model": "gemini-3-pro-image",          "size": "2K", "usd": 0.134},
 }
 GEMINI_MODEL = os.environ.get("IMG_GEN_MODEL")  # explicit override beats --quality
+
+# Grok Imagine (xAI): the other image engine, for gen and edit. One endpoint
+# for text-to-image, another for anything with a source image (an edit, or a
+# gen with --ref). The price here is the list price for a plain generation
+# (2026-10-02); the response says what was actually charged (a source image
+# adds about a cent) and that is what the ledger records.
+GROK_IMAGE_URL = "https://api.x.ai/v1/images/generations"
+GROK_IMAGE_EDIT_URL = "https://api.x.ai/v1/images/edits"
+GROK_QUALITY = {
+    "draft": {"model": "grok-imagine-image",     "size": "1k", "usd": 0.02},
+    "menu":  {"model": "grok-imagine-image-2.0", "size": "1k", "usd": 0.06},
+    "hero":  {"model": "grok-imagine-image-2.0", "size": "2k", "usd": 0.08},
+    "pro":   {"model": "grok-imagine-image-2.0", "size": "2k", "usd": 0.08},
+}
+GROK_ASPECT = {"4:5": "3:4", "5:4": "4:3"}      # Gemini sizes xAI doesn't have -> the nearest it does
+GROK_USD_PER_TICK = 1e-10                       # usage.cost_in_usd_ticks
+IMAGE_ENGINES = ("gemini", "grok")
+
+
+def image_engine(asked=None):
+    """Which engine a picture runs on: --engine, else IMG_GEN_ENGINE, else
+    gemini. Unlike video, the key being there doesn't flip the default: the
+    style presets (menu, patchlamp-social) and the client work were tuned on
+    Gemini, so grok is opted into -- the relay does that for the chat rooms."""
+    e = (asked or os.environ.get("IMG_GEN_ENGINE") or "gemini").lower()
+    if e not in IMAGE_ENGINES:
+        die(f"unknown image engine {e!r}; one of {', '.join(IMAGE_ENGINES)}")
+    return e
+
 
 # Video (Veo 3.1, Sept 2026 paid-tier rates, per SECOND -- a clip is 10-50x an
 # image, which is the whole reason --dry-run exists).
@@ -484,21 +516,77 @@ def gemini_image(model, key, body):
     die(f"Gemini returned no image. Response: {json.dumps(resp)[:400]}")
 
 
-def cmd_edit(args):
-    """img edit PHOTO "instruction": Gemini redraws the photo with the change
-    asked for and nothing else. Same model/cost table as gen; the sidecar and
-    ledger say which file it was an edit of."""
+def grok_image(model, key, prompt, size, aspect=None, sources=()):
+    """One Grok Imagine call; returns (base64 image, mime, usd charged or None)
+    or dies. With `sources` (paths) it goes to the edits endpoint, which is
+    also how a gen with --ref works there."""
+    body = {"model": model, "prompt": prompt, "n": 1, "response_format": "b64_json"}
+    if model.startswith("grok-imagine-image-2"):
+        body["resolution"], body["quality"] = size, "medium"
+    if aspect:
+        body["aspect_ratio"] = GROK_ASPECT.get(aspect, aspect)
+    url = GROK_IMAGE_URL
+    if sources:
+        url = GROK_IMAGE_EDIT_URL
+        images = [{"url": data_url(s_), "type": "image_url"} for s_ in sources]
+        if len(images) == 1:
+            body["image"] = images[0]
+        else:
+            body["images"] = images
+    r = requests.post(url, headers={"Authorization": f"Bearer {key}"}, json=body, timeout=180)
+    if r.status_code != 200:
+        die(f"grok: HTTP {r.status_code} {r.text[:300]}")
+    resp = r.json()
+    for item in resp.get("data") or []:
+        if item.get("b64_json"):
+            ticks = (resp.get("usage") or {}).get("cost_in_usd_ticks")
+            usd = round(ticks * GROK_USD_PER_TICK, 4) if isinstance(ticks, (int, float)) else None
+            return item["b64_json"], item.get("mime_type", "image/jpeg"), usd
+    die(f"grok returned no image. Response: {json.dumps(resp)[:400]}")
+
+
+def image_call(engine, quality, prompt, aspect=None, sources=(), text_first=False):
+    """Set up one engine for gen/edit: returns (make, model, size, list price,
+    billed_to, key name). make() -> (base64, mime, usd for that image)."""
+    if engine == "grok":
+        key = need_key("XAI_API_KEY")
+        _, key_name = key_source("XAI_API_KEY")
+        q = GROK_QUALITY[quality]
+        model = GEMINI_MODEL if (GEMINI_MODEL or "").startswith("grok") else q["model"]
+
+        def make():
+            b64, mime, usd = grok_image(model, key, prompt, q["size"], aspect, sources)
+            return b64, mime, q["usd"] if usd is None else usd
+        return make, model, q["size"], q["usd"], f"xai:{key_name}", key_name
     key = need_key("GEMINI_API_KEY")
-    _, key_name = key_source("GEMINI_API_KEY")
+    _, key_name = key_source("GEMINI_API_KEY")   # who pays, by name only
+    q = QUALITY[quality]
+    model = q["model"] if (GEMINI_MODEL or "grok").startswith("grok") else GEMINI_MODEL
+    parts = [image_part(s_) for s_ in sources]
+    parts = [{"text": prompt}] + parts if text_first else parts + [{"text": prompt}]
+    body = {"contents": [{"parts": parts}],
+            "generationConfig": {"responseModalities": ["IMAGE"], "imageConfig": {"imageSize": q["size"]}}}
+    if aspect:
+        body["generationConfig"]["imageConfig"]["aspectRatio"] = aspect
+
+    def make():
+        return (*gemini_image(model, key, body), q["usd"])
+    return make, model, q["size"], q["usd"], f"gemini:{key_name}", key_name
+
+
+def cmd_edit(args):
+    """img edit PHOTO "instruction": the engine redraws the photo with the
+    change asked for and nothing else. Same model/cost table as gen; the
+    sidecar and ledger say which file it was an edit of."""
+    engine = image_engine(args.engine)
     src = Path(args.photo)
+    if not src.exists():
+        die(f"image not found: {args.photo}")
     prompt = (f"Edit this photo: {args.instruction}\n\nKeep everything else exactly as it is: the same "
               f"people, faces, framing, lighting and composition. Photorealistic, matching the original. "
               f"Output the edited photo only.")
-    q = QUALITY[args.quality]
-    model = GEMINI_MODEL or q["model"]
-    body = {"contents": [{"parts": [image_part(src), {"text": prompt}]}],
-            "generationConfig": {"responseModalities": ["IMAGE"], "imageConfig": {"imageSize": q["size"]}}}
-    img_b64, mime = gemini_image(model, key, body)
+    make, model, size, _, billed_to, key_name = image_call(engine, args.quality, prompt, sources=[src])
+    img_b64, mime, usd = make()
     ext = EXTS.get(mime, ".png")
     if args.out:
         path = Path(args.out).resolve()
@@ -509,25 +597,24 @@ def cmd_edit(args):
     path.write_bytes(base64.b64decode(img_b64))
     write_sidecar(path, {
         "source": "edited", "edit_of": str(src.resolve()), "instruction": args.instruction,
-        "full_prompt": prompt, "model": model, "quality": args.quality, "size": q["size"],
-        "est_cost_usd": q["usd"], "billed_to": f"gemini:{key_name}",
+        "full_prompt": prompt, "engine": engine, "model": model, "quality": args.quality, "size": size,
+        "est_cost_usd": usd, "billed_to": billed_to,
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
     })
     if not args.no_ledger:
         ledger_append(args.ledger, {
-            "ts": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()), "kind": "image",
-            "model": model, "quality": args.quality, "cost_usd": q["usd"], "billed_to": f"gemini:{key_name}",
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()), "kind": "image", "engine": engine,
+            "model": model, "quality": args.quality, "cost_usd": usd, "billed_to": billed_to,
             "project": os.getcwd(), "path": str(path), "edit_of": str(src.resolve()),
         })
     wh = image_size(path)
     print(f"  {path}  {f'{wh[0]}x{wh[1]}' if wh else '?'}")
-    print(f"  ({model}, {q['size']}, ~${q['usd']:.2f}, billed to {key_name})")
+    print(f"  ({model}, {size}, ~${usd:.2f}, billed to {key_name})")
     return [path]
 
 
 def cmd_gen(args):
-    key = need_key("GEMINI_API_KEY")
-    _, key_name = key_source("GEMINI_API_KEY")   # who pays, by name only
+    engine = image_engine(args.engine)
     styles = load_styles()
     if args.style not in styles:
         die(f"unknown style {args.style!r}; run `img styles`")
@@ -536,28 +623,18 @@ def cmd_gen(args):
     if args.aspect:
         prompt += f"\n\nAspect ratio {args.aspect}."
 
-    parts = [{"text": prompt}]
     for ref in args.ref or []:
-        rp = Path(ref)
-        if not rp.exists():
+        if not Path(ref).exists():
             die(f"reference image not found: {ref}")
-        mime = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp"}.get(
-            rp.suffix.lower().lstrip("."), "image/jpeg")
-        parts.append({"inlineData": {"mimeType": mime, "data": base64.b64encode(rp.read_bytes()).decode()}})
-
-    q = QUALITY[args.quality]
-    model = GEMINI_MODEL or q["model"]
-    body = {"contents": [{"parts": parts}], "generationConfig": {"responseModalities": ["IMAGE"]}}
-    body["generationConfig"]["imageConfig"] = {"imageSize": q["size"]}
-    if args.aspect:
-        body["generationConfig"]["imageConfig"]["aspectRatio"] = args.aspect
+    make, model, size, _, billed_to, key_name = image_call(engine, args.quality, prompt, args.aspect, args.ref or [], text_first=True)
 
     # `--out DIR` (an existing directory) means "in there": before 2026-09-29 it was opened as a
     # file after the image was paid for (leads preview --hero gen, B64).
     dest_dir = out_dir(args.out if args.out and Path(args.out).is_dir() else args.out_dir, slugify(args.prompt))
-    made = []
+    made, spent = [], 0.0
     for i in range(args.n):
-        img_b64, mime = gemini_image(model, key, body)
+        img_b64, mime, usd = make()
+        spent += usd
         ext = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}.get(mime, ".png")
         if args.out and args.n == 1 and not Path(args.out).is_dir():
             path = Path(args.out).resolve()
@@ -568,11 +645,12 @@ def cmd_gen(args):
         path.write_bytes(base64.b64decode(img_b64))
         write_sidecar(path, {
             "source": "generated",
+            "engine": engine,
             "model": model,
             "quality": args.quality,
-            "size": q["size"],
-            "est_cost_usd": q["usd"],
-            "billed_to": f"gemini:{key_name}",
+            "size": size,
+            "est_cost_usd": usd,
+            "billed_to": billed_to,
             "style": args.style,
             "prompt": args.prompt,
             "full_prompt": prompt,
@@ -584,10 +662,11 @@ def cmd_gen(args):
             ledger_append(args.ledger, {
                 "ts": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()),
                 "kind": "image",
+                "engine": engine,
                 "model": model,
                 "quality": args.quality,
-                "cost_usd": q["usd"],
-                "billed_to": f"gemini:{key_name}",
+                "cost_usd": usd,
+                "billed_to": billed_to,
                 "project": os.getcwd(),
                 "path": str(path),
             })
@@ -595,7 +674,7 @@ def cmd_gen(args):
         dims = f"{wh[0]}x{wh[1]}" if wh else "?"
         print(f"  [{i + 1}] {path}  {dims}")
         made.append(path)
-    print(f"  ({model}, {q['size']}, ~${q['usd'] * args.n:.2f}, billed to {key_name})")
+    print(f"  ({model}, {size}, ~${spent:.2f}, billed to {key_name})")
     return made
 
 
@@ -826,7 +905,7 @@ def grok_video(key, body, timeout=GROK_TIMEOUT_SECONDS):
         waited += GROK_POLL_SECONDS
         pr = requests.get(GROK_STATUS_URL.format(request_id=rid), headers={"Authorization": headers["Authorization"]},
                           timeout=60)
-        if pr.status_code != 200:
+        if pr.status_code not in (200, 202):         # 202 = still pending, with the same JSON body
             die(f"grok: poll HTTP {pr.status_code} {pr.text[:300]}")
         payload = pr.json()
         status = payload.get("status")
@@ -1351,8 +1430,10 @@ def main():
     s.add_argument("--json", action="store_true", help="print the saved photos as JSON, nothing else")
     s.set_defaults(fn=cmd_stock)
 
-    g = sub.add_parser("gen", help="generate an image with Gemini")
+    g = sub.add_parser("gen", help="generate an image (gemini, or grok with --engine / IMG_GEN_ENGINE)")
     g.add_argument("prompt")
+    g.add_argument("--engine", choices=list(IMAGE_ENGINES), default=None,
+                   help="gemini (default) or grok (xAI; draft 2¢, menu 6¢, hero/pro 8¢). IMG_GEN_ENGINE sets it too")
     g.add_argument("--style", default="plain", help="preset name (see `img styles`)")
     g.add_argument("--quality", choices=list(QUALITY), default="menu",
                    help="draft (lite, 3¢) | menu (flash 1K, 7¢, default) | hero (flash 2K, 10¢) | pro (2K, 13¢)")
@@ -1365,8 +1446,10 @@ def main():
     g.add_argument("--no-ledger", action="store_true", help="don't record this generation's cost")
     g.set_defaults(fn=cmd_gen)
 
-    e = sub.add_parser("edit", help="edit a real photo with Gemini (instructed edit, same photo back)")
+    e = sub.add_parser("edit", help="edit a real photo (instructed edit, same photo back; gemini or grok)")
     e.add_argument("photo")
+    e.add_argument("--engine", choices=list(IMAGE_ENGINES), default=None,
+                   help="gemini (default) or grok. IMG_GEN_ENGINE sets it too")
     e.add_argument("instruction", help='what to change, e.g. "remove the guy on the left", "make it night"')
     e.add_argument("--quality", choices=list(QUALITY), default="menu")
     e.add_argument("--out", help="exact output file")

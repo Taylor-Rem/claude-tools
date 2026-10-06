@@ -83,7 +83,8 @@ _ALL = None
 # The client role's subcommands are what the client template and PLAYBOOK have Patch run; the
 # rest of each tool (SITE_ADMIN work, platform grants, the rooms' credits, the GitHub side) is
 # Taylor's from a terminal and is refused here with that reason.
-SITE_CLIENT = ("publish", "ls", "doctor", "data", "mail", "handover")
+SITE_CLIENT = ("publish", "ls", "doctor", "data", "mail", "handover", "stats", "counter",   # stats, counter: B127
+               "domain", "address")   # B58: the owner's domain and the free address are Patch's (plan 27)
 IMG_CLIENT = ("gen", "stock", "edit", "describe", "video", "styles", "info")
 TOOLS = {
     "site": {"keys": ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "SITE_ORG",

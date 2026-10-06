@@ -27,12 +27,26 @@ Subject hours: your Google listing has no hours on it
 Subject booking: there's no way to book {business} online
 Subject photos: your Google listing has almost no photos
 Subject closed: Google says {business} is closed when it isn't
+# Body by Codex (marketing/copy/2026-10-05-letters.md, variant A), 2026-10-05: one thought a sentence, one ask a letter;
+# the disclosure beside the intro. Flint's one change: batch-first's takedown sentence is out (nothing is built yet in this lane).
+
 Subject default: one thing to fix on {business}'s Google listing
 
 ---
 Hi {first},
 
-I'm Taylor Remund — I build and look after small websites out of American Fork, and I go through local businesses one at a time. I looked {business} up on Google: {fault}. {paying} I've made you a page that fixes it, so you can look at it instead of imagining it: {preview_url}. If you want it kept it's {price_line} to keep it up on your own web address, with a few small changes by text each month; if you don't, I take it down and that's the end of it. Either way the page is yours to copy from.
+I'm Taylor Remund. I build and look after websites here in American Fork, Utah.
+Patch, my AI operator, drafted this note for my review.
+
+I looked {business} up on Google: {fault}.
+
+I made you a page from your Google listing: {preview_url}
+
+If you want to keep it, I'll put it on your own web address for {price_line}. A few small changes by text to Patch each month are included. Bigger changes need a bigger plan.
+
+If you don't want it, just say so and I'll take the preview down.
+
+Take a look and let me know what you think.
 
 Taylor Remund · Patchlamp
 {phone}
@@ -40,4 +54,3 @@ Fifteen minutes on the phone, if that's easier: {booking}
 {address}
 
 This is a one-time note from a local business — it is an advertisement, and nobody paid me to send it. Reply "no thanks" and you won't hear from me again.
-Patch, my AI operator, found this and drafted this note; I read every one before it goes.

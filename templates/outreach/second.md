@@ -4,12 +4,22 @@
 # opt-out, the disclosure. Placeholders: {first} {business} {fault} {preview_url}
 # {price_line} {phone} {booking} {address}.
 
+# Body by Codex (marketing/copy/2026-10-05-letters.md, variant A), 2026-10-05: one thought a sentence, one ask a letter;
+# the disclosure beside the intro. Flint's one change: batch-first's takedown sentence is out (nothing is built yet in this lane).
+
 Subject default: the page I made for {business}
 
 ---
 Hi {first},
 
-Following up on the page for {business} — it's still at {preview_url}. If you keep it ({price_line}), it stays up on your own web address, and a few small changes a month are a text to Patch; anything bigger is a plan up. If it's not for you, no hard feelings.
+I'm Taylor. I build and look after websites in American Fork.
+Patch, my AI operator, drafted this note for my review.
+
+I looked {business} up on Google: {fault}.
+
+Here's a page I made for you: {preview_url}
+
+Want to use it as your website?
 
 Taylor Remund · Patchlamp
 {phone}
@@ -17,4 +27,3 @@ Fifteen minutes on the phone, if that's easier: {booking}
 {address}
 
 A one-time follow-up to my note; this is an advertisement from a local business. Reply "no thanks" and you won't hear from me again.
-Patch, my AI operator, drafted this note; I read every one before it goes.

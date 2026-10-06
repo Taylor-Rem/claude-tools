@@ -33,6 +33,9 @@ The customer book (`db add customers`, ROADMAP B122; --json on each for a machin
   db jobs add CUSTOMER "what" [--date --amount 450 --status booked|done|cancelled --source S --ref R --create]
   db jobs done JOB_ID|CUSTOMER [--amount]   db jobs set ID [--status …]   db jobs ls [CUSTOMER]
 
+Documents signed by link (`db add signatures`, ROADMAP B128) are driven by
+`sign`, not by db subcommands: `sign new|ls|show|pdf|void` (bin/sign).
+
 Every command takes --site NAME when the workspace has more than one site
 with a database, and --local to work on the local copy `wrangler pages dev`
 uses (repos/<site>/.wrangler/, for trying a change before it goes live).

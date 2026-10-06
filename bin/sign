@@ -1,0 +1,630 @@
+#!/usr/bin/env python3
+"""sign — a document a customer reads and signs by link (a waiver, a policy,
+a release). ROADMAP B128, plan ~/projects/plans/49-the-customer-side.md.
+Run inside a client workspace whose site has the `signatures` collection
+(`db add signatures`).
+
+  sign new FILE.md --for "Smith" [--email E] [--phone P] [--customer ID] [--dry-run]
+        put the document on the site as /sign/<token> (an unguessable link,
+        one per customer) and print the link and a message to send with it.
+        FILE.md is usually waivers/<name>.md in this workspace; its first
+        "# " heading is the title. When the site keeps a customer book,
+        "Smith" is looked up there (one match fills the email; several are
+        listed, and --customer ID says which).
+  sign ls [--all] [--json]          what was sent, newest first (--all: void too)
+  sign show ID|TOKEN|NAME [--json] [--no-pdf]
+        one record, the way the page shows it. When it is signed and has no
+        PDF yet, makes the signed PDF, files it under the customer in the
+        book, and prints the two emails to send; the PDF's path is the last line.
+  sign pdf ID [--out PATH]          make (or make again) the signed PDF
+  sign void ID [--signed] [--dry-run]
+        withdraw a link that hasn't been signed; the page then says so. A
+        signed one needs --signed (the record stays, marked void).
+  sign doctor                       the database, the renderer, pdfinfo/pdftotext, waivers/
+
+Common options: --site NAME (more than one site with a database), --local
+(the local copy `wrangler pages dev` uses), --json where it says.
+
+What a signature is here: the name the customer typed, a tick on "I have read
+this and I agree to it", the time (UTC), the IP the request came from, the
+browser, and the sha256 of the text at that moment. It is plain assent with
+a record, not a notarised signature; PLAYBOOK.md § Files says when that's
+not enough.
+
+The PDF (templates/print/signed.html, rendered by print's machinery,
+lib/print.mjs): the business, the title, the signature record (name, time in
+the site's zone and in UTC, IP, the hash) and the whole text. It is checked
+before it is offered: every page US letter (pdfinfo), and the text read back
+out of it (pdftotext) must hold the signer's name, the time and the hash.
+A failed check exits 2 and says what failed; don't send that file.
+
+The emails: the owner is emailed by the site the moment it is signed (the
+same patchlamp.com form mail as any form, "signature"). The PDF itself to the
+owner and the signer needs the customer-mail path (B119); until that is on
+patchlamp.com, `sign show` prints both emails as drafts and the PDF goes
+to the owner as a SEND-FILE.
+
+Everything goes through `db` (the workspace's own database, by the site
+registry), so `sign` has no keys of its own. SIGN_DB overrides the db
+binary (tests).
+"""
+
+import argparse
+import datetime as dt
+import hashlib
+import html
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import secrets
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+HERE = Path(__file__).resolve().parent.parent
+DB = Path(os.environ.get("SIGN_DB") or HERE / "bin" / "db")
+PRINT_BIN = HERE / "bin" / "print"
+TEMPLATE = HERE / "templates" / "print" / "signed.html"
+HELPER = HERE / "lib" / "print.mjs"
+LETTER = (8.5, 11.0)
+
+
+def die(msg, code=1):
+    print(f"sign: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def say(msg=""):
+    print(msg, flush=True)
+
+
+def lit(v):
+    if v is None:
+        return "NULL"
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return repr(v)
+    return "'" + str(v).replace("'", "''") + "'"
+
+
+def load_print():
+    loader = importlib.machinery.SourceFileLoader("print_tool", str(PRINT_BIN))
+    spec = importlib.util.spec_from_loader("print_tool", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    # always the registry db reads (beside the toolbelt env, SITES_REGISTRY or not),
+    # so the site sign links to is the site whose database it wrote
+    env = Path(os.environ.get("CLAUDE_TOOLS_ENV", Path.home() / ".config/claude-tools/env"))
+    mod.REGISTRY = env.parent / "sites.json"
+    return mod
+
+
+# ---------------------------------------------------------------- the workspace
+
+class Ws:
+    def __init__(self, a):
+        self.root = Path.cwd()
+        p = self.root / ".client.json"
+        if not p.exists():
+            die("not in a client workspace (no .client.json here). Run this from ~/projects/clients/<slug>.")
+        try:
+            self.meta = json.loads(p.read_text())
+        except ValueError as exc:
+            die(f".client.json is not valid JSON: {exc}")
+        self.name = self.meta.get("name") or self.meta.get("slug") or ""
+        self.a = a
+
+    def inside(self, path):
+        p = (self.root / path).resolve() if not Path(path).is_absolute() else Path(path).resolve()
+        if not str(p).startswith(str(self.root.resolve()) + os.sep):
+            die(f"{path} is outside this workspace")
+        return p
+
+    def db(self, *args, check=True):
+        cmd = [sys.executable, str(DB), *args]
+        if getattr(self.a, "site", None):
+            cmd += ["--site", self.a.site]
+        if getattr(self.a, "local", False):
+            cmd += ["--local"]
+        r = subprocess.run(cmd, capture_output=True, text=True, cwd=self.root)
+        if check and r.returncode != 0:
+            die((r.stderr.strip() or r.stdout.strip()).removeprefix("db: ") or f"db {args[0]} failed")
+        return r
+
+    def rows(self, sql):
+        out = self.db("query", sql, "--json").stdout
+        try:
+            return json.loads(out)
+        except ValueError:
+            die(f"db said something that isn't JSON:\n{out[-400:]}")
+
+    def exec(self, sql):
+        self.db("exec", sql)
+
+    def tables(self):
+        return {r["name"] for r in self.rows(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('signatures', 'customers', 'jobs')")}
+
+    def need_table(self):
+        if "signatures" not in self.tables():
+            die("this site can't take signatures yet: `db add signatures`, then commit, "
+                "`git -C repos/<site> push` and `site publish <site>` (PLAYBOOK.md § Files)")
+
+    def site(self):
+        """(live url, the site's repo, its time zone) from print's reading of the registry."""
+        P = load_print()
+        ctx = P.Ctx(argparse.Namespace(site=getattr(self.a, "site", None), name=None))
+        url = P.site_url(ctx)
+        tz = "America/Denver"
+        if ctx.repo and (ctx.repo / "wrangler.toml").exists():
+            m = re.search(r'^TIMEZONE\s*=\s*"([^"]+)"', (ctx.repo / "wrangler.toml").read_text(), re.M)
+            if m:
+                tz = m.group(1)
+        return url, ctx, tz
+
+
+# ---------------------------------------------------------------- the document
+
+def normalise(text):
+    """The text as it is kept and hashed: \\n line ends, no trailing spaces, one final newline."""
+    lines = [ln.rstrip() for ln in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    return "\n".join(lines).strip("\n") + "\n"
+
+
+def digest(body):
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def inline(s):
+    s = html.escape(s, quote=True)
+    s = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s)
+    s = re.sub(r"(?<![\w*])\*(?!\s)(.+?)(?<!\s)\*(?![\w*])", r"<em>\1</em>", s)
+    s = re.sub(r"(?<!\w)_(?!\s)(.+?)(?<!\s)_(?!\w)", r"<em>\1</em>", s)
+    return s
+
+
+def to_html(body):
+    """A small Markdown: # headings, paragraphs, - and 1. lists, **bold**, *italic*.
+    Everything is escaped first, so the page never runs what a document holds."""
+    out, para, items, kind = [], [], [], None
+
+    def flush():
+        nonlocal para, items, kind
+        if para:
+            out.append("<p>" + "<br>".join(inline(x) for x in para) + "</p>")
+        if items:
+            out.append(f"<{kind}>" + "".join(f"<li>{inline(x)}</li>" for x in items) + f"</{kind}>")
+        para, items, kind = [], [], None
+
+    for line in body.split("\n"):
+        s = line.strip()
+        h = re.match(r"^(#{1,3})\s+(.*)$", s)
+        ul = re.match(r"^[-*+]\s+(.*)$", s)
+        ol = re.match(r"^\d+[.)]\s+(.*)$", s)
+        if not s:
+            flush()
+        elif h:
+            flush()
+            n = len(h.group(1))
+            out.append(f"<h{n}>{inline(h.group(2))}</h{n}>")
+        elif ul or ol:
+            want = "ul" if ul else "ol"
+            if para or (kind and kind != want):
+                flush()
+            kind = want
+            items.append((ul or ol).group(1))
+        elif items and line.startswith((" ", "\t")):
+            items[-1] += " " + s
+        else:
+            if items:
+                flush()
+            para.append(s)
+    flush()
+    return "\n".join(out)
+
+
+def shown_html(body, title):
+    """The page's and the PDF's HTML: the text, less a first "# " heading that only repeats the
+    title (both already show it as their heading). The hash is always of the whole text."""
+    lines = body.split("\n")
+    if lines and re.match(r"^#\s+", lines[0]) and lines[0].lstrip("#").strip() == title:
+        lines = lines[1:]
+    return to_html("\n".join(lines))
+
+
+def title_of(body, path):
+    m = re.search(r"^#\s+(.+)$", body, re.M)
+    return m.group(1).strip() if m else path.stem.replace("-", " ").replace("_", " ").capitalize()
+
+
+# ---------------------------------------------------------------- finding a record
+
+COLS = ("id, token, title, doc_file, doc_sha256, for_name, email, phone, customer_id, status, signed_name, "
+        "signed_at, signed_ip, signed_agent, signed_sha256, pdf, filed_at, notes, created_at, updated_at")
+
+
+def find(ws, term, full=False):
+    cols = "*" if full else COLS
+    t = str(term).strip().lstrip("#")
+    if re.fullmatch(r"\d{1,9}", t):
+        got = ws.rows(f"SELECT {cols} FROM signatures WHERE id = {int(t)}")
+    elif re.fullmatch(r"[A-Za-z0-9_-]{20,100}", t):
+        got = ws.rows(f"SELECT {cols} FROM signatures WHERE token = {lit(t)}")
+    else:
+        like = lit(f"%{t.lower()}%")
+        got = ws.rows(f"SELECT {cols} FROM signatures WHERE lower(for_name) LIKE {like} "
+                      f"OR lower(coalesce(signed_name, '')) LIKE {like} ORDER BY id DESC")
+    if not got:
+        die(f"nothing sent for signing matches {term!r} (sign ls)")
+    if len(got) > 1:
+        die(f"{len(got)} match {term!r}; say which by number:\n" + "\n".join("  " + line(r) for r in got), 3)
+    return got[0]
+
+
+def line(r, tz="America/Denver"):
+    who = f" — signed by {r['signed_name']} {local_time(r['signed_at'], tz)}" if r.get("status") == "signed" else ""
+    pdf = "" if r.get("status") != "signed" else (" · PDF filed" if r.get("pdf") else " · no PDF yet: sign show " + str(r["id"]))
+    return f"#{r['id']} {r['status']:<6} {r['title']} — for {r['for_name']} (sent {local_day(r['created_at'], tz)}){who}{pdf}"
+
+
+# ---------------------------------------------------------------- commands
+
+def lookup_customer(ws, a, have):
+    """(customer row or None, a note) from the book, when the site keeps one."""
+    if "customers" not in have:
+        return None, ""
+    if a.customer:
+        r = ws.db("customers", "show", str(a.customer), "--json", check=False)
+        if r.returncode != 0:
+            die(f"no customer {a.customer} in the book (db customers find {a.for_})")
+        return json.loads(r.stdout), ""
+    r = ws.db("customers", "find", a.for_, "--json", check=False)
+    found = json.loads(r.stdout) if r.returncode == 0 and r.stdout.strip() else []
+    if a.email:
+        exact = [c for c in found if (c.get("email") or "").lower() == a.email.lower()]
+        found = exact or found
+    if len(found) > 1:
+        die(f"{len(found)} customers in the book match {a.for_!r}; say which with --customer ID:\n"
+            + "\n".join(f"  #{c['id']} {c.get('name')} {c.get('phone') or ''} {c.get('email') or ''}".rstrip() for c in found), 3)
+    if found:
+        return found[0], f"in the book as #{found[0]['id']} {found[0].get('name')}"
+    return None, "not in the customer book yet; they go in when it is signed"
+
+
+def cmd_new(a):
+    ws = Ws(a)
+    path = ws.inside(a.file)
+    if not path.is_file():
+        die(f"no document at {a.file} (the workspace keeps them in waivers/)")
+    body = normalise(path.read_text(encoding="utf-8", errors="replace"))
+    if len(body.strip()) < 20:
+        die(f"{a.file} is nearly empty; a document to sign needs its text")
+    if not a.for_.strip():
+        die('--for "Name": who it is for')
+    ws.need_table()
+    have = ws.tables()
+    c, note = lookup_customer(ws, a, have)
+    who = (c or {}).get("name") or a.for_.strip()            # the book's name when it knows them
+    email = a.email or (c or {}).get("email") or None
+    phone = a.phone or (c or {}).get("phone") or None
+    title = title_of(body, path)
+    token = secrets.token_urlsafe(32)
+    url, _, _ = ws.site()
+    link = f"{url.rstrip('/')}/sign/{token}"
+    rel = str(path.relative_to(ws.root.resolve()))
+    sql = ("INSERT INTO signatures (token, title, doc_file, body, body_html, doc_sha256, for_name, email, phone, customer_id) "
+           f"VALUES ({lit(token)}, {lit(title)}, {lit(rel)}, {lit(body)}, {lit(shown_html(body, title))}, {lit(digest(body))}, "
+           f"{lit(who)}, {lit(email)}, {lit(phone)}, {lit(c['id']) if c else 'NULL'})")
+    if a.dry_run:
+        say(f"would put \"{title}\" ({rel}, sha256 {digest(body)[:16]}…) on the site for {a.for_}")
+        if note:
+            say(f"  {a.for_}: {note}")
+        say(f"  the link would look like {url.rstrip('/')}/sign/<token>")
+        say("dry run: nothing written")
+        return
+    ws.exec(sql)
+    r = ws.rows(f"SELECT {COLS} FROM signatures WHERE token = {lit(token)}")[0]
+    if a.json:
+        say(json.dumps({**r, "link": link}, indent=2))
+        return
+    say(f"#{r['id']} \"{title}\" is ready for {who} to sign (sha256 {r['doc_sha256'][:16]}…)")
+    if note:
+        say(f"  {a.for_}: {note}")
+    say("")
+    say(f"Send this to {who}" + (f" ({email})" if email else (f" ({phone})" if phone else "")) + ":")
+    say(f"  Hi {who.split()[0]}, here's the {title} from {ws.name}. "
+        f"Please read it and sign at the link (it takes a minute): {link}")
+    say("")
+    say("When it's signed the owner gets an email; `sign show " + str(r["id"]) + "` then makes the signed PDF.")
+    say(link)
+
+
+def cmd_ls(a):
+    ws = Ws(a)
+    ws.need_table()
+    where = "" if a.all else "WHERE status != 'void' "
+    got = ws.rows(f"SELECT {COLS} FROM signatures {where}ORDER BY id DESC LIMIT {int(a.n)}")
+    if a.json:
+        say(json.dumps(got, indent=2))
+        return
+    if not got:
+        say("nothing sent for signing yet (sign new waivers/<file>.md --for NAME)")
+    tz = ws.site()[2]
+    for r in got:
+        say(line(r, tz))
+
+
+def local_time(iso, tz):
+    try:
+        t = dt.datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+    except (TypeError, ValueError):
+        return str(iso or "")
+    lt = t.astimezone(ZoneInfo(tz))
+    return f"{lt:%a, %b} {lt.day}, {lt.year}, {lt.hour % 12 or 12}:{lt:%M} {'AM' if lt.hour < 12 else 'PM'} {lt.tzname()}"
+
+
+def local_day(iso, tz):
+    """The day in the site's zone (a signature at 10pm MDT is that day, not tomorrow's UTC date)."""
+    try:
+        t = dt.datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+    except (TypeError, ValueError):
+        return str(iso or "")[:10]
+    return t.astimezone(ZoneInfo(tz)).date().isoformat()
+
+
+def cmd_show(a):
+    ws = Ws(a)
+    ws.need_table()
+    r = find(ws, a.term)
+    url, _, tz = ws.site()
+    link = f"{url.rstrip('/')}/sign/{r['token']}"
+    if a.json:
+        say(json.dumps({**r, "link": link, "signed_local": local_time(r.get("signed_at"), tz) if r.get("signed_at") else None}, indent=2))
+        return
+    say(line(r, tz))
+    say(f"  link: {link}")
+    say(f"  document: {r['doc_file'] or '-'} · sha256 {r['doc_sha256']}")
+    if r.get("email") or r.get("phone"):
+        say(f"  to: {' · '.join(x for x in (r.get('email'), r.get('phone')) if x)}")
+    if r["status"] == "signed":
+        say(f"  signed by: {r['signed_name']}")
+        say(f"  at: {local_time(r['signed_at'], tz)} ({r['signed_at']})")
+        say(f"  from IP: {r['signed_ip'] or 'not given'}")
+        say(f"  text at signing: sha256 {r['signed_sha256']}" + ("" if r["signed_sha256"] == r["doc_sha256"] else "  (DIFFERS from the text sent)"))
+    if r["status"] != "signed" or a.no_pdf:
+        return
+    if r.get("pdf") and ws.inside(r["pdf"]).exists():
+        say(f"  PDF: {r['pdf']} (filed {r.get('filed_at') or ''})")
+        say(str(ws.inside(r["pdf"])))
+        return
+    pdf = make_pdf(ws, a, r["id"])
+    file_it(ws, r, pdf, tz)
+    drafts(ws, r, pdf, tz)
+    say(str(pdf))
+
+
+def make_pdf(ws, a, sid, out=None):
+    r = find(ws, sid, full=True)
+    if r["status"] != "signed" and r["status"] != "void":
+        die(f"#{r['id']} isn't signed yet; the signed PDF comes after")
+    if r["status"] == "void" and not r.get("signed_at"):
+        die(f"#{r['id']} was withdrawn before it was signed; there is nothing to make")
+    url, ctx, tz = ws.site()
+    P = load_print()
+    b = P.brand(ctx)
+    when_local = local_time(r["signed_at"], tz)
+    h = r["signed_sha256"] or r["doc_sha256"]
+    page = TEMPLATE.read_text()
+    vals = {
+        "FONTS": b["fonts_link"], "INK": b["ink"], "ACCENT": b["accent"], "MUTED": b["muted"], "LINE": b["line"],
+        "FONT_DISPLAY": b["font_display"], "FONT_BODY": b["font_body"],
+        "BUSINESS": html.escape(ws.name), "TITLE": html.escape(r["title"]),
+        "SIGNER": html.escape(r["signed_name"] or ""), "FOR": html.escape(r["for_name"]),
+        "WHEN_LOCAL": html.escape(when_local), "WHEN_UTC": html.escape(r["signed_at"] or ""),
+        "IP": html.escape(r["signed_ip"] or "not given"), "HASH": html.escape(h),
+        "HASH_SPLIT": " ".join(html.escape(h[i:i + 16]) for i in range(0, len(h), 16)),
+        "LINK": html.escape(f"{url.rstrip('/')}/sign/…{r['token'][-6:]}"), "ID": str(r["id"]),
+        "VOID": '<p class="void">Withdrawn by the business after signing.</p>' if r["status"] == "void" else "",
+        "BODY": r["body_html"],
+    }
+    for k, v in vals.items():
+        page = page.replace("{{" + k + "}}", str(v))
+    left = re.findall(r"\{\{[A-Z_]+\}\}", page)
+    if left:
+        die(f"signed.html: unfilled {left}")
+    if out:
+        pdf = ws.inside(out).with_suffix(".pdf")
+    else:
+        d = ws.root / "signed"
+        words = "-".join(re.findall(r"[a-z0-9]+", f"{r['title']} {r['signed_name'] or r['for_name']}".lower())[:8])
+        pdf = d / f"{local_day(r['signed_at'], tz)}-{words or 'signed'}-{r['id']}.pdf"
+    pdf.parent.mkdir(parents=True, exist_ok=True)
+    node = shutil.which("node")
+    if not node:
+        die("node is not installed (the PDF renders with the toolbelt's Playwright; see install.sh)")
+    with tempfile.TemporaryDirectory(prefix="sign-") as tmp:
+        src = Path(tmp) / "page.html"
+        src.write_text(page)
+        p = subprocess.run([node, str(HELPER), "render", str(src), "--w", str(LETTER[0]), "--h", str(LETTER[1]),
+                            "--pdf", str(pdf), "--pages", "all"], capture_output=True, text=True, timeout=180)
+    if p.returncode != 0 or not pdf.exists():
+        die(f"the renderer failed: {(p.stderr or p.stdout).strip()[-600:]}")
+    ok, lines = check_pdf(pdf, [r["signed_name"] or "", when_local, h])
+    say("check: " + "; ".join(lines))
+    if not ok:
+        print(f"sign: the check FAILED — don't send {pdf}", file=sys.stderr)
+        sys.exit(2)
+    return pdf
+
+
+def check_pdf(pdf, must):
+    """Every page letter-sized, and the text read back holds each of `must`."""
+    if not (shutil.which("pdfinfo") and shutil.which("pdftotext")):
+        return False, ["pdfinfo/pdftotext (poppler-utils) not installed: the PDF was not checked"]
+    info = subprocess.run(["pdfinfo", "-f", "1", "-l", "999", str(pdf)], capture_output=True, text=True).stdout
+    sizes = re.findall(r"Page\s+\d+\s+size:\s+([\d.]+) x ([\d.]+) pts", info) or \
+        re.findall(r"Page size:\s+([\d.]+) x ([\d.]+) pts", info)
+    pages = int((re.search(r"Pages:\s+(\d+)", info) or [0, 0])[1])
+    ok, lines = True, []
+    bad = [s for s in sizes if abs(float(s[0]) / 72 - LETTER[0]) > 0.02 or abs(float(s[1]) / 72 - LETTER[1]) > 0.02]
+    if not sizes or bad or pages < 1:
+        ok = False
+        lines.append(f"page sizes {sizes[:3]}, wanted 8.5 x 11 in")
+    else:
+        lines.append(f"{pages} page{'s' if pages != 1 else ''}, 8.5 x 11 in")
+    text = subprocess.run(["pdftotext", "-layout", str(pdf), "-"], capture_output=True, text=True).stdout
+    flat = re.sub(r"\s+", "", text)
+    for m in must:
+        if m and re.sub(r"\s+", "", m) not in flat:
+            ok = False
+            lines.append(f"{m!r} is not in the PDF's text")
+    if ok:
+        lines.append("names the signer, the time and the hash")
+    return ok, lines
+
+
+def file_it(ws, r, pdf, tz="America/Denver"):
+    """Under the customer in the book (a job line "Signed: <title>", done that day), and the row updated."""
+    rel = str(pdf.relative_to(ws.root.resolve())) if str(pdf).startswith(str(ws.root.resolve())) else str(pdf)
+    cid = r.get("customer_id")
+    if "customers" in ws.tables():
+        args = ["jobs", "add", f"#{cid}" if cid else (r.get("email") or r["signed_name"] or r["for_name"]),
+                f"Signed: {r['title']}", "--date", local_day(r["signed_at"], tz) if r.get("signed_at") else "today", "--status", "done",
+                "--source", "sign", "--ref", f"sig-{r['id']}", "--notes", f"{rel} · sha256 {r['signed_sha256']}", "--json"]
+        if not cid:
+            args += ["--create", "--name", r["signed_name"] or r["for_name"]]
+            if r.get("email"):
+                args += ["--email", r["email"]]
+            if r.get("phone"):
+                args += ["--phone", r["phone"]]
+        res = ws.db(*args, check=False)
+        if res.returncode == 0:
+            try:
+                got = json.loads(res.stdout)
+                cid = got["customer"]["id"]
+                say(f"filed under #{cid} {got['customer'].get('name')} in the customer book (job #{got['job']['id']})")
+            except (ValueError, KeyError, TypeError):
+                say("filed in the customer book")
+        else:
+            say(f"couldn't file it in the customer book: {(res.stderr or res.stdout).strip()[-300:]}")
+    else:
+        say("this site keeps no customer book, so the PDF is filed in signed/ only (`db add customers` adds one)")
+    ws.exec(f"UPDATE signatures SET pdf = {lit(rel)}, filed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), "
+            f"customer_id = {lit(cid) if cid else 'customer_id'}, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
+            f"WHERE id = {int(r['id'])}")
+
+
+def drafts(ws, r, pdf, tz):
+    owner = ws.meta.get("contact_email") or "the owner"
+    when_local = local_time(r["signed_at"], tz)
+    say("")
+    say("The two emails (not sent: the PDF goes by email once the customer-mail path, B119, is on patchlamp.com;")
+    say("until then send the owner the PDF by SEND-FILE, and the owner forwards the signer's copy):")
+    say(f"  To: {owner}")
+    say(f"  Subject: Signed: {r['title']} — {r['signed_name']}")
+    say(f"  {r['signed_name']} signed \"{r['title']}\" on {when_local}. The signed copy is attached; "
+        f"its fingerprint (SHA-256) is {r['signed_sha256']}.")
+    say("")
+    say(f"  To: {r.get('email') or '(no email on file: ask the owner where to send it)'}")
+    say(f"  Subject: Your signed copy: {r['title']}")
+    say(f"  Hi {(r['signed_name'] or r['for_name']).split()[0]}, thanks for signing the {r['title']} on {when_local}. "
+        f"Your copy is attached. — {ws.name}")
+    say("")
+
+
+def cmd_pdf(a):
+    ws = Ws(a)
+    ws.need_table()
+    r = find(ws, a.id)
+    if a.dry_run:
+        say(f"would make the signed PDF for #{r['id']} ({r['status']})")
+        return
+    pdf = make_pdf(ws, a, r["id"], a.out)
+    if not r.get("pdf") and r["status"] == "signed":
+        file_it(ws, r, pdf, ws.site()[2])
+    say(str(pdf))
+
+
+def cmd_void(a):
+    ws = Ws(a)
+    ws.need_table()
+    r = find(ws, a.id)
+    if r["status"] == "void":
+        say(f"#{r['id']} is already withdrawn")
+        return
+    if r["status"] == "signed" and not a.signed:
+        die(f"#{r['id']} was signed by {r['signed_name']} at {r['signed_at']}. Withdrawing a signed one keeps the "
+            "record and marks it void: run it again with --signed if the owner means that.")
+    if a.dry_run:
+        say(f"would withdraw #{r['id']} \"{r['title']}\" for {r['for_name']}; dry run, nothing written")
+        return
+    ws.exec(f"UPDATE signatures SET status = 'void', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = {int(r['id'])}")
+    say(f"withdrawn: #{r['id']} \"{r['title']}\" for {r['for_name']}; the link now says so")
+
+
+def cmd_doctor(a):
+    ok = True
+
+    def check(good, msg):
+        nonlocal ok
+        ok &= bool(good)
+        say(("ok   " if good else "FAIL ") + msg)
+
+    check(DB.exists(), f"db at {DB}")
+    check(TEMPLATE.exists(), f"PDF template {TEMPLATE}")
+    check(HELPER.exists() and "--pages" in HELPER.read_text(), f"renderer {HELPER} (multi-page)")
+    check(bool(shutil.which("node")), "node on PATH")
+    check(bool(shutil.which("pdfinfo") and shutil.which("pdftotext")), "pdfinfo + pdftotext (poppler-utils)")
+    coll = HERE / "templates" / "collections" / "signatures"
+    check((coll / "functions" / "sign" / "[token].js").exists(), f"the signing page {coll}/functions/sign/[token].js")
+    if (Path.cwd() / ".client.json").exists():
+        ws = Ws(a)
+        r = ws.db("query", "SELECT name FROM sqlite_master WHERE type='table' AND name = 'signatures'", "--json", check=False)
+        has = r.returncode == 0 and "signatures" in r.stdout
+        check(has, "this site has the signatures table" + ("" if has else ": `db add signatures`"
+                                                           + (f" ({(r.stderr or '').strip()[:160]})" if r.returncode else "")))
+        w = ws.root / "waivers"
+        docs = sorted(p.name for p in w.glob("*.md")) if w.is_dir() else []
+        say(f"info waivers/: {', '.join(docs) if docs else 'none yet (an owner sends one; save it as waivers/<name>.md)'}")
+    else:
+        say("info not in a client workspace: the site checks were skipped")
+    sys.exit(0 if ok else 1)
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(prog="sign", description=__doc__.split("\n\n")[0],
+                                formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--site", help="which site, when more than one has a database")
+    common.add_argument("--local", action="store_true", help="the local copy wrangler pages dev uses")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    n = sub.add_parser("new", parents=[common], help="put a document on the site for one customer to sign")
+    n.add_argument("file")
+    n.add_argument("--for", dest="for_", required=True, help="who it is for (a name; looked up in the book)")
+    n.add_argument("--email"); n.add_argument("--phone")
+    n.add_argument("--customer", help="the book's id, when the name matches several")
+    n.add_argument("--dry-run", action="store_true"); n.add_argument("--json", action="store_true")
+    n.set_defaults(fn=cmd_new)
+    ls = sub.add_parser("ls", parents=[common], help="what was sent, newest first")
+    ls.add_argument("--all", action="store_true"); ls.add_argument("-n", default=30, type=int)
+    ls.add_argument("--json", action="store_true"); ls.set_defaults(fn=cmd_ls)
+    s = sub.add_parser("show", parents=[common], help="one record; makes and files the PDF once signed")
+    s.add_argument("term", help="#id, the token, or the name"); s.add_argument("--json", action="store_true")
+    s.add_argument("--no-pdf", action="store_true"); s.set_defaults(fn=cmd_show)
+    d = sub.add_parser("pdf", parents=[common], help="make (again) the signed PDF")
+    d.add_argument("id"); d.add_argument("--out"); d.add_argument("--dry-run", action="store_true")
+    d.set_defaults(fn=cmd_pdf)
+    v = sub.add_parser("void", parents=[common], help="withdraw a link")
+    v.add_argument("id"); v.add_argument("--signed", action="store_true"); v.add_argument("--dry-run", action="store_true")
+    v.set_defaults(fn=cmd_void)
+    sub.add_parser("doctor", parents=[common], help="what this needs, and whether it's here").set_defaults(fn=cmd_doctor)
+    a = p.parse_args(argv)
+    a.fn(a)
+
+
+if __name__ == "__main__":
+    main()

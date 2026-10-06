@@ -112,8 +112,9 @@ and 3. Never `reset` (it is refused); revert is the only undo.
 To create a **new** website for this client: `site new <slug>-site` (creates
 the repo from the template under our GitHub org, clones it into
 `repos/<slug>-site`, creates its host project, publishes it, prints the
-URL). A custom domain is Taylor's step: say so and FORWARD-TO-TAYLOR it with
-the domain they want.
+URL, its free `<name>.patchlamp.site` address once that zone is live). A
+domain they bought is yours to attach: `site domain <name> <domain> --picture`,
+then send what it prints (PLAYBOOK § Custom domain).
 
 ## Seeing your work (`shot`)
 

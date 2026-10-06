@@ -135,13 +135,37 @@ class ReviewLoopTest(unittest.TestCase):
         [q] = self.queue()
         self.assertEqual(q["op"], "ask")
         self.assertEqual(q["customer"], {"id": 7, "name": "Jo Smith", "email": "jo@example.com", "contact": "ok"})
-        self.assertEqual(q["job"], 32, "the newest job that isn't done")
+        self.assertEqual(q["job"], 32, "the one booked job")
         self.assertEqual(q["place_id"], PID)
         self.assertIn("due", q)
         self.assertEqual(Path(str(self.book) + ".done").read_text(), "32\n")
         self.assertIn("Queued: Jo Smith", r.stdout)
         self.assertIn("j…@example.com", r.stdout, "the address is masked in what the owner reads")
         self.assertIn("90 days", r.stdout)
+
+    def test_done_with_the_job_never_picks_a_future_booking(self):
+        import datetime as dt
+        today = dt.date.today()
+        book = json.loads(json.dumps(BOOK))
+        book["jobs"] += [{"id": 34, "customer_id": 7, "date": (today + dt.timedelta(days=30)).isoformat(),
+                          "what": "next month's opening", "status": "booked"}]
+        book["jobs"][1]["date"] = (today - dt.timedelta(days=1)).isoformat()
+        self.book.write_text(json.dumps(book))
+        r = self.run_gbp("ask", "801-555-0134")
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertEqual(self.queue()[0]["job"], 32, "yesterday's job, not next month's")
+        self.assertEqual(Path(str(self.book) + ".done").read_text(), "32\n")
+        # two booked jobs both due: it can't tell, so it asks and touches nothing
+        book["jobs"][-1]["date"] = (today - dt.timedelta(days=2)).isoformat()
+        self.book.write_text(json.dumps(book))
+        (self.ws / "reviews" / "queue.jsonl").unlink()
+        r = self.run_gbp("ask", "801-555-0134")
+        self.assertEqual(r.returncode, 3, r.stdout)
+        self.assertIn("2 booked jobs", r.stdout)
+        self.assertIn("job 34", r.stdout)
+        self.assertIn("--job N", r.stdout)
+        self.assertEqual(self.queue(), [])
+        self.assertEqual(Path(str(self.book) + ".done").read_text(), "32\n", "nothing more marked done")
 
     def test_two_matches_no_match_and_no_email_each_refuse_with_the_reason(self):
         r = self.run_gbp("ask", "Smith")
@@ -241,10 +265,20 @@ class ReviewLoopTest(unittest.TestCase):
         (self.ws / "reviews").mkdir()
         (self.ws / "reviews" / "latest.json").write_text(json.dumps(
             {"source": "places", "rating": 4.7, "count": 22, "reviews": [], "at": "2026-10-01T09:00:00+00:00"}))
-        r = self.run_gbp("watch", "--fresh", extra={"GOOGLE_MAPS_API_KEY": ""})
+        r = self.run_gbp("watch", "--fresh", extra={"GOOGLE_MAPS_API_KEY": "", "RELAY_SANDBOX": "1"})
         self.assertEqual(r.returncode, 0, r.stdout)
         self.assertIn("4.7★ from 22", r.stdout)
         self.assertEqual(Places.hits, [])
+
+    def test_the_relays_fresh_read_failing_is_an_error_not_yesterdays_copy(self):
+        (self.ws / "reviews").mkdir()
+        (self.ws / "reviews" / "latest.json").write_text(json.dumps(
+            {"source": "places", "rating": 4.7, "count": 22, "reviews": [], "at": "2026-10-01T09:00:00+00:00"}))
+        r = self.run_gbp("watch", "--json", "--fresh", extra={"GOOGLE_MAPS_API_KEY": ""})
+        self.assertEqual(r.returncode, 3, r.stdout)
+        got = json.loads(r.stdout)
+        self.assertFalse(got["ok"], "a revoked key must not read as a healthy watch")
+        self.assertIn("no Places key here", got["why"])
 
     def test_watch_falls_back_to_places_when_google_says_quota_zero(self):
         fx = Path(self.tmp.name) / "fx"

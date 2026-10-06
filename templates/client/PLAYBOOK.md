@@ -823,8 +823,12 @@ for a review"; a message from the relay starting `[Review watch]`; "how
 are our reviews?".
 
 **After a job: `gbp ask <name, phone or email>`.** It finds the customer
-in the book (`db customers`), marks their newest open job done, and files
-the ask. An hour later the relay emails them a short note in the
+in the book (`db customers`), marks their booked job done, and files the
+ask. With one booked job that's the one (even dated later: done early).
+With several it takes the one dated today or earlier when exactly one is,
+since next month's booking isn't the job just finished; otherwise it lists
+them and queues nothing, so ask the owner which and run `gbp ask <name>
+--job N` (or `--no-job` to ask without marking one). An hour later the relay emails them a short note in the
 business's name with the Google write-a-review link, then texts the owner
 that it went (or why it didn't). You send nothing yourself. Tell the owner
 what it printed in one line: "Done — Jo gets the review link around 4pm."
@@ -850,8 +854,12 @@ review ask feels like a thank-you rather than marketing. So:
   (§ Data; the owner sees it on /admin/customers). For an address that
   isn't in the book, `gbp ask <address> --stop`. Either way nothing goes
   to them again from this business, not only review asks, and the relay
-  checks the book again just before anything is sent. A customer who
-  replies STOP to the review mail is stopped by the relay on its own.
+  checks the book again just before anything is sent, and mails only the
+  address the book holds. When the business's email is handled here (its
+  own mailbox), the mail ends "reply STOP" and a STOP reply is stopped by
+  the relay on its own; without one it ends "just reply and tell us", the
+  reply goes to the owner, and the owner (or you, on their word) sets
+  `--contact stop`.
 - Every refusal exits with the reason and changes nothing. That reason is
   the answer to give the owner; there's nothing to retry.
 

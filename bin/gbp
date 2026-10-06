@@ -895,6 +895,26 @@ def book_jobs(customer):
                   reverse=True)
 
 
+def booked_jobs(jobs):
+    return [j for j in jobs if str(j.get("status") or "booked").lower() not in ("done", "cancelled")]
+
+
+def which_job(jobs, today=None):
+    """(the booked job "done with the Smith job" means, None) or (None, why it can't tell).
+    One booked job: that one, even dated later (done early, as `db jobs done` does). Several: the one
+    dated today or earlier when exactly one is, because a booking next month isn't the job just done;
+    otherwise ask. No booked job: (None, None) and the ask goes without marking one."""
+    today = (today or dt.date.today()).isoformat()
+    booked = booked_jobs(jobs)
+    if len(booked) <= 1:
+        return (booked[0] if booked else None), None
+    due = [j for j in booked if str(j.get("date") or "")[:10] <= today]
+    if len(due) == 1:
+        return due[0], None
+    return None, (f"{len(booked)} booked jobs" + (f", {len(due)} of them dated today or earlier" if due else
+                                                    ", none dated today or earlier"))
+
+
 def book_set_stop(customer_id):
     """The book's contact column to "stop" (B122: `db customers set ID --contact stop`). Returns None, or why not."""
     _, err = _db("customers", "set", str(customer_id), "--contact", "stop")
@@ -991,8 +1011,13 @@ def cmd_ask(args):
         if args.job:
             job = {"id": args.job}
         else:
-            open_jobs = [j for j in book_jobs(cust) if str(j.get("status") or "").lower() not in ("done", "cancelled")]
-            job = open_jobs[0] if open_jobs else None
+            job, why = which_job(book_jobs(cust))
+            if why:
+                print(f"{name} has {why}; say which one is done and I'll queue the ask:")
+                for j in sorted(booked_jobs(book_jobs(cust)), key=lambda j: (str(j.get("date") or ""), str(j.get("id")))):
+                    print(f"  job {j.get('id')}  {j.get('date') or 'no date'}  {j.get('what') or ''}".rstrip())
+                print(f"(`gbp ask {who} --job N`, or `--no-job` to ask without marking one.) Nothing was queued.")
+                sys.exit(REFUSED)
         if job:
             entry["job"] = job.get("id")
             if args.dry_run:
@@ -1129,7 +1154,10 @@ def read_reviews(args):
         except GbpError as exc:
             why.append(f"Places: {exc}")
     if got is None:
-        if cached:                                              # a walled run: the relay's last read
+        # A walled run has no Places key on purpose (the daily read is the relay's), so the relay's last
+        # copy is its answer. The relay's own --fresh read is not walled: handing it the copy as ok would
+        # make a revoked key or a wrong place id look like a healthy watch, so it gets the error.
+        if cached and (not args.fresh or os.environ.get("RELAY_SANDBOX")):
             return dict(cached, cached=True, why=why)
         if not pid and not creds.ok:
             why.append("no Google place id in NOTES.md (a line `Google place id: ChIJ…`) and no connected listing")

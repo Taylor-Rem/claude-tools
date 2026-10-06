@@ -113,6 +113,19 @@ class RoleTable(Base):
         for sub in ("new", "data", "mail", "shell", "checkout", "status"):
             self.refused("demo-service", "demo", ws, ".", "site", [sub, "x"], msg=sub)
 
+    def test_demo_sign_lists_only(self):
+        # B128 review: `sign new` on a demo would put any .md a stranger wrote on the demo's public
+        # site with a working sign form, and it would reach the database db itself refuses a demo
+        ws = str(self.clients / "demo-service")
+        ST.check_request("demo-service", "demo", ws, ".", "sign", ["ls"])
+        ST.check_request("demo-service", "demo", ws, ".", "sign", ["doctor"])
+        for sub in ("new", "show", "pdf", "void"):
+            why = self.refused("demo-service", "demo", ws, ".", "sign", [sub, "x"], msg=sub)
+            self.assertIn("on a demo", why)
+        for sub in ("new", "ls", "show", "pdf", "void", "doctor"):
+            ST.check_request("acme", "client", str(self.ws), ".", "sign", [sub, "x"])
+            ST.check_request("acme", "owner", str(self.ws), ".", "sign", [sub, "x"])
+
     def test_demo_img_no_video(self):
         ws = str(self.clients / "demo-service")
         ST.check_request("demo-service", "demo", ws, ".", "img", ["gen", "a pool"])
@@ -367,6 +380,14 @@ class ToolSandbox(Base):
 
     def test_registry_copy_is_this_projects_row_for_db(self):
         code, r = self.run_exec("client", "db", ["query", "SELECT 1"])
+        self.assertEqual(r["registry"], {"acme": {"site": {"project": "acme-site"}}})
+
+    def test_sign_gets_dbs_keys_and_this_projects_registry_where_it_reads_it(self):
+        # bin/sign reads CLAUDE_TOOLS_ENV's folder's sites.json (as db does), which is this copy
+        code, r = self.run_exec("client", "sign", ["ls"])
+        self.assertEqual(code, 0)
+        _, d = self.run_exec("client", "db", ["query", "SELECT 1"])
+        self.assertEqual(r["keys"], d["keys"], "db's keys and nothing more (sign runs db)")
         self.assertEqual(r["registry"], {"acme": {"site": {"project": "acme-site"}}})
 
     def test_site_writes_back_only_its_own_row(self):

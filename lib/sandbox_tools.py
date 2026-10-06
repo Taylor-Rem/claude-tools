@@ -117,6 +117,11 @@ TOOLS = {
     "print": {"keys": ["GEMINI_API_KEY", "PEXELS_API_KEY"], "state": ["registry", "ledger", "playwright"],
               "bins": ["ffmpeg", "ffprobe"],
               "roles": {"client": _ALL, "owner": _ALL}},
+    # B128: sign runs db inside its own call (same keys, the registry copy) and print's renderer.
+    # A demo only lists: `new` would put any .md a stranger wrote into the workspace on the demo's
+    # public site with a working sign form, and db itself has no demo role.
+    "sign": {"keys": ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"], "state": ["registry", "playwright"],
+             "roles": {"client": _ALL, "owner": _ALL, "demo": ("ls", "doctor")}},
     "shot": {"keys": [], "state": ["playwright"],
              "roles": {"client": _ALL, "owner": _ALL, "demo": _ALL}},
     "discord": {"keys": ["DISCORD_BOT_TOKEN"], "state": [],

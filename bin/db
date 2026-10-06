@@ -47,6 +47,8 @@ Bookings that finish the job (`db add bookings`, ROADMAP B119):
   db bookings move ID "2026-10-14T15:00" # to that open time, capacity checked, the customer emailed
   db bookings cancel ID                  # the place freed, the customer emailed
   db bookings remind ID                  # a confirmed one ahead: the reminder email (B120's morning run)
+Documents signed by link (`db add signatures`, ROADMAP B128) are driven by
+`sign`, not by db subcommands: `sign new|ls|show|pdf|void` (bin/sign).
 
 Every command takes --site NAME when the workspace has more than one site
 with a database, and --local to work on the local copy `wrangler pages dev`

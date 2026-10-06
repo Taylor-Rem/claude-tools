@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{TITLE}} — signed</title>
+{{FONTS}}
+<style>
+/* sign's signed PDF (bin/sign, ROADMAP B128): US letter, as many pages as the
+   text needs, the signature record first so page one says who, when and what. */
+@page { size: 8.5in 11in; margin: 0.7in 0.75in 0.75in; }
+:root { --ink: {{INK}}; --accent: {{ACCENT}}; --muted: {{MUTED}}; --line: {{LINE}};
+  --font-display: {{FONT_DISPLAY}}; --font-body: {{FONT_BODY}}; }
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; background: #fff; color: var(--ink); font-family: var(--font-body);
+  font-size: 10.5pt; line-height: 1.45; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+header { border-bottom: 2pt solid var(--accent); padding-bottom: 0.12in; margin-bottom: 0.2in; }
+header .biz { font-size: 9pt; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+header h1 { font-family: var(--font-display); font-size: 20pt; line-height: 1.15; margin: 0.04in 0 0; }
+.record { border: 1pt solid var(--line); border-radius: 4pt; padding: 0.14in 0.18in; margin-bottom: 0.25in; break-inside: avoid; }
+.record h2 { font-size: 10pt; letter-spacing: 0.1em; text-transform: uppercase; margin: 0 0 0.08in; color: var(--accent); }
+.record dl { display: grid; grid-template-columns: 1.25in 1fr; gap: 0.04in 0.15in; margin: 0; }
+.record dt { color: var(--muted); }
+.record dd { margin: 0; }
+.record .name { font-size: 13pt; font-weight: 700; }
+.record code { font-family: "DejaVu Sans Mono", Menlo, monospace; font-size: 8.5pt; word-break: break-all; }
+.record .how { margin: 0.1in 0 0; font-size: 8.5pt; color: var(--muted); }
+.void { color: #a40000; font-weight: 700; }
+.doc h1 { font-size: 14pt; margin: 0.18in 0 0.06in; } .doc h2 { font-size: 12pt; margin: 0.16in 0 0.05in; }
+.doc h3 { font-size: 11pt; margin: 0.12in 0 0.04in; }
+.doc p, .doc ul, .doc ol { margin: 0 0 0.09in; }
+.doc h1, .doc h2, .doc h3 { break-after: avoid; }
+footer { margin-top: 0.3in; border-top: 1pt solid var(--line); padding-top: 0.08in; font-size: 8pt; color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <div class="biz">{{BUSINESS}}</div>
+  <h1>{{TITLE}}</h1>
+</header>
+<section class="record">
+  <h2>Signed</h2>
+  {{VOID}}
+  <dl>
+    <dt>Signed by</dt><dd class="name">{{SIGNER}}</dd>
+    <dt>Sent to</dt><dd>{{FOR}}</dd>
+    <dt>When</dt><dd>{{WHEN_LOCAL}}<br>{{WHEN_UTC}} (UTC)</dd>
+    <dt>From IP</dt><dd>{{IP}}</dd>
+    <dt>Text SHA-256</dt><dd><code>{{HASH_SPLIT}}</code></dd>
+  </dl>
+  <p class="how">Signed on {{LINK}} by typing a full name and ticking "I have read this and I agree to it". The SHA-256 is a fingerprint of the text as it was sent (record #{{ID}}): the same text always gives the same fingerprint, so whoever holds the record can check this copy against it. This is a record of agreement, not a notarised signature.</p>
+</section>
+<section class="doc">
+{{BODY}}
+</section>
+<footer>{{BUSINESS}} · {{TITLE}} · signed by {{SIGNER}}, {{WHEN_UTC}} UTC · SHA-256 {{HASH}}</footer>
+</body>
+</html>

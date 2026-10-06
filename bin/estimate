@@ -15,7 +15,12 @@ Run inside a client workspace whose site has the estimates collection
         the draft becomes sent: the accept page (/estimate/<token>) opens, the
         customer is filed in the customer book (B122, when the site has one),
         and the email to the customer is printed for the owner to send (or the
-        PDF goes by SEND-FILE). Only on the owner's word.
+        PDF goes by SEND-FILE). Only on the owner's word. Patchlamp can't mail a
+        customer for a client yet: newsletter mails its own subscribers and
+        `site data --owner` the owner. The seam to use once it is merged is
+        B118's POST /internal/relay/projects/{slug}/customer-mail (kind
+        "estimate", ref the number), called through the relay's
+        customers.send(); until then the owner sends it.
   estimate ls [--status S]  |  estimate show N [--json]  |  estimate pdf N
   estimate void N                         # withdrawn: the accept page stops opening it
   estimate accept N --name "John Smith" [--by phone]

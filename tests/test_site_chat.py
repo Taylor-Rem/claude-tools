@@ -128,7 +128,9 @@ class ClientFacts(unittest.TestCase):
         f = self.clients / "poolco" / "facts.md"
         text = f.read_text()
         heads = [line[3:].strip() for line in text.splitlines() if line.startswith("## ")]
-        self.assertEqual(tuple(heads), SECTIONS, "the contract's sections, in order")
+        # B121 adds `## For customers` (the form replies' standing answers) last; optional, so
+        # `client doctor` (FACTS_SECTIONS) doesn't flag a workspace stamped before it
+        self.assertEqual(tuple(heads), SECTIONS + ("For customers",), "the contract's sections, in order")
         self.assertTrue(text.rstrip().splitlines()[-1].startswith("Updated: "))
         sec = self.client.facts_sections(text)
         self.assertEqual((sec["Phone"], sec["Hours"]), ("", ""), "the fallback lines start empty, never a placeholder")

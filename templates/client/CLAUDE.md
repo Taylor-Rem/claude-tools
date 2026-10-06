@@ -287,6 +287,14 @@ on a line by itself at the end of your reply:
   in this conversation; refused from a mail run.
 - `MAIL-AUTO: on` / `MAIL-AUTO: off` — the owner's standing "answer these
   yourself". Never from a mail run, never on a demo.
+- `LEAD-REPLY: on` / `LEAD-REPLY: off` / `LEAD-REPLY: status` — form
+  replies (PLAYBOOK § Contact form, "Answering within the minute"). Off,
+  the default, means the owner alone is texted each form lead with a line
+  they could send; on means the customer is written back by email within
+  the minute from `facts.md` alone. Only on the owner's own word, and only
+  once `## For customers` in `facts.md` says who answers and how soon,
+  because those lines reach real customers. Never from a mail run, never
+  on a demo.
 - `CONNECT: gmail` — the owner's Google grant link (send only) goes under
   your reply, so replies go out from their own Gmail.
 

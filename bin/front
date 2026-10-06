@@ -8,7 +8,12 @@ for Patch on the global project when Taylor texts "how's the front door".
   front                      # the week: visits by day, top pages, referrers, new leads
   front visits [--days 7]    # visits by day, top pages, top referring sites
   front leads [--all]        # the leads (new ones only unless --all)
+  front --project SLUG       # a client's own site instead (B127): page loads by day, pages, referrers
   front doctor
+
+`--project` is Taylor's view of any client site's count (plan
+~/projects/plans/50-site-numbers.md); inside a client workspace the same
+numbers are `site stats`, which can only read that workspace's own.
 
 Talks to patchlamp.com's /internal/relay/front/* with the relay's shared
 secret. Read-only: telling Taylor about a lead is the relay's job
@@ -73,19 +78,31 @@ def api(path, params=None):
         die(f"could not reach {base_url()}: {e}")
 
 
-def show_visits(days, as_json=False):
-    d = api("/visits", {"days": days})
+def show_visits(days, as_json=False, project=None):
+    params = {"days": days}
+    if project:
+        params["project"] = project
+    d = api("/visits", params)
+    if project and d.get("project") != project:
+        die("patchlamp.com doesn't count client sites yet (the B127 app half isn't deployed)")
     if as_json:
         print(json.dumps(d, indent=2))
         return
     t = d["totals"]
-    print(f"patchlamp.com, last {d['days']} day{'s' if d['days'] != 1 else ''} (since {d['since']}): "
-          f"{t['views']} page views, {t['visitor_days']} visitor-days")
+    span = f"last {d['days']} day{'s' if d['days'] != 1 else ''} (since {d['since']})"
+    if project:
+        print(f"{project}'s site, {span}: {t['views']} page view{'s' if t['views'] != 1 else ''} "
+              f"(page loads; nothing about a visitor is kept)")
+    else:
+        print(f"patchlamp.com, {span}: {t['views']} page views, {t['visitor_days']} visitor-days")
     if not d["by_day"]:
         print("  no visits recorded yet")
     for r in d["by_day"]:
-        bar = "#" * min(40, r["visitors"])
-        print(f"  {r['day']}  {r['visitors']:>4} visitors  {r['views']:>5} views  {bar}")
+        if project:
+            print(f"  {r['day']}  {r['views']:>5} views  {'#' * min(40, r['views'])}")
+        else:
+            bar = "#" * min(40, r["visitors"])
+            print(f"  {r['day']}  {r['visitors']:>4} visitors  {r['views']:>5} views  {bar}")
     if d["pages"]:
         print("  pages:      " + ", ".join(f"{p['path']} {p['views']}" for p in d["pages"]))
     if d["referrers"]:
@@ -116,13 +133,16 @@ def show_leads(all_leads, as_json=False):
 
 
 def cmd_default(a):
+    if a.project:
+        show_visits(7, project=a.project)
+        return
     show_visits(7)
     print()
     show_leads(False)
 
 
 def cmd_visits(a):
-    show_visits(a.days, a.json)
+    show_visits(a.days, a.json, a.project)
 
 
 def cmd_leads(a):
@@ -146,9 +166,11 @@ def cmd_doctor(a):
 
 def main():
     ap = argparse.ArgumentParser(prog="front", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--project", metavar="SLUG", help="a client's own site instead of patchlamp.com (B127)")
     sub = ap.add_subparsers(dest="cmd")
     v = sub.add_parser("visits", help="visits by day, top pages, top referring sites")
     v.add_argument("--days", type=int, default=7)
+    v.add_argument("--project", dest="sub_project", metavar="SLUG", help="a client's own site (B127)")
     v.add_argument("--json", action="store_true")
     v.set_defaults(fn=cmd_visits)
     l = sub.add_parser("leads", help="who left a number (new ones unless --all)")
@@ -157,6 +179,7 @@ def main():
     l.set_defaults(fn=cmd_leads)
     sub.add_parser("doctor", help="can this reach the site?").set_defaults(fn=cmd_doctor)
     a = ap.parse_args()
+    a.project = getattr(a, "sub_project", None) or a.project
     (a.fn if a.cmd else cmd_default)(a)
 
 

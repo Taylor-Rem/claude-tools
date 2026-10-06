@@ -17,23 +17,32 @@
 #   never a sentence that says a site exists: none does yet.
 # Placeholders: {first} {business} {fault_one} {fault_two} {fact} {price_line} {phone} {address}.
 
+# Body by Codex (marketing/copy/2026-10-05-letters.md, variant A), 2026-10-05: one thought a sentence, one ask a letter;
+# the disclosure beside the intro. Flint's one change: batch-first's takedown sentence is out (nothing is built yet in this lane).
+
 Subject default: two things I noticed about {business}
 
 ---
 Hi {first},
 
-[!fact] I'm Taylor Remund; I build and look after websites for local businesses, from American Fork, Utah. Before writing, I looked {business} up, and two things stood out:
-[?fact] I'm Taylor Remund; I build and look after websites for local businesses, from American Fork, Utah. Before writing, I looked {business} up: one thing could be better, and one is already working for you.
+I'm Taylor Remund. I build and look after websites in American Fork, Utah.
+Patch, my AI operator, drafted this note for my approval of the batch.
+
+[!fact] I looked {business} up and noticed two things:
+[?fact] I looked {business} up and noticed one thing to fix and one thing working for you:
 
 - {fault_one}
 - {fault_two}
 - {fact}
 
-I can build you a preview of a site for {business} from your Google listing, free, nothing to sign. Want to see it? Just reply. If you'd want it kept after that, it's {price_line}: your site, up on your own web address, with a few small changes by text each month. If you ever want more changed than that, there are bigger plans for it.
+I can build you a preview of a site for {business} from your Google listing, free, nothing to sign.
+
+If you want to keep it, I'll put it on your own web address for {price_line}. A few small changes by text to Patch each month are included. Bigger changes need a bigger plan.
+
+Want to see it? Just reply.
 
 Taylor Remund · Patchlamp
 {phone}
 {address}
 
 This is an advertisement from a local business. Reply "no thanks" and you won't hear from me again.
-Patch, my AI operator, found this and drafted it; I approve each batch.

@@ -2233,10 +2233,16 @@ def register_dm(c, fs):
 
 
 def then_text(url):
-    """Message two, for when they answer yes: the link, the AI line, the price. Never in message one."""
-    return (f"{url} — nothing to sign, and I'll take it down the moment you say so. Patch, my AI, does the work and "
-            f"I'm on the hook for it; if you want it kept right after the free fix it's {HOSTING_PRICE} a month to keep it up "
-            f"on your own web address, with a few small changes by text each month.")
+    """Message two, for when they answer yes: the link, then the four things an owner asks next (the price, the web
+    address, the Google listing, what changes cost) and the AI line, ending on a question. Never in message one.
+    Codex's words (marketing/copy/2026-10-05-message-two.md, Taylor's yes 2026-10-05); the takedown promise was made
+    once in message one and is not repeated (playbook, Taylor 2026-10-05)."""
+    return (f"{url}\n\n"
+            f"It's {HOSTING_PRICE} a month, no contract, to keep this site up on your own web address. A few small changes "
+            f"by text each month are included, like changing your hours. Bigger changes need a bigger plan. You text Patch, "
+            f"my AI operator; I'm on the hook for it.\n\n"
+            f"You buy the web address if you need one; I help connect it. Your Google listing can link to the site. "
+            f"Want this to be your live site?")
 
 
 def register_email(c, fs):
@@ -2255,18 +2261,29 @@ def build_segment_remote(args, segment):
     key, where = (None, None) if args.census_only else places_key()
     places = Places(key, where, fixture=args.fixture, refresh=args.refresh)
     cands = [c for c in candidates_for(segment, args.min_reviews) if is_business(c)]
-    skip = {} if args.allow_repeat else contacted()
-    skip.update({pid: "pipeline" for pid in pipeline_skip()})
-    skip.update({pid: "claimed" for pid in claimed_places()})   # B45: they took the preview; they're a client
-    chains = chain_names()
-    pool, _ = nearest_pool([c for c in cands if (c["name"] or "").lower() not in chains], args.radius, args.n, skip)
+    pinned = list(getattr(args, "place", None) or [])
+    if pinned:   # these businesses, in this order (2026-10-05: a pitch for a preview that never got one); held ones included
+        by_id = {c["place_id"]: c for c in cands}
+        missing = [pid for pid in pinned if pid not in by_id]
+        if missing:
+            die(f"not in the {SEGMENT_NOUN[segment]} pool: " + ", ".join(missing) + " (`leads show NAME` prints the id; --segment all widens it)")
+        skip = {pid: "claimed" for pid in claimed_places()}
+        pool = [by_id[pid] for pid in pinned if pid not in skip]
+        args.n = len(pool)
+    else:
+        skip = {} if args.allow_repeat else contacted()
+        skip.update({pid: "pipeline" for pid in pipeline_skip()})
+        skip.update({pid: "claimed" for pid in claimed_places()})   # B45: they took the preview; they're a client
+        chains = chain_names()
+        pool, _ = nearest_pool([c for c in cands if (c["name"] or "").lower() not in chains], args.radius, args.n, skip)
     if not pool:
         die(f"no {SEGMENT_NOUN[segment]} left to message (all contacted or in the pipeline); --allow-repeat" if cands else
             f"no {SEGMENT_NOUN[segment]} in the census's pool yet (a phone, no site of their own); `leads doctor` counts them")
     for c in pool:
         c["reach"] = business_reach(c)
-    pool.sort(key=lambda c: (not business_reach_line(c["reach"]), c["miles"]))    # messageable first, then nearest
-    pool.sort(key=lambda c: (not business_reach_line(c["reach"]), strength_order(c)))   # B73: strong first within
+    if not pinned:
+        pool.sort(key=lambda c: (not business_reach_line(c["reach"]), c["miles"]))    # messageable first, then nearest
+        pool.sort(key=lambda c: (not business_reach_line(c["reach"]), strength_order(c)))   # B73: strong first within
     picks = []
     for c in pool:
         if len(picks) >= args.n:
@@ -3104,7 +3121,7 @@ def _copy_site_files(tdir, out, name, year):
     if (tdir / "404.html").exists():
         # a preview carries no site chat (plan 45, Open 5: no project, no allowance); the claim
         # puts the tag back with the client's slug (claim_tree)
-        (out / "404.html").write_text(_site_chat().strip(fill_preview((tdir / "404.html").read_text(), vals)))
+        (out / "404.html").write_text(_site_hit().strip(_site_chat().strip(fill_preview((tdir / "404.html").read_text(), vals))))
     (out / "css" / "preview.css").write_text((PREVIEW_OVERLAY / "css" / "preview.css").read_text())
 
 
@@ -3492,6 +3509,19 @@ def preview_root_files():
     (site / "404.html").write_text((PREVIEW_OVERLAY / "404.html").read_text())
     (site / "robots.txt").write_text((PREVIEW_OVERLAY / "robots.txt").read_text())
     (site / "_headers").write_text((PREVIEW_OVERLAY / "_headers").read_text())
+    (site / "_redirects").write_text(preview_redirects())
+
+
+def preview_redirects():
+    """B58: a claimed preview answers 301 to the site it became (VISION § Decided "A free address on
+    every plan"): two lines a claim, from the manifest's `moved_to`, in the previews project's
+    _redirects. The claim deletes the preview's folder, so no file on the host competes with the rule."""
+    lines = []
+    for m in sorted(previews_all(), key=lambda m: m["slug"]):
+        to = (m.get("moved_to") or "").rstrip("/")
+        if m.get("claimed") and re.match(r"^https://[a-z0-9.-]+$", to):
+            lines += [f"/{m['slug']} {to}/ 301", f"/{m['slug']}/* {to}/:splat 301"]
+    return "\n".join(lines) + ("\n" if lines else "")
 
 
 def preview_publish(dry=False):
@@ -4028,7 +4058,7 @@ def preview_claim(args):
             print(f"  would keep the {m['template']} template's own index.html (its forms); the preview's page "
                   f"goes to clients/{slug}/incoming/preview-index.html for Patch to fold in; the hero is copied")
         print(f"  would commit, push, `site publish {repo}`")
-        print(f"  would mark {m['slug']} claimed and take the preview down")
+        print(f"  would mark {m['slug']} claimed and redirect its preview address to the new site (301)")
         return
     r = subprocess.run(steps[0], capture_output=True, text=True)
     if r.returncode != 0 and not ws.exists():
@@ -4064,10 +4094,26 @@ def preview_claim(args):
             print(f"leads: git {git_args[0]} in {dest}: {(g.stderr or g.stdout).strip()[:160]}", file=sys.stderr)
     r = subprocess.run([str(SITE_BIN), "publish", repo], capture_output=True, text=True, cwd=str(ws))
     print((r.stdout + r.stderr).strip()[-600:])
+    published = r.returncode == 0
     m["claimed"], m["claimed_on"] = slug, now_date().isoformat()     # the week counts claims by date (B52)
+    # B58: the preview's address now 301s to the site it became (its free address once patchlamp.site
+    # is live, its pages.dev host until then): the folder comes off the host, the rule goes on.
+    try:
+        moved = (json.loads((ws / ".client.json").read_text()).get("live_url") or "").rstrip("/")
+    except (OSError, ValueError):
+        moved = ""
+    if published and moved.startswith("https://"):
+        m["moved_to"] = moved
+        shutil.rmtree(preview_site_dir() / m["slug"], ignore_errors=True)
     preview_save(m)
-    print(f"claimed: clients/{slug} · repos/{repo} · the preview is marked claimed "
-          f"(`leads preview --remove {m['slug']}` takes it off the previews host)")
+    if m.get("moved_to"):
+        ok = True if args.no_publish else preview_publish()[0]
+        print(f"claimed: clients/{slug} · repos/{repo} · {m['url']} now redirects to {moved}/"
+              + ("" if ok else " once the previews host publishes (`leads preview sweep` publishes it)"))
+    else:
+        print(f"claimed: clients/{slug} · repos/{repo} · the preview is marked claimed and still up "
+              f"(the site isn't published yet, so there is nowhere to redirect it; "
+              f"`leads preview --remove {m['slug']}` takes it off the previews host)")
 
 
 CLAIM_LEAVE = ("claim/", "css/preview.css")
@@ -4100,14 +4146,22 @@ def _site_chat():
     return site_chat
 
 
+def _site_hit():
+    """lib/site_hit.py: the page-load count's script tag (B127), shared with `site`."""
+    _site_chat()                     # puts lib/ on the path
+    import site_hit
+    return site_hit
+
+
 def claim_tree(tree, dest, slug=None):
     """Copy the rendered site into the client repo (after `site new`), overlay cut, forms on.
     With `slug` (the new workspace's), every page gets the site chat's script tag naming it
-    (B108): the preview was rendered before the slug existed and carries no tag of its own."""
+    (B108) and the page-load count's after it (B127): the preview was rendered before the
+    slug existed and carries neither of its own."""
     files = claim_files(tree)
     pages = {f: claim_page((tree / f).read_text()) for f in files if f.endswith(".html")}
     if slug:
-        pages = {f: _site_chat().ensure(h, slug) for f, h in pages.items()}
+        pages = {f: _site_hit().ensure(_site_chat().ensure(h, slug), slug) for f, h in pages.items()}   # B108 chat, B127 count
     for f, html_ in pages.items():
         left = re.findall(r"<!--/?[pc]:[\w-]+|noindex|class=\"demo-bar\"|disabled>", html_)
         if left:
@@ -7473,6 +7527,9 @@ def main():
     k.add_argument("--previews", action="store_true",
                    help="with --remote: build a preview site for any pick that hasn't got one (B45) and put its "
                         "link in the message")
+    k.add_argument("--place", nargs="+", metavar="PLACE_ID",
+                   help="with --remote: these businesses, in this order, instead of the pool (held or kitted ones "
+                        "too; `leads show NAME` prints the id) — a pitch for a preview that never got one")
     k.set_defaults(fn=cmd_kit)
 
     g = sub.add_parser("diagnose", help="three lines on a business's Google listing, for a group thread")

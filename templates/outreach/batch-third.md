@@ -3,19 +3,23 @@
 # same thread. Same link rule as batch-second.
 # Placeholders: {first} {business} {see_url} {phone} {address} {thread_subject}.
 
+# Body by Codex (marketing/copy/2026-10-05-letters.md, variant A), 2026-10-05: one thought a sentence, one ask a letter;
+# the disclosure beside the intro. Flint's one change: batch-first's takedown sentence is out (nothing is built yet in this lane).
+
 Subject default: Re: {thread_subject}
 
 ---
 Hi {first},
 
-Last note from me about {business}.
-[?see_url] The free preview is still one press away, if you'd like to see it: {see_url}
-[!see_url] If a free preview of a site for {business} would help, reply and I'll send it; there's nothing to sign.
-If I don't hear from you, I won't write again.
+This is my last note about a website for {business}.
+Patch, my AI operator, drafted this note for my approval of the batch.
+
+[?see_url] You can have a free preview built from your Google listing here: {see_url}
+[?see_url] Want to take a look?
+[!see_url] Want me to make a free preview from your Google listing and send it over? Just reply.
 
 Taylor Remund · Patchlamp
 {phone}
 {address}
 
 This is an advertisement from a local business. Reply "no thanks" and you won't hear from me again.
-Patch, my AI operator, found this and drafted it; I approve each batch.

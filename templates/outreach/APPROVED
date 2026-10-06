@@ -1,13 +1,13 @@
 # templates/outreach/APPROVED — the exact text Taylor approved. `outreach send` refuses
 # while a hash here is missing or stale, so editing a letter un-approves it.
-# Written by `outreach approve` on 2026-10-02.
+# Written by `outreach approve` on 2026-10-06.
 
-first          a2ddcaba485c96cf796795a95d24ddfe85766692368b1dd4b5023ba4991fa82c
-second         fc018daed097f41904f7b77e31238aef13528729273f68242d2b7ca029271015
-third          e4bcf2c20ae645283a3005553bd1cf211942d15d67987ace030817f5f6fc6737
-batch-first    0f21854f6b9a20b576546232743117037f97c294096117d5940b1ec4e8928509
-batch-second   b3de751b0577af94744e904a56be6e60b76b4a32ed283a0ee3d0aeb03322f6ca
-batch-third    4414b57ebe9b1a13b4fe936304023d4942c18b50a1e0f96776790297f357974f
-answer-price   c3c3d4aa1fda809b9e95eabf453708fca7292b6d0c510160267be86484a22023
-answer-how     de4ade1c211cb03fae8e63f33b4f8fc94f8a543ba6117a9c16915e15506d601b
-answer-yes     e46bb1d74c0404e9e8c5fb92e4a857747c94e06625a88d65f0a2d7825f6adede
+first          1df2c1918349b8067bb4efd5557f2a0c5affad1bbf97af85bfb7beb7d3a84fcc
+second         d7691854bde606cc87879b7d4d37b2b69eb5a39e6885eb89257d72c87c03c837
+third          d8103c50fb799c9b8b4665b3f46c7c7e1f96158a1eefe3a5a206e414c3f1abd8
+batch-first    0226f9cef417b34a79f08c1143b0efdfeb054e55f486b17abafe598542b41e1f
+batch-second   d6662ad3649854b07d80221d946945ce4853cdba10a3ae4266f042a2218db8a1
+batch-third    dd9911a0512085486a10d31b1f06ddbba8f9f5bb843162bca03da904a59d93e8
+answer-price   8ced7a2757b94ad35e545d7879ac181088e1d77059f8172bdab023a1ea87f13c
+answer-how     4c283b7e473a12130b705dd7839627c318192ffb295dbc3c9398a9b8b6ec04f3
+answer-yes     eaca8d608ccbab9bfac8ad5998753b691e44a164ad78c88e57c51b96949714db

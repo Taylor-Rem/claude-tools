@@ -129,12 +129,13 @@ class RoleTable(Base):
     def test_client_gets_its_tools(self):
         for tool, argv in (("pay", ["status"]), ("db", ["query", "SELECT 1"]), ("newsletter", ["status"]),
                            ("site", ["publish"]), ("site", ["data", "x"]), ("site", ["mail"]),
+                           ("site", ["domain", "x", "example.com"]), ("site", ["address"]),   # B58: Patch's now
                            ("img", ["video", "x"]), ("discord", ["photos"]), ("connections", []),
                            ("connections", ["google", "invite"])):
             ST.check_request("acme", "client", str(self.ws), ".", tool, argv)
         # Taylor's from a terminal: SITE_ADMIN work, the GitHub side, platform grants, the rooms' credits
         for tool, argv in (("site", ["new", "x"]), ("site", ["adopt", "x"]), ("site", ["transfer", "x", "y"]),
-                           ("site", ["domain", "x"]), ("site", ["retire", "x"]), ("site", ["shell"]),
+                           ("site", ["retire", "x"]), ("site", ["shell"]), ("site", ["forward", "--sweep"]),
                            ("site", ["template", "push"]), ("site", ["stamp"]), ("site", ["checkout", "x"]),
                            ("connections", ["google", "grant"]), ("img", ["credit", "x"]),
                            ("social", ["connect", "patchlamp"]), ("social", ["queue"])):

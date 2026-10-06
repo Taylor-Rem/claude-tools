@@ -7,19 +7,24 @@
 # never says one exists.
 # Placeholders: {first} {business} {see_url} {price_line} {phone} {address} {thread_subject}.
 
+# Body by Codex (marketing/copy/2026-10-05-letters.md, variant A), 2026-10-05: one thought a sentence, one ask a letter;
+# the disclosure beside the intro. Flint's one change: batch-first's takedown sentence is out (nothing is built yet in this lane).
+
 Subject default: Re: {thread_subject}
 
 ---
 Hi {first},
 
-Following up on my note from a few days ago about {business}.
-[?see_url] If you'd like to see a site for {business} built from your Google listing, this page makes a free preview of one in a couple of minutes: {see_url}
-[!see_url] If you'd like to see a free preview of a site for {business}, built from your Google listing, just reply and I'll send it.
-If you'd want it kept, it's {price_line} to keep it up on your own web address, with a few small changes by text each month; if not, no hard feelings.
+I'm Taylor. I build and look after websites in American Fork.
+Patch, my AI operator, drafted this note for my approval of the batch.
+
+I can make a free website preview for {business} from your Google listing.
+[?see_url] You can have one built here: {see_url}
+[?see_url] Want to take a look?
+[!see_url] Want me to make one and send it over? Just reply.
 
 Taylor Remund · Patchlamp
 {phone}
 {address}
 
 This is an advertisement from a local business. Reply "no thanks" and you won't hear from me again.
-Patch, my AI operator, found this and drafted it; I approve each batch.

@@ -2,7 +2,14 @@
 
 Every page of a client site carries, on its own line beside the footer badge:
 
-    <script src="https://patchlamp.com/site-chat.js" data-site="SLUG" defer></script>
+    <script src="https://patchlamp.com/s/site-chat.js" data-site="SLUG" crossorigin="anonymous" defer></script>
+
+Since B127 (~/projects/plans/50-site-numbers.md) the tag is at /s/site-chat.js with
+crossorigin="anonymous": the browser loads the script without cookies and keeps none from
+the answer (Cloudflare adds a __cf_bm cookie to every patchlamp.com response; the app serves
+this path with Access-Control-Allow-Origin so the load works). The B108 form,
+`https://patchlamp.com/site-chat.js` without crossorigin, still works and is still found
+here (OLD_SRC); `ensure()` rewrites it to the new one and `site counter` does that per site.
 
 SLUG is the workspace's slug (`.client.json`), which is the project patchlamp.com
 keys the bubble by. The tag costs nothing when the chat is off: the script asks
@@ -18,16 +25,18 @@ carries no bubble (plan 45, Open 5).
 
 import re
 
-SRC = "https://patchlamp.com/site-chat.js"
+SRC = "https://patchlamp.com/s/site-chat.js"
+OLD_SRC = "https://patchlamp.com/site-chat.js"      # B108's tag, before B127
+_SRCS = "(?:" + re.escape(SRC) + "|" + re.escape(OLD_SRC) + ")"
 
 
 def tag(slug):
-    return f'<script src="{SRC}" data-site="{slug}" defer></script>'
+    return f'<script src="{SRC}" data-site="{slug}" crossorigin="anonymous" defer></script>'
 
 
-# the whole line the tag sits on, whatever slug it names
-LINE = re.compile(r'(?m)^[ \t]*<script\b[^>]*\bsrc="' + re.escape(SRC) + r'"[^>]*>\s*</script>[ \t]*\r?\n?')
-_SLUG = re.compile(r'<script\b[^>]*\bsrc="' + re.escape(SRC) + r'"[^>]*\bdata-site="([^"]*)"')
+# the whole line the tag sits on, whatever slug it names, either form
+LINE = re.compile(r'(?m)^[ \t]*<script\b[^>]*\bsrc="' + _SRCS + r'"[^>]*>\s*</script>[ \t]*\r?\n?')
+_SLUG = re.compile(r'<script\b[^>]*\bsrc="' + _SRCS + r'"[^>]*\bdata-site="([^"]*)"')
 _BADGE = re.compile(r'(?m)^([ \t]*)<(p|span|div|li)\b[^>]*class="patchlamp-badge".*?</\2>[ \t]*\r?\n')
 _BODY_END = re.compile(r'(?m)^([ \t]*)</body>')
 
@@ -35,6 +44,11 @@ _BODY_END = re.compile(r'(?m)^([ \t]*)</body>')
 def slugs(html):
     """Every slug the page's site-chat tags name ([] when it has none)."""
     return _SLUG.findall(html or "")
+
+
+def current(html, slug):
+    """True when the page carries exactly the current tag for `slug` (not the B108 form)."""
+    return slugs(html) == [slug] and tag(slug) in (html or "")
 
 
 def has(html, slug=None):
@@ -52,8 +66,8 @@ def ensure(html, slug):
     """The page with exactly one tag naming `slug`: on the line after the footer badge,
     else on the line before </body>, at that line's indent. A page with neither is
     returned as it was (a fragment, not a page)."""
-    if slugs(html) == [slug]:
-        return html
+    if slugs(html) == [slug] and tag(slug) in html:
+        return html                  # exactly right already (the B108 form is rewritten)
     html = strip(html)
     m = _BADGE.search(html)
     if m:

@@ -10,6 +10,7 @@
 // preview them, and a preview must not sign. A wrong, withdrawn or already
 // signed link is a plain page that says so.
 import { esc, sha256, readBody, sameOrigin } from "../_lib/core.js";
+import { shownHtml } from "../_lib/markdown.js";
 
 const TOKEN = /^[A-Za-z0-9_-]{20,100}$/;
 const NAME_MAX = 120;
@@ -94,7 +95,7 @@ function plainLine(env) {
 function show(env, s, { error = "", typed = "" } = {}) {
   const site = env.SITE_NAME ? esc(env.SITE_NAME) : "";
   const head = `<h1>${esc(s.title)}</h1><p class="for">For ${esc(s.for_name)}${site ? `, from ${site}` : ""}</p>`;
-  const doc = `<div class="doc">${s.body_html}</div>`;
+  const doc = `<div class="doc">${shownHtml(s.body, s.title)}</div>`;
   if (s.status === "void") return shell(env, s.title, `${head}<p class="done">${site || "The business"} withdrew this document, so it can't be signed here. Ask them if you expected to sign it.</p>`);
   if (s.status === "signed") {
     return shell(env, s.title, `${head}<div class="done"><p><strong>Signed by ${esc(s.signed_name)}</strong><br>${esc(shownTime(s.signed_at, env))}</p>
@@ -113,10 +114,20 @@ function show(env, s, { error = "", typed = "" } = {}) {
     ${plainLine(env)}`);
 }
 
+// The stored text must still be the text that was hashed: when it was sent (`doc_sha256`) and,
+// once signed, when it was signed (`signed_sha256`). A row edited afterwards is never shown as
+// if it were the document, because the page would then show terms nobody agreed to.
+async function intact(s) {
+  const hash = await sha256(s.body);
+  return hash === s.doc_sha256 && (s.status !== "signed" || hash === s.signed_sha256);
+}
+const CHANGED = "This document changed after it was sent, so it can't be shown or signed from this link.";
+
 export async function onRequestGet({ env, params }) {
   if (!env.DB) return sorry(env, "This site isn't set up to take signatures yet.", 503);
   const s = await load(env, params.token);
   if (!s) return sorry(env, "This link isn't right, or it was mistyped.");
+  if (s.status !== "void" && !(await intact(s))) return sorry(env, CHANGED, 409);
   return show(env, s);
 }
 
@@ -124,7 +135,7 @@ export async function onRequestPost({ request, env, params, waitUntil }) {
   if (!env.DB) return sorry(env, "This site isn't set up to take signatures yet.", 503);
   const s = await load(env, params.token);
   if (!s) return sorry(env, "This link isn't right, or it was mistyped.");
-  if (s.status !== "sent") return show(env, s);
+  if (s.status !== "sent") return s.status === "void" || (await intact(s)) ? show(env, s) : sorry(env, CHANGED, 409);
   if (!sameOrigin(request)) return sorry(env, "That came from another site, so nothing was signed.", 403);
   const data = await readBody(request);
   const typed = String(data.full_name || "").replace(/\s+/g, " ").trim().slice(0, NAME_MAX);
@@ -134,7 +145,7 @@ export async function onRequestPost({ request, env, params, waitUntil }) {
   // the text as it stands now must be the text that was sent: a row changed
   // after sending is never signed, the business sends a new link instead
   const hash = await sha256(s.body);
-  if (hash !== s.doc_sha256) return sorry(env, "This document changed after it was sent, so it can't be signed from this link.", 409);
+  if (hash !== s.doc_sha256) return sorry(env, CHANGED, 409);
 
   const at = new Date().toISOString().slice(0, 19) + "Z";
   const ip = request.headers.get("cf-connecting-ip") || "";

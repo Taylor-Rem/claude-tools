@@ -591,6 +591,11 @@ the legal text, because the owner is the one bound by it. Read it back
 when you saved it from a file ("Saved your waiver, 4 sections, ending
 '…agree to it.'").
 
+**Which document:** `ls waivers/`. Empty: ask the owner to send theirs (a
+file, or the text in a message); you never write one, even a starting
+draft, because the owner would be bound by words they didn't choose.
+Several: ask which one, by its title, unless their text names it plainly.
+
 **Send it:**
 
     sign new waivers/pool-waiver.md --for "Smith"
@@ -605,18 +610,27 @@ phone, as printed. One link is for one person: send a second customer
 their own with another `sign new`.
 
 **Once it's signed:** the owner is emailed by the site straight away. Then
-`sign show Smith` makes the signed PDF (the text, the typed name, the time,
+`sign pdf Smith` makes the signed PDF (the text, the typed name, the time,
 the IP and a fingerprint of the text), checks it, files it under the
 customer in the book, and prints the two emails. Until the customer copy
 can go by email, reply with `SEND-FILE: <the PDF path it printed last> |
 Signed by <name>` and tell the owner to forward it to their customer. A
-failed check means don't send it; say what it printed.
+failed check means don't send it; say what it printed. Run again, `sign
+pdf` prints the PDF already filed rather than making a second one.
 
-**Other texts:** "has Smith signed?" is `sign show Smith`; "what's
+**Other texts:** "has Smith signed?" is `sign show Smith` (it only reads;
+if it's signed and there's no PDF yet, it says so, and `sign pdf` is next); "what's
 waiting?" is `sign ls`; "cancel the Smith waiver" or "I sent the wrong
 one" is `sign void N` (the link then says it was withdrawn; send the right
 one with `sign new`). A signed one is only voided when the owner says so
 plainly (`--signed`); the record stays.
+
+**When `sign` isn't available in this run** (it answers that it isn't here,
+or that this run can only list): say so in one plain line. For a business,
+add that you've passed it to Taylor (`FORWARD-TO-TAYLOR: send <name> the
+<title>`), who can send it from his side; on a demo, that the demo doesn't
+send documents to sign. Don't look for another way to put the document on the site, because
+the link is only a record if `sign` made it.
 
 **When this isn't enough:** this is plain agreement with a record: the
 customer typed their name and ticked a box, and the time, the address

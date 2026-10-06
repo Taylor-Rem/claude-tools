@@ -12,11 +12,13 @@ Run inside a client workspace whose site has the `signatures` collection
         "Smith" is looked up there (one match fills the email; several are
         listed, and --customer ID says which).
   sign ls [--all] [--json]          what was sent, newest first (--all: void too)
-  sign show ID|TOKEN|NAME [--json] [--no-pdf]
-        one record, the way the page shows it. When it is signed and has no
-        PDF yet, makes the signed PDF, files it under the customer in the
-        book, and prints the two emails to send; the PDF's path is the last line.
-  sign pdf ID [--out PATH]          make (or make again) the signed PDF
+  sign show ID|TOKEN|NAME [--json]
+        one record, the way the page shows it. It only reads: "has Smith
+        signed?" never writes anything.
+  sign pdf ID|NAME [--again] [--out PATH]
+        once it is signed: make the signed PDF, check it, file it under the
+        customer in the book, and print the two emails to send; the PDF's path
+        is the last line. Run again, it prints the filed PDF (--again remakes it).
   sign void ID [--signed] [--dry-run]
         withdraw a link that hasn't been signed; the page then says so. A
         signed one needs --signed (the record stays, marked void).
@@ -36,14 +38,22 @@ lib/print.mjs): the business, the title, the signature record (name, time in
 the site's zone and in UTC, IP, the hash) and the whole text. It is checked
 before it is offered: every page US letter (pdfinfo), and the text read back
 out of it (pdftotext) must hold the signer's name, the time and the hash.
-A failed check exits 2 and says what failed; don't send that file.
+A failed check exits 2 and says what failed; don't send that file. Before
+anything is rendered the stored text is hashed again: no HTML is kept, the
+page and the PDF render the text each time, and a row whose text no longer
+gives the hash taken when it was sent and signed makes no PDF (exit 2) and
+no page (the link says the document changed).
+
+The text goes into the database as hex (one line, byte for byte) and is read
+back and hashed before the link is printed; up to 40 KB of text (about 15
+printed pages), since D1 takes one statement of at most 100 KB.
 
 The emails: the owner is emailed by the site the moment it is signed (the
 same patchlamp.com form mail as any form, "signature"). The PDF itself to the
 owner and the signer needs a customer-mail path that carries a file. B118's
 POST /internal/relay/projects/{slug}/customer-mail (through the relay's
 customers.py send(), the one place customer mail is checked) is the seam; it
-is not merged yet and takes text only. Until then `sign show` prints both
+is not merged yet and takes text only. Until then `sign pdf` prints both
 emails as drafts, the PDF goes to the owner as a SEND-FILE, and the owner
 forwards the signer's copy (the signer can also print the signed page).
 
@@ -84,6 +94,14 @@ def die(msg, code=1):
 
 def say(msg=""):
     print(msg, flush=True)
+
+
+MAX_BYTES = 40_000      # the text, UTF-8; as hex it is twice that, inside D1's 100 KB statement
+
+
+def text_lit(s):
+    """A string as an SQL literal that is one line of hex digits: CAST(X'…' AS TEXT)."""
+    return f"CAST(X'{s.encode('utf-8').hex()}' AS TEXT)"
 
 
 def lit(v):
@@ -270,7 +288,7 @@ def find(ws, term, full=False):
 
 def line(r, tz="America/Denver"):
     who = f" — signed by {r['signed_name']} {local_time(r['signed_at'], tz)}" if r.get("status") == "signed" else ""
-    pdf = "" if r.get("status") != "signed" else (" · PDF filed" if r.get("pdf") else " · no PDF yet: sign show " + str(r["id"]))
+    pdf = "" if r.get("status") != "signed" else (" · PDF filed" if r.get("pdf") else " · no PDF yet: sign pdf " + str(r["id"]))
     return f"#{r['id']} {r['status']:<6} {r['title']} — for {r['for_name']} (sent {local_day(r['created_at'], tz)}){who}{pdf}"
 
 
@@ -306,6 +324,10 @@ def cmd_new(a):
     body = normalise(path.read_text(encoding="utf-8", errors="replace"))
     if len(body.strip()) < 20:
         die(f"{a.file} is nearly empty; a document to sign needs its text")
+    if len(body.encode("utf-8")) > MAX_BYTES:
+        die(f"{a.file} is {len(body.encode('utf-8')) // 1000} KB of text; a document to sign here can be up to "
+            f"{MAX_BYTES // 1000} KB (about 15 printed pages), because the site's database takes one statement of "
+            "at most 100 KB. Split it into two documents, or ask Taylor.")
     if not a.for_.strip():
         die('--for "Name": who it is for')
     ws.need_table()
@@ -319,8 +341,10 @@ def cmd_new(a):
     url, _, _ = ws.site()
     link = f"{url.rstrip('/')}/sign/{token}"
     rel = str(path.relative_to(ws.root.resolve()))
-    sql = ("INSERT INTO signatures (token, title, doc_file, body, body_html, doc_sha256, for_name, email, phone, customer_id) "
-           f"VALUES ({lit(token)}, {lit(title)}, {lit(rel)}, {lit(body)}, {lit(shown_html(body, title))}, {lit(digest(body))}, "
+    # the text goes in as hex (X'…' cast back to TEXT): byte for byte, one line, nothing in it that
+    # db's statement splitter or a `--` at the start of a line could read as SQL
+    sql = ("INSERT INTO signatures (token, title, doc_file, body, doc_sha256, for_name, email, phone, customer_id) "
+           f"VALUES ({lit(token)}, {lit(title)}, {lit(rel)}, {text_lit(body)}, {lit(digest(body))}, "
            f"{lit(who)}, {lit(email)}, {lit(phone)}, {lit(c['id']) if c else 'NULL'})")
     if a.dry_run:
         say(f"would put \"{title}\" ({rel}, sha256 {digest(body)[:16]}…) on the site for {a.for_}")
@@ -330,6 +354,13 @@ def cmd_new(a):
         say("dry run: nothing written")
         return
     ws.exec(sql)
+    back = ws.rows(f"SELECT id, body FROM signatures WHERE token = {lit(token)}")
+    if not back or digest(back[0]["body"] or "") != digest(body):
+        if back:
+            ws.exec(f"UPDATE signatures SET status = 'void', notes = 'the stored text did not match the file' "
+                    f"WHERE id = {int(back[0]['id'])}")
+        die("the site's database didn't keep the text exactly as written, so the link was withdrawn and "
+            "nothing should be sent. Tell Taylor (sign doctor may say why).", 2)
     r = ws.rows(f"SELECT {COLS} FROM signatures WHERE token = {lit(token)}")[0]
     if a.json:
         say(json.dumps({**r, "link": link}, indent=2))
@@ -342,7 +373,7 @@ def cmd_new(a):
     say(f"  Hi {who.split()[0]}, here's the {title} from {ws.name}. "
         f"Please read it and sign at the link (it takes a minute): {link}")
     say("")
-    say("When it's signed the owner gets an email; `sign show " + str(r["id"]) + "` then makes the signed PDF.")
+    say("When it's signed the owner gets an email; `sign pdf " + str(r["id"]) + "` then makes the signed PDF.")
     say(link)
 
 
@@ -398,16 +429,10 @@ def cmd_show(a):
         say(f"  at: {local_time(r['signed_at'], tz)} ({r['signed_at']})")
         say(f"  from IP: {r['signed_ip'] or 'not given'}")
         say(f"  text at signing: sha256 {r['signed_sha256']}" + ("" if r["signed_sha256"] == r["doc_sha256"] else "  (DIFFERS from the text sent)"))
-    if r["status"] != "signed" or a.no_pdf:
-        return
-    if r.get("pdf") and ws.inside(r["pdf"]).exists():
-        say(f"  PDF: {r['pdf']} (filed {r.get('filed_at') or ''})")
-        say(str(ws.inside(r["pdf"])))
-        return
-    pdf = make_pdf(ws, a, r["id"])
-    file_it(ws, r, pdf, tz)
-    drafts(ws, r, pdf, tz)
-    say(str(pdf))
+        if r.get("pdf") and ws.inside(r["pdf"]).exists():
+            say(f"  PDF: {r['pdf']} (filed {r.get('filed_at') or ''})")
+        else:
+            say(f"  PDF: not made yet (sign pdf {r['id']} makes it, files it under the customer and prints the two emails)")
 
 
 def make_pdf(ws, a, sid, out=None):
@@ -421,6 +446,14 @@ def make_pdf(ws, a, sid, out=None):
     b = P.brand(ctx)
     when_local = local_time(r["signed_at"], tz)
     h = r["signed_sha256"] or r["doc_sha256"]
+    # the PDF shows the stored text, so the stored text must be the one that was signed
+    now = digest(r.get("body") or "")
+    if now != h or now != r["doc_sha256"]:
+        print(f"sign: #{r['id']}'s stored text no longer matches the fingerprint taken when it was "
+              f"{'signed' if r.get('signed_sha256') else 'sent'} (sha256 now {now[:16]}…, then {h[:16]}…), "
+              "so no PDF was made: one would show terms nobody agreed to. Tell Taylor; the row was changed "
+              "after the fact.", file=sys.stderr)
+        sys.exit(2)
     page = TEMPLATE.read_text()
     vals = {
         "FONTS": b["fonts_link"], "INK": b["ink"], "ACCENT": b["accent"], "MUTED": b["muted"], "LINE": b["line"],
@@ -432,13 +465,13 @@ def make_pdf(ws, a, sid, out=None):
         "HASH_SPLIT": " ".join(html.escape(h[i:i + 16]) for i in range(0, len(h), 16)),
         "LINK": html.escape(f"{url.rstrip('/')}/sign/…{r['token'][-6:]}"), "ID": str(r["id"]),
         "VOID": '<p class="void">Withdrawn by the business after signing.</p>' if r["status"] == "void" else "",
-        "BODY": r["body_html"],
+        "BODY": shown_html(r["body"], r["title"]),
     }
-    for k, v in vals.items():
-        page = page.replace("{{" + k + "}}", str(v))
-    left = re.findall(r"\{\{[A-Z_]+\}\}", page)
-    if left:
-        die(f"signed.html: unfilled {left}")
+    missing = sorted(set(re.findall(r"\{\{([A-Z_]+)\}\}", page)) - set(vals))
+    if missing:
+        die(f"signed.html: no value for {missing}")
+    # one pass over the template, so a {{NAME}} typed in the document or a name is left as typed
+    page = re.sub(r"\{\{([A-Z_]+)\}\}", lambda m: str(vals[m.group(1)]), page)
     if out:
         pdf = ws.inside(out).with_suffix(".pdf")
     else:
@@ -543,12 +576,22 @@ def cmd_pdf(a):
     ws = Ws(a)
     ws.need_table()
     r = find(ws, a.id)
-    if a.dry_run:
-        say(f"would make the signed PDF for #{r['id']} ({r['status']})")
+    if r["status"] == "sent":
+        die(f"#{r['id']} isn't signed yet; the signed PDF comes after (sign show {r['id']})")
+    have = ws.inside(r["pdf"]) if r.get("pdf") else None
+    if have and have.exists() and not (a.again or a.out):
+        say(f"#{r['id']}'s PDF is already made and filed ({r.get('filed_at') or ''}); --again makes it afresh")
+        say(str(have))
         return
+    if a.dry_run:
+        say(f"would make the signed PDF for #{r['id']} ({r['status']})" + ("" if r.get("pdf") else " and file it"))
+        return
+    tz = ws.site()[2]
     pdf = make_pdf(ws, a, r["id"], a.out)
-    if not r.get("pdf") and r["status"] == "signed":
-        file_it(ws, r, pdf, ws.site()[2])
+    if r["status"] == "signed" and not a.out:
+        if not r.get("pdf"):
+            file_it(ws, r, pdf, tz)
+        drafts(ws, r, pdf, tz)
     say(str(pdf))
 
 
@@ -615,11 +658,13 @@ def main(argv=None):
     ls = sub.add_parser("ls", parents=[common], help="what was sent, newest first")
     ls.add_argument("--all", action="store_true"); ls.add_argument("-n", default=30, type=int)
     ls.add_argument("--json", action="store_true"); ls.set_defaults(fn=cmd_ls)
-    s = sub.add_parser("show", parents=[common], help="one record; makes and files the PDF once signed")
+    s = sub.add_parser("show", parents=[common], help="one record, the way the page shows it (reads only)")
     s.add_argument("term", help="#id, the token, or the name"); s.add_argument("--json", action="store_true")
-    s.add_argument("--no-pdf", action="store_true"); s.set_defaults(fn=cmd_show)
-    d = sub.add_parser("pdf", parents=[common], help="make (again) the signed PDF")
-    d.add_argument("id"); d.add_argument("--out"); d.add_argument("--dry-run", action="store_true")
+    s.set_defaults(fn=cmd_show)
+    d = sub.add_parser("pdf", parents=[common], help="make the signed PDF, file it, print the two emails")
+    d.add_argument("id"); d.add_argument("--out", help="write it here instead (not filed)")
+    d.add_argument("--again", action="store_true", help="make it afresh when one is filed")
+    d.add_argument("--dry-run", action="store_true")
     d.set_defaults(fn=cmd_pdf)
     v = sub.add_parser("void", parents=[common], help="withdraw a link")
     v.add_argument("id"); v.add_argument("--signed", action="store_true"); v.add_argument("--dry-run", action="store_true")

@@ -1,14 +1,14 @@
 -- signatures: a document sent to one customer to read and sign by link
--- (`sign new`, ROADMAP B128). The text is kept whole as it was sent; the
--- hash is sha256 of `body` (UTF-8), so the same text always gives the same
--- hash and anyone can check a PDF against the row.
+-- (`sign new`, ROADMAP B128). The text is kept whole as it was sent and is
+-- the only copy: the page and the PDF render it each time (no HTML is stored,
+-- so what is shown can't drift from what was hashed). The hash is sha256 of
+-- `body` (UTF-8), checked when it is signed and again when the PDF is made.
 CREATE TABLE IF NOT EXISTS signatures (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   token         TEXT NOT NULL UNIQUE,              -- the link: /sign/<token>, 32 random bytes
   title         TEXT NOT NULL,
   doc_file      TEXT,                              -- where it came from in the workspace (waivers/pool.md)
   body          TEXT NOT NULL,                     -- the document as written (Markdown)
-  body_html     TEXT NOT NULL,                     -- the same, as the page shows it
   doc_sha256    TEXT NOT NULL,                     -- sha256 of body when it was sent
   for_name      TEXT NOT NULL,                     -- who it was sent to ("Smith")
   email         TEXT,

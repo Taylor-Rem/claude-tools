@@ -140,8 +140,8 @@ class SignTest(unittest.TestCase):
                          ("Pool Service Waiver", "Dana Ruiz", "sent", "waivers/pool.md"))
         self.assertEqual(row["doc_sha256"], S.digest(S.normalise(WAIVER)))
         self.assertEqual(link.rsplit("/", 1)[1], row["token"])
-        self.assertNotIn("<script>", row["body_html"])
-        self.assertNotIn("<h1>", row["body_html"], "the title isn't shown twice")
+        self.assertNotIn("body_html", row, "no HTML is stored: the page and the PDF render the text")
+        self.assertEqual(row["body"], S.normalise(WAIVER), "the text is kept byte for byte")
         # two sends are two links
         self.sign("new", "waivers/pool.md", "--for", "Sam Smith")
         toks = [x["token"] for x in self.q("SELECT token FROM signatures")]
@@ -276,7 +276,15 @@ out.wrong = r.status;
                          (row["signed_name"], row["signed_at"], row["signed_sha256"]))
         if not have_browser():
             self.skipTest("no browser/poppler here: the PDF half was not run")
+        before = self.calls()
         r = self.sign("show", "Dana")
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertIn("PDF: not made yet (sign pdf 1", r.stdout)
+        sqls = [x.split("=", 1)[1] for c in self.calls()[len(before):] for x in c["args"] if x.startswith("--command=")]
+        writes = [q for q in sqls if not re.match(r"(?is)^\s*(SELECT|PRAGMA)", q)]
+        self.assertEqual(writes, [], "show only reads")
+        self.assertEqual(self.q("SELECT COUNT(*) AS n FROM jobs")[0]["n"], 0)
+        r = self.sign("pdf", "Dana")
         self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
         pdf = Path(r.stdout.strip().splitlines()[-1])
         self.assertTrue(pdf.exists() and pdf.parent == self.ws / "signed", pdf)
@@ -292,9 +300,11 @@ out.wrong = r.status;
                          ("Signed: Pool Service Waiver", "done", "sign", "sig-1"))
         got = self.q("SELECT pdf, filed_at FROM signatures")[0]
         self.assertTrue(got["pdf"].startswith("signed/") and got["filed_at"])
-        # shown again: the PDF that is filed, not a second one
-        r = self.sign("show", "1")
+        # asked again: the PDF that is filed, not a second one
+        r = self.sign("pdf", "1")
         self.assertEqual(r.stdout.strip().splitlines()[-1], str(pdf))
+        self.assertIn("already made and filed", r.stdout)
+        self.assertIn(f"PDF: {got['pdf']}", self.sign("show", "1").stdout)
         self.assertEqual(len(self.q("SELECT id FROM jobs")), 1)
 
     def test_a_text_changed_after_sending_is_never_signed(self):
@@ -344,6 +354,71 @@ out.status = sql.prepare("SELECT status FROM signatures").get().status;
         text = subprocess.run(["pdftotext", r.stdout.strip().splitlines()[-1], "-"], capture_output=True, text=True).stdout
         self.assertIn("Clause 40.", text, "nothing is cut off after page one")
 
+
+    def test_a_row_changed_after_signing_makes_no_pdf_and_no_page(self):
+        # review 2026-10-06: the HTML used to be stored beside the text and shown under the
+        # text's hash; now nothing but the text is stored, and it must still give the hash
+        self.add("signatures")
+        r = self.sign("new", "waivers/pool.md", "--for", "Dana")
+        token = r.stdout.strip().splitlines()[-1].rsplit("/", 1)[1]
+        self.db("exec", "UPDATE signatures SET status = 'signed', signed_name = 'Dana Ruiz', signed_at = '2026-10-05T22:31:07Z', "
+                        "signed_ip = '203.0.113.9', signed_sha256 = doc_sha256 WHERE id = 1")
+        self.db("exec", "UPDATE signatures SET body = '# Pool Service Waiver' || char(10) || 'Other terms.' || char(10) WHERE id = 1")
+        r = self.sign("pdf", "1")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("no longer matches", r.stderr)
+        self.assertFalse((self.ws / "signed").exists() and any((self.ws / "signed").iterdir()))
+        if not node_sqlite():
+            self.skipTest("no node with node:sqlite: the page half was not run")
+        out = self.run_page(token, r"""
+let r = await onRequestGet(ctx(new Request(at)));
+out.get = [r.status, (await r.text()).includes("Other terms")];
+r = await onRequestPost(ctx(post({ full_name: "X Y", agree: "yes" })));
+out.post = [r.status, (await r.text()).includes("Other terms")];
+""")
+        self.assertEqual(out["get"], [409, False])
+        self.assertEqual(out["post"], [409, False])
+
+    def test_the_page_and_the_pdf_render_the_text_the_same_way(self):
+        if not NODE:
+            self.skipTest("no node")
+        docs = [WAIVER, "# T\n\nplain *a* and _b_ and **c** and snake_case_word and 2*3*4\n- one\n  more\n1) x\n2. y\n\n### h3 & <i>\n",
+                "Né *café* — «quotes» 'single' \"double\"\n\n-- a line that starts like an SQL comment\n---\n; DROP TABLE x; --\n"]
+        lib = COLL / "functions" / "_lib" / "markdown.js"
+        script = ("import { shownHtml } from " + json.dumps(str(lib)) + ";\n"
+                  "const docs = " + json.dumps([[S.normalise(d), S.title_of(S.normalise(d), Path("x.md"))] for d in docs]) + ";\n"
+                  "console.log(JSON.stringify(docs.map(([b, t]) => shownHtml(b, t))));\n")
+        f = Path(self.tmp.name) / "md.mjs"
+        f.write_text(script)
+        r = subprocess.run([NODE, str(f)], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        js = json.loads(r.stdout)
+        py = [S.shown_html(S.normalise(d), S.title_of(S.normalise(d), Path("x.md"))) for d in docs]
+        self.assertEqual(js, py)
+
+    def test_any_text_goes_in_byte_for_byte_and_a_huge_one_is_refused(self):
+        self.add("signatures")
+        odd = ("# Odd Waiver\n\n-- a line that starts like an SQL comment\n'quoted'; DROP TABLE signatures; --\n"
+               "{{BODY}} and {{HASH}} typed in the text\n\n" + "Clause. " * 1500 + "\n")
+        (self.ws / "waivers" / "odd.md").write_text(odd)
+        r = self.sign("new", "waivers/odd.md", "--for", "Dana {{SIGNER}}")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        row = self.q("SELECT body, doc_sha256 FROM signatures")[0]
+        self.assertEqual(row["body"], S.normalise(odd))
+        self.assertEqual(S.digest(row["body"]), row["doc_sha256"])
+        (self.ws / "waivers" / "huge.md").write_text("# Huge\n\n" + "x" * 41_000 + "\n")
+        r = self.sign("new", "waivers/huge.md", "--for", "Dana")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("up to 40 KB", r.stderr)
+        if not have_browser():
+            self.skipTest("no browser/poppler: the PDF half was not run")
+        self.db("exec", "UPDATE signatures SET status = 'signed', signed_name = 'Dana {{BODY}}', signed_at = '2026-10-05T22:31:07Z', "
+                        "signed_ip = '203.0.113.9', signed_sha256 = doc_sha256 WHERE id = 1")
+        r = self.sign("pdf", "1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        text = subprocess.run(["pdftotext", r.stdout.strip().splitlines()[-1], "-"], capture_output=True, text=True).stdout
+        self.assertIn("{{BODY}} and {{HASH}} typed in the text", text, "a placeholder in the text stays as typed")
+        self.assertIn("Dana {{BODY}}", text)
 
 if __name__ == "__main__":
     unittest.main()

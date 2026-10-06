@@ -47,7 +47,7 @@ footer { margin-top: 0.3in; border-top: 1pt solid var(--line); padding-top: 0.08
     <dt>From IP</dt><dd>{{IP}}</dd>
     <dt>Text SHA-256</dt><dd><code>{{HASH_SPLIT}}</code></dd>
   </dl>
-  <p class="how">Signed on {{LINK}} by typing a full name and ticking "I have read this and I agree to it". The SHA-256 is a fingerprint of the document's text exactly as it was shown (record #{{ID}}): the same text always gives the same fingerprint. This is a record of agreement, not a notarised signature.</p>
+  <p class="how">Signed on {{LINK}} by typing a full name and ticking "I have read this and I agree to it". The SHA-256 is a fingerprint of the text as it was sent (record #{{ID}}): the same text always gives the same fingerprint, so whoever holds the record can check this copy against it. This is a record of agreement, not a notarised signature.</p>
 </section>
 <section class="doc">
 {{BODY}}

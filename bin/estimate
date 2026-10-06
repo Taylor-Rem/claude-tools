@@ -1,0 +1,909 @@
+#!/usr/bin/env python3
+"""estimate — quote first, then get paid: an estimate a customer accepts online
+(ROADMAP B123, plan ~/projects/plans/49-the-customer-side.md § Changes 6).
+Run inside a client workspace whose site has the estimates collection
+(`db add estimates`).
+
+  estimate new "Smith" --line "3 windows" 300 --line "2 doors" 150
+               [--deposit 100] [--valid 14d|2026-11-01] [--note "…"] [--email E] [--phone P]
+               [--tax 7.25|none] [--no-pdf]
+        a draft: a row in the site's database and a branded one-page PDF (the
+        site's name, logo and colours, the lines, tax, the deposit, the date it
+        is good until, the terms from facts.md, a QR to the accept page),
+        checked like every `print` PDF. Its path is the last line printed.
+  estimate send N [--dry-run]
+        the draft becomes sent: the accept page (/estimate/<token>) opens, the
+        customer is filed in the customer book (B122, when the site has one),
+        and the email to the customer is printed for the owner to send (or the
+        PDF goes by SEND-FILE). Only on the owner's word. Patchlamp can't mail a
+        customer for a client yet: newsletter mails its own subscribers and
+        `site data --owner` the owner. The seam is B118's POST
+        /internal/relay/projects/{slug}/customer-mail through the relay's
+        customers.send(), whose KINDS don't include "estimate" yet; wiring it
+        is a later row, and until then the owner sends it.
+  estimate ls [--status S]  |  estimate show N [--json]  |  estimate pdf N
+  estimate void N                         # withdrawn: the accept page stops opening it
+  estimate accept N --name "John Smith" [--by phone] [--email E] [--when T]
+        the owner records an acceptance they got by phone or in person, then
+        follows it through like `sync`
+  estimate sync [N] [--test] [--send-invoice] [--email E] [--when T] [--dry-run]
+        every accepted estimate not yet followed through: `pay invoice` with the
+        same lines (or `pay deposit` when it has a deposit; the balance is then
+        the owner's to invoice) on the owner's own Stripe, and the job in the
+        customer book. Each step runs once, ever: a retry can't bill twice (the
+        invoice's Idempotency-Keys come from the estimate) and never re-files a
+        job the owner has moved on. --when 2026-10-12 09:00 (or a slot, #12) is
+        the agreed time: a booking on /admin/bookings, on a site with bookings;
+        without one no booking is made. What it did comes back as lines to
+        text the owner. Run it when the owner hears an estimate was accepted
+        (patchlamp.com emails them; the subject names the estimate).
+  estimate doctor
+
+N is the estimate's number (E-0003, or just 3). Common: --site NAME (more than
+one site with a database), --local (the local copy wrangler pages dev uses),
+--dry-run (prints, writes nothing, calls nothing), --json where it makes sense.
+
+Where things come from. The business name: .client.json. Colours, fonts and
+the URL: the same as `print` (the site's css tokens, the site registry).
+The logo: repos/<site>/images/logo.* (or img/, or the root), else the name
+alone. Tax: `--tax`, else a line in NOTES.md like "Sales tax: 7.25%", else
+none (a quote with no tax line is the owner's choice to say otherwise). The
+terms: facts.md's "## Terms" section, in the owner's words, else none; the
+good-until date and the deposit are always written in.
+
+Money: `pay` does it, on the owner's own Stripe (the account and the key are
+pay's business: STRIPE_CONNECTED_ACCOUNT / --project, STRIPE_KEY_PATCHLAMP or
+STRIPE_TEST_KEY with --test). Nothing here spends our money; no ledger line.
+
+Config: none of its own. Tests only: ESTIMATE_DB / ESTIMATE_PAY (stand-ins for
+the db and pay commands).
+"""
+
+import argparse
+import datetime as dt
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import secrets
+import shutil
+import subprocess
+import sys
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(HERE / "lib"))
+import tenant  # noqa: E402  (shared tenant-identity check, B80)
+
+DB = os.environ.get("ESTIMATE_DB") or str(HERE / "bin" / "db")
+PAY = os.environ.get("ESTIMATE_PAY") or str(HERE / "bin" / "pay")
+MAX_LINES = 20
+MAX_CENTS = 99_999_999          # Stripe's largest USD amount: one invoice or link can't be more
+STATUSES = ("draft", "sent", "accepted", "declined", "void")
+DRY = False
+
+
+def die(msg, code=1):
+    print(f"estimate: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def say(msg=""):
+    print(msg, flush=True)
+
+
+def load_print():
+    loader = importlib.machinery.SourceFileLoader("print_tool", str(HERE / "bin" / "print"))
+    spec = importlib.util.spec_from_loader("print_tool", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+# ---------------------------------------------------------------- the workspace
+
+def workspace():
+    p = Path.cwd() / ".client.json"
+    if not p.exists():
+        die("run it inside a client workspace (~/projects/clients/<slug>): an estimate belongs to one business")
+    try:
+        meta = json.loads(p.read_text())
+    except ValueError as exc:
+        die(f".client.json is not valid JSON: {exc}")
+    tenant.enforce(meta.get("slug"), die)
+    return meta
+
+
+def ws_text(name):
+    p = Path.cwd() / name
+    return p.read_text(errors="replace") if p.exists() else ""
+
+
+def section(text, title):
+    m = re.search(rf"(?ims)^##\s*{title}\s*$\n(.*?)(?=^##\s|\Z)", text)
+    if not m:
+        return ""
+    body = re.sub(r"(?s)<!--.*?-->", "", m.group(1))
+    body = "\n".join(line.rstrip() for line in body.strip().splitlines() if not line.startswith("Updated:"))
+    return body.strip()
+
+
+def terms_from_facts():
+    facts = ws_text("facts.md")
+    return section(facts, "Terms")
+
+
+TAX_RE = re.compile(r"(?im)^[\s>*-]*(?:sales\s+)?tax(?:\s+rate)?\b[^\n%\d]{0,40}?(\d{1,2}(?:\.\d{1,3})?)\s*%")
+
+
+def tax_from_notes():
+    m = TAX_RE.search(ws_text("NOTES.md"))
+    return Decimal(m.group(1)) if m else None
+
+
+# ---------------------------------------------------------------- money
+
+def cents(text, what="amount"):
+    raw = str(text).strip().replace(",", "").lstrip("$").strip()
+    try:
+        d = Decimal(raw)
+    except InvalidOperation:
+        die(f"{what} {text!r} isn't an amount (dollars, like 450 or 1200.50)")
+    if not d.is_finite():
+        die(f"{what} {text!r} isn't an amount (dollars, like 450 or 1200.50)")
+    if d != d.quantize(Decimal("0.01")):
+        die(f"{what} {text!r} has more than two decimal places")
+    if d <= 0:
+        die(f"{what} {text!r} has to be more than zero")
+    if d > Decimal("999999.99"):
+        die(f"{what} {text!r} is more than one payment can be")
+    return int(d * 100)
+
+
+def dollars(c):
+    return f"${(c or 0) / 100:,.2f}"
+
+
+def amt(c):
+    """Cents as the dollars pay reads ("300.00"), exact."""
+    return f"{c // 100}.{c % 100:02d}"
+
+
+def tax_label(rate):
+    return f"Sales tax {rate.normalize():f}%"
+
+
+def valid_until(text, today=None):
+    today = today or dt.date.today()
+    t = str(text or "30d").strip().lower()
+    m = re.fullmatch(r"(\d{1,3})\s*d(ays?)?", t)
+    if m and 1 <= int(m.group(1)) <= 365:
+        return (today + dt.timedelta(days=int(m.group(1)))).isoformat()
+    try:
+        d = dt.date.fromisoformat(t)
+    except ValueError:
+        die(f"--valid {text!r}: a number of days (14d) or a date (2026-11-01)")
+    if d < today:
+        die(f"--valid {text!r} is already past")
+    return d.isoformat()
+
+
+def long_day(iso):
+    """'2026-10-19' or a UTC stamp '2026-10-06T04:10:00Z' (shown as the local day) -> 'October 19, 2026'."""
+    try:
+        if "T" in str(iso):
+            d = dt.datetime.fromisoformat(str(iso).replace("Z", "+00:00")).astimezone().date()
+        else:
+            d = dt.date.fromisoformat(str(iso)[:10])
+    except ValueError:
+        return str(iso or "")
+    return f"{d.strftime('%B')} {d.day}, {d.year}"
+
+
+# ---------------------------------------------------------------- db + pay
+
+def lit(v):
+    if v is None:
+        return "NULL"
+    if isinstance(v, bool):
+        return "1" if v else "0"
+    if isinstance(v, int):
+        return str(v)
+    return "'" + str(v).replace("'", "''") + "'"
+
+
+def common_db(a):
+    out = []
+    if getattr(a, "site", None):
+        out += ["--site", a.site]
+    if getattr(a, "local", False):
+        out.append("--local")
+    return out
+
+
+def run_tool(cmd, what):
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        msg = (r.stderr.strip() or r.stdout.strip())[-600:]
+        return None, msg or f"{what} failed (exit {r.returncode})"
+    return r.stdout, None
+
+
+def db_query(a, sql):
+    out, err = run_tool([sys.executable, DB, "query", sql, "--json", *common_db(a)], "db query")
+    if err:
+        die(err.removeprefix("db: "))
+    try:
+        return json.loads(out or "[]")
+    except ValueError:
+        die(f"db said something that isn't JSON: {out[-300:]}")
+
+
+def db_exec(a, sql):
+    if DRY:
+        say(f"  would run: {sql.strip()[:400]}")
+        return
+    out, err = run_tool([sys.executable, DB, "exec", sql, *common_db(a)], "db exec")
+    if err:
+        die(err.removeprefix("db: "))
+
+
+def has_table(a, name):
+    return bool(db_query(a, f"SELECT name FROM sqlite_master WHERE type='table' AND name={lit(name)}"))
+
+
+def need_collection(a):
+    if not has_table(a, "estimates"):
+        die("this site has no estimates yet: `db add estimates` (then commit, push and `site publish` so the "
+            "accept page is live). PLAYBOOK.md § Payments.")
+
+
+def number_of(text):
+    m = re.fullmatch(r"\s*(?:e-?|#)?0*(\d{1,6})\s*", str(text), re.I)
+    if not m:
+        die(f"{text!r} isn't an estimate number (E-0003, or 3)")
+    return f"E-{int(m.group(1)):04d}"
+
+
+def get(a, n):
+    rows = db_query(a, f"SELECT * FROM estimates WHERE number = {lit(number_of(n))}")
+    if not rows:
+        die(f"no estimate {number_of(n)} (estimate ls)")
+    row = rows[0]
+    row["lines"] = json.loads(row.get("lines") or "[]")
+    return row
+
+
+# ---------------------------------------------------------------- the PDF
+
+def logo_path(repo):
+    if not (repo and repo.is_dir()):
+        return None
+    for d in ("images", "img", "assets", "."):
+        for ext in ("svg", "png", "jpg", "jpeg", "webp"):
+            p = repo / d / f"logo.{ext}"
+            if p.exists():
+                return p
+    return None
+
+
+def cut_off(pdf, row):
+    """A box that overflows is clipped, not spilled: read the PDF's text back and name the first
+    thing that isn't there (the total, a line, the terms). None when it all is, or pdftotext is missing."""
+    if not shutil.which("pdftotext"):
+        return None
+    text = subprocess.run(["pdftotext", "-layout", str(pdf), "-"], capture_output=True, text=True).stdout
+    flat = re.sub(r"\s+", " ", text)
+    want = [(f"the total ({dollars(row['total_cents'])})", dollars(row["total_cents"]))]
+    want += [(f"the line {x['what'][:40]!r}", x["what"][:24]) for x in row["lines"]]
+    if row.get("terms"):
+        last = re.sub(r"\s+", " ", row["terms"]).strip()[-24:]
+        want.append(("the end of the terms", last))
+    for label, needle in want:
+        if re.sub(r"\s+", " ", needle).strip() not in flat:
+            return label
+    return None
+
+
+def accept_url(pt, ctx, token):
+    return pt.site_url(ctx).rstrip("/") + f"/estimate/{token}"
+
+
+def render_pdf(a, row, meta):
+    pt = load_print()
+    pa = argparse.Namespace(site=getattr(a, "site", None), name=meta.get("name"), out=None,
+                            no_check=getattr(a, "no_check", False))
+    ctx = pt.Ctx(pa)
+    b = pt.brand(ctx)
+    esc = pt.esc
+    url = accept_url(pt, ctx, row["token"])
+    logo = logo_path(ctx.repo)
+    lines = "".join(f'<tr><td>{esc(x["what"])}</td><td class="amt">{dollars(x["cents"])}</td></tr>' for x in row["lines"])
+    if row.get("tax_cents"):
+        lines += (f'<tr class="sub"><td>Subtotal</td><td class="amt">{dollars(row["subtotal_cents"])}</td></tr>'
+                  f'<tr class="sub"><td>{esc(row["tax_label"] or "Tax")}</td><td class="amt">{dollars(row["tax_cents"])}</td></tr>')
+    lines += f'<tr class="total"><td>Total</td><td class="amt">{dollars(row["total_cents"])}</td></tr>'
+    if row.get("deposit_cents"):
+        lines += (f'<tr class="deposit"><td>Deposit due on acceptance</td>'
+                  f'<td class="amt">{dollars(row["deposit_cents"])}</td></tr>')
+    contact = " · ".join(x for x in (row.get("email"), row.get("phone")) if x)
+    body = pt.fill(
+        "estimate.html",
+        LOGO=f'<img class="logo" src="{logo.as_uri()}" alt="">' if logo else "",
+        NAME=esc(row.get("business") or meta.get("name") or ""),
+        SITE=esc(pt.url_words(pt.site_url(ctx))),
+        NUMBER=esc(row["number"]),
+        DATE=esc(long_day(row.get("created_at") or dt.date.today().isoformat())),
+        CUSTOMER=esc(row["customer"]),
+        CONTACT=f"<div>{esc(contact)}</div>" if contact else "",
+        LINES=lines,
+        NOTE=f'<p class="note">{esc(row["note"])}</p>' if row.get("note") else "",
+        QR=pt.qr_block(url, b),
+        ACCEPT_URL=esc(pt.url_words(url)),
+        VALID=esc(f"Good until {long_day(row['valid_until'])}") if row.get("valid_until") else "",
+        TERMS=f'<h2>Terms</h2><div class="terms" data-fit="6.5">{esc(row["terms"])}</div>' if row.get("terms") else "",
+    )
+    w, h = pt.PAPER["letter"]
+    pdf = pt.out_path(ctx, pa, "estimate", f"{row['number']} {row['customer']}")
+    rep = pt.render(pt.page("estimate", body, b, w, h), pdf, w, h)
+    if rep.get("overflow"):
+        die("the estimate doesn't fit one page even at the smallest type; fewer lines or shorter terms", 2)
+    cut = cut_off(pdf, row)
+    if cut:
+        die(f"the estimate doesn't fit one page: {cut} didn't make it onto the PDF. Fewer lines, shorter words "
+            f"or shorter terms; don't send {pdf}", 2)
+    pt.finish(pdf, w, h, pa, url)          # the check: page size, one page, the QR reads the accept link
+    return pdf, url
+
+
+# ---------------------------------------------------------------- commands
+
+def summary(row, url=None):
+    out = [f"{row['number']} for {row['customer']} ({row['status']}):"]
+    for x in row["lines"]:
+        out.append(f"  {x['what']}: {dollars(x['cents'])}")
+    if row.get("tax_cents"):
+        out.append(f"  {row['tax_label']}: {dollars(row['tax_cents'])}")
+    out.append(f"  total {dollars(row['total_cents'])}"
+               + (f", deposit {dollars(row['deposit_cents'])} on acceptance" if row.get("deposit_cents") else "")
+               + (f", good until {long_day(row['valid_until'])}" if row.get("valid_until") else ""))
+    if row.get("accepted_name"):
+        out.append(f"  accepted by {row['accepted_name']} at {row['accepted_at']}"
+                   + (f" ({row['accepted_ip']})" if row.get("accepted_ip") else ""))
+    if row.get("invoice_url"):
+        out.append(f"  {'deposit link' if row.get('deposit_cents') else 'invoice'}: {row['invoice_url']}")
+    if url:
+        out.append(f"  accept page: {url}")
+    return "\n".join(out)
+
+
+def cmd_new(a):
+    global DRY
+    meta = workspace()
+    if not a.line:
+        die('an estimate needs lines: --line "3 windows" 300 --line "2 doors" 150')
+    if len(a.line) > MAX_LINES:
+        die(f"{len(a.line)} lines is more than one page holds ({MAX_LINES}); group some")
+    lines = [{"what": w.strip()[:200], "cents": cents(amt, f"--line {w!r}")} for w, amt in a.line]
+    if any(not x["what"] for x in lines):
+        die("a line needs words for what the work is")
+    sub = sum(x["cents"] for x in lines)
+    rate = None
+    if a.tax and a.tax.lower() in ("none", "0", "no"):
+        rate = None
+    elif a.tax:
+        try:
+            rate = Decimal(a.tax.rstrip("%"))
+        except InvalidOperation:
+            die(f"--tax {a.tax!r}: a percentage like 7.25, or none")
+        if not (0 < rate < 30):
+            die(f"--tax {a.tax!r}: a percentage between 0 and 30")
+    else:
+        rate = tax_from_notes()
+    tax = int((Decimal(sub) * rate / 100).quantize(Decimal("1"), ROUND_HALF_UP)) if rate else 0
+    total = sub + tax
+    if total > MAX_CENTS:
+        die(f"the total ({dollars(total)}) is more than one Stripe payment can be ({dollars(MAX_CENTS)}); split the job")
+    deposit = cents(a.deposit, "--deposit") if a.deposit else 0
+    if deposit > total:
+        die(f"the deposit ({dollars(deposit)}) is more than the total ({dollars(total)})")
+    until = valid_until(a.valid)
+    terms = terms_from_facts()
+    row = {
+        "number": "E-????", "token": secrets.token_urlsafe(24), "business": meta.get("name") or "",
+        "customer": a.customer.strip(), "email": a.email, "phone": a.phone, "lines": lines,
+        "subtotal_cents": sub, "tax_label": tax_label(rate) if rate else None, "tax_cents": tax,
+        "total_cents": total, "deposit_cents": deposit, "valid_until": until, "terms": terms,
+        "note": a.note, "status": "draft", "created_at": dt.date.today().isoformat(),
+    }
+    if not row["customer"]:
+        die("whose estimate is it? a name: estimate new \"Smith\" --line …")
+    need_collection(a)
+    nxt = db_query(a, "SELECT COALESCE(MAX(id), 0) + 1 AS n FROM estimates")[0]["n"]
+    row["number"] = f"E-{int(nxt):04d}"
+    if a.dry_run:
+        DRY = True
+        say("dry run: nothing written, no PDF made")
+        say(summary(row))
+        say(f"  terms: {'from facts.md' if terms else 'none in facts.md (only the good-until date and the deposit)'}"
+            f"; tax: {row['tax_label'] or 'none'}")
+        return
+    cols = ["number", "token", "business", "customer", "email", "phone", "lines", "subtotal_cents", "tax_label",
+            "tax_cents", "total_cents", "deposit_cents", "valid_until", "terms", "note", "status"]
+    vals = [json.dumps(row[c]) if c == "lines" else row[c] for c in cols]
+    db_exec(a, f"INSERT INTO estimates ({', '.join(cols)}) VALUES ({', '.join(lit(v) for v in vals)})")
+    row = get(a, row["number"])
+    if a.json:
+        pdf, url = (None, None) if a.no_pdf else render_pdf(a, row, meta)
+        say(json.dumps({**row, "pdf": str(pdf) if pdf else None, "accept_url": url}))
+        return
+    say("draft — not sent; the owner's word sends it (estimate send " + row["number"] + "):")
+    say(summary(row))
+    if not a.email and not deposit:
+        say("  (no email for them: the accept page works without one, but the invoice after it needs it; "
+            "--email on `estimate sync` adds it then)")
+    if not terms:
+        say("  (no terms in facts.md: the PDF carries the good-until date"
+            + (" and the deposit" if deposit else "") + " only; add a '## Terms' section to facts.md in the owner's words)")
+    if a.no_pdf:
+        say(f"  no PDF (--no-pdf): estimate pdf {row['number']} makes it")
+        return
+    render_pdf(a, row, meta)
+
+
+def cmd_pdf(a):
+    meta = workspace()
+    need_collection(a)
+    render_pdf(a, get(a, a.number), meta)
+
+
+def cmd_show(a):
+    workspace()
+    need_collection(a)
+    row = get(a, a.number)
+    if a.json:
+        say(json.dumps(row))
+        return
+    pt = load_print()
+    ctx = pt.Ctx(argparse.Namespace(site=a.site, name=None))
+    say(summary(row, accept_url(pt, ctx, row["token"]) if row["status"] in ("sent", "accepted") else None))
+
+
+def cmd_ls(a):
+    workspace()
+    need_collection(a)
+    where = f" WHERE status = {lit(a.status)}" if a.status else " WHERE status != 'void'"
+    rows = db_query(a, "SELECT number, customer, total_cents, deposit_cents, status, valid_until, accepted_name, "
+                       f"invoice_id, followed_at FROM estimates{where} ORDER BY id DESC LIMIT 50")
+    if a.json:
+        say(json.dumps(rows))
+        return
+    if not rows:
+        say("no estimates" + (f" {a.status}" if a.status else " yet") + " (estimate new …)")
+    for r in rows:
+        extra = ""
+        if r["status"] == "accepted":
+            extra = f"  by {r['accepted_name']}" + ("" if r.get("followed_at") else "  — not followed through: estimate sync")
+        say(f"{r['number']}  {r['customer'][:28]:<28}  {dollars(r['total_cents']):>12}  {r['status']:<9}"
+            f"  until {r['valid_until'] or '-'}{extra}")
+
+
+def book_customer(a, row):
+    """File the customer in the customer book (B122); the id, or None when the site has no book."""
+    if not has_table(a, "customers"):
+        return None
+    if row.get("customer_id"):            # sent before: filed then, so a second send doesn't file them twice
+        return row["customer_id"]
+    cmd = [sys.executable, DB, "customers", "add", row["customer"], "--source", "estimate", "--json", *common_db(a)]
+    for k in ("phone", "email"):
+        if row.get(k):
+            cmd += [f"--{k}", row[k]]
+    if DRY:
+        say(f"  would file {row['customer']} in the customer book")
+        return None
+    out, err = run_tool(cmd, "db customers add")
+    if err:
+        say(f"  couldn't file them in the customer book: {err.removeprefix('db: ')}")
+        return None
+    try:
+        data = json.loads(out)
+    except ValueError:
+        return None
+    c = data.get("customer") if isinstance(data, dict) and "customer" in data else data
+    return (c or {}).get("id")
+
+
+def page_is_live(url):
+    """True when the live site answers the accept link with the estimate, False when it doesn't
+    (the collection isn't published, so the customer would get a 404), None when we couldn't ask
+    (offline; ESTIMATE_PROBE=0, which the tests set)."""
+    if os.environ.get("ESTIMATE_PROBE") == "0":
+        return None
+    import urllib.error
+    import urllib.request
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"user-agent": "patchlamp-estimate"}),
+                                    timeout=10) as r:
+            return r.status == 200
+    except urllib.error.HTTPError:
+        return False
+    except Exception:  # noqa: BLE001  (no network here: say so rather than guess)
+        return None
+
+
+def email_draft(row, url, meta):
+    who = row["customer"].split()[0] if row["customer"] else "there"
+    dep = (f" A deposit of {dollars(row['deposit_cents'])} is due when you accept." if row.get("deposit_cents") else "")
+    return "\n".join([
+        f"Subject: Estimate {row['number']} from {meta.get('name')}",
+        "",
+        f"Hi {who},",
+        "",
+        f"Here is the estimate for the work we talked about: {dollars(row['total_cents'])} in all, "
+        f"good until {long_day(row['valid_until'])}.{dep} The PDF is attached.",
+        "",
+        f"To accept it, open {url} and type your name.",
+    ])
+
+
+def cmd_send(a):
+    global DRY
+    DRY = a.dry_run
+    meta = workspace()
+    need_collection(a)
+    row = get(a, a.number)
+    if row["status"] not in ("draft", "sent"):
+        die(f"{row['number']} is {row['status']}; only a draft (or a sent one, again) can be sent")
+    pt = load_print()
+    ctx = pt.Ctx(argparse.Namespace(site=a.site, name=None))
+    url = accept_url(pt, ctx, row["token"])
+    if row["status"] == "draft":
+        db_exec(a, "UPDATE estimates SET status = 'sent', sent_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), "
+                   f"updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE number = {lit(row['number'])} "
+                   "AND status = 'draft'")
+    cid = book_customer(a, row)
+    if cid:
+        db_exec(a, f"UPDATE estimates SET customer_id = {int(cid)} WHERE number = {lit(row['number'])}")
+    if DRY:
+        say(f"dry run: {row['number']} stays {row['status']}; nothing sent")
+    live = None if DRY else page_is_live(url)
+    say(f"{row['number']} {'would be' if DRY else 'is'} sent: the accept page "
+        + {True: "opens", False: "isn't on the live site yet: commit, push and `site publish` the estimates "
+                                 "collection before the customer gets the link; it will open",
+           None: "opens (once the estimates collection is published)"}[live]
+        + f" at {url}" + (f"; {row['customer']} is in the customer book (#{cid})" if cid else ""))
+    say("The customer isn't emailed by Patchlamp yet (no customer mail path for estimates); the owner sends "
+        "this from their own email or phone, with the PDF:")
+    say("")
+    say(email_draft(row, url, meta))
+    if row.get("phone"):
+        say("")
+        say(f"Or by text: {meta.get('name')} estimate {row['number']}, {dollars(row['total_cents'])}: {url}")
+
+
+def cmd_void(a):
+    workspace()
+    need_collection(a)
+    row = get(a, a.number)
+    if row["status"] == "accepted":
+        die(f"{row['number']} was accepted by {row['accepted_name']}; void the invoice on their Stripe first if "
+            "the job is off, then set the status on /admin")
+    db_exec(a, f"UPDATE estimates SET status = 'void', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
+               f"WHERE number = {lit(row['number'])}")
+    say(f"{row['number']} is void: its accept page no longer opens it")
+
+
+def cmd_accept(a):
+    global DRY
+    DRY = a.dry_run
+    workspace()
+    need_collection(a)
+    row = get(a, a.number)
+    if row["status"] == "accepted":
+        say(f"{row['number']} was already accepted by {row['accepted_name']}")
+    elif row["status"] not in ("draft", "sent"):
+        die(f"{row['number']} is {row['status']}; it can't be accepted")
+    else:
+        name = re.sub(r"\s+", " ", a.name or "").strip()
+        if len(name) < 2:
+            die('--name "the name the customer gave" (who accepted it)')
+        how = f"recorded by the owner: {a.by or 'in person'}"
+        db_exec(a, f"UPDATE estimates SET status = 'accepted', accepted_name = {lit(name)}, "
+                   "accepted_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), "
+                   f"accepted_ip = {lit(how)}, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
+                   f"WHERE number = {lit(row['number'])} AND status IN ('draft', 'sent')")
+        say(f"{row['number']} accepted by {name} ({how})")
+    set_email(a, row["number"])
+    if not DRY:
+        row = get(a, a.number)
+    else:
+        row["status"], row["accepted_name"] = "accepted", a.name
+        row["email"] = row.get("email") or a.email
+    follow_through(a, row)
+
+
+def set_email(a, number):
+    """--email on accept/sync: the address the estimate didn't have, kept on the row for the invoice."""
+    if not getattr(a, "email", None):
+        return
+    em = a.email.strip()
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", em):
+        die(f"--email {a.email!r} isn't an email address")
+    db_exec(a, f"UPDATE estimates SET email = {lit(em)}, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
+               f"WHERE number = {lit(number)}")
+
+
+def cmd_sync(a):
+    global DRY
+    DRY = a.dry_run
+    workspace()
+    need_collection(a)
+    for flag in ("email", "when"):
+        if getattr(a, flag) and not a.number:
+            die(f"--{flag} is for one estimate: estimate sync E-0003 --{flag} …")
+    if a.email:
+        set_email(a, number_of(a.number))
+    if a.number:                      # one named: always looked at (a time to book, an email added)
+        rows = db_query(a, f"SELECT number FROM estimates WHERE status = 'accepted' AND number = {lit(number_of(a.number))}")
+        if not rows:
+            die(f"{number_of(a.number)} isn't accepted (estimate show {number_of(a.number)})")
+    else:
+        rows = db_query(a, "SELECT number FROM estimates WHERE status = 'accepted' AND followed_at IS NULL ORDER BY id")
+    if not rows:
+        say("nothing to follow through: no accepted estimate is waiting")
+        return
+    for r in rows:
+        follow_through(a, get(a, r["number"]))
+
+
+WHEN_RE = re.compile(r"\s*(\d{4}-\d{2}-\d{2})[T ](\d{1,2}):(\d{2})\s*")
+
+
+def book_time(a, row, what):
+    """--when: the time the owner and the customer agreed, as a booking on /admin/bookings. A slot
+    number (#12) uses that open slot if it has room; a time (2026-10-12 09:00) uses an open slot at
+    that time with room, else opens one for this job alone (capacity 1, so it is full the moment the
+    booking is in and never shows on the public calendar). The booking is `requested`: the owner's
+    Confirm on /admin/bookings is what tells the customer, as for any booking."""
+    n, when = row["number"], a.when.strip()
+    m_slot = re.fullmatch(r"#?(\d{1,7})", when)
+    taken = "(SELECT COUNT(*) FROM bookings b WHERE b.slot_id = s.id AND b.status IN ('requested', 'confirmed'))"
+    if m_slot:
+        slot = db_query(a, f"SELECT s.id, s.starts_at FROM booking_slots s WHERE s.id = {int(m_slot.group(1))} "
+                           f"AND s.status = 'open' AND {taken} < s.capacity")
+        if not slot:
+            say(f"  time: slot #{m_slot.group(1)} isn't an open time with room (/admin/slots); nothing booked")
+            return
+    else:
+        m = WHEN_RE.fullmatch(when)
+        if not m or not (0 <= int(m.group(2)) <= 23 and 0 <= int(m.group(3)) <= 59):
+            die(f"--when {a.when!r}: a time like 2026-10-12 09:00 (the site's own clock), or a slot number like #12")
+        try:
+            dt.date.fromisoformat(m.group(1))
+        except ValueError:
+            die(f"--when {a.when!r}: {m.group(1)} isn't a date")
+        at = f"{m.group(1)}T{int(m.group(2)):02d}:{m.group(3)}"
+        slot = db_query(a, f"SELECT s.id, s.starts_at FROM booking_slots s WHERE s.starts_at = {lit(at)} "
+                           f"AND s.status = 'open' AND {taken} < s.capacity ORDER BY s.id LIMIT 1")
+        if not slot:
+            label = f"Estimate {n}"
+            db_exec(a, "INSERT INTO booking_slots (starts_at, minutes, capacity, label, status) "
+                       f"VALUES ({lit(at)}, 60, 1, {lit(label)}, 'open')")
+            slot = [{"id": None, "starts_at": at}] if DRY else db_query(
+                a, f"SELECT id, starts_at FROM booking_slots WHERE starts_at = {lit(at)} AND label = {lit(label)} "
+                   "ORDER BY id DESC LIMIT 1")
+    sid, at = slot[0]["id"], slot[0]["starts_at"]
+    notes = f"Accepted estimate {n} ({dollars(row['total_cents'])}): {what}."
+    if DRY:
+        say(f"  time (dry run): would book {at} for {row['customer']}")
+        return
+    # the room check again in the statement that writes it, as the site's own booking does
+    db_exec(a, "INSERT INTO bookings (slot_id, starts_at, name, email, phone, notes, status) "
+               f"SELECT s.id, s.starts_at, {lit(row['customer'])}, {lit(row.get('email'))}, {lit(row.get('phone'))}, "
+               f"{lit(notes)}, 'requested' FROM booking_slots s WHERE s.id = {int(sid)} AND {taken} < s.capacity")
+    got = db_query(a, f"SELECT id FROM bookings WHERE slot_id = {int(sid)} AND notes = {lit(notes)} ORDER BY id DESC LIMIT 1")
+    if not got:
+        say(f"  time: {at} filled up a moment ago; nothing booked — pick another")
+        return
+    db_exec(a, f"UPDATE estimates SET booking_id = {int(got[0]['id'])} WHERE number = {lit(n)}")
+    say(f"  booking #{got[0]['id']} at {at.replace('T', ' ')} on /admin/bookings, requested: the owner's Confirm "
+        "there is what tells the customer")
+
+
+def follow_through(a, row):
+    """Accepted -> the money ask on their Stripe, the job in the customer book, and (given --when) the
+    booking. Each step runs once: what it made is written on the estimate (invoice_id, job_id,
+    booking_id), and a step that can't run says why and leaves the rest standing. `followed_at` is
+    set once the money and the book are done (or the site has no book), so a plain `sync` stops
+    picking it up; `sync N` always looks at that one (a time to book, an email added)."""
+    n = row["number"]
+    say(f"{n}, accepted by {row.get('accepted_name')}:")
+    # 1. money
+    if not row.get("invoice_id") and not row.get("deposit_cents") and not row.get("email"):
+        # Stripe refuses an invoice to a customer with no email (it is how the invoice reaches them)
+        say(f"  money: not yet — a Stripe invoice needs {row['customer']}'s email. Ask the owner for it, then "
+            f"`estimate sync {n} --email them@example.com` makes the invoice")
+    elif not row.get("invoice_id"):
+        # the same key on every try: if a run made the invoice and then lost its answer, Stripe hands
+        # the same objects back instead of a second bill (pay's --idempotency-key; --ref covers past a day)
+        key = f"estimate-{n}-{row['token']}"
+        if row.get("deposit_cents"):
+            cmd = [sys.executable, PAY, "deposit", amt(row["deposit_cents"]), f"Estimate {n}, {row['customer']}",
+                   "--ref", n, "--json", "--idempotency-key", key]
+        else:
+            cmd = [sys.executable, PAY, "invoice", row["customer"], amt(row["total_cents"]), f"Estimate {n}",
+                   "--ref", n, "--json", "--due", a.due or "14d", "--idempotency-key", key]
+            for x in row["lines"]:
+                cmd += ["--line", x["what"], amt(x["cents"])]
+            if row.get("tax_cents"):
+                cmd += ["--line", row.get("tax_label") or "Tax", amt(row["tax_cents"])]
+            if row.get("email"):
+                cmd += ["--email", row["email"]]
+            if a.send_invoice:
+                cmd.append("--send")
+        if a.test:
+            cmd.append("--test")
+        if a.project:
+            cmd += ["--project", a.project]
+        if DRY:
+            cmd.append("--dry-run")
+            cmd.remove("--json")
+        out, err = run_tool(cmd, "pay")
+        if err:
+            say(f"  money: couldn't — {err.removeprefix('pay: ')}")
+        elif DRY:
+            say("  money (dry run): " + " ".join(out.split())[:600])
+        else:
+            res = json.loads(out.strip().splitlines()[-1])
+            db_exec(a, f"UPDATE estimates SET invoice_id = {lit(res.get('id'))}, invoice_url = {lit(res.get('url'))}, "
+                       f"updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE number = {lit(n)}")
+            row["invoice_id"] = res.get("id")
+            kind = "deposit link" if res.get("kind") == "deposit" else f"invoice {res.get('number') or res.get('id')}"
+            say(f"  {kind}, {dollars(res.get('amount_cents'))}{' (TEST MODE)' if res.get('mode') == 'test' else ''}"
+                f"{' (made on an earlier try)' if res.get('existing') else ''}: {res.get('url')}")
+            if res.get("kind") == "deposit":
+                say(f"  the balance ({dollars(row['total_cents'] - row['deposit_cents'])}) is the owner's to invoice when "
+                    "the work is done (pay invoice); the deposit link can be paid more than once, so it goes to this "
+                    "customer only")
+    else:
+        say(f"  money: already done ({row.get('invoice_url') or row['invoice_id']})")
+    # 2. the customer book: once, ever (a second `jobs add` would reset a job the owner moved on)
+    what = ", ".join(x["what"] for x in row["lines"])[:300]
+    has_book = has_table(a, "customers") and has_table(a, "jobs")
+    if row.get("job_id"):
+        say(f"  customer book: job #{row['job_id']} filed already")
+    elif has_book:
+        cmd = [sys.executable, DB, "jobs", "add", "", f"Estimate {n}: {what}"[:300], "--amount", amt(row["total_cents"]),
+               "--status", "booked", "--source", "estimate", "--ref", n, "--json", *common_db(a)]
+        if row.get("customer_id"):        # the one `send` (or an earlier try) filed: by id, never a second one
+            cmd[4] = str(int(row["customer_id"]))
+        else:
+            cmd[4] = row.get("email") or row.get("phone") or row["customer"]
+            cmd += ["--create", "--name", row["customer"]]
+            for k in ("phone", "email"):
+                if row.get(k):
+                    cmd += [f"--{k}", row[k]]
+        if DRY:
+            say(f"  would add the job to {row['customer']} in the customer book")
+        else:
+            out, err = run_tool(cmd, "db jobs add")
+            data = None
+            if not err:
+                try:
+                    data = json.loads(out)
+                except ValueError:
+                    err = f"db jobs add said something that isn't JSON: {out[-200:]}"
+            if err:
+                say(f"  customer book: couldn't — {err.removeprefix('db: ')}")
+            else:
+                jid, cid = (data.get("job") or {}).get("id"), (data.get("customer") or {}).get("id")
+                db_exec(a, f"UPDATE estimates SET job_id = {lit(jid)}, customer_id = {lit(cid)} WHERE number = {lit(n)}")
+                row["job_id"] = jid
+                say(f"  customer book: job #{jid} for {row['customer']} (#{cid}), booked, {dollars(row['total_cents'])}")
+    # 3. the time: a booking only when one is agreed (a booking with no time can't be confirmed)
+    has_bookings = has_table(a, "bookings") and has_table(a, "booking_slots")
+    if row.get("booking_id"):
+        say(f"  time: booking #{row['booking_id']} already")
+    elif getattr(a, "when", None):
+        if has_bookings:
+            book_time(a, row, what)
+        else:
+            say("  time: this site has no bookings, so the time lives in the owner's own calendar")
+    elif has_bookings:
+        say(f"  time: none yet — when they agree one, move it to a time: `estimate sync {n} --when 2026-10-12 09:00` "
+            "(or a slot number from /admin/slots)")
+    else:
+        say("  time: this site has no bookings; the owner agrees a time with them directly")
+    if not DRY and row.get("invoice_id") and (row.get("job_id") or not has_book) and not row.get("followed_at"):
+        db_exec(a, f"UPDATE estimates SET followed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE number = {lit(n)}")
+
+
+def cmd_doctor(a):
+    ok = True
+    for name, path in (("db", DB), ("pay", PAY), ("print", str(HERE / "bin" / "print"))):
+        here = Path(path).exists()
+        say(f"{name}: {path if here else 'MISSING ' + path}")
+        ok = ok and here
+    tpl = HERE / "templates" / "print" / "estimate.html"
+    coll = HERE / "templates" / "collections" / "estimates" / "collection.json"
+    say(f"template: {'ok' if tpl.exists() else 'MISSING'} {tpl}")
+    say(f"collection: {'ok' if coll.exists() else 'MISSING'} {coll}")
+    ok = ok and tpl.exists() and coll.exists()
+    for tool in ("node", "pdfinfo", "pdftoppm"):
+        say(f"{tool}: {'ok' if shutil.which(tool) else 'MISSING (print needs it)'}")
+        ok = ok and bool(shutil.which(tool))
+    if (Path.cwd() / ".client.json").exists():
+        meta = workspace()
+        say(f"workspace: {meta.get('slug')} ({meta.get('name')})")
+        try:
+            have = has_table(a, "estimates")
+        except SystemExit:
+            have = None
+        say("estimates on this site: " + ("yes" if have else "no — `db add estimates`" if have is False
+                                           else "couldn't ask the database (the line above says why)"))
+        rate = tax_from_notes()
+        say(f"tax from NOTES.md: {tax_label(rate) if rate else 'none'}; terms from facts.md: "
+            + ("yes" if terms_from_facts() else "none (add '## Terms')"))
+        pt = load_print()
+        ctx = pt.Ctx(argparse.Namespace(site=a.site, name=None))
+        say(f"logo: {logo_path(ctx.repo) or 'none (the name alone)'}")
+    else:
+        say("workspace: none here (run it in ~/projects/clients/<slug>)")
+    say("doctor: all good" if ok else "doctor: something above needs fixing")
+    sys.exit(0 if ok else 1)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="estimate", description=__doc__.split("\n\n")[0],
+                                 formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--site", help="which site, when more than one here has a database")
+    common.add_argument("--local", action="store_true", help="the local copy of the database")
+    common.add_argument("--dry-run", action="store_true", help="print what would happen; write and call nothing")
+    common.add_argument("--json", action="store_true")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("new", parents=[common], help="a draft estimate and its PDF")
+    p.add_argument("customer")
+    p.add_argument("--line", nargs=2, action="append", metavar=("WHAT", "AMOUNT"), help="one line (repeat)")
+    p.add_argument("--deposit", help="dollars due on acceptance")
+    p.add_argument("--valid", default="30d", help="14d, or a date (default 30d)")
+    p.add_argument("--note", help="a line to the customer, on the PDF and the page")
+    p.add_argument("--email"); p.add_argument("--phone")
+    p.add_argument("--tax", help="a percentage (7.25) or none; default: NOTES.md's sales tax line, else none")
+    p.add_argument("--no-pdf", action="store_true", help="the row only; `estimate pdf N` makes the PDF later")
+    p.add_argument("--no-check", action="store_true", help=argparse.SUPPRESS)
+    p.set_defaults(fn=cmd_new)
+    for name, fn, hlp in (("send", cmd_send, "send a draft: the accept page opens, the email to send is printed"),
+                          ("show", cmd_show, "one estimate"), ("pdf", cmd_pdf, "the PDF again"),
+                          ("void", cmd_void, "withdraw one")):
+        p = sub.add_parser(name, parents=[common], help=hlp)
+        p.add_argument("number")
+        p.add_argument("--no-check", action="store_true", help=argparse.SUPPRESS)
+        p.set_defaults(fn=fn)
+    p = sub.add_parser("ls", parents=[common], help="the estimates, newest first")
+    p.add_argument("--status", choices=STATUSES)
+    p.set_defaults(fn=cmd_ls)
+    for name, fn in (("accept", cmd_accept), ("sync", cmd_sync)):
+        p = sub.add_parser(name, parents=[common], help="record an acceptance the owner got, then follow it through"
+                           if name == "accept" else "follow through every accepted estimate (invoice, booking, book)")
+        p.add_argument("number", nargs=None if name == "accept" else "?")
+        if name == "accept":
+            p.add_argument("--name", required=True, help="who accepted it")
+            p.add_argument("--by", help="how: phone, in person, email")
+        p.add_argument("--test", action="store_true", help="pay on STRIPE_TEST_KEY (test mode)")
+        p.add_argument("--project", help="pay's --project, outside a relay run")
+        p.add_argument("--due", default="14d", help="days to pay the invoice (default 14d)")
+        p.add_argument("--send-invoice", action="store_true", help="have Stripe email the invoice too")
+        p.add_argument("--email", help="the customer's email, when the estimate had none (a Stripe invoice needs one)")
+        p.add_argument("--when", help="the agreed time (2026-10-12 09:00) or a slot (#12): a booking on /admin/bookings")
+        p.set_defaults(fn=fn)
+    p = sub.add_parser("doctor", parents=[common], help="is everything here")
+    p.set_defaults(fn=cmd_doctor)
+    a = ap.parse_args(argv)
+    a.fn(a)
+
+
+if __name__ == "__main__":
+    main()

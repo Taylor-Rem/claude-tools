@@ -5,7 +5,15 @@ plan ~/projects/plans/16-payments.md § Build 4, § Contract E).
   pay link 45 "June service"                      # a Payment Link on their account; prints the URL
   pay invoice "Smith" 450 "June service" [--due 14d] [--email smith@x.com] [--send]
                                                   # a Stripe invoice from their account; prints the payable link
-  pay deposit 100 "catering 10/12"                # a Payment Link for a deposit
+                       [--line "3 windows" 300 --line "2 doors" 150] [--ref E-0003] [--json]
+                                                  # --line: the invoice in lines (they must add up to the amount;
+                                                  # a negative line is a credit) — how `estimate` hands over (B123)
+  pay deposit 100 "catering 10/12" [--json]       # a Payment Link for a deposit
+  --idempotency-key K (invoice, deposit)          # the same K makes the same objects on a retry, not new ones:
+                                                  # each POST's Idempotency-Key is K + its path + its count, so a
+                                                  # caller that may run twice (estimate sync) can't bill twice.
+                                                  # Stripe keeps keys 24 hours; past that, `invoice --ref` also
+                                                  # finds an invoice it made before (metadata ref) and returns it.
   pay status                                      # can they take money, get paid, what Stripe still wants; recent payments
   pay doctor                                      # key by name, the account, reachable, test or live
   --dry-run anywhere: print the requests, send nothing.
@@ -62,6 +70,8 @@ ACCT_RE = re.compile(r"^acct_[A-Za-z0-9]{6,64}$")
 MIN_CENTS, MAX_CENTS = 50, 99_999_999            # Stripe's own floor and ceiling for a USD charge
 FORBIDDEN = ("application_fee", "transfer_data", "on_behalf_of")   # never, in any request (VISION: no percentage)
 DRY = False
+IDEM = None          # --idempotency-key: deterministic Idempotency-Keys for this run (see the docstring)
+IDEM_N = {}
 
 
 def die(msg, code=1):
@@ -108,6 +118,8 @@ def cents(text):
         d = Decimal(raw)
     except InvalidOperation:
         die(f"{text!r} isn't an amount (dollars, like 450 or 1200.50)")
+    if not d.is_finite():
+        die(f"{text!r} isn't an amount (dollars, like 450 or 1200.50)")
     if d != d.quantize(Decimal("0.01")):
         die(f"{text!r} has more than two decimal places")
     c = int(d * 100)
@@ -120,6 +132,13 @@ def cents(text):
 
 def dollars(c):
     return f"${c / 100:,.2f}"
+
+
+def line_cents(what, text):
+    """One --line amount: like cents(), but a credit (a negative line) is allowed."""
+    raw = str(text).strip()
+    c = cents(raw[1:] if raw.startswith("-") else raw)
+    return -c if raw.startswith("-") else c
 
 
 def due_days(text):
@@ -266,7 +285,11 @@ def stripe(t, method, path, fields=None, params=None, _retry=True):
     data = None
     if method == "POST":
         headers["Content-Type"] = "application/x-www-form-urlencoded"
-        headers["Idempotency-Key"] = str(uuid.uuid4())
+        if IDEM:
+            n = IDEM_N[path] = IDEM_N.get(path, -1) + 1
+            headers["Idempotency-Key"] = f"{IDEM}:{path}:{n}"[:255]
+        else:
+            headers["Idempotency-Key"] = str(uuid.uuid4())
         data = urllib.parse.urlencode(body).encode()
     req = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
@@ -322,6 +345,13 @@ def make_link(t, amount_cents, name, kind):
     return link
 
 
+def emit(args, obj):
+    if getattr(args, "json", False):
+        print(json.dumps(obj), flush=True)
+        return True
+    return False
+
+
 def cmd_link(args, t):
     c = cents(args.amount)
     link = make_link(t, c, args.description, "link")
@@ -332,6 +362,9 @@ def cmd_link(args, t):
 def cmd_deposit(args, t):
     c = cents(args.amount)
     link = make_link(t, c, f"Deposit — {args.description}", "deposit")
+    if emit(args, {"kind": "deposit", "id": link.get("id"), "url": link.get("url"), "amount_cents": c,
+                   "mode": t.mode, "ref": args.ref}):
+        return
     say(f"{dollars(c)} deposit for {args.description} — pay here:{mode_note(t)}")
     say(link.get("url") or "(no url)")
 
@@ -359,14 +392,36 @@ def find_customer(t, who, email):
 def cmd_invoice(args, t):
     c = cents(args.amount)
     days = due_days(args.due)
+    lines = [(w.strip()[:500], line_cents(w, amt)) for w, amt in (args.line or [])] or [(args.description[:500], c)]
+    if sum(x for _, x in lines) != c:
+        die(f"the lines add up to {dollars(sum(x for _, x in lines))}, not {dollars(c)}; nothing was made")
+    meta = {"patchlamp": "invoice", **({"ref": args.ref[:100]} if args.ref else {})}
     cust, made = find_customer(t, args.customer, args.email)
+    if args.ref and not made and not DRY:
+        # made before (a run whose answer was lost): hand that one back rather than bill twice
+        mine = (call(t, "GET", "/v1/invoices", params={"customer": cust["id"], "limit": 100}) or {}).get("data") or []
+        old = [i for i in mine if (i.get("metadata") or {}).get("ref") == args.ref[:100] and i.get("status") != "void"]
+        if old and old[0].get("status") == "draft":
+            die(f"a draft invoice for {args.ref} is already on their Stripe ({old[0]['id']}) from a run that stopped "
+                "partway; finish or delete it in Stripe, then run this again")
+        if old:
+            o = old[0]
+            if emit(args, {"kind": "invoice", "id": o["id"], "number": o.get("number"), "url": o.get("hosted_invoice_url"),
+                           "customer": cust.get("id"), "amount_cents": o.get("amount_due"), "lines": None, "sent": False,
+                           "mode": t.mode, "ref": args.ref, "existing": True}):
+                return
+            say(f"Invoice {o.get('number') or o['id']} for {args.ref} was made already ({o.get('status')}); "
+                f"nothing new made.{mode_note(t)}")
+            say(o.get("hosted_invoice_url") or "(no link)")
+            return
     inv = call(t, "POST", "/v1/invoices", {
         "customer": cust["id"], "collection_method": "send_invoice", "days_until_due": days,
         "pending_invoice_items_behavior": "exclude", "auto_advance": False,
-        "description": args.description[:500], "metadata": {"patchlamp": "invoice"}})
-    call(t, "POST", "/v1/invoiceitems", {
-        "customer": cust["id"], "invoice": inv["id"], "amount": c, "currency": "usd",
-        "description": args.description[:500]})
+        "description": args.description[:500], "metadata": meta})
+    for what, amt in lines:
+        call(t, "POST", "/v1/invoiceitems", {
+            "customer": cust["id"], "invoice": inv["id"], "amount": amt, "currency": "usd",
+            "description": what})
     fin = call(t, "POST", f"/v1/invoices/{inv['id']}/finalize", {"auto_advance": False})
     sent = False
     if args.send:
@@ -376,6 +431,10 @@ def cmd_invoice(args, t):
             fin = call(t, "POST", f"/v1/invoices/{inv['id']}/send") or fin
             sent = True
     who = cust.get("name") or cust.get("email") or args.customer
+    if emit(args, {"kind": "invoice", "id": inv["id"], "number": fin.get("number"), "url": fin.get("hosted_invoice_url"),
+                   "customer": cust.get("id"), "amount_cents": c, "lines": len(lines), "sent": sent,
+                   "mode": t.mode, "ref": args.ref}):
+        return
     say(f"Invoice {fin.get('number') or inv['id']} for {who}: {dollars(c)} — {args.description}, due in {days} days"
         f"{' (new customer on their Stripe)' if made else ''}{'; Stripe emailed it' if sent else ''}.{mode_note(t)}")
     say(fin.get("hosted_invoice_url") or "(no link yet)")
@@ -460,6 +519,9 @@ def main():
     s.set_defaults(fn=cmd_link)
     s = sub.add_parser("deposit", parents=[common], help="a Payment Link for a deposit")
     s.add_argument("amount"); s.add_argument("description")
+    s.add_argument("--ref", help="what it is for, kept in our words (an estimate number)")
+    s.add_argument("--json", action="store_true", help="one JSON line for a machine (estimate)")
+    s.add_argument("--idempotency-key", help="the same key makes the same link on a retry (estimate)")
     s.set_defaults(fn=cmd_deposit)
     s = sub.add_parser("invoice", parents=[common], help="a Stripe invoice from their account")
     s.add_argument("customer", help="the customer's name or email")
@@ -467,6 +529,11 @@ def main():
     s.add_argument("--due", default="14d", help="days to pay (default 14d)")
     s.add_argument("--email", help="the customer's email (found or added on their Stripe)")
     s.add_argument("--send", action="store_true", help="also have Stripe email it")
+    s.add_argument("--line", nargs=2, action="append", metavar=("WHAT", "AMOUNT"),
+                   help="one line of the invoice (repeat; they must add up to the amount)")
+    s.add_argument("--ref", help="what it is for, in the invoice's metadata (an estimate number)")
+    s.add_argument("--json", action="store_true", help="one JSON line for a machine (estimate)")
+    s.add_argument("--idempotency-key", help="the same key makes the same invoice on a retry (estimate)")
     s.set_defaults(fn=cmd_invoice)
     s = sub.add_parser("status", parents=[common], help="can they take money; recent invoices and payments")
     s.set_defaults(fn=cmd_status)
@@ -474,6 +541,12 @@ def main():
     s.set_defaults(fn=None)
     args = ap.parse_args()
     DRY = args.dry_run
+    global IDEM
+    key = getattr(args, "idempotency_key", None)
+    if key is not None:
+        if not re.fullmatch(r"[A-Za-z0-9:_.-]{8,200}", key):
+            die("--idempotency-key: 8 to 200 letters, digits or : _ . -")
+        IDEM = key
     if args.cmd == "doctor":
         return cmd_doctor(args)
     t = Target(args)

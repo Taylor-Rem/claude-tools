@@ -33,6 +33,23 @@ The customer book (`db add customers`, ROADMAP B122; --json on each for a machin
   db jobs add CUSTOMER "what" [--date --amount 450 --status booked|done|cancelled --source S --ref R --create]
   db jobs done JOB_ID|CUSTOMER [--amount]   db jobs set ID [--status …]   db jobs ls [CUSTOMER]
 
+The ledger, receipts by photo (`db add ledger`, ROADMAP B124; --json on add, ls, set):
+  db ledger add VENDOR AMOUNT [--date --category --note --photo incoming/x.jpg] [--yes over $10,000]   # keeps the photo in receipts/
+  db ledger ls [--month september|2026-09|last] [--search truck] [--vendor --category --days]   # rows + the total
+  db ledger set ID [--date --vendor --amount --category --note --photo]   db ledger rm ID
+  db ledger export                       # ledger.csv/.json + receipts.zip (plain `db export` zips them too)
+Bookings that finish the job (`db add bookings`, ROADMAP B119):
+  db bookings setup                      # the booking key + the calendar feed key (Pages secrets), then site publish
+  db bookings feed [--new]               # the owner's calendar subscribe address, and how to add it
+  db bookings upgrade [--dry-run]        # an older site's bookings Functions brought up to the toolbelt's
+  db bookings status                     # what's on (never the keys)
+  db bookings confirm ID                 # by text: confirm it on the site, the customer emailed
+  db bookings move ID "2026-10-14T15:00" # to that open time, capacity checked, the customer emailed
+  db bookings cancel ID                  # the place freed, the customer emailed
+  db bookings remind ID                  # a confirmed one ahead: the reminder email (B120's morning run)
+Documents signed by link (`db add signatures`, ROADMAP B128) are driven by
+`sign`, not by db subcommands: `sign new|ls|show|pdf|void` (bin/sign).
+
 Every command takes --site NAME when the workspace has more than one site
 with a database, and --local to work on the local copy `wrangler pages dev`
 uses (repos/<site>/.wrangler/, for trying a change before it goes live).
@@ -426,6 +443,11 @@ def columns(site, local, table):
     return [r["name"] for r in rows_of(d1(site, local, command=f"PRAGMA table_info({ident(table)})"))]
 
 
+# Run after `db export` writes its tables: hook(site, out_dir, table_names). A collection
+# with files beside its rows (the ledger's receipt photos, B124) adds one in its own block.
+EXPORT_HOOKS = []
+
+
 def cmd_export(a, only=None):
     site = the_site(a)
     day = datetime.date.today().isoformat()
@@ -448,8 +470,13 @@ def cmd_export(a, only=None):
             w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
             w.writeheader()
             w.writerows(rows)
+        # The same columns as the CSV: PRAGMA table_info leaves out generated ones (the ledger's
+        # `month`), which `SELECT *` returns but `db import` can't write back.
+        rows = [{c: r.get(c) for c in cols} for r in rows]
         (out / f"{t}.json").write_text(json.dumps(rows, indent=2, ensure_ascii=False) + "\n")
         say(f"  {t}: {len(rows)} row{'s' if len(rows) != 1 else ''} -> exports/{day}/{t}.csv, .json")
+    for hook in EXPORT_HOOKS:
+        hook(site, out, names)
     say(f"exported {len(names)} table{'s' if len(names) != 1 else ''} to exports/{day}/ "
         + (f"(left out: {', '.join(SYSTEM_TABLES)}, the sign-in and migration bookkeeping)" if not only else ""))
 
@@ -1011,7 +1038,7 @@ def iso_date(v):
         return today.isoformat()
     if low == "yesterday":
         return (today - datetime.timedelta(days=1)).isoformat()
-    if m := re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})", s):
+    if m := re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T ]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$", s):
         y, mo, d = map(int, m.groups())
     elif m := re.match(r"^(\d{1,2})/(\d{1,2})/(\d{2}|\d{4})$", s):
         mo, d, y = int(m.group(1)), int(m.group(2)), int(m.group(3)) + (2000 if len(m.group(3)) == 2 else 0)
@@ -1029,13 +1056,14 @@ def iso_date(v):
 
 
 def money_cents(v):
+    """'450', '450.00', '$1,200', '-12.50' -> cents. Plain decimal money only: '1e5', 'inf' and
+    'nan' are refused, since float() would read them as numbers nobody wrote on a receipt."""
     s = re.sub(r"[$,\s]", "", str(v or ""))
     if not s:
         return None
-    try:
-        return int(round(float(s) * 100))
-    except ValueError:
+    if not re.fullmatch(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)", s):
         die(f"{v!r} isn't an amount (450, 450.00, $1,200)")
+    return int(round(float(s) * 100))
 
 
 def the_book(a):
@@ -1682,6 +1710,748 @@ def jobs_parser(p, common):
     ls.add_argument("--json", action="store_true"); ls.set_defaults(fn=cmd_jobs_ls)
 
 
+# ---------------------------------------------------------------- the ledger (B124)
+# Receipts by photo, from templates/collections/ledger: Patch reads a receipt
+# (vendor, date, total) and files it with `db ledger add`, which also keeps the
+# photo at receipts/<YYYY-MM>/<date>-<vendor>-<id>.<ext> in the workspace — the
+# workspace, because incoming/ is emptied once a photo is used, the relay's own
+# archive is outside the client's wall, and the site is public. `db export`
+# zips receipts/ into exports/<date>/receipts.zip beside ledger.csv, with the
+# same paths the `photo` column holds, so `site handover` carries both.
+#
+# For machines (the weekly report, relay/weekly.py):
+#   db ledger ls --month 2026-10 --json  -> {"month", "count", "total_cents", "by_category": [{category, count,
+#                                           total_cents}], "rows": [receipt, …]}   (rows capped by --limit)
+#   db ledger add VENDOR AMOUNT … --json -> {"receipt": …, "month": {month, count, total_cents}}; exit 3 +
+#                                           {"error", "existing"} when the same vendor, date and amount is there
+# A receipt is {id, date, month, vendor, amount_cents, category, note, photo, source, created_at, updated_at}.
+
+LEDGER_COLS = ("id", "date", "month", "vendor", "amount_cents", "category", "note", "photo", "source",
+               "created_at", "updated_at")
+RECEIPTS_DIR = "receipts"
+RECEIPT_TYPES = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".gif", ".pdf"}
+RECEIPT_MAX_BYTES = 20 * 1024 * 1024
+LEDGER_CEILING_CENTS = 10_000_00   # over $10,000 needs --yes (check_ceiling)
+MONTH_NAMES = {m.lower(): i for i, m in enumerate(
+    ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
+     "November", "December"), 1)}
+
+
+def the_ledger(a):
+    site = the_site(a)
+    if not has_table(site, a.local, "ledger"):
+        die("this site has no ledger yet: `db add ledger` (PLAYBOOK.md § Files, receipts). Until then a receipt "
+            "can't be filed; say so, and that it's one step to add.")
+    return site
+
+
+def month_arg(v, today=None):
+    """'2026-09', '9/2026', 'september', 'sep 2026', 'this', 'last' -> '2026-09'; '' when it isn't a month.
+    A month named without a year is the latest one that isn't in the future."""
+    today = today or datetime.date.today()
+    s = str(v or "").strip().lower()
+    if s in ("this", "this month", "now"):
+        return today.strftime("%Y-%m")
+    if s in ("last", "last month"):
+        return (today.replace(day=1) - datetime.timedelta(days=1)).strftime("%Y-%m")
+    if m := re.fullmatch(r"(\d{4})-(\d{1,2})", s):
+        y, mo = int(m.group(1)), int(m.group(2))
+    elif m := re.fullmatch(r"(\d{1,2})/(\d{4})", s):
+        mo, y = int(m.group(1)), int(m.group(2))
+    elif m := re.fullmatch(r"([a-z]+)\.?(?:,?\s+(\d{4}))?", s):
+        mo = next((i for name, i in MONTH_NAMES.items() if len(m.group(1)) >= 3 and name.startswith(m.group(1))), 0)
+        y = int(m.group(2)) if m.group(2) else (today.year if mo <= today.month else today.year - 1)
+    else:
+        return ""
+    return f"{y:04d}-{mo:02d}" if 1 <= mo <= 12 and 2000 <= y <= 2100 else ""
+
+
+def month_label(month):
+    try:
+        return datetime.date.fromisoformat(month + "-01").strftime("%B %Y")
+    except ValueError:
+        return month
+
+
+def receipt_line(r):
+    try:
+        day = datetime.date.fromisoformat(r["date"]).strftime("%b %-d, %Y")
+    except (TypeError, ValueError):
+        day = r.get("date") or "no date"
+    return (f"#{r['id']} {day} {r['vendor']} {money_text(r['amount_cents'])}"
+            + (f" ({r['category']})" if r.get("category") else "")
+            + (f" — {r['note']}" if r.get("note") else "")
+            + ("" if r.get("photo") else " [no photo]"))
+
+
+def vendor_slug(vendor):
+    return re.sub(r"[^a-z0-9]+", "-", str(vendor).lower()).strip("-")[:40] or "receipt"
+
+
+def ws_file(site, path):
+    """A file the run named, as a resolved path inside the workspace that is a regular file and no link."""
+    p = Path(path)
+    p = p if p.is_absolute() else Path.cwd() / p
+    ws = site.ws.resolve()
+    try:
+        real = p.resolve(strict=True)
+    except (OSError, RuntimeError):
+        die(f"no such file: {path}")
+    if not real.is_relative_to(ws):
+        die(f"{path} is outside this workspace; a receipt photo is one sent here (incoming/…)")
+    if p.is_symlink() or not real.is_file():
+        die(f"{path} isn't a plain file")
+    return real
+
+
+def receipts_root(site, make=False):
+    """The workspace's receipts/ (made when asked); refuses a receipts/ that is a link."""
+    root = site.ws / RECEIPTS_DIR
+    if root.is_symlink() or (root.exists() and not root.is_dir()):
+        die(f"{RECEIPTS_DIR}/ in this workspace is not a plain folder; tell Taylor (FORWARD-TO-TAYLOR) and file the row without the photo")
+    if make:
+        root.mkdir(exist_ok=True)
+    return root
+
+
+def receipt_photo(site, src):
+    """The photo a run named, checked (in the workspace, a plain file, a receipt's type, under the size cap)
+    -> its resolved path. Called before anything is written, so a refused photo leaves no row behind."""
+    real = ws_file(site, src)
+    if real.suffix.lower() not in RECEIPT_TYPES:
+        die(f"{src}: a receipt is a photo or a PDF ({', '.join(sorted(RECEIPT_TYPES))})")
+    if real.stat().st_size > RECEIPT_MAX_BYTES:
+        die(f"{src} is over {RECEIPT_MAX_BYTES // (1024 * 1024)} MB")
+    receipts_root(site)
+    return real
+
+
+def keep_photo(site, src, day, vendor, rid):
+    """Copy the receipt into receipts/<YYYY-MM>/ -> its workspace-relative path."""
+    real = receipt_photo(site, src)
+    ext = real.suffix.lower()
+    folder = receipts_root(site, make=True) / day[:7]
+    if folder.is_symlink():
+        die(f"{RECEIPTS_DIR}/{day[:7]} is a link, not a folder; file the row without the photo and tell Taylor")
+    folder.mkdir(exist_ok=True)
+    dest = folder / f"{day}-{vendor_slug(vendor)}-{rid}{'.jpg' if ext == '.jpeg' else ext}"
+    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o644)
+    with os.fdopen(fd, "wb") as out, open(real, "rb") as inp:
+        shutil.copyfileobj(inp, out)
+    return str(dest.relative_to(site.ws))
+
+
+def check_ceiling(cents, a):
+    """A receipt over LEDGER_CEILING_CENTS is more often a misread (a dropped decimal point: 8310 for 83.10)
+    than a real bill, so it waits for --yes after the run has looked at the photo again."""
+    if abs(cents) > LEDGER_CEILING_CENTS and not getattr(a, "yes", False):
+        die(f"{money_text(cents)} is over {money_text(LEDGER_CEILING_CENTS)}, which on a receipt is more often a "
+            f"misread decimal point than a real bill. Look at the total again; if it really is {money_text(cents)}, "
+            f"add --yes")
+
+
+def drop_photo(site, local, path):
+    """Delete a kept photo no row points at any more (inside receipts/, a plain file) -> True if it went."""
+    if not path:
+        return False
+    p = site.ws / path
+    root = receipts_root(site).resolve()
+    others = rows(site, local, f"SELECT COUNT(*) AS n FROM ledger WHERE photo = {lit(path)}")[0]["n"]
+    if not others and not p.is_symlink() and p.is_file() and p.resolve().is_relative_to(root):
+        p.unlink()
+        return True
+    return False
+
+
+def receipt(site, local, rid):
+    got = rows(site, local, f"SELECT {', '.join(LEDGER_COLS)} FROM ledger WHERE id = {int(rid)}")
+    return got[0] if got else None
+
+
+def month_total(site, local, month):
+    r = rows(site, local, f"SELECT COUNT(*) AS n, COALESCE(SUM(amount_cents), 0) AS t FROM ledger WHERE month = {lit(month)}")[0]
+    return {"month": month, "count": r["n"], "total_cents": r["t"]}
+
+
+def cmd_ledger_add(a):
+    site = the_ledger(a)
+    vendor = " ".join(str(a.vendor).split())[:200]
+    if not vendor:
+        die("a receipt needs the vendor's name (as the receipt says it)")
+    cents = money_cents(a.amount)
+    if not cents:
+        die(f"{a.amount!r}: a receipt needs its total (42.18); a refund is negative (-12.50)")
+    check_ceiling(cents, a)
+    day = iso_date(a.date) if a.date else datetime.date.today().isoformat()
+    if not day:
+        die(f"--date {a.date!r} isn't a date (2026-10-03, 10/3/2026, Oct 3, 2026)")
+    if day > (datetime.date.today() + datetime.timedelta(days=1)).isoformat() and not a.force:
+        die(f"--date {day} is after today. Check the date on the receipt (a misread year?); --force if it's right")
+    if a.photo:
+        receipt_photo(site, a.photo)                        # refuse a bad photo before anything is written
+    same = rows(site, a.local, f"SELECT {', '.join(LEDGER_COLS)} FROM ledger WHERE date = {lit(day)} "
+                               f"AND lower(vendor) = {lit(vendor.lower())} AND amount_cents = {cents} LIMIT 1")
+    if same and not a.force:
+        if a.json:
+            emit_json({"error": "already filed", "existing": same[0]})
+        else:
+            print("db: already filed (the same vendor, date and amount): " + receipt_line(same[0])
+                  + "\n  a second receipt like it really is two: add --force", file=sys.stderr)
+        sys.exit(3)
+    note = (a.note or "").strip()[:500] or None
+    category = (a.category or "").strip().lower()[:60] or None
+    res = d1(site, a.local, command=(
+        "INSERT INTO ledger (date, vendor, amount_cents, category, note, source) VALUES ("
+        + ", ".join(lit(v) for v in (day, vendor, cents, category, note, a.source or "text")) + ")"))
+    rid = (res[-1].get("meta") or {}).get("last_row_id") or rows(site, a.local, "SELECT MAX(id) AS id FROM ledger")[0]["id"]
+    if a.photo:
+        path = keep_photo(site, a.photo, day, vendor, rid)
+        d1(site, a.local, command=f"UPDATE ledger SET photo = {lit(path)} WHERE id = {int(rid)}")
+    r = receipt(site, a.local, rid)
+    m = month_total(site, a.local, day[:7])
+    if a.json:
+        emit_json({"receipt": r, "month": m})
+        return
+    say("filed " + receipt_line(r) + (f"\n  photo kept at {r['photo']}" if r.get("photo") else ""))
+    say(f"  {month_label(m['month'])} so far: {money_text(m['total_cents'])} over {m['count']} receipt{'s' if m['count'] != 1 else ''}")
+    if day < (datetime.date.today() - datetime.timedelta(days=400)).isoformat():
+        say(f"  (the date is over a year ago: {day}. If the receipt is newer, fix it: db ledger set {rid} --date …)")
+
+
+def ledger_where(a):
+    where = []
+    if a.month:
+        m = month_arg(a.month)
+        if not m:
+            die(f"--month {a.month!r} isn't a month (2026-09, september, last)")
+        where.append(f"month = {lit(m)}")
+    if a.days:
+        where.append(f"date >= {lit((datetime.date.today() - datetime.timedelta(days=a.days)).isoformat())}")
+    if a.vendor:
+        where.append(f"lower(vendor) LIKE {lit('%' + a.vendor.lower() + '%')}")
+    if a.category:
+        where.append(f"lower(category) = {lit(a.category.lower())}")
+    if a.search:
+        like = lit("%" + a.search.lower() + "%")
+        where.append(f"(lower(vendor) LIKE {like} OR lower(COALESCE(note, '')) LIKE {like} "
+                     f"OR lower(COALESCE(category, '')) LIKE {like})")
+    return " WHERE " + " AND ".join(where) if where else ""
+
+
+def cmd_ledger_ls(a):
+    site = the_ledger(a)
+    w = ledger_where(a)
+    tot = rows(site, a.local, f"SELECT COUNT(*) AS n, COALESCE(SUM(amount_cents), 0) AS t FROM ledger{w}")[0]
+    cats = rows(site, a.local, f"SELECT COALESCE(category, '') AS category, COUNT(*) AS count, "
+                               f"SUM(amount_cents) AS total_cents FROM ledger{w} GROUP BY 1 ORDER BY 3 DESC")
+    got = rows(site, a.local, f"SELECT {', '.join(LEDGER_COLS)} FROM ledger{w} ORDER BY date DESC, id DESC "
+                              f"LIMIT {max(0, int(a.limit))}")
+    month = month_arg(a.month) if a.month else None
+    if a.json:
+        emit_json({"month": month, "count": tot["n"], "total_cents": tot["t"], "by_category": cats, "rows": got})
+        return
+    what = month_label(month) if month else ("these" if w else "everything in the ledger")
+    if not tot["n"]:
+        say(f"no receipts {'like that' if w else 'yet'}" + (f" in {what}" if month else ""))
+        return
+    for r in got:
+        say(receipt_line(r))
+    if tot["n"] > len(got):
+        say(f"… and {tot['n'] - len(got)} more (--limit)")
+    say(f"{what}: {money_text(tot['t'])} over {tot['n']} receipt{'s' if tot['n'] != 1 else ''}")
+    if len(cats) > 1:
+        say("  by category: " + "; ".join(f"{c['category'] or 'none'} {money_text(c['total_cents'])}" for c in cats))
+
+
+def cmd_ledger_set(a):
+    site = the_ledger(a)
+    r = receipt(site, a.local, a.id)
+    if not r:
+        die(f"no receipt #{a.id} (db ledger ls)", 4)
+    sets = []
+    if a.date:
+        d = iso_date(a.date)
+        if not d:
+            die(f"--date {a.date!r} isn't a date")
+        sets.append(f"date = {lit(d)}")
+    if a.amount:
+        c = money_cents(a.amount)
+        if not c:
+            die(f"{a.amount!r} isn't a total")
+        check_ceiling(c, a)
+        sets.append(f"amount_cents = {c}")
+    for k in ("vendor", "category", "note"):
+        v = getattr(a, k)
+        if v is not None:
+            v = v.strip()
+            sets.append(f"{k} = {lit((v.lower() if k == 'category' else v) or None)}")
+    if a.photo:
+        path = keep_photo(site, a.photo, iso_date(a.date) if a.date else r["date"], a.vendor or r["vendor"], r["id"])
+        sets.append(f"photo = {lit(path)}")
+    if not sets:
+        die("nothing to change: --date, --vendor, --amount, --category, --note or --photo")
+    d1(site, a.local, command=f"UPDATE ledger SET {', '.join(sets)}, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
+                              f"WHERE id = {int(r['id'])}")
+    old = r.get("photo")
+    r = receipt(site, a.local, r["id"])
+    if a.photo and old and old != r.get("photo"):
+        drop_photo(site, a.local, old)               # the replaced photo, so receipts.zip holds only live ones
+    emit_json(r) if a.json else say("changed " + receipt_line(r))
+
+
+def cmd_ledger_rm(a):
+    site = the_ledger(a)
+    r = receipt(site, a.local, a.id)
+    if not r:
+        die(f"no receipt #{a.id} (db ledger ls)", 4)
+    d1(site, a.local, command=f"DELETE FROM ledger WHERE id = {int(r['id'])}")
+    gone = f" and its photo ({r['photo']})" if drop_photo(site, a.local, r.get("photo")) else ""
+    say(f"removed {receipt_line(r)}{gone}")
+
+
+def zip_receipts(site, out, names):
+    """EXPORT_HOOKS: with the ledger exported, receipts/ -> out/receipts.zip (plain files only, no links)."""
+    if "ledger" not in names:
+        return
+    root = site.ws / RECEIPTS_DIR
+    if not root.is_dir() or root.is_symlink():
+        say("  receipts: no photos kept yet")
+        missing_photos(site, out)
+        return
+    import zipfile
+    n = 0
+    with zipfile.ZipFile(out / "receipts.zip", "w", zipfile.ZIP_DEFLATED) as z:
+        for d, dirs, files in os.walk(root, followlinks=False):
+            dirs[:] = sorted(x for x in dirs if not (Path(d) / x).is_symlink())
+            for f in sorted(files):
+                p = Path(d) / f
+                if p.is_symlink() or not p.is_file():
+                    continue
+                z.write(p, str(p.relative_to(site.ws)))
+                n += 1
+    say(f"  receipts: {n} photo{'s' if n != 1 else ''} -> exports/{out.name}/receipts.zip "
+        f"(the paths inside match ledger.csv's photo column)")
+    missing_photos(site, out)
+
+
+def missing_photos(site, out):
+    """Warn about rows whose photo column names a file that isn't on disk (deleted by hand, or a restore)."""
+    try:
+        got = json.loads((out / "ledger.json").read_text())
+    except (OSError, ValueError):
+        return
+    gone = [r for r in got if r.get("photo") and not (site.ws / r["photo"]).is_file()]
+    if gone:
+        say(f"  receipts: {len(gone)} row{'s name' if len(gone) != 1 else ' names'} a photo that isn't in "
+            f"receipts/ any more, so it's not in the zip: " + ", ".join(f"#{r['id']} {r['photo']}" for r in gone[:10])
+            + (" …" if len(gone) > 10 else ""))
+
+
+EXPORT_HOOKS.append(zip_receipts)
+
+
+def cmd_ledger_export(a):
+    the_ledger(a)
+    cmd_export(a, only=("ledger",))
+
+
+@subcommands("ledger", "receipts by photo: add, ls, set, rm, export")
+def ledger_parser(p, common):
+    s = p.add_subparsers(dest="action", required=True)
+    d = s.add_parser("add", parents=[common], help="file a receipt (and keep its photo)")
+    d.add_argument("vendor", help="who was paid, as the receipt says it"); d.add_argument("amount", help="the total: 42.18")
+    d.add_argument("--date", help="the date on the receipt (default today)")
+    d.add_argument("--category", help="the owner's word: fuel, supplies, equipment, vehicle, meals, other")
+    d.add_argument("--note", help="what it was for: \"truck: oil change\"")
+    d.add_argument("--photo", help="the photo or PDF in this workspace (incoming/…); a copy goes to receipts/")
+    d.add_argument("--source", help="text (default), email, admin, import")
+    d.add_argument("--force", action="store_true", help="file it even if the same one is there, or the date is ahead")
+    d.add_argument("--yes", action="store_true", help="a total over $10,000 really is that much (checked against the photo)")
+    d.add_argument("--json", action="store_true"); d.set_defaults(fn=cmd_ledger_add)
+    ls = s.add_parser("ls", parents=[common], help="receipts and their total: --month, --vendor, --search …")
+    ls.add_argument("--month", help="2026-09, september, last, this"); ls.add_argument("--days", type=int)
+    ls.add_argument("--vendor"); ls.add_argument("--category")
+    ls.add_argument("--search", help="vendor, note or category: \"truck\"")
+    ls.add_argument("--limit", type=int, default=50); ls.add_argument("--json", action="store_true")
+    ls.set_defaults(fn=cmd_ledger_ls)
+    t = s.add_parser("set", parents=[common], help="fix one: --date, --vendor, --amount, --category, --note, --photo")
+    t.add_argument("id", type=int)
+    for k in ("date", "vendor", "amount", "category", "note", "photo"):
+        t.add_argument(f"--{k}")
+    t.add_argument("--yes", action="store_true", help="a total over $10,000 really is that much")
+    t.add_argument("--json", action="store_true"); t.set_defaults(fn=cmd_ledger_set)
+    r = s.add_parser("rm", parents=[common], help="remove one filed by mistake (its photo too)")
+    r.add_argument("id", type=int); r.set_defaults(fn=cmd_ledger_rm)
+    s.add_parser("export", parents=[common], help="the ledger and receipts.zip to exports/<date>/").set_defaults(fn=cmd_ledger_export)
+# ---------------------------------------------------------------- bookings that finish the job (B119)
+# The bookings collection's keys and upgrade. Two Pages secrets on the site:
+#   BOOKING_KEY        signs the customer's manage links and the posts to
+#                      patchlamp.com; derived, never stored: HMAC-SHA256 of
+#                      "booking-mail:<slug>" under PATCHLAMP_RELAY_SHARED_SECRET,
+#                      which is how patchlamp.com (App\Support\BookingSignature)
+#                      derives the same one. Without it the site still takes
+#                      bookings and the owner is mailed; the customer isn't.
+#   BOOKINGS_FEED_KEY  the calendar feed's key, random, kept in the site's
+#                      registry row (sites.json) as `bookings_feed_key` the way
+#                      `site` keeps `indexnow_key`. Never printed except inside
+#                      the subscribe address `db bookings feed` gives the owner.
+#
+#   db bookings setup [--dry-run]     both secrets on the Pages project (then site publish)
+#   db bookings feed [--new] [--json] the owner's subscribe address and how to add it
+#   db bookings upgrade [--dry-run]   the collection's Functions brought up to the toolbelt's
+#   db bookings status [--json]       what's on: the key, the feed, the files (no key shown)
+#   db bookings confirm|cancel|remind ID [--json]
+#   db bookings move ID "YYYY-MM-DDTHH:MM" [--json]
+#                                     a change by text, run by the site itself (functions/api/bookings/[id].js):
+#                                     the same capacity check and customer mail as /admin. POSTs JSON
+#                                     {"action", "starts_at"?, "ts"} to <site>/api/bookings/<id>, signed
+#                                     X-Booking-Signature: hex(HMAC-SHA256(BOOKING_KEY, "api|" + body)).
+#                                     The contract: ~/projects/plans/49-the-customer-side.md § Site endpoint.
+#                                     --json prints the site's answer as is; exit 0 on ok, 1 when the site
+#                                     refused (the reason and, for a move, the open times), 2 when unreachable.
+#                                     BOOKINGS_SITE_URL overrides the site's address (tests, `wrangler pages dev`).
+
+import hashlib  # noqa: E402
+import hmac  # noqa: E402
+import secrets  # noqa: E402
+import time  # noqa: E402
+
+BOOKINGS = COLLECTIONS / "bookings"
+OLD_THANKS = "Booked — we've got you down and we'll confirm by email or phone."
+NEW_THANKS = ("Got it, your request is in. We'll confirm by email or phone, and if you left an email, "
+              "a copy with a link to move or cancel it is on its way.")
+
+
+def booking_key(slug):
+    env = read_env()
+    secret = os.environ.get("PATCHLAMP_RELAY_SHARED_SECRET") or env.get("PATCHLAMP_RELAY_SHARED_SECRET")
+    if not secret:
+        die("PATCHLAMP_RELAY_SHARED_SECRET is not in the toolbelt, so there's no booking key to give the site. "
+            "Bookings still work and the owner is still mailed; the customer's mails wait on it (Taylor: setenv.sh).")
+    return hmac.new(secret.encode(), f"booking-mail:{slug}".encode(), hashlib.sha256).hexdigest()
+
+
+def bookings_site(a):
+    site = the_site(a)
+    if not any(p.name.endswith("_bookings.sql") for p in repo_migrations(site)):
+        die(f"repos/{site.name} has no bookings yet: `db add bookings` first (PLAYBOOK.md § Data)")
+    return site
+
+
+def site_url(site):
+    """The site's own address: the client's live URL, else its Pages host."""
+    live = (site.meta.get("live_url") or "").strip()
+    if live:
+        return live.rstrip("/")
+    return f"https://{site.row.get('pages_host') or (site.project or site.name) + '.pages.dev'}"
+
+
+def registry_save(reg):
+    REGISTRY.parent.mkdir(parents=True, exist_ok=True)
+    tmp = REGISTRY.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(reg, indent=2, sort_keys=True) + "\n")
+    tmp.replace(REGISTRY)
+
+
+def feed_key(site, new=False):
+    """The feed key from the registry row, made (and saved) when there's none or --new."""
+    reg = registry()
+    row = reg.setdefault(site.meta["slug"], {}).setdefault(site.name, {})
+    if new or not row.get("bookings_feed_key"):
+        row["bookings_feed_key"] = secrets.token_hex(20)
+        registry_save(reg)
+        site.row["bookings_feed_key"] = row["bookings_feed_key"]
+        return row["bookings_feed_key"], True
+    return row["bookings_feed_key"], False
+
+
+def pages_secrets(site, values, dry, say=say):
+    """Set Pages secrets on the site's project (production and preview); values never printed."""
+    names = ", ".join(sorted(values))
+    if dry or FAKE:
+        say(f"  {'would set' if dry else 'set (test stand-in: no Cloudflare call)'} Pages secrets {names} on {site.project}")
+        return
+    tok, acct = cf_creds()
+    if not (tok and acct):
+        die("CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID are not in the toolbelt (Taylor: setenv.sh)")
+    env = {k: {"type": "secret_text", "value": v} for k, v in values.items()}
+    body = json.dumps({"deployment_configs": {"production": {"env_vars": env}, "preview": {"env_vars": env}}}).encode()
+    req = urllib.request.Request(f"{CF_API}/accounts/{acct}/pages/projects/{site.project}", data=body, method="PATCH",
+                                 headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json",
+                                          "User-Agent": "claude-tools db"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            ok = json.loads(r.read().decode()).get("success")
+    except urllib.error.HTTPError as exc:
+        die(f"Cloudflare refused the secrets ({exc.code}); nothing else changed. `db doctor` shows the token's reach.")
+    except (urllib.error.URLError, OSError) as exc:
+        die(f"Cloudflare unreachable: {exc}")
+    if not ok:
+        die("Cloudflare didn't take the secrets; nothing else changed")
+    say(f"  set Pages secrets {names} on {site.project} (values never shown)")
+
+
+def pages_secret_names(site):
+    """The env var names on the Pages project (production), or None when it can't be read."""
+    if FAKE:
+        return None
+    code, res = cf_get(f"/pages/projects/{site.project}")
+    if code != 200:
+        return None
+    return set(((res.get("deployment_configs") or {}).get("production") or {}).get("env_vars") or {})
+
+
+def cmd_bookings_setup(a):
+    site = bookings_site(a)
+    say(f"bookings setup for repos/{site.name} (Pages project {site.project})")
+    values = {"BOOKING_KEY": booking_key(site.meta["slug"])}
+    if a.dry_run and not site.row.get("bookings_feed_key"):
+        say(f"  would make the calendar feed's key and keep it in {REGISTRY.name}")
+        values["BOOKINGS_FEED_KEY"] = "(new)"
+    else:
+        key, made = feed_key(site) if not a.dry_run else (site.row["bookings_feed_key"], False)
+        if made:
+            say(f"  made the calendar feed's key, kept in {REGISTRY.name} (not shown)")
+        values["BOOKINGS_FEED_KEY"] = key
+    pages_secrets(site, values, a.dry_run)
+    behind = bookings_behind(site)
+    if behind:
+        say(f"  note: {len(behind)} bookings file(s) are older than the toolbelt's: `db bookings upgrade` first")
+    say(f"next: `site publish {site.name}` (a secret reaches the Functions from the next deploy), then "
+        f"`db bookings feed` for the owner's calendar address")
+
+
+def cmd_bookings_feed(a):
+    site = bookings_site(a)
+    key, made = feed_key(site, new=a.new)
+    if made:
+        pages_secrets(site, {"BOOKINGS_FEED_KEY": key}, False,
+                      say=(lambda m: print(m, file=sys.stderr)) if a.json else say)
+    url = f"{site_url(site)}/api/bookings.ics?key={key}"
+    webcal = "webcal://" + url.split("://", 1)[1]
+    if a.json:
+        emit_json({"url": url, "webcal": webcal, "new_key": made})
+        return
+    if made:
+        say(f"(a {'new' if a.new else 'first'} feed key: it works once `site publish {site.name}` has run"
+            + ("; the old address stops working then" if a.new else "") + ")\n")
+    say(f"""Your bookings calendar. Subscribe once and every confirmed booking shows up on your phone.
+Keep this address to yourself: anyone with it can read your bookings.
+
+{url}
+
+Google Calendar (on a computer): Settings > Add calendar > From URL, paste it, Add calendar.
+  It then shows on your phone's Google Calendar too. Google refreshes it every few hours.
+iPhone: Settings > Calendar > Accounts > Add Account > Other > Add Subscribed Calendar,
+  paste it ({webcal}). Apple Calendar on a Mac: File > New Calendar Subscription.
+Outlook: Add calendar > Subscribe from web, paste it.
+
+It's one way: bookings go onto your calendar; your own appointments don't close times on the site.""")
+
+
+def bookings_files():
+    """The collection's own code: every Function but the /admin views (those are the site's to rename)."""
+    src = BOOKINGS / "functions"
+    return [f for f in sorted(src.rglob("*")) if f.is_file() and f.parent.name != "_admin"]
+
+
+def bookings_behind(site):
+    src = BOOKINGS / "functions"
+    out = []
+    for f in bookings_files():
+        dest = site.repo / "functions" / f.relative_to(src)
+        rel = f.relative_to(src)
+        if rel == Path("_lib/customers.js") and dest.exists():
+            continue                           # the customer book's own copy; `db add customers` owns it
+        if not dest.exists() or dest.read_bytes() != f.read_bytes():
+            out.append(str(Path("functions") / rel))
+    return out
+
+
+# The bookings Functions as the toolbelt shipped them before (sha256), so an
+# upgrade can tell the template's old copy from one someone changed by hand.
+# Read from the toolbelt's own git history; this one is the fallback when git
+# isn't there (a66f09d's api/bookings.js, the only file before B119).
+KNOWN_OLD = {"6b02bc961d4f29d61de3ca2d904be1641c25d1d694d8e1a3d09e8152e8594ec4"}
+
+
+def shipped_versions(rel):
+    """sha256 of every version of templates/collections/bookings/functions/<rel> the toolbelt has committed."""
+    path = f"templates/collections/bookings/functions/{rel}"
+    out = set(KNOWN_OLD)
+    try:
+        revs = subprocess.run(["git", "-C", str(HERE), "log", "--format=%H", "--", path],
+                              capture_output=True, text=True, timeout=20).stdout.split()
+        for rev in revs:
+            blob = subprocess.run(["git", "-C", str(HERE), "show", f"{rev}:{path}"], capture_output=True, timeout=20)
+            if blob.returncode == 0:
+                out.add(hashlib.sha256(blob.stdout).hexdigest())
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return out
+
+
+def customised(site, rel):
+    """True when the site's copy exists and is neither the toolbelt's current one nor any it shipped before."""
+    dest = site.repo / rel
+    if not dest.exists():
+        return False
+    return hashlib.sha256(dest.read_bytes()).hexdigest() not in shipped_versions(str(Path(rel).relative_to("functions")))
+
+
+def old_thanks(site):
+    """The pages still carrying the calendar's old thanks line (it said nothing of the email)."""
+    return [p for p in sorted(site.repo.rglob("*.html")) if ".wrangler" not in p.parts and OLD_THANKS in p.read_text(errors="replace")]
+
+
+def cmd_bookings_upgrade(a):
+    site = bookings_site(a)
+    behind = bookings_behind(site)
+    pages = old_thanks(site)
+    for p in pages:
+        if not a.dry_run:
+            p.write_text(p.read_text().replace(OLD_THANKS, NEW_THANKS))
+        say(f"  {'would say' if a.dry_run else 'said'} the email and the link in the thanks line of repos/{site.name}/{p.relative_to(site.repo)}")
+    if not behind and not pages:
+        say(f"repos/{site.name}: the bookings Functions are the toolbelt's already")
+        return
+    src = BOOKINGS / "functions"
+    kept = [] if a.force else [rel for rel in behind if customised(site, rel)]
+    for rel in kept:
+        # someone changed this one by hand (a question added, a word changed): overwriting it would lose that
+        say(f"  kept repos/{site.name}/{rel}: it isn't any copy the toolbelt shipped, so someone changed it. "
+            f"Compare it with {BOOKINGS.relative_to(HERE)}/{Path(rel).relative_to('functions')} and carry the change over, "
+            f"or `db bookings upgrade --force` to replace it")
+    for rel in [r for r in behind if r not in kept]:
+        f = src / Path(rel).relative_to("functions")
+        dest = site.repo / rel
+        if not a.dry_run:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(f, dest)
+        say(f"  {'would write' if a.dry_run else 'wrote'} repos/{site.name}/{rel}")
+    if a.dry_run:
+        say("dry run: nothing written")
+        return
+    say(f"next: commit, `git -C repos/{site.name} push`, `db bookings setup`, `site publish {site.name}`")
+
+
+def cmd_bookings_status(a):
+    site = bookings_site(a)
+    names = pages_secret_names(site)
+    st = {
+        "files_behind": bookings_behind(site),
+        "feed_key_in_registry": bool(site.row.get("bookings_feed_key")),
+        "pages_secrets": None if names is None else {k: k in names for k in ("BOOKING_KEY", "BOOKINGS_FEED_KEY")},
+    }
+    if a.json:
+        emit_json(st)
+        return
+    say(f"bookings on repos/{site.name}:")
+    say(f"  files: {'up to date' if not st['files_behind'] else ', '.join(st['files_behind']) + ' behind (db bookings upgrade)'}")
+    say(f"  calendar feed: {'a key in the registry (db bookings feed gives the address)' if st['feed_key_in_registry'] else 'none yet (db bookings setup)'}")
+    if names is None:
+        say("  Pages secrets: not read (no Cloudflare access from here)")
+    else:
+        for k, on in st["pages_secrets"].items():
+            say(f"  {k}: {'set' if on else 'not set (db bookings setup)'}")
+
+
+def cmd_bookings_change(a):
+    """confirm / move / cancel / remind one booking through the site's own signed endpoint."""
+    if not re.fullmatch(r"\d{1,12}", a.id):
+        die(f"{a.id!r} isn't a booking id (the number on /admin/bookings, or `db query \"SELECT id, name, starts_at FROM bookings\"`)")
+    payload = {"action": a.change}
+    if a.change == "move":
+        at = a.starts_at.strip().replace(" ", "T")[:16]
+        if not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d", at):
+            die(f"{a.starts_at!r}: give the new time as YYYY-MM-DDTHH:MM in the site's own time (\"2026-10-14T15:00\")")
+        payload["starts_at"] = at
+    site = bookings_site(a)
+    key = booking_key(site.meta["slug"])
+    payload["ts"] = int(time.time())
+    body = json.dumps(payload, separators=(",", ":"))
+    sig = hmac.new(key.encode(), ("api|" + body).encode(), hashlib.sha256).hexdigest()
+    base = (os.environ.get("BOOKINGS_SITE_URL") or site_url(site)).rstrip("/")
+    req = urllib.request.Request(f"{base}/api/bookings/{a.id}", data=body.encode(), method="POST", headers={
+        "Content-Type": "application/json", "Accept": "application/json", "X-Booking-Signature": sig,
+        "User-Agent": "claude-tools db"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            code, raw = r.status, r.read().decode()
+    except urllib.error.HTTPError as exc:
+        code, raw = exc.code, exc.read().decode(errors="replace")
+    except (urllib.error.URLError, OSError) as exc:
+        die(f"couldn't reach {base}: {exc}. Nothing changed; try again, or the owner can do it on /admin/bookings", 2)
+    try:
+        res = json.loads(raw)
+    except ValueError:
+        res = {"ok": False, "error": f"the site answered {code} without JSON"
+               + (": it may not have the bookings upgrade yet (db bookings status)" if code in (404, 405) else "")}
+    if a.json:
+        emit_json(res)
+        sys.exit(0 if res.get("ok") else 1)
+    if not res.get("ok"):
+        hint = {401: " (the site's BOOKING_KEY isn't this one: db bookings setup, then site publish)",
+                503: ""}.get(code, "")
+        lines = [f"db: booking {a.id}: {res.get('error') or code}{hint}"]
+        for o in res.get("open") or []:
+            lines.append(f"  open: {o.get('starts_at')}{(' · ' + o['label']) if o.get('label') else ''} ({o.get('places')} place(s))")
+        print("\n".join(lines), file=sys.stderr)
+        sys.exit(1)
+    b = res.get("booking") or {}
+    done = {"confirm": "confirmed", "move": "moved", "cancel": "cancelled", "remind": "reminded"}[a.change]
+    when = b.get("starts_at", "")
+    say(f"booking {b.get('id', a.id)} ({b.get('name', '')}, {when}) {done}"
+        + (f" (was {b['was']})" if b.get("was") else "") + ".")
+    if res.get("customer_mailed"):
+        say("  the customer is emailed" + (" a reminder" if a.change == "remind" else "") + ".")
+    else:
+        say(f"  the customer is NOT emailed: {res.get('why') or 'no reason given'}.")
+
+
+def bookings_doctor(site, local, fail):
+    """db doctor's bookings lines: the files, the feed (that it exists, never the key), the two secrets."""
+    if not any(p.name.endswith("_bookings.sql") for p in repo_migrations(site)):
+        return
+    behind = bookings_behind(site)
+    say("  bookings: Functions " + ("up to date" if not behind else f"{len(behind)} file(s) behind (db bookings upgrade)"))
+    say("  bookings: calendar feed " + ("on (key in the registry; db bookings feed gives the address)"
+                                        if site.row.get("bookings_feed_key") else "not set up (db bookings setup)"))
+    names = None if local else pages_secret_names(site)
+    if names is not None:
+        missing = [k for k in ("BOOKING_KEY", "BOOKINGS_FEED_KEY") if k not in names]
+        if missing:
+            say(f"  note: bookings: {', '.join(missing)} not on the Pages project, so customers get no mail or the feed is "
+                f"off (db bookings setup, then site publish)")
+        else:
+            say("  bookings: BOOKING_KEY and BOOKINGS_FEED_KEY set (customers are mailed; values not shown)")
+
+
+@subcommands("bookings", "bookings: setup (the keys), feed (the owner's calendar), upgrade, status, confirm/move/cancel/remind")
+def bookings_parser(p, common):
+    s = p.add_subparsers(dest="action", required=True)
+    u = s.add_parser("setup", parents=[common], help="the booking key and the feed key as Pages secrets")
+    u.add_argument("--dry-run", action="store_true"); u.set_defaults(fn=cmd_bookings_setup)
+    f = s.add_parser("feed", parents=[common], help="the owner's calendar subscribe address and how to add it")
+    f.add_argument("--new", action="store_true", help="a new key; the old address stops after the next publish")
+    f.add_argument("--json", action="store_true"); f.set_defaults(fn=cmd_bookings_feed)
+    g = s.add_parser("upgrade", parents=[common], help="the bookings Functions brought up to the toolbelt's")
+    g.add_argument("--dry-run", action="store_true")
+    g.add_argument("--force", action="store_true", help="replace a file someone changed by hand too")
+    g.set_defaults(fn=cmd_bookings_upgrade)
+    for name, what in (("confirm", "confirm a requested booking; the customer is emailed"),
+                       ("cancel", "cancel it, the place freed; the customer is emailed"),
+                       ("remind", "the reminder email for a confirmed booking still ahead")):
+        c = s.add_parser(name, parents=[common], help=what)
+        c.add_argument("id")
+        c.add_argument("--json", action="store_true"); c.set_defaults(fn=cmd_bookings_change, change=name)
+    m = s.add_parser("move", parents=[common], help="move it to an open time; the customer is emailed the new one")
+    m.add_argument("id"); m.add_argument("starts_at", help='the open time, "2026-10-14T15:00"')
+    m.add_argument("--json", action="store_true"); m.set_defaults(fn=cmd_bookings_change, change="move")
+    t = s.add_parser("status", parents=[common], help="the key, the feed, the files (no key shown)")
+    t.add_argument("--json", action="store_true"); t.set_defaults(fn=cmd_bookings_status)
+
+
 # ---------------------------------------------------------------- doctor
 
 def toml_binding(repo):
@@ -1786,6 +2556,7 @@ def cmd_doctor(a):
                 say("  secrets: SESSION_SECRET, ADMIN_EMAIL set on the Pages project (values not shown)")
         else:
             fail(f"Pages project {site.project}: {res}")
+    bookings_doctor(site, a.local, fail)
     owner, contact = site.d1.get("owner"), site.meta.get("contact_email")
     if owner and contact and owner.lower() != contact.lower():
         fail(f"/admin signs in {owner} but the sign-in email goes to the contact address {contact} "

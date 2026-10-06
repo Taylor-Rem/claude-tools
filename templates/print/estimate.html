@@ -1,0 +1,58 @@
+<style>
+/* ---- estimate: letter, one page. The lines take the room the header and the
+   bottom block leave; a long list or long terms shrink their own type
+   (data-fit), and `estimate` reads the PDF's text back to be sure nothing
+   was cut off. */
+body.estimate .sheet { padding: 0.6in 0.7in 0.55in; display: flex; flex-direction: column; gap: 0.18in; }
+.estimate .top { display: flex; justify-content: space-between; align-items: flex-start; gap: 0.3in; }
+.estimate .who { display: flex; align-items: center; gap: 0.16in; min-width: 0; }
+.estimate .logo { max-height: 0.8in; max-width: 1.6in; object-fit: contain; }
+.estimate .biz { font-family: var(--font-display); font-size: 20pt; line-height: 1.1; color: var(--ink); }
+.estimate .biz-url { font-size: 9.5pt; color: var(--muted); margin-top: 0.03in; }
+.estimate .doc { text-align: right; flex: none; }
+.estimate .doc .kicker { font-size: 10pt; }
+.estimate .doc .no { font-size: 18pt; font-weight: 700; color: var(--ink); }
+.estimate .doc .date { font-size: 9.5pt; color: var(--muted); }
+.estimate .rule { height: 3pt; background: var(--accent); }
+.estimate .for { font-size: 11pt; line-height: 1.35; }
+.estimate .for .label { font-size: 8.5pt; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+.estimate .for .name { font-size: 13pt; font-weight: 600; }
+.estimate .lines { flex: 1 1 auto; min-height: 0; overflow: hidden; font-size: 11pt; }
+.estimate table { width: 100%; border-collapse: collapse; }
+.estimate th { text-align: left; font-size: 0.8em; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted);
+  border-bottom: 1pt solid var(--ink); padding: 0 0 0.4em; }
+.estimate th.amt, .estimate td.amt { text-align: right; white-space: nowrap; padding-left: 1.5em; }
+.estimate td { padding: 0.45em 0; border-bottom: 0.5pt solid var(--line); vertical-align: top; }
+.estimate tr.sub td { border-bottom: none; color: var(--muted); padding: 0.25em 0; }
+.estimate tr.total td { border-top: 1pt solid var(--ink); border-bottom: none; font-weight: 700; font-size: 1.15em; padding-top: 0.5em; }
+.estimate tr.deposit td { border-bottom: none; padding: 0.25em 0; }
+.estimate .note { font-size: 1em; line-height: 1.4; margin-top: 0.6em; }
+.estimate .bottom { flex: none; display: flex; gap: 0.3in; align-items: flex-start; }
+.estimate .accept { flex: none; width: 1.75in; display: flex; flex-direction: column; align-items: center; gap: 0.05in; text-align: center; }
+.estimate .accept .qr-wrap { width: 1.45in; height: 1.45in; }
+.estimate .accept .how { font-size: 8.5pt; color: var(--muted); line-height: 1.3; }
+.estimate .accept .url { font-size: 7.5pt; font-weight: 400; color: var(--ink); }
+.estimate .terms-box { flex: 1; min-width: 0; }
+.estimate .terms-box h2 { font-size: 9pt; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); font-weight: 600; margin-bottom: 0.05in; }
+.estimate .valid { font-size: 11pt; font-weight: 600; margin-bottom: 0.06in; }
+.estimate .terms { height: 1.55in; overflow: hidden; font-size: 9.5pt; line-height: 1.38; white-space: pre-line; color: var(--ink); }
+</style>
+<div class="top">
+  <div class="who">{{LOGO}}<div><div class="biz">{{NAME}}</div><div class="biz-url">{{SITE}}</div></div></div>
+  <div class="doc"><div class="kicker">Estimate</div><div class="no">{{NUMBER}}</div><div class="date">{{DATE}}</div></div>
+</div>
+<div class="rule"></div>
+<div class="for"><div class="label">For</div><div class="name">{{CUSTOMER}}</div>{{CONTACT}}</div>
+<div class="lines" data-fit="7">
+<table>
+<thead><tr><th>Work</th><th class="amt">Amount</th></tr></thead>
+<tbody>
+{{LINES}}
+</tbody>
+</table>
+{{NOTE}}
+</div>
+<div class="bottom">
+  <div class="accept">{{QR}}<div class="how">Scan or open the link to read it and accept it online</div><div class="url">{{ACCEPT_URL}}</div></div>
+  <div class="terms-box"><div class="valid">{{VALID}}</div>{{TERMS}}</div>
+</div>

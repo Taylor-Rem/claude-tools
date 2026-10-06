@@ -1,0 +1,4 @@
+{
+  "status": "ready",
+  "summary": "documents a customer reads and signs by link (a waiver, a policy): typed name, a tick, the time, the IP and a hash of the text, on /admin and as a PDF"
+}

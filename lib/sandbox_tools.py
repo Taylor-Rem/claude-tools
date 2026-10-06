@@ -100,15 +100,28 @@ TOOLS = {
                    "roles": {"client": _ALL, "owner": _ALL}},
     "social": {"keys": ["PATCHLAMP_RELAY_SHARED_SECRET"], "state": [],
                "roles": {"client": ("post", "ls", "doctor"), "owner": ("post", "ls", "doctor")}},
-    "gbp": {"keys": ["PATCHLAMP_RELAY_SHARED_SECRET"], "state": [],
+    # B118: `gbp ask` reads the customer book through `db` (this project's D1 only: the registry copy holds
+    # this business's row alone), so gbp carries db's keys. No Places key: the daily review read is the relay's.
+    "gbp": {"keys": ["PATCHLAMP_RELAY_SHARED_SECRET", "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"],
+            "state": ["registry"],
             "roles": {"client": _ALL, "owner": _ALL}},
     "pay": {"keys": ["PATCHLAMP_RELAY_SHARED_SECRET", "STRIPE_KEY_PATCHLAMP", "STRIPE_TEST_KEY"], "state": [],
             "roles": {"client": _ALL, "owner": _ALL}},
+    # estimate (B123) runs db, pay and print's renderer as its own children, so it carries their keys
+    # and state; not for a demo stranger, like pay
+    "estimate": {"keys": ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "PATCHLAMP_RELAY_SHARED_SECRET",
+                          "STRIPE_KEY_PATCHLAMP", "STRIPE_TEST_KEY"], "state": ["registry", "playwright"],
+                 "roles": {"client": _ALL, "owner": _ALL}},
     "connections": {"keys": ["PATCHLAMP_RELAY_SHARED_SECRET"], "state": [],
                     "roles": {"client": ("ls", "google", "doctor"), "owner": ("ls", "google", "doctor")}},
     "print": {"keys": ["GEMINI_API_KEY", "PEXELS_API_KEY"], "state": ["registry", "ledger", "playwright"],
               "bins": ["ffmpeg", "ffprobe"],
               "roles": {"client": _ALL, "owner": _ALL}},
+    # B128: sign runs db inside its own call (same keys, the registry copy) and print's renderer.
+    # A demo only lists: `new` would put any .md a stranger wrote into the workspace on the demo's
+    # public site with a working sign form, and db itself has no demo role.
+    "sign": {"keys": ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"], "state": ["registry", "playwright"],
+             "roles": {"client": _ALL, "owner": _ALL, "demo": ("ls", "doctor")}},
     "shot": {"keys": [], "state": ["playwright"],
              "roles": {"client": _ALL, "owner": _ALL, "demo": _ALL}},
     "discord": {"keys": ["DISCORD_BOT_TOKEN"], "state": [],

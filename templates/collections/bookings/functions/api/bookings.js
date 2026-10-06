@@ -11,9 +11,12 @@
 //                             ?sent=booking#book (or sent=full, sent=0).
 //
 // The owner opens times on /admin/slots (or Patch does, by text: a row in
-// booking_slots). A copy of each booking goes on to patchlamp.com so the owner
-// is emailed, like a form.
-import { readBody, formFields, sha256, wantsJson, backTo, now, localNow, localTime } from "../_lib/core.js";
+// booking_slots). Each booking goes on to patchlamp.com, signed with
+// BOOKING_KEY (functions/_lib/bookings.js): the owner is emailed, and the
+// customer gets "requested" with the link to move or cancel it. It also goes
+// into the customer book when the site has one (B122).
+import { readBody, formFields, sha256, wantsJson, backTo, now, localNow } from "../_lib/core.js";
+import { tellPatchlamp, recordBooking } from "../_lib/bookings.js";
 
 const PER_TEN_MINUTES = 5;
 const DAYS_AHEAD = 60;
@@ -59,16 +62,9 @@ export async function onRequestPost({ request, env, waitUntil }) {
   if (!res.meta.changes) return reply(409, "full", { error: "that time is taken or closed" });
 
   const id = res.meta.last_row_id;
-  const row = await env.DB.prepare("SELECT starts_at FROM bookings WHERE id = ?").bind(id).first();
-  if (env.PATCHLAMP_SLUG && env.FORWARD_EMAIL !== "off") {
-    const base = (env.PATCHLAMP_URL || "https://patchlamp.com").replace(/\/$/, "");
-    const origin = env.MAIL_ORIGIN || new URL(request.url).origin;
-    const fields = { time: localTime(row.starts_at), name: f.name, email: f.email || "", phone: f.phone || "", notes: f.notes || "" };
-    waitUntil(fetch(`${base}/f/${encodeURIComponent(env.PATCHLAMP_SLUG)}/booking`, {
-      method: "POST", body: new URLSearchParams(fields),
-      headers: { origin, referer: `${origin}/`, accept: "application/json", "content-type": "application/x-www-form-urlencoded" },
-    }).then((r) => { if (!r.ok) console.error(`forward: patchlamp.com answered ${r.status}`); })
-      .catch((e) => console.error(`forward: ${e}`)));
-  }
+  const row = await env.DB.prepare("SELECT * FROM bookings WHERE id = ?").bind(id).first();
+  await recordBooking(env, row);
+  const mail = tellPatchlamp(env, request, "requested", row);
+  if (mail) waitUntil(mail);
   return reply(200, "booking", { id, starts_at: row.starts_at });
 }

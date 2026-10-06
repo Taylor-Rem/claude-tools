@@ -15,6 +15,13 @@
   social queue drop N
   social check N [--kind text|raccoon|data|pinned]   # one fresh judge looks at draft N's picture (B112)
   social check --image FILE --kind K       #   or at any image; exit 0 pass, 1 fail, 3 unsure, 4 couldn't check
+  social packet [--date D] [--topic-line N]   # B133: today's facts quoted from their files -> social/packets/<date>.md
+  social draft [--no-codex]                # Opus and Codex each write from the packet (a caption, a ledger, three lines of why)
+  social facts [N] | --draft FILE          # code checks every number/price against its re-read line, then a fresh judge; 0 pass, 1 fail, 4 couldn't
+  social facts capture CMD ...             # keep a command's output in social/facts/<date>.md so a count from it can be cited
+  social pick [--image IMG --mood M --art A]   # the passing drafts picked blind (A/B), a splice re-checked; --image queues the winner
+  social receipt [N]                       # each claim beside its source, who wrote it, the verdicts (under 12 lines)
+  social lessons [week | propose "rule" ["rule"] | keep N | drop N | retire]   # taste lessons only on Taylor's keep
   social connect [BRAND] [--network x]     # the signed link (24h) the account's owner opens to grant it
       --x-text "…"                         # (post) the X version; default: the caption cut to 280, any link kept last
   social ls [BRAND]                        # recent posts with their links
@@ -35,6 +42,10 @@ Config, by name, never printed:
   SOCIAL_JUDGE                    optional; a stand-in command for the judge (tests), prompt on stdin
   SOCIAL_JUDGE_MODEL              optional; default opus (never Fable, always named)
   IMG_PATCH_REF                   optional; the portrait the raccoon is compared with
+  SOCIAL_WRITER_OPUS / SOCIAL_WRITER_CODEX / SOCIAL_FACTS_JUDGE / SOCIAL_PICKER   stand-ins for tests (prompt on stdin)
+  SOCIAL_PICKER_MODEL             optional; default fable (the one Fable run a morning); opus moves it
+  SOCIAL_CODEX_TIMEOUT / SOCIAL_WRITER_TIMEOUT   seconds; default 300 each
+  SOCIAL_PROJECTS, SOCIAL_MARKETING_DIR, SOCIAL_PRICES_FILE, SOCIAL_TODAY   paths and the date, for tests
 """
 
 import argparse
@@ -197,7 +208,7 @@ def log_posted(brand, caption, results, draft=None):
            "mood": (draft or {}).get("mood"), "art": (draft or {}).get("art"),
            "topic": (draft or {}).get("topic") or caption.split("\n")[0][:80], "status": "posted",
            "kind": (draft or {}).get("kind"), "check": (draft or {}).get("check"),
-           "path": (draft or {}).get("image"), "links": {k: v.get("url") for k, v in results.items() if v.get("ok")}}
+           "path": (draft or {}).get("image"), "caption": caption, "links": {k: v.get("url") for k, v in results.items() if v.get("ok")}}
     SOCIAL_DIR.mkdir(parents=True, exist_ok=True)
     with (SOCIAL_DIR / "posted.jsonl").open("a") as f:
         f.write(json.dumps(row) + "\n")
@@ -584,6 +595,1249 @@ def cmd_check(args):
     sys.exit(EXIT[v])
 
 
+# ---- a feed you can trust (B133, plan ~/projects/plans/54-a-feed-you-can-trust.md) --------------
+# What got through before this: the 2026-10-03 post's "24 / 12 / 7" were in no file, the 2026-09-29
+# post said more than its stat, and a topic line outlived its corrected brief by a week. The run
+# that wrote a caption also traced its own numbers, and the only other judge looked at the picture.
+# So: the facts a writer may use are quoted from their files by code (`packet`), two writers draft
+# from the same packet (`draft`), the words are checked by code and then by a judge that never saw
+# the writer's reasons (`facts`), a blind pick chooses (`pick`), and the morning's message carries
+# each claim beside its source (`receipt`). Fact lessons are written by code; taste lessons only on
+# Taylor's Sunday `keep N`, because an argument that persuades a model is not evidence.
+
+PROJECTS = Path(os.environ.get("SOCIAL_PROJECTS", Path.home() / "projects"))
+MARKETING = Path(os.environ.get("SOCIAL_MARKETING_DIR", PROJECTS / "marketing"))
+PRICES_FILE = Path(os.environ.get("SOCIAL_PRICES_FILE", PROJECTS / "patchlamp/app/Support/Prices.php"))
+WRITER_TIMEOUT = int(os.environ.get("SOCIAL_WRITER_TIMEOUT", "300"))     # five minutes a writer
+CODEX_TIMEOUT = int(os.environ.get("SOCIAL_CODEX_TIMEOUT", str(WRITER_TIMEOUT)))
+FACTS_TIMEOUT = 180                                                         # three minutes for the judge
+PICK_TIMEOUT = 600                                                          # ten for the picker
+FACTS_EXIT = {"pass": 0, "fail": 1, "couldnt": 4}
+FACT_VERDICTS = ("supported", "not supported", "unsure", "no claim")
+LESSONS_CAP = 30
+SIGNOFFS = ("patched.", "all it takes is a text.")
+# weekday -> (kind, the topic pillars to draw from, in order); calendar.md § Leans by weekday
+DAY_PLAN = {0: ("text", ["ask", "fix"]), 1: ("data", ["number"]), 2: ("text", ["nothing", "how"]),
+            3: ("data", ["number"]), 4: ("raccoon", ["room"]), 5: ("text", ["stepin", "thread", "ask"])}
+# a topic line that says it waits on something code can't confirm is not drawn by itself
+GATED = ("only after", "after s1", "after a real", "post only once", "citable only once", "ask first",
+         "restaurant day only", "empty on purpose", "only once stripe", "not before /pricing")
+LINK_CLAIMS = {"/check": ["Free no account nothing to sign What's wrong with your Google listing check",
+                          "business name goes in reads that listing live opens the website link the way the census did"],
+               "/templates": ["Each demo is a real site anyone can text templates"]}
+SOURCE_FILES = {"DATA_STORY": "client-leads/DATA_STORY_STATS.md", "CLAIMS": "patchlamp/CLAIMS.md",
+                "BRAND": "patchlamp/BRAND.md"}
+STOP = set("that this with from have your they them their what when will just about into than then there here "
+           "only once link post data never name line lines each every more most some been were also does".split())
+
+
+def today_str(args=None):
+    return (getattr(args, "date", None) or os.environ.get("SOCIAL_TODAY") or dt.date.today().isoformat())
+
+
+def day_file(date):
+    return SOCIAL_DIR / "packets" / f"{date}.json"
+
+
+def load_day(date, need=True):
+    f = day_file(date)
+    if not f.exists():
+        if need:
+            die(f"no packet for {date} (`social packet --date {date}` first)")
+        return None
+    return json.loads(f.read_text())
+
+
+def save_day(day):
+    if COSTS:
+        day.setdefault("costs", []).extend([who, usd] for who, usd in COSTS)
+        COSTS.clear()
+    f = day_file(day["date"])
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps(day, indent=1, ensure_ascii=False) + "\n")
+
+
+def norm(text):
+    t = (text or "").lower().replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"')
+    t = re.sub(r"\*\*|__|`", "", t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+CLOCK = re.compile(r"\b\d{1,2}:\d{2}\s*(?:am|pm)?\b", re.I)
+NUM = re.compile(r"\$?\d[\d,]*(?:\.\d+)?%?")
+
+
+def numbers(text):
+    """The numbers in a sentence, as plain digit strings ('5,865' -> '5865', '3%' -> '3', '$99' -> '99').
+    A clock time (2:14am) is the night shift's premise, not a claim, so it is left out; so are links."""
+    t = re.sub(r"https?://\S+|\S*patchlamp\.\w+\S*|#\w+", " ", text or "")
+    t = CLOCK.sub(" ", t)
+    out = []
+    for m in NUM.finditer(t):
+        v = m.group().lstrip("$").rstrip("%").replace(",", "").rstrip(".")
+        if v:
+            out.append(v)
+    return out
+
+
+def prices_in(text):
+    t = re.sub(r"https?://\S+", " ", text or "")
+    return [m.group(1).replace(",", "") for m in re.finditer(r"\$\s?(\d[\d,]*(?:\.\d\d)?)", t)]
+
+
+def pricing_table():
+    """{tier: (name, monthly dollars, line number)} and the set of every dollar amount /pricing shows,
+    read from Prices::TIERS (the one place a price lives). (None, None) if the file can't be read."""
+    try:
+        lines = PRICES_FILE.read_text().splitlines()
+    except OSError:
+        return None, None
+    tiers, allowed, cur = {}, set(), None
+    inside = False
+    for i, line in enumerate(lines, 1):
+        if "const TIERS" in line:
+            inside = True
+            continue
+        if not inside:
+            continue
+        if re.match(r"\s*\];", line):
+            break
+        m = re.match(r"\s*'([a-z_+]+)' => \[", line)
+        if m:
+            cur = m.group(1)
+            continue
+        m = re.match(r"\s*'name' => '([^']+)'", line)
+        if m and cur:
+            tiers.setdefault(cur, {})["name"] = m.group(1)
+        m = re.match(r"\s*'(monthly|usage|first_month_usage|topup|extra_site)' => (\d[\d_]*)", line)
+        if m and cur:
+            dollars = int(m.group(2).replace("_", "")) / 100
+            allowed.add(f"{dollars:g}")
+            if m.group(1) == "monthly":
+                tiers.setdefault(cur, {}).update(monthly=dollars, line=i)
+    return tiers, allowed
+
+
+def pricing_line(tier, row):
+    return f"{row.get('name', tier)}: ${row['monthly']:,.0f} a month"
+
+
+# ---- sources: quoted from the file, re-read when checked ---------------------------------------
+
+def read_lines(rel):
+    p = (PROJECTS / rel).resolve()
+    if not str(p).startswith(str(PROJECTS.resolve()) + os.sep) or not p.is_file():
+        return None
+    return p.read_text(errors="replace").splitlines()
+
+
+def heading_path(lines, i):
+    """The '## …' and '### …' headings above line i (1-based), as 'A › B'."""
+    h2 = h3 = None
+    for j in range(i - 1, -1, -1):
+        s = lines[j]
+        if s.startswith("### ") and h3 is None and h2 is None:
+            h3 = s[4:].strip()
+        elif s.startswith("## ") and h2 is None:
+            h2 = s[3:].strip()
+            break
+        elif s.startswith("# ") and h2 is None:
+            h2 = s[2:].strip()
+            break
+    return " › ".join(x for x in (h2, h3) if x)
+
+
+def block_at(lines, i):
+    """The markdown block line i (1-based) belongs to: one table row, or a bullet / paragraph up to 8 lines."""
+    s = lines[i - 1]
+    if s.lstrip().startswith("|"):
+        return i, i
+    a = i
+    while a > 1 and lines[a - 2].strip() and not re.match(r"\s*(?:[-*] |\d+\. |#)", lines[a - 1]) \
+            and not lines[a - 2].lstrip().startswith(("|", "#")) and i - a < 6:
+        a -= 1
+    b = i
+    while b < len(lines) and lines[b].strip() and not re.match(r"\s*(?:[-*] |\d+\. |\||#)", lines[b]) and b - a < 7:
+        b += 1
+    return a, b
+
+
+def table_header(lines, i):
+    j = i
+    while j > 1 and lines[j - 2].lstrip().startswith("|"):
+        j -= 1
+    return j if j != i else None
+
+
+def make_source(rel, a, b, lines=None):
+    lines = lines or read_lines(rel)
+    text = " ".join(x.strip() for x in lines[a - 1:b])
+    return {"file": rel, "lines": [a, b], "text": text, "section": heading_path(lines, a)}
+
+
+def section_range(lines, words):
+    """(start, end) of the '## ' section whose heading holds every word, else the whole file."""
+    for i, s in enumerate(lines):
+        if s.startswith("## ") and all(w.lower() in s.lower() for w in words):
+            for j in range(i + 1, len(lines)):
+                if lines[j].startswith("## "):
+                    return i + 1, j
+            return i + 1, len(lines)
+    return 1, len(lines)
+
+
+def keywords(text):
+    return {w for w in re.findall(r"[a-z][a-z']{3,}", norm(text)) if w not in STOP}
+
+
+def find_sources(rel, topic, section_words=(), want=4, pinned_line=None):
+    lines = read_lines(rel)
+    if lines is None:
+        return [], f"{rel} isn't there to quote"
+    lo, hi = section_range(lines, section_words) if section_words else (1, len(lines))
+    picks = []
+    if pinned_line and 1 <= pinned_line <= len(lines):
+        picks.append(pinned_line)
+    allnums = set(numbers(topic))
+    nums = [n for n in allnums if len(n) > 1 or n not in ("1", "2", "3")] or list(allnums)
+    hits = {}
+    for i in range(lo, hi + 1):
+        have = set(numbers(lines[i - 1]))
+        if have & set(nums):
+            hits[i] = len(have & allnums)
+    # the lines that hold the most of the topic's numbers, best first
+    picks.extend(sorted(hits, key=lambda i: (-hits[i], i))[:want])
+    if not nums or len(picks) < 2:
+        kw = keywords(topic)
+        scored = sorted(((len(kw & keywords(lines[i - 1])), i) for i in range(lo, hi + 1)), reverse=True)
+        picks.extend(i for s, i in scored[:want] if s >= 2)
+    out, seen = [], set()
+    for i in picks:
+        a, b = block_at(lines, i)
+        h = table_header(lines, i)
+        hdr = [(h, h)] if h and h < len(lines) and re.match(r"\s*\|\s*:?-{3}", lines[h]) else []
+        for rng in [(a, b)] + hdr:      # the row first; a real header row after it, for the columns' meaning
+            if rng not in seen:
+                seen.add(rng)
+                out.append(make_source(rel, rng[0], rng[1], lines))
+    return out[: want + 3], ""
+
+
+def ready_lines(rel, section_words):
+    """The '### Ready-to-use lines' bullets of a DATA_STORY section: the sentences already cleared to quote."""
+    lines = read_lines(rel)
+    if lines is None:
+        return []
+    lo, hi = section_range(lines, section_words)
+    out = []
+    for i in range(lo, hi + 1):
+        if lines[i - 1].startswith("### Ready-to-use"):
+            j = i + 1
+            while j <= hi and not lines[j - 1].startswith("#"):
+                if lines[j - 1].lstrip().startswith("- "):
+                    a, b = block_at(lines, j)
+                    out.append(make_source(rel, a, b, lines))
+                    j = b + 1
+                else:
+                    j += 1
+            break
+    return out
+
+
+def topic_sources(topic):
+    """Every source a topic line names, quoted from its file. Returns (sources, notes)."""
+    src, notes = [], []
+    paren = " ".join(re.findall(r"\(([^()]*(?:\([^()]*\)[^()]*)*)\)", topic)) or topic
+    body = re.sub(r"\([^()]*(?:\([^()]*\)[^()]*)*\)", " ", topic)
+    for m in re.finditer(r"(research/[\w./-]+\.md)(?::(\d+))?", paren):
+        got, why = find_sources(m.group(1), body, pinned_line=int(m.group(2)) if m.group(2) else None)
+        src += got
+        notes += [why] if why else []
+    if re.search(r"DATA_STORY", paren):
+        words = ["Services"] if re.search(r"§\s*Services", paren) else (["v3"] if "v3" in paren else [])
+        rel = SOURCE_FILES["DATA_STORY"]
+        if words == ["Services"]:
+            src += ready_lines(rel, words)
+        got, why = find_sources(rel, body, section_words=words)
+        src += got
+        notes += [why] if why else []
+    m = re.search(r"CLAIMS(?:\s*§[^:;)]*)?:?\s*([^)]*)", paren)
+    if m:
+        phrases = [p.strip() for p in re.split(r"[;,]", m.group(1)) if p.strip() and "link" not in p] or [body]
+        for p in phrases[:4]:
+            got, why = find_sources(SOURCE_FILES["CLAIMS"], p + " " + (body if len(keywords(p)) < 2 else ""), want=1)
+            src += got[:2]
+    for link, queries in LINK_CLAIMS.items():        # the page the post links to, so an invitation to it is checkable
+        if link in paren:
+            for query in queries:
+                got, _ = find_sources(SOURCE_FILES["CLAIMS"], query, want=1)
+                src += got[:1]
+    if re.search(r"BRAND", paren):
+        got, _ = find_sources(SOURCE_FILES["BRAND"], body, want=2)
+        src += got
+    if re.search(r"/pricing|\$\d|Starter|plans? from", topic):
+        tiers, _ = pricing_table()
+        if tiers is None:
+            notes.append(f"the prices file isn't readable ({PRICES_FILE}), so no price can be posted today")
+        else:
+            for t, row in tiers.items():
+                if "monthly" in row:
+                    src.append({"file": "/pricing", "lines": [row["line"], row["line"]], "tier": t,
+                                "text": pricing_line(t, row), "section": "Prices::TIERS (what /pricing shows)"})
+    return src, notes
+
+
+def facts_file_sources(date):
+    rel = f"social/facts/{date}.md"
+    lines = read_lines(rel) if (PROJECTS / rel).exists() else None
+    if not lines:
+        return []
+    return [make_source(rel, i, i, lines) for i, s in enumerate(lines, 1)
+            if s.strip() and not s.startswith("#")][:40]
+
+
+def draw_topic(kind, pillars, weekday, line_no=None):
+    """(line number, text) of the topic line: --topic-line N, else the top unstruck, ungated line of the first
+    pillar that has one. Tuesday prefers a DATA_STORY line, Thursday a research brief (calendar § Leans)."""
+    f = SOCIAL_DIR / "topics" / "patchlamp.md"
+    lines = f.read_text().splitlines() if f.exists() else []
+    if line_no:
+        if not 1 <= line_no <= len(lines):
+            die(f"topics/patchlamp.md has no line {line_no}")
+        return line_no, lines[line_no - 1]
+    for pillar in pillars:
+        cands = [(i, s) for i, s in enumerate(lines, 1)
+                 if s.startswith(f"- [{pillar}]") and "~~" not in s and not any(g in s.lower() for g in GATED)]
+        if kind == "data" and cands:
+            pref = "DATA_STORY" if weekday == 1 else "research/"
+            cands.sort(key=lambda c: 0 if pref in c[1] else 1)
+        if cands:
+            return cands[0]
+    return None, None
+
+
+def last_captions(n=6):
+    f = SOCIAL_DIR / "posted.jsonl"
+    rows = []
+    for line in (f.read_text().splitlines() if f.exists() else []):
+        try:
+            r_ = json.loads(line)
+        except ValueError:
+            continue
+        if r_.get("status", "posted") == "posted":
+            rows.append(r_)
+    return [f"{r_.get('date')} [{r_.get('kind') or r_.get('pillar')}] {r_.get('caption') or r_.get('topic')}" for r_ in rows[-n:]]
+
+
+def read_social(name, default=""):
+    f = SOCIAL_DIR / name
+    return f.read_text().strip() if f.exists() else default
+
+
+def source_line(sid, s):
+    a, b = s["lines"]
+    where = f"{s['file']}:{a}" + (f"-{b}" if b != a else "")
+    sec = f" ({s['section']})" if s.get("section") else ""
+    return f"{sid}  {where}{sec}\n    {s['text']}"
+
+
+def cmd_packet(args):
+    date = today_str(args)
+    try:
+        d = dt.date.fromisoformat(date)
+    except ValueError:
+        die(f"--date {date}: not a date (YYYY-MM-DD)")
+    wd = d.weekday()
+    if wd not in DAY_PLAN and not args.kind:
+        die(f"{date} is a Sunday: no post (calendar.md § Leans by weekday)")
+    kind, pillars = DAY_PLAN.get(wd, (args.kind, []))
+    kind = args.kind or kind
+    if args.pillar:
+        pillars = [args.pillar]
+    line_no, topic = draw_topic(kind, pillars, wd, args.topic_line)
+    sources, notes = topic_sources(topic) if topic else ([], [f"no unstruck topic line for {', '.join(pillars)}"])
+    sources += facts_file_sources(date)
+    seen, uniq = set(), []
+    for s in sources:
+        k = (s["file"], tuple(s["lines"]))
+        if k not in seen:
+            seen.add(k)
+            uniq.append(s)
+    src = {f"S{i}": s for i, s in enumerate(uniq[:30], 1)}
+    rules = read_social("rules.md", "(social/rules.md is missing)")
+    lessons = read_social("lessons.md", "(no lessons yet)")
+    md = [f"# Packet — {date}, a {kind} post" + (f" (pillar {pillars[0]})" if pillars else ""), "",
+          "Built by `social packet` from the files, no model. Write only from what is quoted here.", "",
+          "## Today's topic line", "",
+          (f"topics/patchlamp.md:{line_no}: {topic}" if topic else "none: " + "; ".join(notes)), "",
+          "The topic line is a suggestion in someone's words, not a source. Its own claims count only where a "
+          "source line below says them.", "",
+          "## Sources (quoted verbatim, file and line; cite them by id)", ""]
+    md += [source_line(k, v) for k, v in src.items()] or ["(none: a post with a fact in it can't be written from this packet)"]
+    if notes:
+        md += ["", "Notes from the packet: " + "; ".join(notes)]
+    md += ["", "## The last six posts (don't repeat a shape or an opening)", ""] + [f"- {c}" for c in last_captions()]
+    md += ["", "## Lessons (social/lessons.md)", "", lessons, "", "## The rules (social/rules.md)", "", rules, ""]
+    (SOCIAL_DIR / "packets").mkdir(parents=True, exist_ok=True)
+    (SOCIAL_DIR / "packets" / f"{date}.md").write_text("\n".join(md))
+    old = load_day(date, need=False) or {}
+    day = {"date": date, "kind": kind, "pillar": pillars[0] if pillars else None, "topic_line": line_no,
+           "topic": topic, "sources": src, "notes": notes, "built": dt.datetime.now().isoformat(timespec="seconds")}
+    if old.get("drafts") and not args.fresh:
+        day.update({k: old[k] for k in ("drafts", "pick", "queued") if k in old})
+    save_day(day)
+    print(f"packet {SOCIAL_DIR / 'packets' / (date + '.md')}: a {kind} post, {len(src)} source line(s)"
+          + (f", topic line {line_no}" if line_no else ", no topic line") + ("; " + "; ".join(notes) if notes else ""))
+
+
+# ---- the writers ---------------------------------------------------------------------------------
+
+WRITER_BRIEF = """You are writing one caption for Patchlamp's social feed, for {date}: a {kind} post. Patchlamp keeps a small business's website and Google listing right by text: the owner texts a change and it is done. Patch is the raccoon who does it, and the feed is in his voice.
+
+The packet below holds everything you may stand on: today's topic line, the source lines quoted from their files with file and line, the last six posts, the lessons from earlier mornings and the one-page rule sheet. Use only facts that a source line in it says. The reason: after you, a checker re-reads each line you cite from its file and a separate judge reads your caption beside those lines, and a sentence they can't find in a source does not post. A number has to appear in the line you cite, written the same way. A joke, a mood or an invitation needs no source.
+
+Another writer is drafting from the same packet; someone who doesn't know which of you wrote which will pick one. Write the one you would put your name on.
+
+Your budget: about five minutes and one draft. If the packet doesn't hold enough to write a true post of this kind today, say so: "nothing true to post in this shape today, because ..." is a good answer, it is passed on as you wrote it, and nobody asks again.
+
+Reply with one JSON object and nothing after it:
+{{"caption": "the caption exactly as it would post, or empty if you decline", "ledger": [{{"sentence": "a factual sentence from the caption, word for word", "sources": ["S1"]}}], "why": ["three short lines on why you wrote it this way"], "declined": "empty, or why there is nothing true to post"}}
+Every sentence that says what Patchlamp does or costs, or carries a number, goes in the ledger with the ids it stands on.
+
+---
+
+{packet}
+"""
+
+CODEX_ASSIGNMENT = """# Assignment: today's feed caption ({date})
+from Flint's `social draft` (stamped by code, B133) · write to `marketing/copy/feed-{date}.md` · worth five minutes
+
+One caption for this morning's post on Patchlamp's feed, a {kind} post. Another writer drafts from the same packet, and the drafts are picked blind, so write yours as you'd want it to run.
+
+**What is fixed.** Everything you may stand on is in the packet below (you can't read outside `marketing/`, so it is inline): the topic line, the source lines quoted from their files with file and line, the last six posts, the lessons and the rule sheet. Use only facts a source line says, a number exactly as its line writes it. After you, code re-reads each cited line from its file and a judge reads the caption beside those lines; a sentence they can't find does not post. A joke, a mood or an invitation needs no source.
+
+**If it can't be done truthfully.** "Nothing true to post in this shape today, because ..." is a good answer; it is passed on as written.
+
+**The brief** has your usual headings (Now: "none, a new post"; Proposed: the caption; Why: three short lines; Facts: each factual sentence beside the source ids it stands on), and ends with one fenced ```json block holding the same thing for the code that reads it:
+{{"caption": "...", "ledger": [{{"sentence": "...", "sources": ["S1"]}}], "why": ["...", "...", "..."], "declined": ""}}
+
+---
+
+{packet}
+"""
+
+
+def scrubbed_env():
+    return {k: v for k, v in os.environ.items() if k not in JUDGE_SCRUB}
+
+
+def claude_cmd(model, turns):
+    exe = shutil.which("claude") or "claude"
+    return [exe, "-p", "--model", model, "--output-format", "json", "--restricted", "--tools", "",
+            "--permission-mode", "dontAsk", "--strict-mcp-config", "--disable-slash-commands",
+            "--no-session-persistence", "--max-turns", str(turns)]
+
+
+COSTS = []    # (who, dollars at list price) for each model run this command made; kept on the day's file
+
+
+def unwrap(out, who="a model"):
+    """claude --output-format json wraps the reply; return (text, error or '')."""
+    try:
+        wrap = json.loads(out)
+        if isinstance(wrap, dict) and isinstance(wrap.get("total_cost_usd"), (int, float)):
+            COSTS.append((who, round(wrap["total_cost_usd"], 4)))
+        if isinstance(wrap, dict) and isinstance(wrap.get("result"), str):
+            if wrap.get("is_error"):
+                return "", f"the session ended in an error: {wrap['result'][:200]}"
+            return wrap["result"], ""
+    except ValueError:
+        pass
+    return out, ""
+
+
+def last_obj(text, keys):
+    for m in reversed(list(re.finditer(r"\{", text or ""))):
+        try:
+            obj, _ = json.JSONDecoder().raw_decode(text[m.start():])
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and any(k in obj for k in keys):
+            return obj
+    return None
+
+
+def plural_minutes(seconds):
+    if seconds < 60:
+        return f"{seconds} seconds"
+    return f"{seconds // 60} minute" + ("s" if seconds >= 120 else "")
+
+
+def run_model(cmd, prompt, timeout, cwd, keys, who):
+    """Run one model command; (answer dict or None, why-not)."""
+    try:
+        r = subprocess.run(cmd, input=prompt, capture_output=True, text=True, cwd=cwd, env=scrubbed_env(), timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return None, f"{who} did not answer within {plural_minutes(timeout)}", True
+    except OSError as exc:
+        return None, f"{who} could not start ({exc})", False
+    text, err = unwrap(r.stdout or "", who)
+    if err:
+        return None, f"{who}: {err}", False
+    ans = last_obj(text, keys)
+    if ans is None:
+        return None, f"{who}'s answer had no JSON in it (exit {r.returncode}): {(text.strip() or r.stderr.strip())[-160:]}", False
+    return ans, "", False
+
+
+def writer_opus(day, packet):
+    prompt = WRITER_BRIEF.format(date=day["date"], kind=day["kind"], packet=packet)
+    tmp = tempfile.mkdtemp(prefix="social-draft-")
+    try:
+        (Path(tmp) / "packet.md").write_text(packet)
+        cmd = ["sh", "-c", os.environ["SOCIAL_WRITER_OPUS"]] if os.environ.get("SOCIAL_WRITER_OPUS") \
+            else claude_cmd(os.environ.get("SOCIAL_WRITER_MODEL") or "opus", 3)
+        return run_model(cmd, prompt, WRITER_TIMEOUT, tmp, ("caption", "declined"), "Opus")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def writer_codex(day, packet):
+    date = day["date"]
+    name = f"feed-{date}"
+    assign = MARKETING / "assignments" / f"{name}.md"
+    brief = MARKETING / "copy" / f"{name}.md"
+    text = CODEX_ASSIGNMENT.format(date=date, kind=day["kind"], packet=packet)
+    try:
+        assign.parent.mkdir(parents=True, exist_ok=True)
+        assign.write_text(text)
+    except OSError as exc:
+        return None, f"couldn't stamp Codex's assignment ({exc})", False
+    tmp = tempfile.mkdtemp(prefix="social-codex-")
+    out = Path(tmp) / "last.md"
+    try:
+        if os.environ.get("SOCIAL_WRITER_CODEX"):
+            cmd = ["sh", "-c", os.environ["SOCIAL_WRITER_CODEX"]]
+            prompt = text
+        else:
+            exe = shutil.which("codex")
+            if not exe:
+                return None, "codex is not on PATH", False
+            cmd = [exe, "exec", "-C", str(MARKETING), "-s", "workspace-write", "--skip-git-repo-check", "-o", str(out),
+                   f"read ../AGENTS.md, do assignments/{name}.md"]
+            prompt = ""          # stdin closed: a background codex waits on input forever otherwise
+        started = dt.datetime.now().timestamp() - 1   # a brief left from an earlier run of the same date is not today's answer
+        try:
+            r = subprocess.run(cmd, input=prompt, capture_output=True, text=True, cwd=str(MARKETING),
+                               env=os.environ.copy(), timeout=CODEX_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            return None, f"Codex did not answer within {plural_minutes(CODEX_TIMEOUT)}", True
+        except OSError as exc:
+            return None, f"Codex could not start ({exc})", False
+        said = ""
+        for f in (brief, out):
+            if f.exists() and f.stat().st_mtime >= started:
+                said = f.read_text()
+                ans = last_obj(said, ("caption", "declined"))
+                if ans is not None:
+                    return ans, "", False
+        ans = last_obj(r.stdout, ("caption", "declined"))
+        if ans is not None:
+            return ans, "", False
+        return None, f"Codex's answer had no JSON in it (exit {r.returncode}): {(said or r.stdout or r.stderr).strip()[-160:]}", False
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def clean_draft(writer, ans, why_not, timed_out):
+    if ans is None:
+        return {"writer": writer, "status": "timeout" if timed_out else "error", "reason": why_not}
+    caption = str(ans.get("caption") or "").strip()
+    declined = str(ans.get("declined") or "").strip()
+    if not caption:
+        return {"writer": writer, "status": "declined", "reason": declined or "an empty caption and no reason"}
+    ledger = []
+    for e in ans.get("ledger") or []:
+        if isinstance(e, dict) and e.get("sentence"):
+            srcs = e.get("sources") or ([e["source"]] if e.get("source") else [])
+            ledger.append({"sentence": str(e["sentence"]), "sources": [str(s) for s in srcs],
+                           **({"quote": e["quote"]} if e.get("quote") else {})})
+    why = ans.get("why") or []
+    return {"writer": writer, "status": "ok", "caption": caption, "ledger": ledger,
+            "why": [str(w) for w in (why if isinstance(why, list) else [why])][:3]}
+
+
+def cmd_draft(args):
+    date = today_str(args)
+    day = load_day(date)
+    packet = (SOCIAL_DIR / "packets" / f"{date}.md").read_text()
+    results = {}
+
+    def go(name, fn):
+        results[name] = clean_draft(name, *fn(day, packet))
+
+    import threading
+    jobs = [("opus", writer_opus)] + ([] if args.no_codex else [("codex", writer_codex)])
+    threads = [threading.Thread(target=go, args=j) for j in jobs]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    if args.no_codex:
+        results["codex"] = {"writer": "codex", "status": "skipped", "reason": "--no-codex"}
+    day["drafts"] = [results["opus"], results["codex"]]
+    day.pop("pick", None)
+    save_day(day)
+    for i, d in enumerate(day["drafts"], 1):
+        if d["status"] == "ok":
+            print(f"{i}. {d['writer']}: {d['caption']}")
+            for w in d.get("why") or []:
+                print(f"     why: {w}")
+        else:
+            print(f"{i}. {d['writer']}: {d['status']} — {d['reason']}")
+    ok = [d for d in day["drafts"] if d["status"] == "ok"]
+    if len(ok) == 1:
+        other = next(d for d in day["drafts"] if d["status"] != "ok")
+        print(f"one draft today ({other['writer']} {other['status']}: {other['reason']})")
+    if not ok:
+        print("no draft today: send Taylor the reasons above as written, and don't ask the writers again")
+        sys.exit(1)
+
+
+# ---- the fact check: code first, then a judge who never saw the writer ---------------------------
+
+def resolve_ref(ref, sources, quote=None):
+    """A ledger citation -> (file, a, b, quote or None, problem). 'S3' is a packet line; 'path:12' or
+    'path:12-14' a file line; '/pricing:starter' a tier as Prices::TIERS has it."""
+    ref = str(ref).strip()
+    if ref in (sources or {}):
+        s = sources[ref]
+        return s["file"], s["lines"][0], s["lines"][1], s.get("tier") or s["text"], ""
+    m = re.match(r"^/pricing:(\w[\w+]*)$", ref)
+    if m:
+        return "/pricing", 0, 0, m.group(1), ""
+    m = re.match(r"^([\w./+-]+\.\w+):(\d+)(?:-(\d+))?$", ref)
+    if m:
+        a = int(m.group(2))
+        return m.group(1), a, int(m.group(3) or a), quote, ""
+    return None, 0, 0, None, f"cites {ref!r}, which is not a line in a file"
+
+
+def reread(file, a, b, quote, packet_ids=None):
+    """(text as the file says it now, problem). The file is read again, never the packet."""
+    if file == "/pricing":
+        tiers, _ = pricing_table()
+        if tiers is None:
+            return None, f"the prices file ({PRICES_FILE}) can't be read"
+        row = tiers.get(quote) or next((r for t, r in tiers.items() if r.get("name", "").lower() == str(quote).lower()), None)
+        if not row or "monthly" not in row:
+            return None, f"/pricing has no tier {quote!r}"
+        return pricing_line(quote, row), ""
+    lines = read_lines(file)
+    if lines is None:
+        return None, f"cites {file}, which isn't a file under ~/projects"
+    if not (1 <= a <= b <= len(lines)):
+        return None, f"cites {file}:{a}-{b}, but the file has {len(lines)} lines"
+    text = " ".join(x.strip() for x in lines[a - 1:b])
+    if quote and norm(quote) not in norm(text):
+        return None, f"cites {file}:{a}" + (f"-{b}" if b != a else "") + f" for \"{quote[:80]}\", but that line now reads \"{text[:80]}\""
+    return text, ""
+
+
+def sentences(caption):
+    """The caption's sentences that could carry a claim: links, hashtags and the sign-offs are left out."""
+    out = []
+    for line in (caption or "").splitlines():
+        line = re.sub(r"https?://\S+|\S*patchlamp\.(?:com|site)\S*|#\w+", " ", line).strip()
+        for s in re.split(r"(?<=[.?!])\s+(?=[\"'A-Z0-9“$])", line):
+            s = s.strip()
+            if s and norm(s) not in SIGNOFFS and re.search(r"[A-Za-z0-9]", s):
+                out.append(s)
+    return out
+
+
+def ledger_for(sentence, ledger):
+    ns = norm(sentence).strip(" .\"'")
+    best, score = None, 0.0
+    for e in ledger or []:
+        ne = norm(e.get("sentence")).strip(" .\"'")
+        if not ne:
+            continue
+        if ne == ns or (len(ne) > 12 and (ne in ns or ns in ne)):
+            return e
+        a, b = set(ns.split()), set(ne.split())
+        j = len(a & b) / max(len(a | b), 1)
+        if j > score:
+            best, score = e, j
+    return best if score >= 0.6 else None
+
+
+def code_check(caption, ledger, sources, in_packet=True):
+    """Every problem code can see, as [(sentence, category, reason)], and the cited lines as re-read
+    {ref: (file, a, b, text)}. Pure apart from reading the cited files."""
+    problems, cited = [], {}
+    _, allowed = pricing_table()
+    for s in sentences(caption):
+        for p in prices_in(s):
+            if allowed is None:
+                problems.append((s, "price", f"a price (${p}) and the prices file ({PRICES_FILE}) can't be read"))
+            elif f"{float(p):g}" not in allowed:
+                problems.append((s, "price", f"${p} is not a price on /pricing (Prices::TIERS)"))
+        nums = numbers(s)
+        e = ledger_for(s, ledger)
+        if nums and e is None:
+            problems.append((s, "no-source", f"it has a number ({', '.join(nums)}) and no source in the ledger"))
+            continue
+        if e is None:
+            continue
+        texts = []
+        for ref in e.get("sources") or []:
+            file, a, b, quote, prob = resolve_ref(ref, sources, e.get("quote"))
+            if prob:
+                problems.append((s, "no-source", prob))
+                continue
+            if in_packet and sources and file != "/pricing" and ref not in sources and \
+                    not any(v["file"] == file and list(v["lines"]) == [a, b] for v in sources.values()):
+                problems.append((s, "not-in-packet", f"cites {ref}, which is not a line in today's packet"))
+                continue
+            text, prob = reread(file, a, b, quote)
+            if prob:
+                problems.append((s, "stale-cite", prob))
+                continue
+            cited[str(ref)] = (file, a, b, text)
+            texts.append(text)
+        if nums and not texts and not any(p[0] == s for p in problems):
+            problems.append((s, "no-source", f"it has a number ({', '.join(nums)}) and cites no line in a file"))
+            continue
+        have = set()
+        for t in texts:
+            have.update(numbers(t))
+        missing = [n for n in nums if n not in have]
+        if texts and missing:
+            problems.append((s, "number", f"{', '.join(missing)} is not in the line it cites"))
+    return problems, cited
+
+
+FACTS_PROMPT = """You are checking the words of one post for Patchlamp's social feed before it goes up. You did not write it and you have not seen why it was written; that is the point. Patchlamp keeps a small business's website and Google listing right by text; Patch, a raccoon, is the voice.
+
+Below are the caption, its sentences numbered, and the source lines the writer cited, each quoted from its file just now. For each numbered sentence, say whether the sources support it:
+- "supported": a source line says this, at least as strongly as the sentence does.
+- "not supported": no source line says it, or the sentence says more than its source (a wider claim, a different number, a detail the source doesn't have).
+- "unsure": you can't tell from these lines. That is a good answer whenever it is true; it is passed on to Taylor as your doubt.
+- "no claim": the sentence states no fact (a joke, a mood, an invitation like "Is yours one?"). If you are in doubt whether it is a claim, treat it as one.
+Your job is the claim, not the style. Why it matters: Taylor stopped trusting the feed after a post carried numbers no file held and another said more than its stat; this check is what lets him stop cross-checking.
+
+If you couldn't do the check (the text is garbled, the sources are missing), set "looked" to false and say why; that goes to Taylor as it is.
+
+Your budget is a couple of turns and about three minutes; no tools are needed.
+
+Reply with one JSON object and nothing after it:
+{{"looked": true or false, "sentences": [{{"n": 1, "verdict": one of "supported" / "not supported" / "unsure" / "no claim", "why": "one line"}}]}}
+
+## The caption
+
+{caption}
+
+## The sentences
+
+{numbered}
+
+## The cited sources
+
+{sources}
+"""
+
+
+def ask_facts_judge(caption, sents, cited):
+    src = "\n".join(f"- {f}" + (f":{a}" + (f"-{b}" if b != a else "") if a else "") + f"\n  {t}"
+                    for f, a, b, t in cited.values()) or "(none cited)"
+    prompt = FACTS_PROMPT.format(caption=caption, numbered="\n".join(f"{i}. {s}" for i, s in enumerate(sents, 1)), sources=src)
+    cmd = ["sh", "-c", os.environ["SOCIAL_FACTS_JUDGE"]] if os.environ.get("SOCIAL_FACTS_JUDGE") \
+        else claude_cmd(judge_model(), 2)
+    tmp = tempfile.mkdtemp(prefix="social-facts-")
+    try:
+        ans, why, _ = run_model(cmd, prompt, FACTS_TIMEOUT, tmp, ("sentences", "looked"), "the judge")
+        return ans, why
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def facts_verdict(problems, sents, ans, why_not=""):
+    """(verdict, [(sentence, line)]) — pass only when code found nothing and the judge called every sentence
+    supported or no claim. Stricter than the picture check on purpose: an unsure fact doesn't post. Pure."""
+    if problems:
+        return "fail", [(s, r) for s, _, r in problems]
+    if not sents:
+        return "pass", []
+    if ans is None:
+        return "couldnt", [("", why_not or "no answer from the judge")]
+    if ans.get("looked") is False:
+        return "couldnt", [("", "the judge couldn't check: " + str(ans.get("why") or "no reason given"))]
+    by_n = {}
+    for e in ans.get("sentences") or []:
+        try:
+            by_n[int(e.get("n"))] = e
+        except (TypeError, ValueError):
+            continue
+    lines, bad = [], False
+    for i, s in enumerate(sents, 1):
+        e = by_n.get(i)
+        v = str((e or {}).get("verdict", "")).lower().strip()
+        if v not in FACT_VERDICTS:
+            return "couldnt", [(s, f"the judge's answer for sentence {i} was not one of the choices ({v or 'missing'})")]
+        lines.append((s, f"{v}: {(e or {}).get('why') or '-'}"))
+        bad = bad or v in ("not supported", "unsure")
+    return ("fail" if bad else "pass"), lines
+
+
+def check_draft(d, sources, in_packet=True):
+    """Run both layers on one draft; returns the facts record stored on it."""
+    problems, cited = code_check(d["caption"], d.get("ledger"), sources, in_packet)
+    sents = sentences(d["caption"])
+    ans, why_not = (None, "")
+    if not problems and sents:
+        ans, why_not = ask_facts_judge(d["caption"], sents, cited)
+    v, lines = facts_verdict(problems, sents, ans, why_not)
+    return {"verdict": v, "layer": "code" if problems else "judge", "lines": [[s, r] for s, r in lines],
+            "problems": [list(p) for p in problems],
+            "cited": {k: list(v_) for k, v_ in cited.items()},
+            "model": None if problems else ("stand-in (SOCIAL_FACTS_JUDGE)" if os.environ.get("SOCIAL_FACTS_JUDGE") else judge_model()),
+            "at": dt.datetime.now().isoformat(timespec="seconds")}
+
+
+def print_facts(label, rec):
+    print(f"{label}: {rec['verdict']} ({rec['layer']})")
+    for s, r in rec["lines"]:
+        print(f"  - \"{s[:90]}\" — {r}" if s else f"  - {r}")
+
+
+def cmd_facts(args):
+    words = args.words
+    if words and words[0] == "capture":
+        return facts_capture(args, words[1:])
+    date = today_str(args)
+    if args.draft:
+        f = Path(args.draft).expanduser()
+        try:
+            d = json.loads(f.read_text())
+        except (OSError, ValueError) as exc:
+            die(f"{f}: {exc}")
+        rec = check_draft(d, d.get("sources") or {}, in_packet=bool(d.get("sources")))
+        print_facts(d.get("label") or f.name, rec)
+        if COSTS:
+            print(f"  (the judge: ${sum(c for _, c in COSTS):.2f} at list price, on the subscription)")
+        if not args.no_lessons:
+            fact_lessons(d.get("date") or date, rec)
+        if args.json:
+            print(json.dumps(rec))
+        sys.exit(FACTS_EXIT[rec["verdict"]])
+    day = load_day(date)
+    drafts_ = day.get("drafts") or []
+    which = [int(w) for w in words if w.isdigit()] or [i for i, d in enumerate(drafts_, 1) if d.get("status") == "ok"]
+    if not which:
+        die(f"no drafts to check for {date} (`social draft` first)")
+    verdicts = []
+    for n in which:
+        if not 1 <= n <= len(drafts_) or drafts_[n - 1].get("status") != "ok":
+            die(f"no written draft {n} for {date}")
+        d = drafts_[n - 1]
+        d["facts"] = rec = check_draft(d, day.get("sources") or {})
+        print_facts(f"{n}. {d['writer']}", rec)
+        if not args.no_lessons:
+            fact_lessons(date, rec)
+        verdicts.append(rec["verdict"])
+    save_day(day)
+    # one passing draft is enough for the morning to go on to `social pick`; otherwise the worst reason
+    sys.exit(0 if "pass" in verdicts else (FACTS_EXIT["couldnt"] if "couldnt" in verdicts else FACTS_EXIT["fail"]))
+
+
+def facts_capture(args, cmd):
+    """`social facts capture CMD …` runs a command and keeps its output in social/facts/<date>.md, so a count
+    from it (a week's kits, a `front` number) is in a file the packet can quote and the checker can re-read."""
+    if not cmd:
+        die("usage: social facts capture COMMAND [ARGS…]   (e.g. social facts capture leads week)")
+    date = today_str(args)
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        die(f"{' '.join(cmd)}: {exc}")
+    if r.returncode != 0:
+        die(f"{' '.join(cmd)} failed (exit {r.returncode}): {(r.stderr or r.stdout).strip()[:200]}; nothing kept")
+    f = SOCIAL_DIR / "facts" / f"{date}.md"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    head = "" if f.exists() else f"# Facts for {date}: command output kept by `social facts capture`, quoted by the packet\n"
+    with f.open("a") as fh:
+        fh.write(f"{head}\n## `{' '.join(cmd)}` at {dt.datetime.now().isoformat(timespec='minutes')}\n\n{r.stdout.rstrip()}\n")
+    print(f"kept {len(r.stdout.splitlines())} line(s) of `{' '.join(cmd)}` in {f}")
+
+
+# ---- lessons: facts by themselves, taste on Taylor's keep ----------------------------------------
+
+LESSON_TEXT = {
+    "no-source": "a number needs a line in a file that says it",
+    "number": "a number is written as its source line writes it, or not at all",
+    "price": "a price is one /pricing shows, or none",
+    "stale-cite": "a cited line must still say it when the file is read again",
+    "not-in-packet": "cite the packet's lines; a fact outside the packet can't be checked that morning",
+    "judge": "a sentence says no more than its source",
+}
+PER_CATEGORY = 3
+
+
+def lessons_parts():
+    f = SOCIAL_DIR / "lessons.md"
+    text = f.read_text() if f.exists() else ""
+    head, facts, taste, part = [], [], [], "head"
+    for line in text.splitlines():
+        if line.startswith("## Facts"):
+            part = "facts"
+            continue
+        if line.startswith("## Taste"):
+            part = "taste"
+            continue
+        if part == "head":
+            head.append(line)
+        elif line.startswith("- "):
+            (facts if part == "facts" else taste).append(line)
+    if not any(h.strip() for h in head):
+        head = ["# Lessons for the feed (B133, plan 54) — both writers read this in the packet",
+                "",
+                "Fact lessons are written by `social facts` when a check fails. Taste lessons are written only when",
+                "Taylor answers the Sunday review with `keep N`: an argument that persuades a model is not evidence,",
+                f"and left alone the loop drifts toward what models like to read. At most {LESSONS_CAP} lines below.", ""]
+    return head, facts, taste
+
+
+def write_lessons(head, facts, taste):
+    while head and not head[-1].strip():
+        head = head[:-1]
+    out = head + ["", "## Facts", ""] + facts + ["", "## Taste", ""] + taste
+    (SOCIAL_DIR / "lessons.md").write_text("\n".join(out) + "\n")
+
+
+def fact_lessons(date, rec):
+    """One line per failure, by itself. Same category and sentence twice is one line; a category keeps its
+    newest few, so the fact lines stay short enough for a writer to hold."""
+    if rec["verdict"] != "fail":
+        return
+    adds = []
+    if rec["layer"] == "code":
+        for s, cat, reason in rec["problems"]:
+            adds.append((cat, f"- {date} · {LESSON_TEXT.get(cat, 'a fact needs its source')}: \"{s[:70]}\" ({reason[:110]}) [{cat}]"))
+    else:
+        for s, r in rec["lines"]:
+            if r.startswith(("not supported", "unsure")):
+                adds.append(("judge", f"- {date} · {LESSON_TEXT['judge']}: \"{s[:70]}\" (judge, {r[:110]}) [judge]"))
+    if not adds:
+        return
+    SOCIAL_DIR.mkdir(parents=True, exist_ok=True)
+    head, facts, taste = lessons_parts()
+    for cat, line in adds:
+        key = line.split("·", 1)[1].split("(")[0]
+        if any(key in f for f in facts):
+            continue
+        facts.append(line)
+        same = [f for f in facts if f.endswith(f"[{cat}]")]
+        for old in same[:-PER_CATEGORY]:
+            facts.remove(old)
+    write_lessons(head, facts, taste)
+
+
+def proposals_file():
+    return SOCIAL_DIR / "packets" / "proposed-taste.json"
+
+
+def cmd_lessons(args):
+    words = args.words or ["ls"]
+    op = words[0]
+    head, facts, taste = lessons_parts()
+    if op == "ls":
+        print((SOCIAL_DIR / "lessons.md").read_text() if (SOCIAL_DIR / "lessons.md").exists() else "no lessons yet")
+        return
+    if op == "week":
+        since = (dt.date.fromisoformat(today_str(args)) - dt.timedelta(days=7)).isoformat()
+        f = SOCIAL_DIR / "picks.jsonl"
+        rows = [json.loads(x) for x in (f.read_text().splitlines() if f.exists() else []) if x.strip()]
+        rows = [r_ for r_ in rows if r_.get("date", "") > since]
+        print(f"the week's picks since {since}: {len(rows)}")
+        for r_ in rows:
+            print(f"  {r_['date']} {r_.get('kind')}: {r_.get('how')}, won by {r_.get('won')} — {r_.get('argument') or '-'}")
+        p = SOCIAL_DIR / "posted.jsonl"
+        skips = [json.loads(x) for x in (p.read_text().splitlines() if p.exists() else []) if x.strip()]
+        skips = [r_ for r_ in skips if r_.get("date", "") > since and r_.get("status") == "skipped"]
+        for r_ in skips:
+            print(f"  skipped {r_['date']}: {r_.get('topic')}")
+        print(f"fact lessons this week: {sum(1 for x in facts if x[2:12] > since)}; taste lines: {len(taste)} "
+              f"(cap {LESSONS_CAP} lines in all, {len(facts) + len(taste)} now)")
+        return
+    if op == "propose":
+        rules = [w.strip() for w in words[1:] if w.strip()]
+        if not 1 <= len(rules) <= 2:
+            die('usage: social lessons propose "rule — reason (the post that showed it)" ["second rule"]  (at most two)')
+        proposals_file().parent.mkdir(parents=True, exist_ok=True)
+        proposals_file().write_text(json.dumps({"date": today_str(args), "rules": rules}, indent=1) + "\n")
+        print("Proposed for the feed's taste lessons (nothing is written until you keep one):")
+        for i, r_ in enumerate(rules, 1):
+            print(f"  {i}. {r_}")
+        print("Reply keep N or drop N.")
+        if len(facts) + len(taste) + len(rules) > LESSONS_CAP and taste:
+            print(f"At the cap ({LESSONS_CAP} lines): `retire` drops the oldest taste line: {taste[0][2:]}")
+        return
+    if op in ("keep", "drop"):
+        try:
+            prop = json.loads(proposals_file().read_text())
+        except (OSError, ValueError):
+            die("no proposed taste rules waiting")
+        if len(words) != 2 or not words[1].isdigit() or not 1 <= int(words[1]) <= len(prop["rules"]):
+            die(f"usage: social lessons {op} N  (N from 1 to {len(prop['rules'])})")
+        rule = prop["rules"][int(words[1]) - 1]
+        prop["rules"][int(words[1]) - 1] = None
+        if op == "keep":
+            taste.append(f"- {today_str(args)} · {rule} (kept by Taylor)")
+            write_lessons(head, facts, taste)
+            print(f"kept: {rule}")
+        else:
+            print(f"dropped: {rule}")
+        if any(prop["rules"]):
+            proposals_file().write_text(json.dumps(prop, indent=1) + "\n")
+        else:
+            proposals_file().unlink(missing_ok=True)
+        return
+    if op == "retire":
+        if not taste:
+            die("no taste lines to retire")
+        old = taste.pop(0)
+        write_lessons(head, facts, taste)
+        print(f"retired: {old[2:]}")
+        return
+    die("usage: social lessons [ls | week | propose \"rule\" [\"rule\"] | keep N | drop N | retire]")
+
+
+# ---- the pick: blind, with both sets of reasons ---------------------------------------------------
+
+PICK_PROMPT = """Two drafts of this morning's post for Patchlamp's feed (a {kind} post) both passed the fact check: every number is in its cited line and a judge called each sentence supported. Pick the one a small-business owner scrolling past is likelier to stop for and believe, or splice the two into one better caption. The writers are not named, on purpose: pick the words, not the writer.
+
+{a_and_b}
+
+The rule sheet the writers had:
+
+{rules}
+
+If you splice, keep every factual sentence word for word from A or B (with its sources), because a new sentence is a new claim and goes back through the check; a splice that fails it falls back to the draft you name in "prefer". Your budget is about ten minutes and one answer.
+
+Reply with one JSON object and nothing after it:
+{{"choice": one of "A" / "B" / "splice", "prefer": one of "A" / "B", "caption": "only for a splice: the spliced caption", "ledger": [{{"sentence": "...", "sources": ["S1"]}}], "argument": "the one argument that decided it, in a sentence"}}
+"""
+
+
+def draft_text(label, d):
+    why = "\n".join(f"  - {w}" for w in d.get("why") or []) or "  (none given)"
+    return f"## Draft {label}\n\n{d['caption']}\n\nWhy, in its writer's words:\n{why}\n"
+
+
+def picker_model():
+    return os.environ.get("SOCIAL_PICKER_MODEL") or "fable"
+
+
+def ask_picker(day, a, b):
+    prompt = PICK_PROMPT.format(kind=day["kind"], a_and_b=draft_text("A", a) + "\n" + draft_text("B", b),
+                                rules=read_social("rules.md", "(missing)"))
+    cmd = ["sh", "-c", os.environ["SOCIAL_PICKER"]] if os.environ.get("SOCIAL_PICKER") else claude_cmd(picker_model(), 2)
+    tmp = tempfile.mkdtemp(prefix="social-pick-")
+    try:
+        ans, why, _ = run_model(cmd, prompt, PICK_TIMEOUT, tmp, ("choice", "argument"), "the picker")
+        return ans, why
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def score(d):
+    """Lower is better: how many sentences fell short (for choosing which failed draft goes to Taylor)."""
+    rec = d.get("facts") or {}
+    return sum(1 for s, r in rec.get("lines", []) if not str(r).startswith(("supported", "no claim")))
+
+
+def cmd_pick(args):
+    import random
+    date = today_str(args)
+    day = load_day(date)
+    drafts_ = day.get("drafts") or []
+    written = [d for d in drafts_ if d.get("status") == "ok"]
+    unchecked = [d for d in written if "facts" not in d]
+    if unchecked:
+        die(f"run `social facts` first ({', '.join(d['writer'] for d in unchecked)} not checked)")
+    passed = [d for d in written if d["facts"]["verdict"] == "pass"]
+    codex = next((d for d in drafts_ if d["writer"] == "codex"), {})
+    pick = {"date": date, "kind": day["kind"], "writers": [d["writer"] for d in written],
+            "codex": codex.get("status", "missing") + (f": {codex.get('reason')}" if codex.get("reason") else "")}
+    if not passed:
+        best = min(written, key=score) if written else None
+        pick.update(how="none", won=None, argument=None)
+        day["pick"] = pick
+        save_day(day)
+        append_pick(pick)
+        if best:
+            print(f"no draft passed the fact check; the closer one ({best['writer']}) goes to Taylor for post / swap / skip:")
+            print(best["caption"])
+            for s, r in best["facts"]["lines"]:
+                print(f"  - \"{s[:90]}\" — {r}" if s else f"  - {r}")
+        else:
+            print("no draft was written today; send Taylor the writers' reasons (`social receipt`)")
+        sys.exit(1)
+    if len(passed) == 1:
+        win = passed[0]
+        pick.update(how="only", won=win["writer"], argument="the only draft that passed the fact check"
+                    if len(written) > 1 else "the only draft written")
+    else:
+        order = passed[:]
+        random.shuffle(order)
+        a, b = order
+        pick["labels"] = {"A": a["writer"], "B": b["writer"]}
+        ans, why_not = ask_picker(day, a, b)
+        choice = str((ans or {}).get("choice", "")).strip().upper()
+        if ans is None or choice not in ("A", "B", "SPLICE"):
+            win = min(passed, key=lambda d: len(d["caption"]))
+            pick.update(how="fallback", won=win["writer"],
+                        argument=f"the picker couldn't choose ({why_not or 'no A, B or splice'}); the shorter draft went up")
+        elif choice == "SPLICE":
+            splice = {"writer": "splice", "status": "ok", "caption": str(ans.get("caption") or "").strip(),
+                      "ledger": [e for e in ans.get("ledger") or [] if isinstance(e, dict)], "why": [ans.get("argument") or ""]}
+            splice["facts"] = check_draft(splice, day.get("sources") or {}) if splice["caption"] else \
+                {"verdict": "fail", "layer": "code", "lines": [["", "the splice was empty"]], "problems": [], "cited": {}}
+            fact_lessons(date, splice["facts"])
+            if splice["facts"]["verdict"] == "pass":
+                win = splice
+                day["drafts"].append(splice)
+                pick.update(how="splice", won="splice", argument=ans.get("argument"))
+            else:
+                pref = str(ans.get("prefer", "A")).upper()
+                win = a if pref != "B" else b
+                pick.update(how="splice-failed", won=win["writer"], argument=f"{ans.get('argument')} (the splice failed the "
+                            f"fact check, so the preferred draft went up: {splice['facts']['lines'][0][1][:80]})")
+        else:
+            win = a if choice == "A" else b
+            pick.update(how="pick", won=win["writer"], argument=ans.get("argument"))
+        pick["model"] = "stand-in (SOCIAL_PICKER)" if os.environ.get("SOCIAL_PICKER") else picker_model()
+    day["pick"] = pick
+    day["winner"] = win
+    append_pick(pick)
+    print(f"winner ({pick['how']}, {win['writer']}): {win['caption']}")
+    if pick.get("argument"):
+        print(f"  because: {pick['argument']}")
+    if args.image:
+        n = queue_winner(day, win, args)
+        day["queued"] = n
+        print(f"queued as draft {n}: `social check {n}`, then `social post patchlamp {n}`")
+    save_day(day)
+
+
+def append_pick(pick):
+    SOCIAL_DIR.mkdir(parents=True, exist_ok=True)
+    with (SOCIAL_DIR / "picks.jsonl").open("a") as f:
+        f.write(json.dumps({k: v for k, v in pick.items()}, ensure_ascii=False) + "\n")
+
+
+def queue_winner(day, win, args):
+    src = Path(args.image).expanduser().resolve()
+    if not src.is_file():
+        die(f"{src}: no such file")
+    queue_dir().mkdir(parents=True, exist_ok=True)
+    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    img = queue_dir() / f"{stamp}-patchlamp{src.suffix.lower()}"
+    shutil.copy2(src, img)
+    item = {"brand": "patchlamp", "image": str(img), "caption": win["caption"], "pillar": day.get("pillar"),
+            "topic": (day.get("topic") or "")[:80] or None, "mood": args.mood, "art": args.art,
+            "kind": day["kind"] if day["kind"] in KINDS else None, "day": day["date"], "writer": win["writer"],
+            "facts": win["facts"]["verdict"], "added": dt.datetime.now().isoformat(timespec="seconds")}
+    (queue_dir() / f"{stamp}-patchlamp.json").write_text(json.dumps(item, indent=1) + "\n")
+    q = drafts()
+    return next(i for i, d in enumerate(q, 1) if d["_path"].name == f"{stamp}-patchlamp.json")
+
+
+# ---- the receipt -----------------------------------------------------------------------------------
+
+def snippet(text, sentence, width=70):
+    """The part of a source line that bears on the sentence: around its first number, else its best words."""
+    t = re.sub(r"\s+", " ", text or "").strip()
+    if len(t) <= width:
+        return t
+    at = -1
+    for n in numbers(sentence):
+        m = re.search(r"(?<![\d,.])(?:" + re.escape(n) + (f"|{int(n):,}" if n.isdigit() and len(n) > 3 else "") + r")(?![\d])", t)
+        if m:
+            at = m.start()
+            break
+    if at < 0:
+        words = sorted(keywords(sentence), key=len, reverse=True)
+        at = next((t.lower().find(w) for w in words if t.lower().find(w) >= 0), 0)
+    start = max(0, min(at - width // 3, len(t) - width))
+    return ("…" if start else "") + t[start:start + width] + ("…" if start + width < len(t) else "")
+
+
+def receipt_lines(day, picture=None):
+    """The morning's receipt, under 12 lines: each claim beside its source, who wrote it, the verdicts."""
+    win, pick = day.get("winner"), day.get("pick") or {}
+    out = []
+    if not win:
+        out.append(f"receipt {day['date']}: nothing posted from the drafts ({pick.get('how') or 'no pick yet'})")
+        for d in day.get("drafts") or []:
+            if d.get("status") != "ok":
+                out.append(f"  {d['writer']}: {d['status']} — {d.get('reason')}")
+        return out[:12]
+    who = {"opus": "Opus", "codex": "Codex", "splice": "a splice of both"}.get(win["writer"], win["writer"])
+    how = {"pick": "picked blind over the other", "only": "the only draft that passed" if len(pick.get("writers") or []) > 1 else "the only draft", "splice": "spliced from both",
+           "splice-failed": "picked; the splice failed its check", "fallback": "the picker couldn't choose"}.get(pick.get("how"), pick.get("how"))
+    out.append(f"receipt {day['date']} · {day['kind']} · written by {who} ({how})" + (f": {pick['argument']}" if pick.get("argument") and pick.get("how") != "only" else ""))
+    codex = next((d for d in day.get("drafts") or [] if d["writer"] == "codex"), None)
+    if codex and codex.get("status") != "ok":
+        out.append(f"  one draft today: Codex {codex['status']} ({codex.get('reason')})")
+    for d in day.get("drafts") or []:
+        if d is not win and d.get("status") == "ok" and (d.get("facts") or {}).get("verdict") != "pass" and d["writer"] != "splice":
+            bad = next(((s, r) for s, r in (d.get("facts") or {}).get("lines", []) if not str(r).startswith(("supported", "no claim"))), ("", "not checked"))
+            out.append(f"  {d['writer'].capitalize()}'s draft didn't pass: \"{bad[0][:50]}\" — {bad[1][:70]}")
+    rec = win.get("facts") or {}
+    cited = rec.get("cited") or {}
+    verdicts = {s: r for s, r in rec.get("lines", [])}
+    room = 12 - len(out) - 3
+    for e in (win.get("ledger") or [])[:max(room, 1)]:
+        refs = [cited.get(str(r_)) for r_ in e.get("sources") or [] if cited.get(str(r_))]
+        src = "; ".join(f"{f}" + (f":{a}" + (f"-{b}" if b != a else "") if a else "") + f" \"{snippet(t, e['sentence'])}\"" for f, a, b, t in refs) or "no source"
+        out.append(f"  \"{e['sentence'][:60]}\" → {src}")
+    nclaims = sum(1 for r in verdicts.values() if r.startswith("supported"))
+    out.append(f"  facts: {rec.get('verdict')} (code, then the judge: {nclaims} supported, "
+               f"{sum(1 for r in verdicts.values() if r.startswith('no claim'))} no claim)")
+    if picture:
+        out.append(f"  picture: {picture}")
+    if day.get("costs"):
+        out.append(f"  the words cost ${sum(c for _, c in day['costs']):.2f} at list price ({len(day['costs'])} model runs, on the subscription)")
+    return out[:12]
+
+
+def cmd_receipt(args):
+    date = today_str(args)
+    picture = None
+    if args.words and args.words[0].isdigit():
+        q = drafts()
+        n = int(args.words[0])
+        if not 1 <= n <= len(q):
+            die(f"no draft {n}")
+        date = q[n - 1].get("day") or date
+        chk = q[n - 1].get("check") or {}
+        picture = chk.get("verdict") and f"{chk['verdict']} ({chk.get('reason', '')[:70]})"
+    day = load_day(date)
+    if picture is None:
+        p = SOCIAL_DIR / "posted.jsonl"
+        for line in reversed(p.read_text().splitlines() if p.exists() else []):
+            try:
+                r_ = json.loads(line)
+            except ValueError:
+                continue
+            if r_.get("date") == date and r_.get("check"):
+                picture = f"{r_['check'].get('verdict')} ({str(r_['check'].get('reason', ''))[:70]})"
+                break
+    print("\n".join(receipt_lines(day, picture)))
+
+
 def cmd_connect(args):
     slug, _ = resolve(args, args.words)
     if args.network == "x":
@@ -629,6 +1883,12 @@ def cmd_doctor(args):
     line(PATCH_REF.exists(), f"the portrait `social check` compares with: {PATCH_REF}")
     line(bool(os.environ.get("SOCIAL_JUDGE") or shutil.which("claude")),
          f"the judge for `social check`: claude on PATH, model {os.environ.get('SOCIAL_JUDGE_MODEL') or JUDGE_MODEL_DEFAULT}")
+    line(bool(os.environ.get("SOCIAL_WRITER_CODEX") or shutil.which("codex")), "codex on PATH (the second writer, B133)")
+    line((SOCIAL_DIR / "rules.md").exists(), f"the rule sheet: {SOCIAL_DIR / 'rules.md'}")
+    line((SOCIAL_DIR / "lessons.md").exists(), f"the lessons: {SOCIAL_DIR / 'lessons.md'}")
+    tiers, _ = pricing_table()
+    line(bool(tiers), f"the prices `social facts` checks against: {PRICES_FILE}" + (f" ({len(tiers)} tiers)" if tiers else ""))
+    print(f"    the picker: {picker_model()} (SOCIAL_PICKER_MODEL)")
     if not s:
         sys.exit(1)
     slugs = [workspace_slug()] if workspace_slug() else list(HOUSE)
@@ -690,6 +1950,38 @@ def main():
         if name == "connect":
             c.add_argument("--network", choices=("meta", "x"), default="meta", help="meta (Facebook + Instagram, the default) or x")
         c.set_defaults(fn=fn)
+    pk = sub.add_parser("packet", help="today's facts quoted from their files, the lessons and the rule sheet (B133)")
+    pk.add_argument("--date")
+    pk.add_argument("--kind", choices=KINDS)
+    pk.add_argument("--pillar")
+    pk.add_argument("--topic-line", type=int, help="draw this line of topics/patchlamp.md instead")
+    pk.add_argument("--fresh", action="store_true", help="forget the day's drafts and pick")
+    pk.set_defaults(fn=cmd_packet)
+    dr = sub.add_parser("draft", help="Opus and Codex each write from the packet (B133)")
+    dr.add_argument("--date")
+    dr.add_argument("--no-codex", action="store_true")
+    dr.set_defaults(fn=cmd_draft)
+    fc = sub.add_parser("facts", help="the words checked: code, then a judge who never saw the writer (B133)")
+    fc.add_argument("words", nargs="*", help="N (a draft of `social draft`), or capture -- CMD ...")
+    fc.add_argument("--date")
+    fc.add_argument("--draft", help="a draft file (caption, ledger, sources) instead of today's")
+    fc.add_argument("--no-lessons", action="store_true", help="don't write a failure to lessons.md")
+    fc.add_argument("--json", action="store_true")
+    fc.set_defaults(fn=cmd_facts)
+    pi = sub.add_parser("pick", help="the drafts that passed, picked blind; --image queues the winner (B133)")
+    pi.add_argument("--date")
+    pi.add_argument("--image")
+    pi.add_argument("--mood")
+    pi.add_argument("--art")
+    pi.set_defaults(fn=cmd_pick)
+    rc = sub.add_parser("receipt", help="each claim beside its source, who wrote it, the verdicts (B133)")
+    rc.add_argument("words", nargs="*")
+    rc.add_argument("--date")
+    rc.set_defaults(fn=cmd_receipt)
+    ls_ = sub.add_parser("lessons", help="the writers' lessons; Sunday's propose / keep N / drop N (B133)")
+    ls_.add_argument("words", nargs="*")
+    ls_.add_argument("--date")
+    ls_.set_defaults(fn=cmd_lessons)
     d = sub.add_parser("doctor")
     d.set_defaults(fn=cmd_doctor)
     args = ap.parse_args()

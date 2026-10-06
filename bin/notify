@@ -3,6 +3,7 @@
 #   notify "B33 build finished"                                  now, on the channel Taylor last used
 #   notify --wait-pid PID --file FILE "text"                     detaches; sends when the pid exits, file head under the text
 #   notify --wait-file requests/x.reply.md "request answered"    detaches; sends when the file lands and settles
+#   notify --photo IMG "caption"                                 a picture with the text as its caption (one message)
 #   notify --to discord|telegram|sms|here|last ...               pick the channel (default: this run's, then last, then a DM)
 # Inside a relay run (and anything it starts) RELAY_TRANSPORT/RELAY_CHAT/RELAY_THREAD name the channel.
 exec "${RELAY_DIR:-$HOME/projects/sms-relay}/relay.py" notify "$@"

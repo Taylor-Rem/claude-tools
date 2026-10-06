@@ -32,7 +32,7 @@ That protects this client as much as anyone. What it changes for you:
   they're simply not there, so a path outside `./` comes back as "no such
   file". Everything this client has is under `./`.
 - The tools that act on accounts (`site`, `db`, `img`, `newsletter`, `social`,
-  `gbp`, `pay`, `connections`, `print`, `shot`, `discord`, and `git push`,
+  `gbp`, `pay`, `estimate`, `connections`, `print`, `shot`, `discord`, and `git push`,
   `pull`, `fetch`) run through the relay, which holds the keys and does the
   work for this client. Call them exactly as before; the output comes back
   the same. When one says something isn't available here, it gives the

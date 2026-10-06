@@ -88,7 +88,8 @@ class EstimateTest(unittest.TestCase):
         self.assertEqual(self.db("add", "estimates").returncode, 0)
 
     def est(self, *args):
-        r = subprocess.run([sys.executable, str(EST), *args], env=self.env, cwd=self.ws, capture_output=True, text=True)
+        r = subprocess.run([sys.executable, str(EST), *args], env={**self.env, "ESTIMATE_PROBE": "0"}, cwd=self.ws,
+                           capture_output=True, text=True)
         for key in (test_pay.LIVE, test_pay.TEST):
             self.assertNotIn(key, r.stdout + r.stderr, "a key value was printed")
         return r
@@ -138,6 +139,9 @@ class EstimateTest(unittest.TestCase):
         sent = self.q("SELECT status, customer_id FROM estimates")[0]
         self.assertEqual(sent["status"], "sent")
         self.assertTrue(sent["customer_id"])
+        before = len(self.q("SELECT id FROM customers"))
+        self.assertEqual(self.est("send", "E-0001").returncode, 0, "sending again is allowed")
+        self.assertEqual(len(self.q("SELECT id FROM customers")), before, "a second send doesn't file them twice")
         # the customer accepts on the page (as the Function would write it)
         self.db("exec", "UPDATE estimates SET status = 'accepted', accepted_name = 'John Smith', "
                         "accepted_at = '2026-10-05T22:00:00Z', accepted_ip = '203.0.113.9'")
@@ -157,13 +161,31 @@ class EstimateTest(unittest.TestCase):
         self.assertEqual((b["name"], b["status"]), ("John Smith", "requested"))
         self.assertIn("E-0001", b["notes"])
         self.assertEqual(self.q("SELECT status FROM booking_slots")[0]["status"], "closed", "never on the public calendar")
-        job = self.q("SELECT what, amount_cents, status, source, ref FROM jobs")
+        job = self.q("SELECT what, amount_cents, status, source, ref, customer_id FROM jobs")
+        self.assertEqual([j["customer_id"] for j in job], [sent["customer_id"]], "the job is on the customer send filed")
+        self.assertEqual(len(self.q("SELECT id FROM customers")), before, "and no second John Smith")
         self.assertEqual([(j["amount_cents"], j["status"], j["source"], j["ref"]) for j in job], [(45000, "booked", "estimate", "E-0001")])
         # a second sync does nothing twice
         n = len(test_pay.Fake.state["sent"])
         self.assertIn("nothing to follow through", self.est("sync", "--test").stdout)
         self.assertEqual(len(test_pay.Fake.state["sent"]), n)
         self.assertEqual(len(self.q("SELECT id FROM bookings")), 1)
+
+    def test_an_invoice_waits_for_an_email_and_sync_email_adds_it(self):
+        """Stripe refuses a sent invoice to a customer with no email (found on demo-service, 2026-10-06)."""
+        r = self.est("new", "Pat Lee", "--line", "Pump repair", "200", "--no-pdf")
+        self.assertIn("no email for them", r.stdout)
+        self.est("send", "1")
+        self.db("exec", "UPDATE estimates SET status = 'accepted', accepted_name = 'Pat Lee', accepted_at = '2026-10-06T10:00:00Z'")
+        r = self.est("sync", "--test")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("needs Pat Lee's email", r.stdout)
+        self.assertEqual([c for c in test_pay.Fake.state["sent"] if c["path"].startswith("/v1/")], [], "no Stripe call")
+        self.assertIn("isn't an email", self.est("sync", "1", "--email", "nope", "--test").stderr)
+        r = self.est("sync", "E-0001", "--email", "pat@example.com", "--test")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("invoice FERN-0001", r.stdout)
+        self.assertEqual(self.q("SELECT email FROM estimates")[0]["email"], "pat@example.com")
 
     def test_a_deposit_is_a_deposit_link_and_tax_comes_from_notes(self):
         (self.ws / "NOTES.md").write_text("Sales tax: 7.25%\n")
@@ -198,7 +220,7 @@ class EstimateTest(unittest.TestCase):
 
     def test_a_failed_stripe_call_leaves_it_for_the_next_sync(self):
         self.env["STRIPE_CONNECTED_ACCOUNT"] = "not-an-account"
-        self.est("new", "Smith", "--line", "x", "100", "--no-pdf")
+        self.est("new", "Smith", "--line", "x", "100", "--email", "s@example.com", "--no-pdf")
         self.db("exec", "UPDATE estimates SET status = 'accepted', accepted_name = 'S'")
         r = self.est("sync", "--test")
         self.assertEqual(r.returncode, 0, r.stderr)

@@ -752,7 +752,10 @@ it bills; `estimate` is the quote, and acceptance turns into the invoice.
    booking request on `/admin/bookings` with no time yet, and the job in
    the customer book. Send the owner what it printed, link included.
    Accepted by phone or in person: `estimate accept E-0003 --name "John
-   Smith" --by phone`, which does the same.
+   Smith" --by phone`, which does the same. A Stripe invoice needs the
+   customer's email (a deposit link doesn't); when the estimate has none,
+   `estimate` says so and makes the rest, so ask the owner for it and run
+   `estimate sync E-0003 --email them@example.com`.
 4. `estimate ls` / `show E-0003` / `void E-0003` (withdrawn: the page
    stops opening it).
 

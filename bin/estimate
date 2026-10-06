@@ -432,6 +432,9 @@ def cmd_new(a):
         return
     say("draft — not sent; the owner's word sends it (estimate send " + row["number"] + "):")
     say(summary(row))
+    if not a.email and not deposit:
+        say("  (no email for them: the accept page works without one, but the invoice after it needs it; "
+            "--email on `estimate sync` adds it then)")
     if not terms:
         say("  (no terms in facts.md: the PDF carries the good-until date"
             + (" and the deposit" if deposit else "") + " only; add a '## Terms' section to facts.md in the owner's words)")
@@ -482,6 +485,8 @@ def book_customer(a, row):
     """File the customer in the customer book (B122); the id, or None when the site has no book."""
     if not has_table(a, "customers"):
         return None
+    if row.get("customer_id"):            # sent before: filed then, so a second send doesn't file them twice
+        return row["customer_id"]
     cmd = [sys.executable, DB, "customers", "add", row["customer"], "--source", "estimate", "--json", *common_db(a)]
     for k in ("phone", "email"):
         if row.get(k):
@@ -499,6 +504,24 @@ def book_customer(a, row):
         return None
     c = data.get("customer") if isinstance(data, dict) and "customer" in data else data
     return (c or {}).get("id")
+
+
+def page_is_live(url):
+    """True when the live site answers the accept link with the estimate, False when it doesn't
+    (the collection isn't published, so the customer would get a 404), None when we couldn't ask
+    (offline; ESTIMATE_PROBE=0, which the tests set)."""
+    if os.environ.get("ESTIMATE_PROBE") == "0":
+        return None
+    import urllib.error
+    import urllib.request
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"user-agent": "patchlamp-estimate"}),
+                                    timeout=10) as r:
+            return r.status == 200
+    except urllib.error.HTTPError:
+        return False
+    except Exception:  # noqa: BLE001  (no network here: say so rather than guess)
+        return None
 
 
 def email_draft(row, url, meta):
@@ -536,10 +559,11 @@ def cmd_send(a):
         db_exec(a, f"UPDATE estimates SET customer_id = {int(cid)} WHERE number = {lit(row['number'])}")
     if DRY:
         say(f"dry run: {row['number']} stays {row['status']}; nothing sent")
-    live = subprocess.run(["git", "-C", str(ctx.repo), "ls-files", "--error-unmatch", "functions/estimate/[token].js"],
-                          capture_output=True).returncode == 0 if ctx.repo else False
+    live = None if DRY else page_is_live(url)
     say(f"{row['number']} {'would be' if DRY else 'is'} sent: the accept page "
-        + ("opens" if live else "will open, once the estimates collection is committed and published (site publish),")
+        + {True: "opens", False: "isn't on the live site yet: commit, push and `site publish` the estimates "
+                                 "collection before the customer gets the link; it will open",
+           None: "opens (once the estimates collection is published)"}[live]
         + f" at {url}" + (f"; {row['customer']} is in the customer book (#{cid})" if cid else ""))
     say("The customer isn't emailed by Patchlamp yet (no customer mail path for estimates); the owner sends "
         "this from their own email or phone, with the PDF:")
@@ -582,11 +606,24 @@ def cmd_accept(a):
                    f"accepted_ip = {lit(how)}, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
                    f"WHERE number = {lit(row['number'])} AND status IN ('draft', 'sent')")
         say(f"{row['number']} accepted by {name} ({how})")
+    set_email(a, row["number"])
     if not DRY:
         row = get(a, a.number)
     else:
         row["status"], row["accepted_name"] = "accepted", a.name
+        row["email"] = row.get("email") or a.email
     follow_through(a, row)
+
+
+def set_email(a, number):
+    """--email on accept/sync: the address the estimate didn't have, kept on the row for the invoice."""
+    if not getattr(a, "email", None):
+        return
+    em = a.email.strip()
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", em):
+        die(f"--email {a.email!r} isn't an email address")
+    db_exec(a, f"UPDATE estimates SET email = {lit(em)}, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
+               f"WHERE number = {lit(number)}")
 
 
 def cmd_sync(a):
@@ -594,6 +631,10 @@ def cmd_sync(a):
     DRY = a.dry_run
     workspace()
     need_collection(a)
+    if a.email and not a.number:
+        die("--email is for one estimate: estimate sync E-0003 --email them@example.com")
+    if a.email:
+        set_email(a, number_of(a.number))
     where = f" AND number = {lit(number_of(a.number))}" if a.number else ""
     rows = db_query(a, "SELECT number FROM estimates WHERE status = 'accepted' AND (invoice_id IS NULL OR invoice_id = '' "
                        f"OR booking_id IS NULL){where} ORDER BY id")
@@ -610,7 +651,11 @@ def follow_through(a, row):
     n = row["number"]
     say(f"{n}, accepted by {row.get('accepted_name')}:")
     # 1. money
-    if not row.get("invoice_id"):
+    if not row.get("invoice_id") and not row.get("deposit_cents") and not row.get("email"):
+        # Stripe refuses an invoice to a customer with no email (it is how the invoice reaches them)
+        say(f"  money: not yet — a Stripe invoice needs {row['customer']}'s email. Ask the owner for it, then "
+            f"`estimate sync {n} --email them@example.com` makes the invoice")
+    elif not row.get("invoice_id"):
         if row.get("deposit_cents"):
             cmd = [sys.executable, PAY, "deposit", amt(row["deposit_cents"]), f"Estimate {n}, {row['customer']}",
                    "--ref", n, "--json"]
@@ -668,12 +713,16 @@ def follow_through(a, row):
         say("  booking request: this site has no bookings, so tell the owner to agree a time with them")
     # 3. the customer book
     if has_table(a, "customers") and has_table(a, "jobs"):
-        cmd = [sys.executable, DB, "jobs", "add", row.get("email") or row.get("phone") or row["customer"],
-               f"Estimate {n}: {what}"[:300], "--amount", amt(row["total_cents"]), "--status", "booked",
-               "--source", "estimate", "--ref", n, "--create", "--name", row["customer"], *common_db(a)]
-        for k in ("phone", "email"):
-            if row.get(k):
-                cmd += [f"--{k}", row[k]]
+        cmd = [sys.executable, DB, "jobs", "add", "", f"Estimate {n}: {what}"[:300], "--amount", amt(row["total_cents"]),
+               "--status", "booked", "--source", "estimate", "--ref", n, *common_db(a)]
+        if row.get("customer_id"):        # the one `send` filed: by id, so a name-only customer isn't made twice
+            cmd[4] = str(int(row["customer_id"]))
+        else:
+            cmd[4] = row.get("email") or row.get("phone") or row["customer"]
+            cmd += ["--create", "--name", row["customer"]]
+            for k in ("phone", "email"):
+                if row.get(k):
+                    cmd += [f"--{k}", row[k]]
         if DRY:
             say(f"  would add the job to {row['customer']} in the customer book")
         else:
@@ -758,6 +807,7 @@ def main(argv=None):
         p.add_argument("--project", help="pay's --project, outside a relay run")
         p.add_argument("--due", default="14d", help="days to pay the invoice (default 14d)")
         p.add_argument("--send-invoice", action="store_true", help="have Stripe email the invoice too")
+        p.add_argument("--email", help="the customer's email, when the estimate had none (a Stripe invoice needs one)")
         p.set_defaults(fn=fn)
     p = sub.add_parser("doctor", parents=[common], help="is everything here")
     p.set_defaults(fn=cmd_doctor)

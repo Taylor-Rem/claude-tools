@@ -38,6 +38,10 @@ Bookings that finish the job (`db add bookings`, ROADMAP B119):
   db bookings feed [--new]               # the owner's calendar subscribe address, and how to add it
   db bookings upgrade [--dry-run]        # an older site's bookings Functions brought up to the toolbelt's
   db bookings status                     # what's on (never the keys)
+  db bookings confirm ID                 # by text: confirm it on the site, the customer emailed
+  db bookings move ID "2026-10-14T15:00" # to that open time, capacity checked, the customer emailed
+  db bookings cancel ID                  # the place freed, the customer emailed
+  db bookings remind ID                  # a confirmed one ahead: the reminder email (B120's morning run)
 
 Every command takes --site NAME when the workspace has more than one site
 with a database, and --local to work on the local copy `wrangler pages dev`
@@ -1705,10 +1709,21 @@ def jobs_parser(p, common):
 #   db bookings feed [--new] [--json] the owner's subscribe address and how to add it
 #   db bookings upgrade [--dry-run]   the collection's Functions brought up to the toolbelt's
 #   db bookings status [--json]       what's on: the key, the feed, the files (no key shown)
+#   db bookings confirm|cancel|remind ID [--json]
+#   db bookings move ID "YYYY-MM-DDTHH:MM" [--json]
+#                                     a change by text, run by the site itself (functions/api/bookings/[id].js):
+#                                     the same capacity check and customer mail as /admin. POSTs JSON
+#                                     {"action", "starts_at"?, "ts"} to <site>/api/bookings/<id>, signed
+#                                     X-Booking-Signature: hex(HMAC-SHA256(BOOKING_KEY, "api|" + body)).
+#                                     The contract: ~/projects/plans/49-the-customer-side.md § Site endpoint.
+#                                     --json prints the site's answer as is; exit 0 on ok, 1 when the site
+#                                     refused (the reason and, for a move, the open times), 2 when unreachable.
+#                                     BOOKINGS_SITE_URL overrides the site's address (tests, `wrangler pages dev`).
 
 import hashlib  # noqa: E402
 import hmac  # noqa: E402
 import secrets  # noqa: E402
+import time  # noqa: E402
 
 BOOKINGS = COLLECTIONS / "bookings"
 OLD_THANKS = "Booked — we've got you down and we'll confirm by email or phone."
@@ -1862,6 +1877,37 @@ def bookings_behind(site):
     return out
 
 
+# The bookings Functions as the toolbelt shipped them before (sha256), so an
+# upgrade can tell the template's old copy from one someone changed by hand.
+# Read from the toolbelt's own git history; this one is the fallback when git
+# isn't there (a66f09d's api/bookings.js, the only file before B119).
+KNOWN_OLD = {"6b02bc961d4f29d61de3ca2d904be1641c25d1d694d8e1a3d09e8152e8594ec4"}
+
+
+def shipped_versions(rel):
+    """sha256 of every version of templates/collections/bookings/functions/<rel> the toolbelt has committed."""
+    path = f"templates/collections/bookings/functions/{rel}"
+    out = set(KNOWN_OLD)
+    try:
+        revs = subprocess.run(["git", "-C", str(HERE), "log", "--format=%H", "--", path],
+                              capture_output=True, text=True, timeout=20).stdout.split()
+        for rev in revs:
+            blob = subprocess.run(["git", "-C", str(HERE), "show", f"{rev}:{path}"], capture_output=True, timeout=20)
+            if blob.returncode == 0:
+                out.add(hashlib.sha256(blob.stdout).hexdigest())
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return out
+
+
+def customised(site, rel):
+    """True when the site's copy exists and is neither the toolbelt's current one nor any it shipped before."""
+    dest = site.repo / rel
+    if not dest.exists():
+        return False
+    return hashlib.sha256(dest.read_bytes()).hexdigest() not in shipped_versions(str(Path(rel).relative_to("functions")))
+
+
 def old_thanks(site):
     """The pages still carrying the calendar's old thanks line (it said nothing of the email)."""
     return [p for p in sorted(site.repo.rglob("*.html")) if ".wrangler" not in p.parts and OLD_THANKS in p.read_text(errors="replace")]
@@ -1879,7 +1925,13 @@ def cmd_bookings_upgrade(a):
         say(f"repos/{site.name}: the bookings Functions are the toolbelt's already")
         return
     src = BOOKINGS / "functions"
-    for rel in behind:
+    kept = [] if a.force else [rel for rel in behind if customised(site, rel)]
+    for rel in kept:
+        # someone changed this one by hand (a question added, a word changed): overwriting it would lose that
+        say(f"  kept repos/{site.name}/{rel}: it isn't any copy the toolbelt shipped, so someone changed it. "
+            f"Compare it with {BOOKINGS.relative_to(HERE)}/{Path(rel).relative_to('functions')} and carry the change over, "
+            f"or `db bookings upgrade --force` to replace it")
+    for rel in [r for r in behind if r not in kept]:
         f = src / Path(rel).relative_to("functions")
         dest = site.repo / rel
         if not a.dry_run:
@@ -1913,6 +1965,59 @@ def cmd_bookings_status(a):
             say(f"  {k}: {'set' if on else 'not set (db bookings setup)'}")
 
 
+def cmd_bookings_change(a):
+    """confirm / move / cancel / remind one booking through the site's own signed endpoint."""
+    if not re.fullmatch(r"\d{1,12}", a.id):
+        die(f"{a.id!r} isn't a booking id (the number on /admin/bookings, or `db query \"SELECT id, name, starts_at FROM bookings\"`)")
+    payload = {"action": a.change}
+    if a.change == "move":
+        at = a.starts_at.strip().replace(" ", "T")[:16]
+        if not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d", at):
+            die(f"{a.starts_at!r}: give the new time as YYYY-MM-DDTHH:MM in the site's own time (\"2026-10-14T15:00\")")
+        payload["starts_at"] = at
+    site = bookings_site(a)
+    key = booking_key(site.meta["slug"])
+    payload["ts"] = int(time.time())
+    body = json.dumps(payload, separators=(",", ":"))
+    sig = hmac.new(key.encode(), ("api|" + body).encode(), hashlib.sha256).hexdigest()
+    base = (os.environ.get("BOOKINGS_SITE_URL") or site_url(site)).rstrip("/")
+    req = urllib.request.Request(f"{base}/api/bookings/{a.id}", data=body.encode(), method="POST", headers={
+        "Content-Type": "application/json", "Accept": "application/json", "X-Booking-Signature": sig,
+        "User-Agent": "claude-tools db"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            code, raw = r.status, r.read().decode()
+    except urllib.error.HTTPError as exc:
+        code, raw = exc.code, exc.read().decode(errors="replace")
+    except (urllib.error.URLError, OSError) as exc:
+        die(f"couldn't reach {base}: {exc}. Nothing changed; try again, or the owner can do it on /admin/bookings", 2)
+    try:
+        res = json.loads(raw)
+    except ValueError:
+        res = {"ok": False, "error": f"the site answered {code} without JSON"
+               + (": it may not have the bookings upgrade yet (db bookings status)" if code in (404, 405) else "")}
+    if a.json:
+        emit_json(res)
+        sys.exit(0 if res.get("ok") else 1)
+    if not res.get("ok"):
+        hint = {401: " (the site's BOOKING_KEY isn't this one: db bookings setup, then site publish)",
+                503: ""}.get(code, "")
+        lines = [f"db: booking {a.id}: {res.get('error') or code}{hint}"]
+        for o in res.get("open") or []:
+            lines.append(f"  open: {o.get('starts_at')}{(' · ' + o['label']) if o.get('label') else ''} ({o.get('places')} place(s))")
+        print("\n".join(lines), file=sys.stderr)
+        sys.exit(1)
+    b = res.get("booking") or {}
+    done = {"confirm": "confirmed", "move": "moved", "cancel": "cancelled", "remind": "reminded"}[a.change]
+    when = b.get("starts_at", "")
+    say(f"booking {b.get('id', a.id)} ({b.get('name', '')}, {when}) {done}"
+        + (f" (was {b['was']})" if b.get("was") else "") + ".")
+    if res.get("customer_mailed"):
+        say("  the customer is emailed" + (" a reminder" if a.change == "remind" else "") + ".")
+    else:
+        say(f"  the customer is NOT emailed: {res.get('why') or 'no reason given'}.")
+
+
 def bookings_doctor(site, local, fail):
     """db doctor's bookings lines: the files, the feed (that it exists, never the key), the two secrets."""
     if not any(p.name.endswith("_bookings.sql") for p in repo_migrations(site)):
@@ -1931,7 +2036,7 @@ def bookings_doctor(site, local, fail):
             say("  bookings: BOOKING_KEY and BOOKINGS_FEED_KEY set (customers are mailed; values not shown)")
 
 
-@subcommands("bookings", "bookings: setup (the keys), feed (the owner's calendar), upgrade, status")
+@subcommands("bookings", "bookings: setup (the keys), feed (the owner's calendar), upgrade, status, confirm/move/cancel/remind")
 def bookings_parser(p, common):
     s = p.add_subparsers(dest="action", required=True)
     u = s.add_parser("setup", parents=[common], help="the booking key and the feed key as Pages secrets")
@@ -1940,7 +2045,18 @@ def bookings_parser(p, common):
     f.add_argument("--new", action="store_true", help="a new key; the old address stops after the next publish")
     f.add_argument("--json", action="store_true"); f.set_defaults(fn=cmd_bookings_feed)
     g = s.add_parser("upgrade", parents=[common], help="the bookings Functions brought up to the toolbelt's")
-    g.add_argument("--dry-run", action="store_true"); g.set_defaults(fn=cmd_bookings_upgrade)
+    g.add_argument("--dry-run", action="store_true")
+    g.add_argument("--force", action="store_true", help="replace a file someone changed by hand too")
+    g.set_defaults(fn=cmd_bookings_upgrade)
+    for name, what in (("confirm", "confirm a requested booking; the customer is emailed"),
+                       ("cancel", "cancel it, the place freed; the customer is emailed"),
+                       ("remind", "the reminder email for a confirmed booking still ahead")):
+        c = s.add_parser(name, parents=[common], help=what)
+        c.add_argument("id")
+        c.add_argument("--json", action="store_true"); c.set_defaults(fn=cmd_bookings_change, change=name)
+    m = s.add_parser("move", parents=[common], help="move it to an open time; the customer is emailed the new one")
+    m.add_argument("id"); m.add_argument("starts_at", help='the open time, "2026-10-14T15:00"')
+    m.add_argument("--json", action="store_true"); m.set_defaults(fn=cmd_bookings_change, change="move")
     t = s.add_parser("status", parents=[common], help="the key, the feed, the files (no key shown)")
     t.add_argument("--json", action="store_true"); t.set_defaults(fn=cmd_bookings_status)
 

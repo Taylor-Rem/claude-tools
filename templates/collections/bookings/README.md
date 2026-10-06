@@ -12,6 +12,7 @@ What `db add bookings` puts in the repo:
 | `functions/api/bookings.js` | `GET /api/bookings`: the open times from now to 60 days out with places left (full ones left out). `POST /api/bookings`: a booking for one slot; the capacity is checked in the statement that writes it; patchlamp.com emails the owner, and the customer (when they left an email) gets "requested" with their manage link; the customer book gets the customer and a job |
 | `functions/_admin/bookings.js` | `/admin/bookings`: the bookings, newest first; the owner confirms, cancels (frees the place) or marks done, and keeps notes |
 | `functions/admin/bookings/[id].js` | one booking on `/admin`: confirming or cancelling emails the customer, "Move to another time" moves it and emails them the new time, and the customer book follows (done moves their last seen) |
+| `functions/api/bookings/[id].js` | `POST /api/bookings/<id>`, signed with the site's `BOOKING_KEY`: what `db bookings confirm|move|cancel|remind` call, so a change by text runs the same capacity check and sends the same customer email as `/admin` (the contract: `~/projects/plans/49-the-customer-side.md` § Site endpoint) |
 | `functions/book/manage.js` | `/book/manage?t=…`, the customer's link from every booking email: their booking, the other open times, Move and Cancel. The owner is emailed what they did. A wrong or old link is a plain page saying so |
 | `functions/api/bookings.ics.js` | `/api/bookings.ics?key=…`, the owner's calendar feed: every confirmed booking, for Google Calendar, Apple Calendar or Outlook to subscribe to |
 | `functions/_lib/bookings.js` | what those share: the signed manage link, the signed post to patchlamp.com, moving a booking, the customer book, the feed |
@@ -41,7 +42,8 @@ After `db add bookings`:
 
 A site made before 2026-10-05 (B119) has the old bookings Functions: `db
 bookings upgrade` brings them up (the /admin views and the customer book's
-own file are left alone, and the old thanks line is reworded), then
+own file are left alone, so is a file someone changed by hand unless
+`--force`, and the old thanks line is reworded), then
 commit, push, `db bookings setup`, `site publish <name>`. `db bookings
 status` (or `db doctor`) says what's behind.
 
@@ -50,10 +52,21 @@ Everyday texts, no publish needed (the calendar reads the database live):
 - open a time: the INSERT above; close one: `db exec "UPDATE booking_slots SET status = 'closed' WHERE id = 7"`
   (find it with `db query "SELECT id, starts_at, status FROM booking_slots ORDER BY starts_at"`)
 - who's booked: `db query "SELECT starts_at, name, phone, status FROM bookings WHERE status IN ('requested','confirmed') ORDER BY starts_at"`
-- confirm, cancel or move one: on `/admin/bookings/<id>` (the owner, or
-  you telling them where), because that is what emails the customer. A
-  `db exec "UPDATE bookings …"` changes the row and mails nobody, so use it
-  only for a booking with no email or when the owner says not to tell them.
+- confirm, cancel or move one: `db bookings confirm 12`, `db bookings
+  cancel 12`, `db bookings move 12 "2026-10-14T15:00"` (find the id with
+  the query above, adding `id`). The site does the change itself, the way
+  `/admin/bookings/<id>` does: a move only to an open time with a place
+  left, and the customer emailed. It prints whether the email went; if it
+  says the customer is not emailed (no address on the booking, or the mail
+  failed), tell the owner so they can call or text them. A move to a time
+  that isn't open is refused with the open times listed: open the time
+  first (the INSERT above) if the owner means it. The owner can do the
+  same on `/admin/bookings/<id>`. A `db exec "UPDATE bookings …"` changes
+  the row and mails nobody, so use it only when the owner says not to
+  tell the customer.
+- a reminder to one customer: `db bookings remind 12` (a confirmed
+  booking still ahead; not to someone marked "asked not to be contacted"
+  in the customer book). Nothing sends reminders on a schedule yet.
 - their calendar address again: `db bookings feed`; a leaked one: `db
   bookings feed --new`, then `site publish <name>` (the old one stops).
 
@@ -74,6 +87,7 @@ Rules the Function keeps: a booking needs a time, a name and an email or
 phone; five bookings per visitor per ten minutes; the honeypot; only an
 open slot in the future with a place left can be booked or moved to
 (`requested` and `confirmed` hold a place, `cancelled` and `done` don't).
-It doesn't take payment or send reminders, and the calendar feed is one
-way: the owner's own appointments don't close times on the site — say so
-if asked (PLAYBOOK.md § Data).
+It doesn't take payment or send reminders on its own (one at a time by
+`db bookings remind`), and the calendar feed is one way: the owner's own
+appointments don't close times on the site — say so if asked (PLAYBOOK.md
+§ Data).

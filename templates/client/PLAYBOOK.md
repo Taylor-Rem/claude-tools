@@ -288,9 +288,25 @@ their email, works once, for 15 minutes.
   url>admin/slots`, and the customer gets an email at once ("requested")
   and again when they confirm, cancel or move it on `/admin/bookings`,
   each with a link the customer can use to move or cancel it themselves
-  (the owner is emailed when they do). Confirm, cancel and move on the
-  booking's `/admin` page, not with `db exec`: the page is what emails the
-  customer, and a `db exec` change reaches nobody.
+  (the owner is emailed when they do).
+- "confirm the Smith booking" / "move Smith to 3pm Tuesday" / "cancel
+  Dana's" → `db bookings confirm <id>`, `db bookings move <id>
+  "YYYY-MM-DDT15:00"`, `db bookings cancel <id>` (the id from `db query
+  "SELECT id, name, starts_at, status FROM bookings WHERE status IN
+  ('requested','confirmed') ORDER BY starts_at"`). The site makes the
+  change itself, so it gets the same checks and sends the customer the
+  same email as the owner's `/admin/bookings` page, which stays the
+  owner's own way to do it. Say back what it printed, including when the
+  customer was *not* emailed (no address on the booking, or the mail
+  didn't go), so the owner knows to call them. A move to a time that isn't
+  open is refused with the open ones listed: ask which, or open that time
+  first if that's what they meant. Not `db exec` for these: a `db exec`
+  change mails nobody, which is right only when the owner says not to
+  tell the customer.
+- "remind Dana about tomorrow" → `db bookings remind <id>`: one reminder
+  email with the link to change it, for a confirmed booking still ahead,
+  and not to someone marked "asked not to be contacted". Nothing sends
+  them on a schedule yet; say so if asked for automatic reminders.
 - "put bookings on my calendar" / "sync my Google Calendar" → `db bookings
   feed` prints the subscribe address and the steps for Google Calendar,
   iPhone and Outlook; send it to the owner only, since anyone with the
@@ -334,9 +350,10 @@ their email, works once, for 15 minutes.
   the Stripe connect link (§ Payments); the last switch
   (`site checkout --connected`) is Taylor's: FORWARD-TO-TAYLOR once
   `connections` says Stripe is connected.
-- Taking payment for a booking, reminders, or a two-way calendar (their
-  Google Calendar closing times on the site): not yet. The customer's
-  emails and the one-way feed above are what there is. Say so.
+- Taking payment for a booking, automatic reminders, or a two-way
+  calendar (their Google Calendar closing times on the site): not yet. The
+  customer's emails, a reminder you send by hand, and the one-way feed
+  above are what there is. Say so.
 - Writing to a booking's customer about anything but that booking. The
   booking emails go even to someone marked "asked not to be contacted"
   in the customer book, because they're about a booking that person just

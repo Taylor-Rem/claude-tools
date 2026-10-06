@@ -7,7 +7,11 @@
 // opening the link must never change anything); the buttons POST. A wrong or
 // expired link is a plain page that says so and how to reach the business.
 import { esc, localTime, localNow, readBody, sameOrigin } from "../_lib/core.js";
-import { readManageToken, openSlots, moveBooking, tellPatchlamp, recordBooking, customerPage, sorry, TAKEN } from "../_lib/bookings.js";
+import { readManageToken, openSlots, moveBooking, cancelBooking, tellPatchlamp, recordBooking, customerPage, sorry, TAKEN } from "../_lib/bookings.js";
+
+// Said only when patchlamp.com took the mail; the change itself is in the
+// site's own database either way, so the owner sees it on /admin.
+const NOT_SENT = "We couldn't send the email; the business has the change.";
 
 const STYLE = `<style>
   .booking-manage { max-width: 36rem; }
@@ -55,7 +59,7 @@ export async function onRequestGet({ request, env }) {
   return show(env, b, await openSlots(env, b.slot_id), url.searchParams.get("t"));
 }
 
-export async function onRequestPost({ request, env, waitUntil }) {
+export async function onRequestPost({ request, env }) {
   if (!sameOrigin(request)) return sorry(env, "That came from another site, so nothing was changed.");
   const body = await readBody(request);
   const t = String(body.t || "");
@@ -67,18 +71,22 @@ export async function onRequestPost({ request, env, waitUntil }) {
     return show(env, b, [], t);
   }
   if (body.action === "cancel") {
-    await env.DB.prepare(`UPDATE bookings SET status = 'cancelled', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ? AND status IN ${TAKEN}`).bind(b.id).run();
-    const now = await env.DB.prepare("SELECT * FROM bookings WHERE id = ?").bind(b.id).first();
-    await recordBooking(env, now);
-    waitUntil(tellPatchlamp(env, request, "cancelled", now, { by: "customer" }));
-    return show(env, now, [], t, "Cancelled. We've let them know.");
+    const r = await cancelBooking(env, b.id);
+    if (!r.ok) {
+      // changed under them (the owner cancelled it, or it was marked done): say so, post nothing
+      return show(env, r.booking || b, [], t, "This booking had already changed, so nothing was done. Here's where it stands.");
+    }
+    await recordBooking(env, r.booking);
+    const sent = await tellPatchlamp(env, request, "cancelled", r.booking, { by: "customer" });
+    return show(env, r.booking, [], t, sent === true ? "Cancelled. We've let them know." : `Cancelled. ${NOT_SENT}`);
   }
   if (body.action === "move") {
     const moved = await moveBooking(env, b.id, parseInt(body.slot || "", 10));
     if (!moved.ok) return show(env, b, await openSlots(env, b.slot_id), t, "That time was just taken or closed. Please pick another.");
     await recordBooking(env, moved.booking);
-    waitUntil(tellPatchlamp(env, request, "moved", moved.booking, { by: "customer", was: moved.was }));
-    return show(env, moved.booking, await openSlots(env, moved.booking.slot_id), t, "Moved. We've let them know, and an email with the new time is on its way.");
+    const sent = await tellPatchlamp(env, request, "moved", moved.booking, { by: "customer", was: moved.was });
+    return show(env, moved.booking, await openSlots(env, moved.booking.slot_id), t,
+      sent === true ? "Moved. We've let them know, and an email with the new time is on its way." : `Moved. ${NOT_SENT}`);
   }
   return show(env, b, await openSlots(env, b.slot_id), t);
 }

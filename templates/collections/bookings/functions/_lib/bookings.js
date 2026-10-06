@@ -75,20 +75,22 @@ export async function manageUrl(env, origin, id, startsAt) {
 
 // Tell patchlamp.com what happened to a booking, so the owner and the customer
 // are mailed (FormsController::booking). kind: requested | confirmed | moved |
-// cancelled; by: "owner" or "customer". `booking` is the row (name, email,
+// cancelled | reminder; by: "owner" or "customer". `booking` is the row (name, email,
 // phone, notes, starts_at, id); `was` the time before a move. Returns the
-// fetch's promise (hand it to waitUntil); never throws.
+// fetch's promise, true when patchlamp.com took it (hand it to waitUntil, or
+// await it to tell the person whether the mail went), or null when nothing
+// was sent (no slug, mail off, or a change on a site without the key); never throws.
 export async function tellPatchlamp(env, request, kind, booking, { by = "owner", was = null } = {}) {
   if (!env.PATCHLAMP_SLUG || env.FORWARD_EMAIL === "off") return null;
   const base = (env.PATCHLAMP_URL || "https://patchlamp.com").replace(/\/$/, "");
   const origin = env.MAIL_ORIGIN || new URL(request.url).origin;
   const fields = {
-    time: localTime(booking.starts_at), name: booking.name || "", email: booking.email || "",
+    time: localTime(String(booking.starts_at).slice(0, 16)), name: booking.name || "", email: booking.email || "",
     phone: booking.phone || "", notes: kind === "requested" ? booking.notes || "" : "",
   };
   const headers = { origin, referer: `${origin}/`, accept: "application/json", "content-type": "application/x-www-form-urlencoded" };
   if (env.BOOKING_KEY) {
-    Object.assign(fields, { kind, by, ref: String(booking.id), ts: String(now()), was: was ? localTime(was) : "",
+    Object.assign(fields, { kind, by, ref: String(booking.id), ts: String(now()), was: was ? localTime(String(was).slice(0, 16)) : "",
       manage: kind === "cancelled" ? "" : await manageUrl(env, origin, booking.id, booking.starts_at) });
   } else if (kind !== "requested") {
     return null;                                            // unsigned, only the owner's copy of a new booking goes
@@ -131,6 +133,50 @@ export async function moveBooking(env, id, slotId) {
   if (!res.meta.changes) return { ok: false };
   const booking = await env.DB.prepare("SELECT * FROM bookings WHERE id = ?").bind(id).first();
   return { ok: true, was: before.starts_at, booking };
+}
+
+// Cancel one that still holds a place. -> { ok, booking } (ok false when it had
+// already been cancelled or done, by someone else in the meantime).
+export async function cancelBooking(env, id) {
+  const res = await env.DB.prepare(
+    `UPDATE bookings SET status = 'cancelled', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ? AND status IN ${TAKEN}`
+  ).bind(id).run();
+  const booking = await env.DB.prepare("SELECT * FROM bookings WHERE id = ?").bind(id).first();
+  return { ok: !!res.meta.changes, booking };
+}
+
+// Confirm one that's only requested. -> { ok, booking }.
+export async function confirmBooking(env, id) {
+  const res = await env.DB.prepare(
+    `UPDATE bookings SET status = 'confirmed', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ? AND status = 'requested'`
+  ).bind(id).run();
+  const booking = await env.DB.prepare("SELECT * FROM bookings WHERE id = ?").bind(id).first();
+  return { ok: !!res.meta.changes, booking };
+}
+
+// The open slot that starts at this wall-clock time ("2026-10-14T15:00"; seconds
+// ignored), its own booking's slot left out, or null.
+export async function openSlotAt(env, startsAt, exceptSlot = 0) {
+  const at = String(startsAt || "").replace(" ", "T").slice(0, 16);
+  return (await openSlots(env, exceptSlot)).find((s) => String(s.starts_at).slice(0, 16) === at) || null;
+}
+
+// ---------------------------------------------------------------- the site endpoint (for Patch, by text)
+
+// POST /api/bookings/<id> is signed like the posts to patchlamp.com, with a
+// prefix so one can never stand for the other:
+//   X-Booking-Signature: hex(HMAC-SHA256(BOOKING_KEY, "api|" + raw body))
+// and the body's `ts` (unix seconds) within SIGNED_WINDOW of now. The contract
+// is written down in ~/projects/plans/49-the-customer-side.md § Site endpoint.
+export const SIGNED_WINDOW = 600;
+
+export async function verifySigned(env, request, raw) {
+  if (!env.BOOKING_KEY) return false;
+  const given = String(request.headers.get("x-booking-signature") || "").toLowerCase();
+  if (!sameString(given, await hmacHex(env.BOOKING_KEY, "api|" + raw))) return false;
+  let ts = 0;
+  try { ts = parseInt(JSON.parse(raw).ts, 10) || 0; } catch { return false; }
+  return ts > 0 && Math.abs(now() - ts) <= SIGNED_WINDOW;
 }
 
 // ---------------------------------------------------------------- the customer book (B122)
@@ -214,8 +260,13 @@ export async function calendar(env, origin) {
   const lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Patchlamp//Bookings//EN", "CALSCALE:GREGORIAN", "METHOD:PUBLISH",
     `X-WR-CALNAME:${icsText(site + " bookings")}`, "REFRESH-INTERVAL;VALUE=DURATION:PT1H", "X-PUBLISHED-TTL:PT1H"];
   for (const r of rows) {
-    const start = utcStamp(r.starts_at, tz);
-    const endLocal = new Date(Date.parse(r.starts_at + ":00Z") + (r.minutes || 60) * 60000).toISOString().slice(0, 16);
+    // a row written by hand may carry seconds ("2026-10-06T09:00:00"); one that
+    // still can't be read is left out of the feed, never a broken feed
+    const local = String(r.starts_at).slice(0, 16);
+    const startMs = Date.parse(local + ":00Z");
+    if (!/^\d{4}-\d\d-\d\dT\d\d:\d\d$/.test(local) || isNaN(startMs)) continue;
+    const start = utcStamp(local, tz);
+    const endLocal = new Date(startMs + (r.minutes || 60) * 60000).toISOString().slice(0, 16);
     const about = [r.phone && `Phone: ${r.phone}`, r.email && `Email: ${r.email}`, r.notes && `Notes: ${r.notes}`,
       `${origin.replace(/\/$/, "")}/admin/bookings/${r.id}`].filter(Boolean).join("\n");
     lines.push("BEGIN:VEVENT", `UID:booking-${r.id}@${host}`, `DTSTAMP:${stamp}`, `DTSTART:${start}`, `DTEND:${utcStamp(endLocal, tz)}`,

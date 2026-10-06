@@ -40,9 +40,12 @@ A failed check exits 2 and says what failed; don't send that file.
 
 The emails: the owner is emailed by the site the moment it is signed (the
 same patchlamp.com form mail as any form, "signature"). The PDF itself to the
-owner and the signer needs the customer-mail path (B119); until that is on
-patchlamp.com, `sign show` prints both emails as drafts and the PDF goes
-to the owner as a SEND-FILE.
+owner and the signer needs a customer-mail path that carries a file. B118's
+POST /internal/relay/projects/{slug}/customer-mail (through the relay's
+customers.py send(), the one place customer mail is checked) is the seam; it
+is not merged yet and takes text only. Until then `sign show` prints both
+emails as drafts, the PDF goes to the owner as a SEND-FILE, and the owner
+forwards the signer's copy (the signer can also print the signed page).
 
 Everything goes through `db` (the workspace's own database, by the site
 registry), so `sign` has no keys of its own. SIGN_DB overrides the db
@@ -522,7 +525,7 @@ def drafts(ws, r, pdf, tz):
     owner = ws.meta.get("contact_email") or "the owner"
     when_local = local_time(r["signed_at"], tz)
     say("")
-    say("The two emails (not sent: the PDF goes by email once the customer-mail path, B119, is on patchlamp.com;")
+    say("The two emails (not sent: nothing here can email a customer a file yet; the seam is B118's customer mail;")
     say("until then send the owner the PDF by SEND-FILE, and the owner forwards the signer's copy):")
     say(f"  To: {owner}")
     say(f"  Subject: Signed: {r['title']} — {r['signed_name']}")

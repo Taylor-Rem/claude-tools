@@ -30,8 +30,12 @@ print's renderer, checks it (letter pages; the name, the time and the hash
 read back from the PDF's text), saves it under `signed/`, and files it
 under the customer as a job "Signed: <title>" (done, that day) when the
 site keeps the customer book. Emailing the PDF to the owner and the signer
-needs the customer-mail path on patchlamp.com (B119); until then `sign
-show` prints both emails as drafts and Patch sends the owner the PDF.
+needs a customer-mail path that carries a file; B118's
+`POST /internal/relay/projects/{slug}/customer-mail` (relay `customers.py
+send()`, not merged on 2026-10-06) is the seam, and it takes text only. Until
+then `sign show` prints both emails as drafts, Patch sends the owner the PDF
+(SEND-FILE), and the signer's copy is the signed page itself, which they can
+print or save, or the PDF the owner forwards.
 
 **The hash** is sha256 of the stored text (UTF-8, `\n` line ends, no
 trailing spaces, one final newline): `sign` writes it when sending, the

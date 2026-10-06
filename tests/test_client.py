@@ -66,7 +66,7 @@ class ClientTiers(unittest.TestCase):
 
     def test_doctor_counts_doc_inside_the_wall(self):
         out = self.run_client("doctor", "hostco").stdout
-        self.assertIn("12 shims in sandbox/bin", out)
+        self.assertIn("14 shims in sandbox/bin", out)
         self.assertIn("1 tool runs inside the wall (doc:", out)
         self.assertNotIn("FAIL sandbox/bin", out)
 

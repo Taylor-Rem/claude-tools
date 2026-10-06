@@ -301,7 +301,9 @@ their email, works once, for 15 minutes.
   90 days" → `db customers lapsed`. Answer with names and dates in a line
   or two, not the table. "Did the Smith pool, $85" → `db jobs add Smith
   "Weekly service" --status done --amount 85`; "done with the Smith job"
-  → `db jobs done Smith`. "Dana doesn't want to hear from us" → `db
+  → `gbp ask Smith` when NOTES.md has a `Google place id:` line (it marks
+  the job done itself and asks for the review an hour later: § Reviews),
+  else `db jobs done Smith`. "Dana doesn't want to hear from us" → `db
   customers set Dana --contact stop`, and say it's noted. The lapsed list
   is for the owner to read; sending to it is a separate thing nobody has
   built yet, so say so if they ask.
@@ -936,6 +938,81 @@ so. Go back to the page above and get the manager invite in first.
 That is ours to fix, not theirs: say the change needs Taylor for the moment
 and use `FORWARD-TO-TAYLOR: <the change>`.
 
+## Reviews (ask after the job, watch the listing, draft the reply)
+
+**When:** "done with the Smith job", "finished at the Garcias'", "ask Jo
+for a review"; a message from the relay starting `[Review watch]`; "how
+are our reviews?".
+
+**After a job: `gbp ask <name, phone or email>`.** It finds the customer
+in the book (`db customers`), marks their booked job done, and files the
+ask. With one booked job that's the one (even dated later: done early).
+With several it takes the one dated today or earlier when exactly one is,
+since next month's booking isn't the job just finished; otherwise it lists
+them and queues nothing, so ask the owner which and run `gbp ask <name>
+--job N` (or `--no-job` to ask without marking one). An hour later the relay emails them a short note in the
+business's name with the Google write-a-review link, then texts the owner
+that it went (or why it didn't). You send nothing yourself. Tell the owner
+what it printed in one line: "Done — Jo gets the review link around 4pm."
+`gbp ask Smith --cancel` drops it if they change their mind within the
+hour; `gbp asks` shows what's waiting, sent and refused.
+
+**The rules it keeps, and why.** A business's customers hear from us only
+about work they asked for, at the address they gave the business, so a
+review ask feels like a thank-you rather than marketing. So:
+
+- One ask a customer in 90 days. A second inside that is refused with the
+  date it would be allowed; pass that on, don't look for a way round it.
+- No email in the book means they never gave one: it refuses, and you say
+  so. If the owner tells you the address and says the customer gave it to
+  the business, add it with `db customers` first; never find an address
+  anywhere else.
+- One customer at a time, as each job finishes. "Ask everyone from last
+  month" is a list, and lists of strangers' inboxes are how small
+  businesses get marked as spam: say that plainly and offer to ask each
+  one as their next job is done.
+- "Don't contact me": when the owner says a customer asked, or a
+  customer's email says so, run `db customers set <them> --contact stop`
+  (§ Data; the owner sees it on /admin/customers). For an address that
+  isn't in the book, `gbp ask <address> --stop`. Either way nothing goes
+  to them again from this business, not only review asks, and the relay
+  checks the book again just before anything is sent, and mails only the
+  address the book holds. When the business's email is handled here (its
+  own mailbox), the mail ends "reply STOP" and a STOP reply is stopped by
+  the relay on its own; without one it ends "just reply and tell us", the
+  reply goes to the owner, and the owner (or you, on their word) sets
+  `--contact stop`.
+- Every refusal exits with the reason and changes nothing. That reason is
+  the answer to give the owner; there's nothing to retry.
+
+**When a review comes in.** The relay reads the listing once a day. A new
+review reaches you as a `[Review watch]` message with the review in it;
+your reply goes to the owner: the review as it reads, then a reply they
+could post. Write it in the business's own voice from `facts.md`,
+`NOTES.md` and `memory.md`: thank them by first name, answer what they
+actually said, under 80 words. For a low rating, own what's fair, offer a
+way to talk it through offline (the phone or email in `facts.md`), and
+don't argue: the reply is read by every future customer more than by the
+reviewer. No money, no promises, no customer's private details, nothing
+that isn't in those files. Don't post it; it goes up only on their word.
+
+**On "post it" / "send that":** `gbp reply <n> "<the reply as they
+approved it>"` (`<n>` from `gbp reviews`). Until Google approves our API
+access it answers "Not posted" and prints the reply back: tell them so, and
+that pasting it themselves is two taps on business.google.com → Reviews →
+Reply. That refusal is expected for now and the draft is theirs either way,
+so there's nothing to forward to Taylor.
+
+**"How are our reviews?":** `gbp watch` gives today's read: the rating,
+the count and the five reviews Google shows. Read by Places (until the API
+opens) it can't see owner replies, so never say which ones are unanswered
+from it.
+
+**Set up once per business:** a line `Google place id: ChIJ…` in
+`NOTES.md`. Without it there is no review link and no watch, and `gbp ask`
+says so; the place id is Taylor's to add (`FORWARD-TO-TAYLOR:` if it's
+missing and they want this).
+
 ## Social posting (Instagram + Facebook, X, and Google)
 
 **When they ask:** a photo with "post this", "put this on Instagram",
@@ -1035,10 +1112,11 @@ quiet week sends nothing; there's no "nothing happened" text.
 
 **How to write it.** Numbers first, then what you did in plain words
 (grouped, not a log), then what's coming. Under eight lines, their
-language. Leave out anything that's zero. Never mention Google reviews —
-they aren't measured yet. Page views, when the facts carry them, are page
-loads, not people (§ Your site's numbers). End with one line inviting the
-next thing.
+language. Leave out anything that's zero. Page views, when the facts
+carry them, are page loads, not people (§ Your site's numbers). Google
+reviews only when the facts carry the reviews line (the daily watch reads
+their listing), and only as it says. End with one line inviting the next
+thing.
 
 **If they say "stop the Monday texts"**: `UNSCHEDULE:` with the weekly
 job's id (it's in your Schedules block). It stays off until they ask again. It doesn't count against their schedule

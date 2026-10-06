@@ -100,7 +100,10 @@ TOOLS = {
                    "roles": {"client": _ALL, "owner": _ALL}},
     "social": {"keys": ["PATCHLAMP_RELAY_SHARED_SECRET"], "state": [],
                "roles": {"client": ("post", "ls", "doctor"), "owner": ("post", "ls", "doctor")}},
-    "gbp": {"keys": ["PATCHLAMP_RELAY_SHARED_SECRET"], "state": [],
+    # B118: `gbp ask` reads the customer book through `db` (this project's D1 only: the registry copy holds
+    # this business's row alone), so gbp carries db's keys. No Places key: the daily review read is the relay's.
+    "gbp": {"keys": ["PATCHLAMP_RELAY_SHARED_SECRET", "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"],
+            "state": ["registry"],
             "roles": {"client": _ALL, "owner": _ALL}},
     "pay": {"keys": ["PATCHLAMP_RELAY_SHARED_SECRET", "STRIPE_KEY_PATCHLAMP", "STRIPE_TEST_KEY"], "state": [],
             "roles": {"client": _ALL, "owner": _ALL}},

@@ -1071,7 +1071,7 @@ Every sentence that says what Patchlamp does or costs, or carries a number, goes
 """
 
 CODEX_ASSIGNMENT = """# Assignment: today's feed caption ({date})
-from Flint's `social draft` (stamped by code, B133) · write to `marketing/copy/feed-{date}.md` · worth five minutes
+from Flint's `social draft` (stamped by code, B133) · write to `marketing/copy/{name}.md` (a new file; an older feed brief is not this one) · worth five minutes
 
 One caption for this morning's post on Patchlamp's feed, a {kind} post. Another writer drafts from the same packet, and the drafts are picked blind, so write yours as you'd want it to run.
 
@@ -1183,9 +1183,13 @@ def writer_opus(day, packet):
 def writer_codex(day, packet):
     date = day["date"]
     name = f"feed-{date}"
+    n = 2
+    while (MARKETING / "copy" / f"{name}.md").exists():   # a rerun gets its own brief: Codex found the old one
+        name = f"feed-{date}-{n}"                          # "already done" once and wrote nothing new (2026-10-06)
+        n += 1
     assign = MARKETING / "assignments" / f"{name}.md"
     brief = MARKETING / "copy" / f"{name}.md"
-    text = CODEX_ASSIGNMENT.format(date=date, kind=day["kind"], packet=packet)
+    text = CODEX_ASSIGNMENT.format(date=date, kind=day["kind"], packet=packet, name=name)
     try:
         assign.parent.mkdir(parents=True, exist_ok=True)
         assign.write_text(text)
@@ -1263,6 +1267,7 @@ def cmd_draft(args):
     if args.no_codex:
         results["codex"] = {"writer": "codex", "status": "skipped", "reason": "--no-codex"}
     day["drafts"] = [results["opus"], results["codex"]]
+    day["costs"] = []                 # a rerun's morning is this run's; the cost line and the ledger count it alone
     day.pop("pick", None)
     save_day(day)
     for i, d in enumerate(day["drafts"], 1):
@@ -1910,6 +1915,11 @@ def snippet(text, sentence, width=70):
     return ("…" if start else "") + t[start:start + width] + ("…" if start + width < len(t) else "")
 
 
+def short(text, n):
+    t = re.sub(r"\s+", " ", str(text or "")).strip()
+    return t if len(t) <= n else t[:n - 1].rsplit(" ", 1)[0] + "…"
+
+
 def receipt_lines(day, picture=None):
     """The morning's receipt, under 12 lines: each claim beside its source, who wrote it, the verdicts."""
     win, pick = day.get("winner"), day.get("pick") or {}
@@ -1923,7 +1933,7 @@ def receipt_lines(day, picture=None):
     who = {"opus": "Opus", "codex": "Codex", "splice": "a splice of both"}.get(win["writer"], win["writer"])
     how = {"pick": "picked blind over the other", "only": "the only draft that passed" if len(pick.get("writers") or []) > 1 else "the only draft", "splice": "spliced from both",
            "splice-failed": "picked; the splice failed its check", "fallback": "the picker couldn't choose"}.get(pick.get("how"), pick.get("how"))
-    out.append(f"receipt {day['date']} · {day['kind']} · written by {who} ({how})" + (f": {pick['argument']}" if pick.get("argument") and pick.get("how") != "only" else ""))
+    out.append(f"receipt {day['date']} · {day['kind']} · written by {who} ({how})" + (f": {short(pick['argument'], 140)}" if pick.get("argument") and pick.get("how") != "only" else ""))
     codex = next((d for d in day.get("drafts") or [] if d["writer"] == "codex"), None)
     if codex and codex.get("status") != "ok":
         out.append(f"  one draft today: Codex {codex['status']} ({codex.get('reason')})")

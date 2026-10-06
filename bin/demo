@@ -406,6 +406,16 @@ def cmd_reset(args):
     if r.returncode != 0:
         _record("publish failed")
         die("the site did not publish; the repo is back to golden but the live site is not")
+    # B58 (plan 27 § 4): each demo answers on its free <name>.patchlamp.site address once that zone is
+    # live; `site address` is idempotent and says one line when the zone isn't there. Never fails a reset.
+    try:
+        a = subprocess.run(["site", "address", name], capture_output=True, text=True, cwd=str(ws), env=pub_env,
+                           timeout=120)
+        said = [l.strip() for l in (a.stdout + a.stderr).splitlines() if "free address" in l]
+        if said:
+            print("  " + said[-1])
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"  free address: skipped ({exc})")
     url = live_url(meta)
     if url:
         status, body = fetch_live(url)

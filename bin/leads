@@ -2261,18 +2261,29 @@ def build_segment_remote(args, segment):
     key, where = (None, None) if args.census_only else places_key()
     places = Places(key, where, fixture=args.fixture, refresh=args.refresh)
     cands = [c for c in candidates_for(segment, args.min_reviews) if is_business(c)]
-    skip = {} if args.allow_repeat else contacted()
-    skip.update({pid: "pipeline" for pid in pipeline_skip()})
-    skip.update({pid: "claimed" for pid in claimed_places()})   # B45: they took the preview; they're a client
-    chains = chain_names()
-    pool, _ = nearest_pool([c for c in cands if (c["name"] or "").lower() not in chains], args.radius, args.n, skip)
+    pinned = list(getattr(args, "place", None) or [])
+    if pinned:   # these businesses, in this order (2026-10-05: a pitch for a preview that never got one); held ones included
+        by_id = {c["place_id"]: c for c in cands}
+        missing = [pid for pid in pinned if pid not in by_id]
+        if missing:
+            die(f"not in the {SEGMENT_NOUN[segment]} pool: " + ", ".join(missing) + " (`leads show NAME` prints the id; --segment all widens it)")
+        skip = {pid: "claimed" for pid in claimed_places()}
+        pool = [by_id[pid] for pid in pinned if pid not in skip]
+        args.n = len(pool)
+    else:
+        skip = {} if args.allow_repeat else contacted()
+        skip.update({pid: "pipeline" for pid in pipeline_skip()})
+        skip.update({pid: "claimed" for pid in claimed_places()})   # B45: they took the preview; they're a client
+        chains = chain_names()
+        pool, _ = nearest_pool([c for c in cands if (c["name"] or "").lower() not in chains], args.radius, args.n, skip)
     if not pool:
         die(f"no {SEGMENT_NOUN[segment]} left to message (all contacted or in the pipeline); --allow-repeat" if cands else
             f"no {SEGMENT_NOUN[segment]} in the census's pool yet (a phone, no site of their own); `leads doctor` counts them")
     for c in pool:
         c["reach"] = business_reach(c)
-    pool.sort(key=lambda c: (not business_reach_line(c["reach"]), c["miles"]))    # messageable first, then nearest
-    pool.sort(key=lambda c: (not business_reach_line(c["reach"]), strength_order(c)))   # B73: strong first within
+    if not pinned:
+        pool.sort(key=lambda c: (not business_reach_line(c["reach"]), c["miles"]))    # messageable first, then nearest
+        pool.sort(key=lambda c: (not business_reach_line(c["reach"]), strength_order(c)))   # B73: strong first within
     picks = []
     for c in pool:
         if len(picks) >= args.n:
@@ -7516,6 +7527,9 @@ def main():
     k.add_argument("--previews", action="store_true",
                    help="with --remote: build a preview site for any pick that hasn't got one (B45) and put its "
                         "link in the message")
+    k.add_argument("--place", nargs="+", metavar="PLACE_ID",
+                   help="with --remote: these businesses, in this order, instead of the pool (held or kitted ones "
+                        "too; `leads show NAME` prints the id) — a pitch for a preview that never got one")
     k.set_defaults(fn=cmd_kit)
 
     g = sub.add_parser("diagnose", help="three lines on a business's Google listing, for a group thread")

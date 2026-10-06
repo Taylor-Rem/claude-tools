@@ -178,7 +178,59 @@ class LedgerTest(unittest.TestCase):
         self.assertFalse(photo.exists(), "a receipt filed by mistake takes its photo with it")
         self.assertEqual(self.j("ledger", "ls", "--month", "2026-10")["count"], 1)
 
-    # -- export ------------------------------------------------------------------
+    def test_a_refused_photo_type_leaves_no_row(self):
+        """The type and size checks run before the INSERT, so the retry isn't "already filed"."""
+        self.ledger()
+        (self.ws / "incoming").mkdir(exist_ok=True)
+        (self.ws / "incoming" / "r.tiff").write_bytes(b"II*\x00not really")
+        r = self.db("ledger", "add", "X", "5", "--date", "2026-10-01", "--photo", "incoming/r.tiff")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("a receipt is a photo or a PDF", r.stderr)
+        self.assertEqual(json.loads(self.db("query", "SELECT COUNT(*) AS n FROM ledger", "--json").stdout)[0]["n"], 0)
+        r = self.db("ledger", "add", "X", "5", "--date", "2026-10-01", "--photo", self.texted("juniper-fuel.jpg"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_amounts_and_dates_are_plain(self):
+        self.ledger()
+        for bad in ("1e5", "inf", "nan", "12.5.1", "-"):
+            r = self.db("ledger", "add", "X", bad, "--date", "2026-10-01")
+            self.assertNotEqual(r.returncode, 0, bad)
+            self.assertIn("isn't an amount", r.stderr, bad)
+            self.assertNotIn("Traceback", r.stderr, bad)
+        r = self.db("ledger", "add", "X", "83100", "--date", "2026-10-01")   # 831.00 with the point dropped
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("over $10,000", r.stderr)
+        self.assertIn("--yes", r.stderr)
+        self.assertEqual(self.j("ledger", "add", "X", "831.00", "--date", "2026-10-01")["receipt"]["amount_cents"], 83100)
+        r = self.db("ledger", "add", "Truck Lot", "$18,500", "--date", "2026-10-01")
+        self.assertNotEqual(r.returncode, 0)
+        got = self.j("ledger", "add", "Truck Lot", "$18,500", "--date", "2026-10-01", "--yes")
+        self.assertEqual(got["receipt"]["amount_cents"], 1850000)
+        r = self.db("ledger", "set", "1", "--amount", "83100")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("--yes", r.stderr)
+        r = self.db("ledger", "add", "X", "5", "--date", "2026-10-02junk")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("isn't a date", r.stderr)
+        d = load_db().iso_date
+        self.assertEqual([d(x) for x in ("2026-10-02", "2026-10-02T09:15:00Z", "2026-10-02 09:15", "2026-10-02junk",
+                                         "2026-10-02x09:15")],
+                         ["2026-10-02", "2026-10-02", "2026-10-02", "", ""])
+
+    def test_a_new_photo_replaces_the_old_file(self):
+        self.ledger()
+        a, _b, _c = self.file_three()
+        rid, old = a["receipt"]["id"], self.ws / a["receipt"]["photo"]
+        got = self.j("ledger", "set", str(rid), "--vendor", "Bluebird Pool", "--photo", self.texted("ridgeline-hardware.jpg"))
+        self.assertNotEqual(got["photo"], a["receipt"]["photo"])
+        self.assertTrue((self.ws / got["photo"]).is_file())
+        self.assertFalse(old.exists(), "the replaced photo is gone, so the zip holds only live ones")
+        # the same name (date and vendor unchanged) is overwritten in place and kept
+        got2 = self.j("ledger", "set", str(rid), "--photo", self.texted("juniper-fuel.jpg"))
+        self.assertEqual(got2["photo"], got["photo"])
+        self.assertEqual((self.ws / got2["photo"]).read_bytes(), (RECEIPTS / "juniper-fuel.jpg").read_bytes())
+
+        # -- export ------------------------------------------------------------------
 
     def test_export_carries_the_photos_zipped_beside_the_csv(self):
         self.ledger()
@@ -196,6 +248,30 @@ class LedgerTest(unittest.TestCase):
         shutil.rmtree(out)
         r = self.db("ledger", "export")
         self.assertEqual(sorted(p.name for p in out.iterdir()), ["ledger.csv", "ledger.json", "receipts.zip"])
+
+    def test_the_json_export_imports_back(self):
+        """ledger.json has the CSV's columns, not the generated `month`, so `db import` takes it."""
+        self.ledger()
+        self.file_three()
+        self.db("export")
+        out = self.ws / "exports" / TODAY.isoformat()
+        data = json.loads((out / "ledger.json").read_text())
+        self.assertNotIn("month", data[0])
+        self.assertEqual(list(data[0]), next(csv.reader(io.StringIO((out / "ledger.csv").read_text()))))
+        self.db("exec", "DELETE FROM ledger", "--yes")
+        r = self.db("import", "ledger", str(out / "ledger.json"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.j("ledger", "ls", "--month", "2026-10")["total_cents"], 14437)
+
+    def test_export_says_which_photos_are_missing(self):
+        self.ledger()
+        a, _b, _c = self.file_three()
+        (self.ws / a["receipt"]["photo"]).unlink()
+        r = self.db("export")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("receipts: 2 photos", r.stdout)
+        self.assertIn(f"#{a['receipt']['id']} {a['receipt']['photo']}", r.stdout)
+        self.assertIn("isn't in receipts/ any more", r.stdout)
 
     def test_export_skips_links_left_in_receipts(self):
         self.ledger()

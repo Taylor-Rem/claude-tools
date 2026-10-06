@@ -59,6 +59,10 @@ elif argv and argv[0] == "new":
     (d / "photos.html").write_text("<html>photos</html>")
     (d / "css" / "style.css").write_text("body{}")
     os.system("git -C %s init -q -b main" % d)
+    if os.environ.get("FAKE_SITE_LIVE"):            # B58: the claimed site's live URL, as site new --primary writes it
+        meta = json.loads((ws / ".client.json").read_text())
+        meta["live_url"] = os.environ["FAKE_SITE_LIVE"]
+        (ws / ".client.json").write_text(json.dumps(meta))
 print("ok")
 '''
 
@@ -372,6 +376,24 @@ class PreviewTest(unittest.TestCase):
                          self.run_leads("kit", "--remote", "--segment", "services", "--fixture", str(DETAILS),
                                         "--previews", "--json", "--no-save").stdout,
                          "a claimed preview is not offered again")
+
+    def test_a_claimed_preview_redirects_to_the_site_it_became(self):
+        # B58 (VISION § Decided "A free address on every plan"): previews/<slug>/ answers 301 to the new site
+        self.build("Mike's Pool Care, American Fork")
+        slug = "mikes-pool-care-american-fork"
+        r = self.run_leads("preview", "--claim", "Mike's Pool Care", "--slug", "mikes-pool-care",
+                           env={"FAKE_SITE_LIVE": "https://mikes-pool-care.patchlamp.site/"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        meta = json.loads((self.previews / "meta" / f"{slug}.json").read_text())
+        self.assertEqual(meta["moved_to"], "https://mikes-pool-care.patchlamp.site")
+        self.assertFalse((self.previews / "site" / slug).exists(), "no file on the host competes with the rule")
+        rules = (self.previews / "site" / "_redirects").read_text().splitlines()
+        self.assertIn(f"/{slug} https://mikes-pool-care.patchlamp.site/ 301", rules)
+        self.assertIn(f"/{slug}/* https://mikes-pool-care.patchlamp.site/:splat 301", rules)
+        self.assertIn(("site", "previews"), [(c["tool"], c["argv"][0]) for c in self.calls()], "the host is republished")
+        self.assertIn("now redirects to https://mikes-pool-care.patchlamp.site/", r.stdout)
+        # an unclaimed preview has no rule
+        self.assertNotIn("/other", "\n".join(rules))
 
     # -- the section library, the looks, the renderer (plan 28, B64) ----------------------
 

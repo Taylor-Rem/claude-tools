@@ -3498,6 +3498,19 @@ def preview_root_files():
     (site / "404.html").write_text((PREVIEW_OVERLAY / "404.html").read_text())
     (site / "robots.txt").write_text((PREVIEW_OVERLAY / "robots.txt").read_text())
     (site / "_headers").write_text((PREVIEW_OVERLAY / "_headers").read_text())
+    (site / "_redirects").write_text(preview_redirects())
+
+
+def preview_redirects():
+    """B58: a claimed preview answers 301 to the site it became (VISION § Decided "A free address on
+    every plan"): two lines a claim, from the manifest's `moved_to`, in the previews project's
+    _redirects. The claim deletes the preview's folder, so no file on the host competes with the rule."""
+    lines = []
+    for m in sorted(previews_all(), key=lambda m: m["slug"]):
+        to = (m.get("moved_to") or "").rstrip("/")
+        if m.get("claimed") and re.match(r"^https://[a-z0-9.-]+$", to):
+            lines += [f"/{m['slug']} {to}/ 301", f"/{m['slug']}/* {to}/:splat 301"]
+    return "\n".join(lines) + ("\n" if lines else "")
 
 
 def preview_publish(dry=False):
@@ -4034,7 +4047,7 @@ def preview_claim(args):
             print(f"  would keep the {m['template']} template's own index.html (its forms); the preview's page "
                   f"goes to clients/{slug}/incoming/preview-index.html for Patch to fold in; the hero is copied")
         print(f"  would commit, push, `site publish {repo}`")
-        print(f"  would mark {m['slug']} claimed and take the preview down")
+        print(f"  would mark {m['slug']} claimed and redirect its preview address to the new site (301)")
         return
     r = subprocess.run(steps[0], capture_output=True, text=True)
     if r.returncode != 0 and not ws.exists():
@@ -4070,10 +4083,26 @@ def preview_claim(args):
             print(f"leads: git {git_args[0]} in {dest}: {(g.stderr or g.stdout).strip()[:160]}", file=sys.stderr)
     r = subprocess.run([str(SITE_BIN), "publish", repo], capture_output=True, text=True, cwd=str(ws))
     print((r.stdout + r.stderr).strip()[-600:])
+    published = r.returncode == 0
     m["claimed"], m["claimed_on"] = slug, now_date().isoformat()     # the week counts claims by date (B52)
+    # B58: the preview's address now 301s to the site it became (its free address once patchlamp.site
+    # is live, its pages.dev host until then): the folder comes off the host, the rule goes on.
+    try:
+        moved = (json.loads((ws / ".client.json").read_text()).get("live_url") or "").rstrip("/")
+    except (OSError, ValueError):
+        moved = ""
+    if published and moved.startswith("https://"):
+        m["moved_to"] = moved
+        shutil.rmtree(preview_site_dir() / m["slug"], ignore_errors=True)
     preview_save(m)
-    print(f"claimed: clients/{slug} · repos/{repo} · the preview is marked claimed "
-          f"(`leads preview --remove {m['slug']}` takes it off the previews host)")
+    if m.get("moved_to"):
+        ok = True if args.no_publish else preview_publish()[0]
+        print(f"claimed: clients/{slug} · repos/{repo} · {m['url']} now redirects to {moved}/"
+              + ("" if ok else " once the previews host publishes (`leads preview sweep` publishes it)"))
+    else:
+        print(f"claimed: clients/{slug} · repos/{repo} · the preview is marked claimed and still up "
+              f"(the site isn't published yet, so there is nowhere to redirect it; "
+              f"`leads preview --remove {m['slug']}` takes it off the previews host)")
 
 
 CLAIM_LEAVE = ("claim/", "css/preview.css")

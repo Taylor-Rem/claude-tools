@@ -22,11 +22,16 @@ before 2026-09-16 and goes away once Bleu Grave has moved.
   site mail platform [--check]         # the Resend domain mail.patchlamp.com + the Porkbun records   (SITE_ADMIN=1)
   site mail doctor                     # the app's mail status, the DNS, this workspace's mailbox vs its links
   site ls                              # repos in ./repos with where they're served
-  site domain <name> [example.com]     # custom domain on the project + the DNS lines   (SITE_ADMIN=1)
+  site domain <name> [example.com] [--records] [--picture] [--dry-run]
+                                       # the owner's domain on the project (B58, Patch's): a zone of ours + the two
+                                       # nameservers to set, or --records (ALIAS/CNAME); --picture names the registrar
+  site address [<name>]                # the site's free <label>.patchlamp.site address (site new does it by itself)
+  site forward [--sweep]               # leavers' 90-day redirects; --sweep ends the due ones   (SITE_ADMIN=1)
   site adopt <name> [--project P]      # register an existing repo as a Cloudflare site   (SITE_ADMIN=1)
   site transfer <name> <github-user> [--keep]  # hand the repo to the client             (SITE_ADMIN=1)
   site handover [<name>] [--out DIR] [--no-upload]  # everything that is theirs -> handover/<date>/ + a zip (B69)
-  site retire <name> [--delete-repo] [--keep-local]  # take a site down: Pages project + registry row (+ repo)  (SITE_ADMIN=1)
+  site retire <name> [--delete-repo] [--keep-local] [--forward URL]  # take a site down: Pages project + registry row (+ repo);
+                                       # --forward: the address 301s to URL for 90 days instead   (SITE_ADMIN=1)
   site stamp <name>                    # (GitHub Pages only) build id into version.json + every page
   site template push [--template T]    # mirror templates/sites/<T> to <org>/site-template(-<T>)
   site watch [--once] [--dry-run] [--rdap] [--site KEY] [--json]   # every live site + preview checked (B72)
@@ -37,8 +42,10 @@ Everything but `template` and `doctor` runs only inside a client workspace
 touches ./repos/. Which Pages project a workspace may publish to is
 recorded in ~/.config/claude-tools/sites.json by `site new` / `site adopt`
 — outside the workspace, so a client session can't point itself at another
-client's project. domain, adopt, transfer and retire are Taylor's work: they refuse
+client's project. adopt, transfer and retire are Taylor's work: they refuse
 unless SITE_ADMIN=1 is in the environment, which a client session can't set.
+`domain` was too until B58 (2026-10-05); on a Cloudflare site it is Patch's now, because
+the registry already limits it to this workspace's own project (a demo still refuses).
 
 The data layer (plan 12 § B29): `site data` (or `new --db`) creates one
 Cloudflare D1 database named after the Pages project, records its id in the
@@ -123,7 +130,9 @@ Config, by name, never printed:
   RESEND_API_KEY         `site mail platform` / `--domain` (a full-access key: it makes domains)
   PATCHLAMP_RELAY_SHARED_SECRET  the mailbox on patchlamp.com (`site mail`, `site new`'s {{MAIL}}, doctor)
   CLOUDFLARE_API_TOKEN   ~/.config/claude-tools/env — Account: Cloudflare Pages Edit (+ D1 Edit for the data layer)
-  CLOUDFLARE_ACCOUNT_ID  same file. Both required for new/publish/domain.
+  CLOUDFLARE_ACCOUNT_ID  same file. Both required for new/publish/domain. `site domain`'s zone and the free
+                         address need Zone · Zone · Edit and Zone · DNS · Edit on the same token (B58)
+  SITE_BRAND_ZONE        the free addresses' zone (default patchlamp.site; the tests set it too)
   GITHUB_TOKEN   passed to gh as GH_TOKEN; when absent, gh's own login is used.
   SITE_ORG       the GitHub owner repos are created under (`setenv.sh SITE_ORG`).
   SITE_TEMPLATE_REPO  name of the mirrored template repo (default site-template).
@@ -786,7 +795,7 @@ def site_host(entry, project):
     for dom in entry.get("domains") or []:
         if not dom.startswith("www."):
             return dom
-    return entry.get("pages_host") or pages_host(project)
+    return entry.get("address") or entry.get("pages_host") or pages_host(project)
 
 
 def site_urls(d, base):
@@ -943,6 +952,9 @@ def cmd_new(a):
     if cloudflare and not DRY:
         cf_ensure_project(name)                      # first: the URL filled into the files is its real host
     url = f"https://{pages_host(name)}/" if cloudflare else pages_url(o, name)
+    address = brand_attach(meta, name, name) if cloudflare else None   # B58: born on <label>.patchlamp.site
+    if address:
+        url = f"https://{address}/"
     values = {
         "NAME": meta["name"], "REPO": name, "URL": url, "OWNER": o,
         "SLUG": meta["slug"],                        # B108: the site chat's data-site, the project patchlamp.com keys it by
@@ -1005,7 +1017,10 @@ def cmd_new(a):
     if cloudflare:
         cf_ensure_project(name)
         site_register(meta, name, name, template=kind)
-        say(f"  registered {meta['slug']}/{name} -> Pages project {name}")
+        if address:
+            registry_set(meta, name, address=address)
+        say(f"  registered {meta['slug']}/{name} -> Pages project {name}"
+            + (f", free address {address} (pages.dev kept as the fallback)" if address else ""))
     else:
         code, out, err = gh("api", "-X", "POST", f"repos/{slug}/pages", "--input", "-",
                             stdin=json.dumps({"source": {"branch": "main", "path": "/"}}), check=False)
@@ -1043,7 +1058,15 @@ def cmd_new(a):
     say()
     say(f"repo:  https://github.com/{slug}")
     say(f"local: repos/{name}  (git -C repos/{name} …; its CLAUDE.md is the site manual)")
-    say(f"live:  {url}  {'— serving' if live else '— not serving yet; Pages usually takes 1–3 minutes'}")
+    if address:
+        live = address_serving(url)
+        say(f"live:  {url}  " + ("— serving, with its certificate" if live else
+                                 f"— not serving yet: the certificate usually takes a few minutes "
+                                 f"(`site domain {name}` shows it; https://{pages_host(name)}/ serves now)"))
+        say(f"text:  {live_text(url)}" if live else
+            f"text, once it serves (never before): {live_text(url)}")
+    else:
+        say(f"live:  {url}  {'— serving' if live else '— not serving yet; Pages usually takes 1–3 minutes'}")
     say(f"next:  edit the REPLACE-ME placeholders in repos/{name}/index.html, commit, push"
         + (f", site publish {name}" if cloudflare else "") + f", then shot {url}")
     if meta.get("live_url") == url:
@@ -1126,6 +1149,8 @@ def cmd_publish(a):
         if not dom.startswith("www."):
             live = f"https://{dom}/"
             break
+    if not live and entry.get("address"):
+        live = f"https://{entry['address']}/"
     # is it serving? (direct uploads are live in seconds)
     up = wait_live(prod, "", seconds=90)
     cc = curl_header(prod, "Cache-Control") if up else None
@@ -1135,7 +1160,7 @@ def cmd_publish(a):
     if cc and "no-cache" not in cc and "max-age=0" not in cc:
         say("  WARN HTML is cacheable: copy templates/sites/business/_headers into the repo root")
     if live:
-        say(f"  live:       {live}  (custom domain; the same deployment)")
+        say(f"  live:       {live}  ({'custom domain' if entry.get('domains') else 'the free address'}; the same deployment)")
     if key:
         indexnow_submit(meta, name, d, entry, project, key)
     say(f"published {name} @ {sha}: {subject}")
@@ -1685,7 +1710,8 @@ def watch_targets():
         for repo, e in sorted(rows.items()):
             if e.get("host") != "cloudflare" or e.get("watch") is False:
                 continue
-            host = site_host(e, e["project"]) if e.get("domains") else (e.get("pages_host") or f"{e['project']}.pages.dev")
+            host = site_host(e, e["project"]) if e.get("domains") else \
+                (e.get("address") or e.get("pages_host") or f"{e['project']}.pages.dev")
             custom = host if e.get("domains") else None
             out.append({"key": f"{slug}/{repo}", "kind": "client", "slug": slug, "repo": repo, "project": e["project"],
                         "url": f"https://{host}/", "host": host, "domain": custom,
@@ -1701,8 +1727,8 @@ def watch_targets():
                 m = json.loads(p.read_text())
             except ValueError:
                 continue
-            if not m.get("slug") or not phost:
-                continue
+            if not m.get("slug") or not phost or m.get("moved_to"):
+                continue                    # B58: a claimed preview with moved_to is a 301 to the client's site now
             out.append({"key": f"preview/{m['slug']}", "kind": "preview", "slug": m["slug"], "repo": None,
                         "project": proj.get("project") or PREVIEWS_PROJECT, "url": f"https://{phost}/{m['slug']}/",
                         "host": phost, "domain": None, "markers": list(PREVIEW_MARKERS),
@@ -2058,6 +2084,11 @@ def cmd_watch(a):
         say(("  would say: " if a.dry_run else "  told Taylor: ") + e)
     if a.dry_run:
         say("dry run: nothing written, nobody told")
+    elif not a.site and not WATCH_PRETEND:
+        try:                                         # B58: a leaver's 90-day redirect ends on its day
+            forward_sweep()
+        except (SystemExit, Exception) as exc:       # noqa: BLE001 - the sweep never fails the watch
+            say(f"  forward sweep: skipped ({exc})")
 
 
 def watch_print(data, only=None):
@@ -2913,8 +2944,11 @@ def cmd_ls(a):
         entry = site_entry(meta, n)
         if entry and entry.get("host") == "cloudflare":
             proj = entry["project"]
-            live = f"https://{entry['domains'][0]}/" if entry.get("domains") else f"https://{pages_host(proj)}/"
-            extra = [f"cloudflare:{proj}"] + [f"domain={x}" for x in entry.get("domains") or []]
+            live = f"https://{entry['domains'][0]}/" if entry.get("domains") else \
+                f"https://{entry['address']}/" if entry.get("address") else f"https://{pages_host(proj)}/"
+            extra = [f"cloudflare:{proj}"] + [f"domain={x}" for x in entry.get("domains") or []] \
+                + ([f"address={entry['address']}"] if entry.get("address") else []) \
+                + ([f"forwarding->{entry['forward']['to']} until {entry['forward']['until']}"] if entry.get("forward") else [])
             same = lambda u: re.sub(r"^https?://", "", (u or "").rstrip("/"))
             star = " *" if meta.get("live_url") and same(live) == same(meta["live_url"]) else ""
             say(f"{n:<24} {slug:<32} {live}{star}  {' '.join(extra)}")
@@ -2936,56 +2970,443 @@ def cmd_ls(a):
         say(f"\n* = live_url in .client.json (the URL the allowlist can curl): {meta['live_url']}")
 
 
+# ---------------------------------------------------------------- the domain and the free address (B58)
+#
+# Plan ~/projects/plans/27-domain-without-taylor.md. Two things:
+#
+# - `site domain <name> <domain>` is Patch's now (no SITE_ADMIN inside a client workspace; a demo
+#   still refuses). The default is the nameserver move: the domain becomes a zone on our Cloudflare
+#   account (made once, reused after), the apex and www are attached to the Pages project and their
+#   records written in that zone, and the owner sets the two nameservers Cloudflare assigned at their
+#   registrar. `--records` is the old way (ALIAS + CNAME at the registrar), and the tool takes it by
+#   itself for a subdomain, for a domain that already receives mail (moving the nameservers would
+#   move the mail too) and when the zone can't be made (it says why). `--picture` names the registrar
+#   from the domain's current nameservers and prints its help page and, when there is one, the path
+#   of templates/dns/<registrar>.png last, for SEND-FILE.
+# - The free address: when the zone `patchlamp.site` (SITE_BRAND_ZONE) is in the account and active,
+#   `site new` attaches <label>.patchlamp.site to the new project and writes its CNAME, and that is the
+#   site's live URL; the pages.dev host stays in the registry as the fallback. The label is the
+#   workspace's slug for its first site and the site's own name after that. `site address [<name>]`
+#   gives an existing site its address the same way. Pages has no wildcard custom domains, so this
+#   per-site call on our own zone is what "wildcarded" means. The registry row's `address` holds it,
+#   kept apart from `domains` (the owner's own), because the watch reads `domains` for expiry texts.
+# - Leaving (VISION § Decided "A free address on every plan"): `SITE_ADMIN=1 site retire <name>
+#   --forward URL` keeps the Pages project for 90 days with nothing on it but a redirect to URL, the
+#   address still attached; `site forward --sweep` (run by every `site watch --once`) takes the
+#   project, the domains and the address's record down once the 90 days are over. A retire without
+#   --forward deletes the address's record with the project, so no name of ours points at a
+#   pages.dev host someone else could take.
+
+BRAND_ZONE = (os.environ.get("SITE_BRAND_ZONE") or "patchlamp.site").lower()
+ADDRESS_WAIT = int(os.environ.get("SITE_ADDRESS_WAIT_SECONDS") or 120)   # how long `site new` waits for the address's certificate
+# Codex's sentence, marketing/copy/2026-10-05-free-address.md § Proposed; CLAIMS § Hero carries it. Word for word.
+LIVE_TEXT = "Your site's live: {url}. Patched."
+FORWARD_DAYS = 90
+TWO_PART_SUFFIXES = ("co.uk", "org.uk", "me.uk", "com.au", "net.au", "org.au", "co.nz", "com.mx", "com.br", "co.jp", "co.za")
+DNS_PICTURES = HERE / "templates" / "dns"
+DOH = os.environ.get("SITE_DOH") or "https://cloudflare-dns.com/dns-query"
+# registrar -> (the name the owner knows, nameserver patterns, the help page for changing nameservers)
+REGISTRARS = {
+    "godaddy": ("GoDaddy", ("domaincontrol.com",), "https://www.godaddy.com/help/change-nameservers-for-my-domains-664"),
+    "namecheap": ("Namecheap", ("registrar-servers.com", "namecheaphosting.com"),
+                  "https://www.namecheap.com/support/knowledgebase/article.aspx/767/10/how-to-change-dns-for-a-domain/"),
+    "squarespace": ("Squarespace (Google Domains moved there)", ("squarespacedns.com", "googledomains.com", "squarespace.com"),
+                    "https://support.squarespace.com/hc/en-us/articles/4404183898125"),
+    "porkbun": ("Porkbun", ("porkbun.com",), "https://kb.porkbun.com/article/22-how-to-change-your-nameservers"),
+    "cloudflare": ("Cloudflare", ("ns.cloudflare.com",), "https://developers.cloudflare.com/registrar/"),
+    "generic": ("your registrar", (), "https://developers.cloudflare.com/dns/zone-setups/full-setup/setup/"),
+}
+
+
+def apex_of(domain):
+    """The registrable name: example.com for www.example.com, example.co.uk for shop.example.co.uk."""
+    parts = domain.split(".")
+    n = 3 if ".".join(parts[-2:]) in TWO_PART_SUFFIXES else 2
+    return ".".join(parts[-n:])
+
+
+def doh(rtype, name):
+    """DNS over HTTPS (Cloudflare's JSON endpoint), the fallback when `dig` isn't there or says nothing."""
+    req = urllib.request.Request(f"{DOH}?name={name}&type={rtype}",
+                                 headers={"Accept": "application/dns-json", "User-Agent": "claude-tools site"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = json.loads(r.read().decode())
+    except (urllib.error.URLError, OSError, ValueError):
+        return []
+    return [str(x.get("data") or "").strip() for x in data.get("Answer") or [] if x.get("data")]
+
+
+def lookup(rtype, name):
+    return dig(rtype, name) or doh(rtype, name)
+
+
+def registrar_of(domain):
+    """(key, nameservers today): who runs the domain's DNS, read from its NS records."""
+    ns = [n.lower().rstrip(".") for n in lookup("NS", apex_of(domain))]
+    for key, (_, pats, _) in REGISTRARS.items():
+        if any(n.endswith(p) for n in ns for p in pats):
+            return key, ns
+    return "generic", ns
+
+
+def picture_for(key):
+    p = DNS_PICTURES / f"{key}.png"
+    if p.exists():
+        return p
+    g = DNS_PICTURES / "generic.png"
+    return g if g.exists() else None
+
+
+def cf_errs(errs):
+    return "; ".join(f"{e.get('code')}: {e.get('message')}" for e in errs or []) or "no reason given"
+
+
+def zone_find(name):
+    """(zone or None, problem or None): our account's zone called `name`."""
+    _, acct = cf_creds()
+    ok, zones, errs = cf_zone_call("GET", f"/zones?name={name}&account.id={acct}")
+    if not ok:
+        return None, f"the token can't list zones ({cf_errs(errs)})"
+    return (zones[0] if zones else None), None
+
+
+def zone_ensure(apex):
+    """(zone, None) — ours already, or made now as a full zone; (None, why) when it can't be."""
+    zone, problem = zone_find(apex)
+    if problem:
+        return None, problem
+    if zone:
+        say(f"  zone {apex}: already in the account ({zone.get('status')})")
+        return zone, None
+    _, acct = cf_creds()
+    if DRY:
+        say(f"  would POST /zones {json.dumps({'name': apex, 'account': {'id': '<account>'}, 'type': 'full'})}")
+        return {"id": "(dry run)", "name": apex, "status": "pending",
+                "name_servers": ["(the two Cloudflare assigns)"]}, None
+    ok, zone, errs = cf_zone_call("POST", "/zones", {"name": apex, "account": {"id": acct}, "type": "full"})
+    if not ok:
+        codes = {e.get("code") for e in errs or []}
+        if 1061 in codes:
+            return None, f"{apex} is already on Cloudflare in another account"
+        if codes & {9109, 10000, 9103, 1000}:
+            return None, f"the token can't create zones yet (it needs Zone · Zone · Edit; {cf_errs(errs)})"
+        return None, f"Cloudflare wouldn't make the zone ({cf_errs(errs)})"
+    say(f"  zone {apex}: made in the account (pending until the nameservers change)")
+    return zone, None
+
+
+def zone_cname(zone, fqdn, target):
+    """fqdn CNAME target (proxied) in one of our zones, written once; an old CNAME of ours is moved."""
+    if DRY or str(zone.get("id", "")).startswith("("):
+        say(f"  would write CNAME {fqdn} -> {target} in {zone['name']}")
+        return "dry run"
+    ok, rows, errs = cf_zone_call("GET", f"/zones/{zone['id']}/dns_records?name={fqdn}")
+    if not ok:
+        return f"not written: Cloudflare won't list {fqdn}'s records ({cf_errs(errs)})"
+    body = {"type": "CNAME", "name": fqdn, "content": target, "ttl": 1, "proxied": True}
+    for r in rows or []:
+        if r.get("type") == "CNAME" and str(r.get("content", "")).rstrip(".") == target:
+            return "already there"
+        if r.get("type") == "CNAME":
+            ok, _, errs = cf_zone_call("PUT", f"/zones/{zone['id']}/dns_records/{r['id']}", body)
+            return "moved" if ok else f"not moved ({cf_errs(errs)})"
+        if r.get("type") in ("A", "AAAA"):
+            return f"not written: {fqdn} has an {r['type']} record already; Pages wants a CNAME there"
+    ok, _, errs = cf_zone_call("POST", f"/zones/{zone['id']}/dns_records", body)
+    return "written" if ok else f"not written ({cf_errs(errs)}; the token needs Zone · DNS · Edit)"
+
+
+def zone_drop_record(zone_name, fqdn):
+    """Delete fqdn's records from one of our zones (a retired address). Never raises."""
+    try:
+        zone, problem = zone_find(zone_name)
+        if not zone:
+            return problem or f"no zone {zone_name}"
+        if DRY:
+            return f"would delete {fqdn}'s records"
+        ok, rows, errs = cf_zone_call("GET", f"/zones/{zone['id']}/dns_records?name={fqdn}")
+        for r in (rows or []) if ok else []:
+            cf_zone_call("DELETE", f"/zones/{zone['id']}/dns_records/{r['id']}")
+        return f"deleted {len(rows or [])} record(s) for {fqdn}" if ok else cf_errs(errs)
+    except SystemExit:
+        return "Cloudflare didn't answer"
+
+
+def brand_zone():
+    """(zone or None, state): the free addresses' zone — 'active', 'pending', 'missing' or why it can't be read."""
+    tok, acct = cf_creds(required=False)
+    if not (tok and acct):
+        return None, "no Cloudflare token"
+    zone, problem = zone_find(BRAND_ZONE)
+    if problem:
+        return None, problem
+    if not zone:
+        return None, "missing"
+    return zone, ("active" if zone.get("status") == "active" else zone.get("status") or "pending")
+
+
+def address_label(meta, name):
+    """The free address's first label: the workspace's slug for its main site (the only one, or the one
+    named <slug>-site / <slug>), else the site's own name. None when both are taken (by another site's
+    address, live or forwarding)."""
+    reg = registry_load()
+    taken = {r.get("address") for s, rows in reg.items() for n, r in rows.items()
+             if r.get("address") and not (s == meta["slug"] and n == name)}
+    others = set(reg.get(meta["slug"], {})) - {name}
+    main = not others or name in (meta["slug"], f"{meta['slug']}-site")
+    for cand in ((meta["slug"], name) if main else (name,)):
+        if NAME_RE.match(cand) and len(cand) <= 63 and f"{cand}.{BRAND_ZONE}" not in taken:
+            return cand
+    return None
+
+
+def brand_attach(meta, name, project, quiet=False):
+    """Attach <label>.patchlamp.site to the project and write its record. Returns the host, or None
+    (and one line why) when the zone isn't there yet: the site stays on its pages.dev host."""
+    zone, state = brand_zone()
+    if state != "active":
+        say(f"  free address: not yet — {BRAND_ZONE} is {state if zone or state == 'missing' else 'unreadable: ' + state}"
+            + ("" if quiet else f"; the site is on its pages.dev host for now (`site address {name}` later)"))
+        return None
+    label = address_label(meta, name)
+    if not label:
+        say(f"  free address: {meta['slug']}.{BRAND_ZONE} and {name}.{BRAND_ZONE} are both taken; the site stays on pages.dev")
+        return None
+    host = f"{label}.{BRAND_ZONE}"
+    have = set() if (DRY and project in CREATED) or (DRY and not cf_project(project)) else \
+        {dm["name"] for dm in cf_domains(project)}
+    if host in have:
+        say(f"  free address: {host} already on {project}")
+    else:
+        cf_api("POST", f"/pages/projects/{project}/domains", {"name": host})
+        say(f"  free address: {host} attached to {project}" + (" (dry run)" if DRY else ""))
+    say(f"  free address: CNAME {zone_cname(zone, host, pages_host(project))}")
+    return host
+
+
+def address_serving(url, seconds=None):
+    """True once the address answers 200 over HTTPS (the certificate is issued)."""
+    seconds = ADDRESS_WAIT if seconds is None else seconds
+    deadline = time.time() + seconds
+    while True:
+        code, _ = http_status(url)
+        if code == 200:
+            return True
+        if time.time() >= deadline:
+            return False
+        time.sleep(min(10, max(1, seconds // 6)))
+
+
+def live_text(url):
+    """The text Patch sends when a site first goes live on its address (send it only once it serves)."""
+    return LIVE_TEXT.format(url=url.rstrip("/"))
+
+
+def cmd_address(a):
+    """`site address [<name>]`: an existing site gets its free address (B58). The live URL moves to it
+    when the live URL was the pages.dev host; a custom domain stays the live URL."""
+    global DRY
+    DRY = a.dry_run
+    ws, meta = workspace()
+    names = [a.name] if a.name else repos_of(ws)
+    if not names:
+        die("no sites here yet (site new <name>)")
+    for name in names:
+        entry = site_entry(meta, name)
+        if not entry or entry.get("host") != "cloudflare":
+            say(f"{name}: not a Cloudflare site in the registry; nothing to do")
+            continue
+        if entry.get("forward"):
+            say(f"{name}: forwarding until {entry['forward'].get('until')}; no new address")
+            continue
+        project = entry["project"]
+        host = brand_attach(meta, name, project)
+        if not host:
+            continue
+        registry_set(meta, name, address=host)
+        url = f"https://{host}/"
+        old = meta.get("live_url") or ""
+        if not entry.get("domains") and (not old or old.rstrip("/") == f"https://{pages_host(project)}"):
+            set_live_url(ws, meta, url, force=True)
+            restamp(ws, meta)
+        say(f"{name}: {url}" + (" (dry run)" if DRY else ""))
+
+
+def forward_sweep():
+    """Every forward past its 90 days comes down: the project's domains, the project, the address's
+    record, the registry row. Called by `site forward --sweep` and by every `site watch --once`."""
+    today = datetime.date.today()
+    due = [(slug, name, e) for slug, rows in sorted(registry_load().items()) for name, e in sorted(rows.items())
+           if e.get("forward") and datetime.date.fromisoformat(e["forward"]["until"]) < today]
+    if not due:
+        return 0
+    cf_creds()
+    for slug, name, e in due:
+        project = e["project"]
+        if cf_project(project):
+            for dom in cf_domains(project):
+                cf_api("DELETE", f"/pages/projects/{project}/domains/{dom['name']}", ok404=True)
+            cf_api("DELETE", f"/pages/projects/{project}", ok404=True)
+        if e.get("address"):
+            say(f"  {e['address']}: {zone_drop_record(BRAND_ZONE, e['address'])}")
+        if not DRY:
+            reg = registry_load()
+            reg.get(slug, {}).pop(name, None)
+            if not reg.get(slug):
+                reg.pop(slug, None)
+            registry_save(reg)
+        say(f"  {slug}/{name}: the forward to {e['forward']['to']} ended {e['forward']['until']}; "
+            f"project {project} and its address are gone" + (" (dry run)" if DRY else ""))
+    return len(due)
+
+
+def cmd_forward(a):
+    """`site forward` lists the sites that redirect after leaving; `--sweep` (SITE_ADMIN=1, or the
+    watch) ends the ones past their 90 days."""
+    global DRY
+    DRY = a.dry_run
+    today = datetime.date.today()
+    if a.sweep:
+        require_admin("forward --sweep")
+        n = forward_sweep()
+        if not n:
+            say(f"no forward past its {FORWARD_DAYS} days ({today})")
+        return
+    rows = [(slug, name, e) for slug, rows in sorted(registry_load().items()) for name, e in sorted(rows.items())
+            if e.get("forward")]
+    if not rows:
+        say("no site is forwarding")
+    for slug, name, e in rows:
+        until = datetime.date.fromisoformat(e["forward"]["until"])
+        say(f"{slug}/{name}: {e.get('address') or e['project']} -> {e['forward']['to']} until {e['forward']['until']}"
+            + (" (due)" if until < today else f" ({(until - today).days} days left)"))
+
+
+def forward_bundle(to):
+    """The whole site while it forwards: one _redirects line and a page for anything that ignores it."""
+    root = Path(tempfile.mkdtemp(prefix="site-forward-"))
+    (root / "public").mkdir()
+    (root / "public" / "_redirects").write_text(f"/* {to.rstrip('/')}/:splat 301\n")
+    (root / "public" / "index.html").write_text(
+        f'<!doctype html><meta charset="utf-8"><meta name="robots" content="noindex">'
+        f'<meta http-equiv="refresh" content="0; url={to}"><title>Moved</title>'
+        f'<p>This site has moved to <a href="{to}">{to}</a>.</p>\n')
+    return root
+
+
+def forward_site(meta, name, entry, to):
+    """Retire's --forward half: the project keeps only the address and a redirect to `to`."""
+    project = entry["project"]
+    keep = entry.get("address")
+    for dom in cf_domains(project) if cf_project(project) else []:
+        if dom["name"] != keep:
+            cf_api("DELETE", f"/pages/projects/{project}/domains/{dom['name']}", ok404=True)
+            say(f"  detached {dom['name']} (the owner's own domain is theirs to point at the new site)")
+    root = forward_bundle(to)
+    try:
+        code, log = wrangler("pages", "deploy", str(root / "public"), "--project-name", project, "--branch", "main",
+                             "--commit-dirty=true", "--commit-message", f"Moved to {to}", cwd=root)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+    if code != 0 and not DRY:
+        die("the redirect didn't deploy, so nothing else was changed:\n" + "\n".join(log.splitlines()[-6:]))
+    until = (datetime.date.today() + datetime.timedelta(days=FORWARD_DAYS)).isoformat()
+    registry_set(meta, name, forward={"to": to, "since": datetime.date.today().isoformat(), "until": until},
+                 domains=[], watch=False)
+    say(f"  {keep or pages_host(project)} now redirects to {to} until {until}, then stops "
+        f"(`site forward --sweep`, run by the watch)")
+
+
 def cf_domain(ws, meta, d, name, entry, a):
-    """Custom domain for a Cloudflare site: apex + www on the Pages project,
-    canonical links in the repo, and the two records for the registrar.
-    Cloudflare validates once the records resolve and issues the certificate
-    itself; `site domain <name>` (no domain) shows where that's at."""
+    """A domain the owner bought, on a Cloudflare site (B58: Patch's, no Taylor step). Default: the
+    nameserver move — the domain a zone of ours, apex + www attached and their records written, two
+    nameservers for the owner to set. `--records` (or a subdomain, a domain with mail, a zone that
+    can't be made): the two records at the registrar instead. Cloudflare validates and issues the
+    certificate itself; `site domain <name>` (no domain) shows where that's at."""
     project = entry["project"]
     if not a.domain:
         doms = cf_domains(project)
-        say(f"{name}: Pages project {project} -> https://{project}.pages.dev/")
+        say(f"{name}: Pages project {project} -> https://{pages_host(project)}/")
+        if entry.get("address"):
+            say(f"  free address: https://{entry['address']}/")
+        z = entry.get("zone") or {}
+        if z.get("id"):
+            ok, cur, _ = cf_zone_call("GET", f"/zones/{z['id']}")
+            cur = cur if ok and cur else z
+            say(f"  zone {cur.get('name')}: {cur.get('status')} — nameservers to set: "
+                f"{', '.join(cur.get('name_servers') or z.get('name_servers') or []) or '-'}")
         if not doms:
             say("  custom domains: (none)")
         for dm in doms:
-            cert = (dm.get("certificate_authority") or "") and dm.get("status")
             say(f"  {dm['name']:<32} domain {dm.get('status')}, validation {dm.get('validation_data', {}).get('status', '-')}, "
                 f"certificate {dm.get('certificate_authority') or '-'}")
         return
     domain = re.sub(r"^https?://", "", a.domain.lower().strip().rstrip("/"))
     if not DOMAIN_RE.match(domain):
         die(f"{domain!r} doesn't look like a domain")
-    apex = domain.count(".") == 1
-    wanted = [domain, f"www.{domain}"] if apex else [domain]
-    have = {dm["name"] for dm in cf_domains(project)}
+    if domain == BRAND_ZONE or domain.endswith("." + BRAND_ZONE):
+        die(f"{domain} is a free address of ours, not a domain to attach; `site address {name}` gives the site its own")
+    apex = apex_of(domain)
+    is_apex = domain == apex
+    wanted = [domain, f"www.{domain}"] if is_apex else [domain]
+    mode, why = ("records", "asked for the records") if a.records else ("nameservers", "")
+    if mode == "nameservers" and not is_apex:
+        mode, why = "records", f"{domain} is a subdomain, and moving {apex}'s nameservers would move all of {apex}"
+    if mode == "nameservers":
+        mx = lookup("MX", domain)
+        if mx:
+            mode, why = "records", (f"{domain} receives mail ({mx[0].split()[-1].rstrip('.')}), and moving the "
+                                    f"nameservers would move the mail with it")
+    if mode == "nameservers":
+        mine = {(r.get("zone") or {}).get("name") for r in registry_load().get(meta["slug"], {}).values()} - {None, apex}
+        if mine:
+            mode, why = "records", (f"this business's zone is {sorted(mine)[0]} already (one a business), so a second "
+                                    f"domain points at the site by records")
+    zone = None
+    if mode == "nameservers":
+        zone, problem = zone_ensure(apex)
+        if not zone:
+            mode, why = "records", problem
+    if why:
+        say(f"  the two records instead of the nameservers: {why}")
+
+    have = set() if DRY and not cf_project(project) else {dm["name"] for dm in cf_domains(project)}
     for dm in wanted:
         if dm in have:
             say(f"  {dm} already on {project}")
         else:
             cf_api("POST", f"/pages/projects/{project}/domains", {"name": dm})
             say(f"  added {dm} to {project}")
+    target = pages_host(project)
+    if zone:
+        for dm in wanted:
+            say(f"  CNAME {dm} -> {target}: {zone_cname(zone, dm, target)}")
     new_url = f"https://{domain}/"
 
     # the repo: canonical links to the bare domain (Pages can't redirect one
     # host to another from _redirects, so www serves the same site), and the
     # live URL in the manual/allowlist
     changed = []
-    if apex:
+    if is_apex:
         for page in sorted(d.glob("*.html")):
             text = page.read_text()
             if 'rel="canonical"' in text or page.name == "404.html" or "<head>" not in text:
                 continue
             path = "" if page.name == "index.html" else page.name[:-5]
-            text = text.replace("<head>", f'<head>\n  <link rel="canonical" href="{new_url}{path}">', 1)
-            page.write_text(text)
+            if not DRY:
+                page.write_text(text.replace("<head>", f'<head>\n  <link rel="canonical" href="{new_url}{path}">', 1))
             changed.append(page.name)
     old_url = meta.get("live_url") or f"https://{pages_host(project)}/"
     for f in FILLED_FILES:
         p = d / f
         if p.exists() and old_url in p.read_text() and old_url != new_url:
-            p.write_text(p.read_text().replace(old_url, new_url))
+            if not DRY:
+                p.write_text(p.read_text().replace(old_url, new_url))
             changed.append(f)
-    if changed and not DRY:
+    if changed and DRY:
+        say(f"  would point {', '.join(changed)} at {new_url}, commit, push and publish")
+    elif changed:
         git(d, "add", *changed)
         git(d, "-c", "user.name=Patch (claude-tools site)", "-c", "user.email=noreply@anthropic.com",
             "commit", "-q", "-m", f"Point the site at {domain}")
@@ -2993,33 +3414,61 @@ def cf_domain(ws, meta, d, name, entry, a):
         say(f"  committed {', '.join(changed)} and pushed")
 
     site_register(meta, name, project, wanted)
+    if zone and not DRY:
+        registry_set(meta, name, zone={"id": zone["id"], "name": zone["name"],
+                                       "name_servers": zone.get("name_servers") or [], "status": zone.get("status")})
     set_live_url(ws, meta, new_url, force=True)
     restamp(ws, meta)
     if changed and not DRY:
         cmd_publish(argparse.Namespace(name=name, dry_run=False))
 
-    target = pages_host(project)
-    say(f"\nDNS records at the registrar for {domain} (replace any A/CNAME already there for these names):")
-    if apex:
-        say(f"  ALIAS  @      {target}     (Porkbun: ALIAS; elsewhere ANAME/'CNAME flattening'; "
-            f"if the registrar can't, move the nameservers to Cloudflare)")
-        say(f"  CNAME  www    {target}")
+    key, ns_now = registrar_of(domain) if (a.picture or mode == "nameservers") else ("generic", [])
+    rname, _, help_url = REGISTRARS[key]
+    if mode == "nameservers":
+        ns = zone.get("name_servers") or []
+        say(f"\nAt {rname}, set {domain}'s nameservers to these two (replace the ones there"
+            + (f": {', '.join(ns_now)}" if ns_now else "") + "):")
+        for n_ in ns:
+            say(f"  {n_}")
+        say(f"\nOnce they change (minutes, sometimes a few hours) Cloudflare activates the zone, checks the "
+            f"domain and issues the certificate; nothing else to set, and DNS is ours to keep right. "
+            f"`site domain {name}` shows where it's at. Live URL is now {new_url}.")
     else:
-        say(f"  CNAME  {domain.split('.', 1)[0]:<6} {target}")
-    say(f"\nCloudflare checks the records itself (minutes once DNS has propagated), then issues the "
-        f"certificate; `SITE_ADMIN=1 site domain {name}` shows the state. Live URL is now {new_url}."
-        + (f"\nwww.{domain} serves the same site (Pages can't redirect hosts); every page now carries a "
-           f"canonical link to {new_url}, which is what search engines go by." if apex else ""))
+        say(f"\nDNS records at the registrar for {domain} (replace any A/CNAME already there for these names):")
+        if is_apex:
+            say(f"  ALIAS  @      {target}     (Porkbun: ALIAS; elsewhere ANAME/'CNAME flattening'; "
+                f"a registrar that has neither: the nameserver move, `site domain {name} {domain}` without --records)")
+            say(f"  CNAME  www    {target}")
+        else:
+            say(f"  CNAME  {domain[: -len(apex) - 1]:<6} {target}")
+        say(f"\nCloudflare checks the records itself (minutes once DNS has propagated), then issues the "
+            f"certificate; `site domain {name}` shows the state. Live URL is now {new_url}."
+            + (f"\nwww.{domain} serves the same site (Pages can't redirect hosts); every page now carries a "
+               f"canonical link to {new_url}, which is what search engines go by." if is_apex else ""))
+    if a.picture:
+        say(f"\nregistrar: {rname} — their help page: {help_url}")
+        pic = picture_for(key)
+        say(f"picture: {pic}" if pic else "picture: (none for this registrar yet; send the help page)")
 
 
 def cmd_domain(a):
-    require_admin("domain")
+    """B58: a Cloudflare site's domain is Patch's to attach from inside the workspace (the registry
+    limits it to this workspace's own project, which was the point of the old SITE_ADMIN gate). A demo
+    refuses (strangers text those), and the GitHub Pages path (legacy, through gh) stays Taylor's."""
+    global DRY
+    DRY = getattr(a, "dry_run", False)
     ws, meta = workspace()
+    if (is_demo(meta["slug"]) or os.environ.get("RELAY_ROLE") == "demo") and os.environ.get("SITE_ADMIN") != "1":
+        die("this is a demo site, so it doesn't take a domain; on a site of their own it's one text "
+            "(\"put it on example.com\") and Patch does it")
     d = repo_dir(ws, a.name)
     entry = site_entry(meta, a.name)
     if entry and entry.get("host") == "cloudflare":
+        if entry.get("forward"):
+            die(f"{a.name} is forwarding to {entry['forward']['to']} after leaving; it takes no domain now")
         cf_domain(ws, meta, d, a.name, entry, a)
         return
+    require_admin("domain")
     slug = remote_slug(d)
     if not slug:
         die(f"repos/{a.name} has no GitHub remote")
@@ -3423,7 +3872,9 @@ def cmd_retire(a):
     registry row, the workspace's live_url if it was this site, the local
     clone. The GitHub repo stays — it is the record and what a client gets on
     exit — unless --delete-repo, which is for throwaway runs. Never touches
-    config.json: the relay's project entry is the owner's to remove."""
+    config.json: the relay's project entry is the owner's to remove.
+    --forward URL (B58, leaving): the project stays for 90 days holding only its free address and a
+    301 to URL; its row stays, marked, until `site forward --sweep` (the watch) ends it."""
     global DRY
     require_admin("retire")
     ws, meta = workspace()
@@ -3439,9 +3890,19 @@ def cmd_retire(a):
     project = (entry or {}).get("project") or name
     say(f"site retire {name} for {meta['name']} ({meta['slug']}){' — DRY RUN' if DRY else ''}")
 
-    # 1. the host: domains, then the project
-    if entry and entry.get("host") == "cloudflare":
+    # 1. the host: domains, then the project — or, with --forward, a redirect kept for 90 days (B58)
+    if getattr(a, "forward", None) and not (entry and entry.get("host") == "cloudflare"):
+        die("--forward needs a Cloudflare site in the registry (the redirect is served from its project)")
+    if getattr(a, "forward", None):
+        to = a.forward.strip()
+        if not re.match(r"^https?://[^\s/]+\.[^\s/]+", to):
+            die(f"{to!r} isn't an address to forward to (https://their-new-site.com/)")
         cf_creds()
+        forward_site(meta, name, entry, to)
+    elif entry and entry.get("host") == "cloudflare":
+        cf_creds()
+        if entry.get("address"):
+            say(f"  {entry['address']}: {zone_drop_record(BRAND_ZONE, entry['address'])}")
         if cf_project(project):
             for dom in cf_domains(project):
                 cf_api("DELETE", f"/pages/projects/{project}/domains/{dom['name']}", ok404=True)
@@ -3455,8 +3916,8 @@ def cmd_retire(a):
     else:
         say("  not in the registry (GitHub Pages era or never adopted); host untouched")
 
-    # 2. the registry
-    if entry:
+    # 2. the registry (a forwarding site keeps its row until `site forward --sweep` ends it)
+    if entry and not getattr(a, "forward", None):
         reg = registry_load()
         reg.get(meta["slug"], {}).pop(name, None)
         if not reg.get(meta["slug"]):
@@ -3478,8 +3939,8 @@ def cmd_retire(a):
             say(f"  kept https://github.com/{slug} (the record; --delete-repo removes it, `site transfer` hands it over)")
 
     # 4. the workspace
-    url = f"https://{pages_host(project)}/"
-    if meta.get("live_url") and meta["live_url"].rstrip("/") + "/" == url:
+    urls = {f"https://{h}/" for h in [pages_host(project), (entry or {}).get("address")] + list((entry or {}).get("domains") or []) if h}
+    if meta.get("live_url") and meta["live_url"].rstrip("/") + "/" in urls:
         meta["live_url"] = None
         if not DRY:
             write_meta(ws, meta)
@@ -3610,6 +4071,24 @@ def cmd_doctor(a):
         except SystemExit:
             say("  note: the token can't manage D1 yet, so `site data` / `--db` refuse "
                 "(TAYLOR-TODO §1 \"Give the Cloudflare token D1\")")
+        try:                                        # B58: the free address's zone, a note either way
+            zone, state = brand_zone()
+        except SystemExit:
+            zone, state = None, "Cloudflare didn't answer"
+        if state == "active":
+            say(f"  free address: zone {BRAND_ZONE} present and active; new sites are born on <name>.{BRAND_ZONE}")
+        elif state == "missing":
+            say(f"  free address: zone {BRAND_ZONE} missing from the account, so new sites are born on pages.dev "
+                f"(TAYLOR-TODO §1 \"Buy patchlamp.site\")")
+        elif zone:
+            say(f"  free address: zone {BRAND_ZONE} present but {state} (its nameservers at the registrar: "
+                f"{', '.join(zone.get('name_servers') or []) or '?'}); new sites stay on pages.dev until it's active")
+        else:
+            say(f"  free address: {state}, so neither {BRAND_ZONE} nor an owner's domain can be read or made a zone "
+                f"(TAYLOR-TODO §1 \"Buy patchlamp.site\": Zone · Zone · Edit and Zone · DNS · Edit on the token)")
+        if zone is not None or state == "missing":
+            say("  Zone · Zone · Edit: unproven until the first zone is made (there is no read-only test for it); "
+                "without it `site domain` gives the two records instead and says why")
     if (Path.cwd() / ".client.json").exists():
         ws, meta = workspace()
         say(f"== workspace {meta['slug']} ({meta['name']}) live_url={meta.get('live_url') or '-'}")
@@ -3673,6 +4152,10 @@ def cmd_doctor(a):
                     say(f"  repos/{n}: checkout off (site checkout {n} --connected once the owner's Stripe is connected)")
                 if cc and "no-cache" not in cc and "max-age=0" not in cc:
                     fail(f"repos/{n}: HTML is cacheable (copy templates/sites/business/_headers into the repo root)")
+                if entry.get("address"):
+                    say(f"  repos/{n}: free address https://{entry['address']}/")
+                if entry.get("forward"):
+                    say(f"  repos/{n}: forwarding to {entry['forward']['to']} until {entry['forward']['until']}")
                 for dm in cf_domains(proj):
                     ok_ = dm.get("status") == "active"
                     (say if ok_ else fail)(f"  repos/{n}: domain {dm['name']} {dm.get('status')}"
@@ -3792,10 +4275,23 @@ def main():
     st.add_argument("name", help="repo name under ./repos")
     st.add_argument("--commit", metavar="MSG", help="git add -A && git commit -m MSG in that repo afterwards")
     st.set_defaults(fn=cmd_stamp)
-    d = sub.add_parser("domain", help="custom domain for a site (SITE_ADMIN=1); no domain = show status")
+    d = sub.add_parser("domain", help="the owner's own domain on a site (B58: Patch's; the nameserver move by default); "
+                       "no domain = show status")
     d.add_argument("name"); d.add_argument("domain", nargs="?")
-    d.add_argument("--https", action="store_true", help="enforce HTTPS (works once GitHub has the certificate)")
+    d.add_argument("--records", action="store_true", help="the two records at the registrar instead of the nameserver move")
+    d.add_argument("--picture", action="store_true", help="name the registrar from its nameservers; its help page and "
+                   "picture (templates/dns/<registrar>.png), the path last for SEND-FILE")
+    d.add_argument("--https", action="store_true", help="(GitHub Pages sites) enforce HTTPS once GitHub has the certificate")
+    d.add_argument("--dry-run", action="store_true", help="every call and write printed, none made")
     d.set_defaults(fn=cmd_domain)
+    adr = sub.add_parser("address", help=f"give a site its free <name>.{BRAND_ZONE} address (B58; site new does it by itself)")
+    adr.add_argument("name", nargs="?", help="repo name under ./repos (default: every site here)")
+    adr.add_argument("--dry-run", action="store_true")
+    adr.set_defaults(fn=cmd_address)
+    fw = sub.add_parser("forward", help="the sites redirecting after leaving (B58); --sweep ends the ones past 90 days (SITE_ADMIN=1)")
+    fw.add_argument("--sweep", action="store_true")
+    fw.add_argument("--dry-run", action="store_true")
+    fw.set_defaults(fn=cmd_forward)
     t = sub.add_parser("transfer", help="hand a repo to the client's GitHub account (SITE_ADMIN=1)")
     t.add_argument("name"); t.add_argument("user")
     t.add_argument("--keep", action="store_true", help="keep the local clone in repos/")
@@ -3810,6 +4306,8 @@ def main():
     rt.add_argument("name")
     rt.add_argument("--delete-repo", action="store_true", help="also delete the GitHub repo (throwaway runs)")
     rt.add_argument("--keep-local", action="store_true", help="keep repos/<name> in the workspace")
+    rt.add_argument("--forward", metavar="URL", help=f"leaving: keep the free address as a 301 to URL for {FORWARD_DAYS} days "
+                    "instead of deleting the project (B58)")
     rt.add_argument("--dry-run", action="store_true")
     rt.set_defaults(fn=cmd_retire)
     tp = sub.add_parser("template", help="`site template push` mirrors templates/sites/<T> to <org>/site-template(-<T>)")

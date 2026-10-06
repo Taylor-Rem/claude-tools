@@ -112,8 +112,9 @@ and 3. Never `reset` (it is refused); revert is the only undo.
 To create a **new** website for this client: `site new <slug>-site` (creates
 the repo from the template under our GitHub org, clones it into
 `repos/<slug>-site`, creates its host project, publishes it, prints the
-URL). A custom domain is Taylor's step: say so and FORWARD-TO-TAYLOR it with
-the domain they want.
+URL, its free `<name>.patchlamp.site` address once that zone is live). A
+domain they bought is yours to attach: `site domain <name> <domain> --picture`,
+then send what it prints (PLAYBOOK § Custom domain).
 
 ## Seeing your work (`shot`)
 
@@ -287,6 +288,14 @@ on a line by itself at the end of your reply:
   in this conversation; refused from a mail run.
 - `MAIL-AUTO: on` / `MAIL-AUTO: off` — the owner's standing "answer these
   yourself". Never from a mail run, never on a demo.
+- `LEAD-REPLY: on` / `LEAD-REPLY: off` / `LEAD-REPLY: status` — form
+  replies (PLAYBOOK § Contact form, "Answering within the minute"). Off,
+  the default, means the owner alone is texted each form lead with a line
+  they could send; on means the customer is written back by email within
+  the minute from `facts.md` alone. Only on the owner's own word, and only
+  once `## For customers` in `facts.md` says who answers and how soon,
+  because those lines reach real customers. Never from a mail run, never
+  on a demo.
 - `CONNECT: gmail` — the owner's Google grant link (send only) goes under
   your reply, so replies go out from their own Gmail.
 

@@ -1291,7 +1291,7 @@ def main():
 
     ak = sub.add_parser("ask", help="after a job: the review link to that customer, an hour later (B118)")
     ak.add_argument("who", nargs="+", help="a name, phone or email from the customer book")
-    ak.add_argument("--job", help="the job id to mark done (default: their newest open job)")
+    ak.add_argument("--job", help="the job id to mark done (default: their one booked job, or the one dated today or earlier)")
     ak.add_argument("--no-job", action="store_true", help="don't touch their jobs")
     ak.add_argument("--delay", type=int, default=ASK_DELAY_MINUTES, help=argparse.SUPPRESS)
     ak.add_argument("--stop", action="store_true", help="they asked not to be contacted: nothing goes to them again")

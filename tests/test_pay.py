@@ -236,6 +236,27 @@ class PayTest(unittest.TestCase):
         self.assertIn("https://invoice.stripe.com/i/acct_x/test_inv", r.stdout)
         self.assertIn("$450.00", r.stdout)
 
+    def test_invoice_in_lines_is_one_item_a_line_and_they_must_add_up(self):
+        """The hand-over from `estimate` (B123): --line each, --ref in the metadata, --json for a machine."""
+        env = {"STRIPE_CONNECTED_ACCOUNT": ACCT}
+        r = self.pay("invoice", "Smith", "450", "Estimate E-0001", "--line", "3 windows", "300",
+                     "--line", "2 doors", "150", "--ref", "E-0001", "--json", env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = self.stripe_calls()
+        self.assert_clean(calls)
+        items = [c["body"] for c in calls if c["path"] == "/v1/invoiceitems"]
+        self.assertEqual([(i["description"], i["amount"]) for i in items], [("3 windows", "30000"), ("2 doors", "15000")])
+        self.assertEqual(next(c for c in calls if c["path"] == "/v1/invoices")["body"]["metadata[ref]"], "E-0001")
+        out = json.loads(r.stdout)
+        self.assertEqual((out["kind"], out["number"], out["amount_cents"], out["lines"]), ("invoice", "FERN-0001", 45000, 2))
+        Fake.state["sent"] = []
+        r = self.pay("invoice", "Smith", "450", "x", "--line", "a", "300", "--line", "b", "100", env=env)
+        self.assertIn("add up to $400.00, not $450.00", r.stderr)
+        self.assertEqual(self.stripe_calls(), [], "a mismatch makes nothing")
+        r = self.pay("invoice", "Smith", "400", "x", "--line", "work", "450", "--line", "credit", "-50", env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("-5000", [c["body"].get("amount") for c in self.stripe_calls()])
+
     def test_invoice_to_a_known_email_reuses_the_customer_and_send_emails_it(self):
         Fake.state["by_email"] = [{"id": "cus_smith", "name": "Pat Smith", "email": "smith@x.test"}]
         r = self.pay("invoice", "Smith", "450", "June service", "--email", "smith@x.test", "--due", "30d", "--send",

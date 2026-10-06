@@ -103,6 +103,11 @@ TOOLS = {
             "roles": {"client": _ALL, "owner": _ALL}},
     "pay": {"keys": ["PATCHLAMP_RELAY_SHARED_SECRET", "STRIPE_KEY_PATCHLAMP", "STRIPE_TEST_KEY"], "state": [],
             "roles": {"client": _ALL, "owner": _ALL}},
+    # estimate (B123) runs db, pay and print's renderer as its own children, so it carries their keys
+    # and state; not for a demo stranger, like pay
+    "estimate": {"keys": ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "PATCHLAMP_RELAY_SHARED_SECRET",
+                          "STRIPE_KEY_PATCHLAMP", "STRIPE_TEST_KEY"], "state": ["registry", "playwright"],
+                 "roles": {"client": _ALL, "owner": _ALL}},
     "connections": {"keys": ["PATCHLAMP_RELAY_SHARED_SECRET"], "state": [],
                     "roles": {"client": ("ls", "google", "doctor"), "owner": ("ls", "google", "doctor")}},
     "print": {"keys": ["GEMINI_API_KEY", "PEXELS_API_KEY"], "state": ["registry", "ledger", "playwright"],

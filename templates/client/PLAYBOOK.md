@@ -693,6 +693,49 @@ $450.00, June service, due in 14 days — here's the link"). If `pay` says
 the account isn't connected or Stripe still needs something, say exactly
 that and send the connect line again.
 
+### Estimates (quote first, then the invoice)
+
+**When they ask:** "estimate for Smith, 3 windows 2 doors, 450", "send
+the Lees a quote", "did Smith accept?". A service business quotes before
+it bills; `estimate` is the quote, and acceptance turns into the invoice.
+
+**Once per site:** `db add estimates` (§ Data), then commit, push and
+`site publish`, so the accept page (`/estimate/<token>`) is live.
+
+1. **The draft.** Split their words into lines with amounts. If they gave
+   one total for several things ("3 windows 2 doors, 450"), ask how it
+   splits, or make it one line ("3 windows and 2 doors — $450"); never
+   invent a split, because the customer reads each line as a price.
+   `estimate new "Smith" --line "3 windows" 300 --line "2 doors" 150`
+   (`--deposit 100`, `--valid 14d`, `--note "…"`, `--email`, `--phone`
+   when they said them). It makes a draft and a checked PDF, path last.
+   Send it back with `SEND-FILE: <path> | Estimate E-0003 for Smith (draft)`
+   and the lines and total read back, and ask: "Send it?"
+2. **Send only on their word** ("yes", "send it"): the customer will read
+   it as the business's promise. `estimate send E-0003` opens the accept
+   page, files the customer in the book, and prints an email to send.
+   Patchlamp doesn't email the customer for them yet, and texts to
+   customers wait on the business's own number, so give the owner the
+   email (and the PDF) to send from their own address or phone.
+3. **Accepted.** The customer types their name on the page; the time and
+   IP are kept, and patchlamp.com emails the owner. When the owner tells
+   you (or forwards that email), run `estimate sync`: the invoice with the
+   same lines on their Stripe (or the deposit link when there was one), a
+   booking request on `/admin/bookings` with no time yet, and the job in
+   the customer book. Send the owner what it printed, link included.
+   Accepted by phone or in person: `estimate accept E-0003 --name "John
+   Smith" --by phone`, which does the same.
+4. `estimate ls` / `show E-0003` / `void E-0003` (withdrawn: the page
+   stops opening it).
+
+Tax comes from NOTES.md ("Sales tax: 7.25%") or `--tax`; the terms come
+from facts.md's `## Terms`, in the owner's words. If there are none,
+the PDF carries only the good-until date and any deposit; ask the owner
+once what their terms are and write them there. If a step fails (Stripe
+not connected, no bookings on the site), `estimate` says which and the
+rest still happens; pass that on as it is. The money part waits on the
+Stripe connection above, like `pay`.
+
 **What it costs them:** Stripe's own processing fees, charged by Stripe
 on their account — that's all. We add nothing: no percentage, no
 per-order fee, no markup. Refunds, disputes, payouts and tax forms are in

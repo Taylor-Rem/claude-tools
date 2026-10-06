@@ -1,0 +1,4 @@
+{
+  "status": "ready",
+  "summary": "estimates the owner sends (lines, tax, deposit, good-until) and the page where the customer accepts one by typing their name, on /admin"
+}

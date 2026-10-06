@@ -91,11 +91,13 @@ class SocialTest(unittest.TestCase):
         self.server.server_close()
         self.tmp.cleanup()
 
+    today = "2026-10-04"   # a Sunday: no kind of the day, so the B133 gate stays out of these tests unless one sets it
+
     def run_social(self, *args, cwd=None):
         env = dict(os.environ, PATCHLAMP_URL=f"http://127.0.0.1:{self.server.server_port}",
                    PATCHLAMP_RELAY_SHARED_SECRET="shh", CLAUDE_TOOLS_ENV=str(self.dir / "no-env"),
                    SOCIAL_DIR=str(self.dir / "social"), GBP_ARGS=str(self.dir / "gbp-args"),
-                   PATH=f"{self.bin}:{os.environ['PATH']}")
+                   PATH=f"{self.bin}:{os.environ['PATH']}", SOCIAL_TODAY=self.today)
         return subprocess.run([sys.executable, str(SOCIAL), *args], capture_output=True, text=True, env=env,
                               cwd=cwd or self.tmp.name)
 
@@ -147,6 +149,28 @@ class SocialTest(unittest.TestCase):
         logged = json.loads((self.dir / "social" / "posted.jsonl").read_text().splitlines()[0])
         self.assertEqual(logged["pillar"], "proof")
         self.assertNotEqual(self.run_social("post", "patchlamp").returncode, 0)
+
+    def test_unchecked_words_dont_post(self):
+        # B133: on a Tuesday a data draft that `social pick` didn't make is refused in code, whatever the mode line says
+        self.today = "2026-10-06"
+        self.run_social("queue", "add", "patchlamp", str(self.photo), "181 dead links. Patched.", "--kind", "data")
+        r = self.run_social("post", "patchlamp")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("unchecked words: run social facts/pick", r.stderr)
+        self.assertEqual(self.posted(), [])
+        q = next((self.dir / "social" / "queue").glob("*.json"))
+        d = json.loads(q.read_text())
+        d.update(day="2026-10-06", facts="fail")
+        q.write_text(json.dumps(d))
+        r = self.run_social("post", "patchlamp")
+        self.assertIn("its fact check was fail", r.stderr)
+        d["facts"] = "pass"
+        q.write_text(json.dumps(d))
+        r = self.run_social("post", "patchlamp")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.run_social("queue", "add", "patchlamp", str(self.photo), "By hand.", "--kind", "data")
+        r = self.run_social("post", "patchlamp", "--unchecked")
+        self.assertEqual(r.returncode, 0, r.stderr)
 
     def test_a_bare_post_passes_over_a_held_draft_and_the_row_carries_kind_and_check(self):
         # B112: the pinned explainer waits in the queue for its own "post N"; the day's draft goes up

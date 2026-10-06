@@ -43,7 +43,8 @@ Config, by name, never printed:
   SOCIAL_JUDGE_MODEL              optional; default opus (never Fable, always named)
   IMG_PATCH_REF                   optional; the portrait the raccoon is compared with
   SOCIAL_WRITER_OPUS / SOCIAL_WRITER_CODEX / SOCIAL_FACTS_JUDGE / SOCIAL_PICKER   stand-ins for tests (prompt on stdin)
-  SOCIAL_PICKER_MODEL             optional; default fable (the one Fable run a morning); opus moves it
+  SOCIAL_PICKER_MODEL             optional; default opus (background jobs stay off Fable)
+  SOCIAL_LEDGER                   optional; the cost ledger (default IMG_LEDGER's, ~/.local/state/claude-tools/ledger.jsonl)
   SOCIAL_CODEX_TIMEOUT / SOCIAL_WRITER_TIMEOUT   seconds; default 300 each
   SOCIAL_PROJECTS, SOCIAL_MARKETING_DIR, SOCIAL_PRICES_FILE, SOCIAL_TODAY   paths and the date, for tests
 """
@@ -229,6 +230,25 @@ def page_line(p):
     return f"  Facebook: {p.get('label')}{ig}"
 
 
+def unchecked_words(draft):
+    """Why a queued house draft may not post without --unchecked, or ''. B133: the words are gated in code, not
+    by the mode line's wording. A draft made by `social pick` (it carries `day`) posts only when its facts
+    passed; any other draft of today's kind (the 8am run's shape) is refused; a held draft (the pinned explainer)
+    and a draft of another kind than today's are Taylor's own and pass."""
+    if draft.get("day"):
+        return "" if draft.get("facts") == "pass" else f"its fact check was {draft.get('facts') or 'not run'}"
+    if draft.get("hold"):
+        return ""
+    try:
+        wd = dt.date.fromisoformat(os.environ.get("SOCIAL_TODAY") or dt.date.today().isoformat()).weekday()
+    except ValueError:
+        return ""
+    today_kind = DAY_PLAN.get(wd, (None,))[0]
+    if today_kind and kind_of(draft) == today_kind:
+        return f"a {today_kind} draft that `social pick` didn't make"
+    return ""
+
+
 def cmd_status(args):
     slugs = [workspace_slug()] if workspace_slug() else ([args.project] if args.project else list(HOUSE))
     for slug in slugs:
@@ -268,6 +288,9 @@ def cmd_post(args):
             die(f"no draft {n} for {slug}; `social queue` lists {len(waiting)}")
         draft = waiting[n - 1]
         image, caption = draft["image"], draft["caption"]
+        why = unchecked_words(draft)
+        if why and not args.unchecked:
+            die(f"unchecked words: run social facts/pick ({why}). Taylor can post it as it is with --unchecked, by hand")
     elif len(rest) == 2:
         image, caption = rest
     else:
@@ -611,10 +634,11 @@ PRICES_FILE = Path(os.environ.get("SOCIAL_PRICES_FILE", PROJECTS / "patchlamp/ap
 WRITER_TIMEOUT = int(os.environ.get("SOCIAL_WRITER_TIMEOUT", "300"))     # five minutes a writer
 CODEX_TIMEOUT = int(os.environ.get("SOCIAL_CODEX_TIMEOUT", str(WRITER_TIMEOUT)))
 FACTS_TIMEOUT = 180                                                         # three minutes for the judge
-PICK_TIMEOUT = 600                                                          # ten for the picker
+PICK_TIMEOUT = 180                                                          # three for the picker
 FACTS_EXIT = {"pass": 0, "fail": 1, "couldnt": 4}
 FACT_VERDICTS = ("supported", "not supported", "unsure", "no claim")
 LESSONS_CAP = 30
+TASTE_CAP = 12
 SIGNOFFS = ("patched.", "all it takes is a text.")
 # weekday -> (kind, the topic pillars to draw from, in order); calendar.md § Leans by weekday
 DAY_PLAN = {0: ("text", ["ask", "fix"]), 1: ("data", ["number"]), 2: ("text", ["nothing", "how"]),
@@ -667,17 +691,54 @@ CLOCK = re.compile(r"\b\d{1,2}:\d{2}\s*(?:am|pm)?\b", re.I)
 NUM = re.compile(r"\$?\d[\d,]*(?:\.\d+)?%?")
 
 
-def numbers(text):
-    """The numbers in a sentence, as plain digit strings ('5,865' -> '5865', '3%' -> '3', '$99' -> '99').
-    A clock time (2:14am) is the night shift's premise, not a claim, so it is left out; so are links."""
+UNITS = {w: i for i, w in enumerate("zero one two three four five six seven eight nine ten eleven twelve thirteen "
+                                    "fourteen fifteen sixteen seventeen eighteen nineteen".split())}
+TENS = {w: 10 * i for i, w in enumerate("_ _ twenty thirty forty fifty sixty seventy eighty ninety".split()) if i > 1}
+SCALES = {"hundred": 100, "thousand": 1000}
+NUMWORD = r"(?:" + "|".join(sorted(list(UNITS) + list(TENS) + list(SCALES), key=len, reverse=True)) + r")"
+NUMWORDS = re.compile(r"\b" + NUMWORD + r"(?:(?:[\s-]+|\s+and\s+)" + NUMWORD + r")*\b", re.I)
+
+
+def words_to_digits(text):
+    """'Twenty-four trades' -> '24 trades', 'five thousand eight hundred' -> '5800', so a number spelled out
+    is checked like one in digits. A lone 'one' or 'zero' is left as a word: "one text", "Is yours one?" and
+    "Zero calls." are the feed's ordinary speech, not counts, and reading them as 1 or 0 would fail most posts."""
+    def conv(m):
+        words = [w for w in re.split(r"[\s-]+", m.group().lower()) if w and w != "and"]
+        if len(words) == 1 and words[0] in ("one", "zero"):
+            return m.group()
+        total = cur = 0
+        for w in words:
+            if w in UNITS:
+                cur += UNITS[w]
+            elif w in TENS:
+                cur += TENS[w]
+            elif w == "hundred":
+                cur = (cur or 1) * 100
+            elif w == "thousand":
+                total += (cur or 1) * 1000
+                cur = 0
+        return str(total + cur)
+    return NUMWORDS.sub(conv, text or "")
+
+
+def num_tokens(text):
+    """The numbers in a text as (digits, unit): ('5865', ''), ('23', '%'), ('20', '$'). '23 percent' and
+    '23 %' are '%'. A clock time (2:14am) is the night shift's premise, not a claim, so it is left out;
+    so are links and hashtags."""
     t = re.sub(r"https?://\S+|\S*patchlamp\.\w+\S*|#\w+", " ", text or "")
-    t = CLOCK.sub(" ", t)
+    t = CLOCK.sub(" ", words_to_digits(t))
     out = []
-    for m in NUM.finditer(t):
-        v = m.group().lstrip("$").rstrip("%").replace(",", "").rstrip(".")
+    for m in re.finditer(r"(\$\s?)?(\d[\d,]*(?:\.\d+)?)(\s?%|\s+percent\b)?", t, re.I):
+        v = m.group(2).replace(",", "").rstrip(".")
         if v:
-            out.append(v)
+            out.append((v, "$" if m.group(1) else ("%" if m.group(3) else "")))
     return out
+
+
+def numbers(text):
+    """The numbers in a text as plain digit strings ('5,865' -> '5865', '3%' -> '3', 'twenty-four' -> '24')."""
+    return [v for v, _ in num_tokens(text)]
 
 
 def prices_in(text):
@@ -712,8 +773,8 @@ def pricing_table():
         m = re.match(r"\s*'(monthly|usage|first_month_usage|topup|extra_site)' => (\d[\d_]*)", line)
         if m and cur:
             dollars = int(m.group(2).replace("_", "")) / 100
-            allowed.add(f"{dollars:g}")
-            if m.group(1) == "monthly":
+            if m.group(1) == "monthly":       # the six plan prices; usage and top-up amounts are not prices to quote
+                allowed.add(f"{dollars:g}")
                 tiers.setdefault(cur, {}).update(monthly=dollars, line=i)
     return tiers, allowed
 
@@ -1073,10 +1134,27 @@ def plural_minutes(seconds):
     return f"{seconds // 60} minute" + ("s" if seconds >= 120 else "")
 
 
+def run_group(cmd, prompt, timeout, cwd, env):
+    """subprocess.run in its own process group, and on a timeout the whole group is killed: a `sh -c` stand-in
+    or a CLI that forks would otherwise leave its children running after the morning has moved on."""
+    p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                         cwd=cwd, env=env, start_new_session=True)
+    try:
+        out, err = p.communicate(prompt, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(p.pid, 9)
+        except OSError:
+            pass
+        p.communicate()
+        raise
+    return subprocess.CompletedProcess(cmd, p.returncode, out, err)
+
+
 def run_model(cmd, prompt, timeout, cwd, keys, who):
     """Run one model command; (answer dict or None, why-not)."""
     try:
-        r = subprocess.run(cmd, input=prompt, capture_output=True, text=True, cwd=cwd, env=scrubbed_env(), timeout=timeout)
+        r = run_group(cmd, prompt, timeout, cwd, scrubbed_env())
     except subprocess.TimeoutExpired:
         return None, f"{who} did not answer within {plural_minutes(timeout)}", True
     except OSError as exc:
@@ -1128,8 +1206,7 @@ def writer_codex(day, packet):
             prompt = ""          # stdin closed: a background codex waits on input forever otherwise
         started = dt.datetime.now().timestamp() - 1   # a brief left from an earlier run of the same date is not today's answer
         try:
-            r = subprocess.run(cmd, input=prompt, capture_output=True, text=True, cwd=str(MARKETING),
-                               env=os.environ.copy(), timeout=CODEX_TIMEOUT)
+            r = run_group(cmd, prompt, CODEX_TIMEOUT, str(MARKETING), scrubbed_env())
         except subprocess.TimeoutExpired:
             return None, f"Codex did not answer within {plural_minutes(CODEX_TIMEOUT)}", True
         except OSError as exc:
@@ -1278,11 +1355,6 @@ def code_check(caption, ledger, sources, in_packet=True):
     problems, cited = [], {}
     _, allowed = pricing_table()
     for s in sentences(caption):
-        for p in prices_in(s):
-            if allowed is None:
-                problems.append((s, "price", f"a price (${p}) and the prices file ({PRICES_FILE}) can't be read"))
-            elif f"{float(p):g}" not in allowed:
-                problems.append((s, "price", f"${p} is not a price on /pricing (Prices::TIERS)"))
         nums = numbers(s)
         e = ledger_for(s, ledger)
         if nums and e is None:
@@ -1296,7 +1368,13 @@ def code_check(caption, ledger, sources, in_packet=True):
             if prob:
                 problems.append((s, "no-source", prob))
                 continue
-            if in_packet and sources and file != "/pricing" and ref not in sources and \
+            if file != "/pricing" and (file.startswith(("marketing/", "social/")) and not file.startswith("social/facts/")):
+                problems.append((s, "no-source", f"cites {file}, and a draft, a brief or a topic line is not a source"))
+                continue
+            if in_packet and not sources:
+                problems.append((s, "not-in-packet", f"cites {ref}, but today's packet holds no source lines"))
+                continue
+            if in_packet and file != "/pricing" and ref not in sources and \
                     not any(v["file"] == file and list(v["lines"]) == [a, b] for v in sources.values()):
                 problems.append((s, "not-in-packet", f"cites {ref}, which is not a line in today's packet"))
                 continue
@@ -1311,10 +1389,24 @@ def code_check(caption, ledger, sources, in_packet=True):
             continue
         have = set()
         for t in texts:
-            have.update(numbers(t))
-        missing = [n for n in nums if n not in have]
+            have.update(num_tokens(t))
+        plain = {v for v, _ in have}
+        missing = [(u if u == "$" else "") + v + (u if u == "%" else "") for v, u in num_tokens(s)
+                   if (v not in plain if not u else (v, u) not in have)]
         if texts and missing:
-            problems.append((s, "number", f"{', '.join(missing)} is not in the line it cites"))
+            problems.append((s, "number", f"{', '.join(missing)} is not in the line it cites, written that way"))
+        held = {v for v, u in have if u == "$"}
+        for p in prices_in(s):
+            v = f"{float(p):g}"
+            if allowed is None:
+                problems.append((s, "price", f"a price (${p}) and the prices file ({PRICES_FILE}) can't be read"))
+            elif v not in allowed and v not in held and p not in held:
+                problems.append((s, "price", f"${p} is not a plan price on /pricing (Prices::TIERS), nor in the line it cites"))
+    for s in sentences(caption):                       # a price in a sentence with no ledger line still has to be a plan price
+        if ledger_for(s, ledger) is None:
+            for p in prices_in(s):
+                if allowed is not None and f"{float(p):g}" not in allowed and not any(x[0] == s and x[1] == "price" for x in problems):
+                    problems.append((s, "price", f"${p} is not a plan price on /pricing (Prices::TIERS)"))
     return problems, cited
 
 
@@ -1362,7 +1454,13 @@ def ask_facts_judge(caption, sents, cited):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def facts_verdict(problems, sents, ans, why_not=""):
+def must_claim(sents, ledger):
+    """The sentence numbers the judge may not call "no claim": the writer put them in its ledger, or they hold a
+    number, a price or a percentage. A factual sentence waved through as "no claim" would post unchecked."""
+    return {i for i, s in enumerate(sents, 1) if numbers(s) or prices_in(s) or ledger_for(s, ledger) is not None}
+
+
+def facts_verdict(problems, sents, ans, why_not="", claims=()):
     """(verdict, [(sentence, line)]) — pass only when code found nothing and the judge called every sentence
     supported or no claim. Stricter than the picture check on purpose: an unsure fact doesn't post. Pure."""
     if problems:
@@ -1385,6 +1483,9 @@ def facts_verdict(problems, sents, ans, why_not=""):
         v = str((e or {}).get("verdict", "")).lower().strip()
         if v not in FACT_VERDICTS:
             return "couldnt", [(s, f"the judge's answer for sentence {i} was not one of the choices ({v or 'missing'})")]
+        if v == "no claim" and i in claims:
+            v, e = "unsure", {"why": "called no claim, but it is in the ledger or holds a number: "
+                              + str((e or {}).get("why") or "-")}
         lines.append((s, f"{v}: {(e or {}).get('why') or '-'}"))
         bad = bad or v in ("not supported", "unsure")
     return ("fail" if bad else "pass"), lines
@@ -1397,7 +1498,7 @@ def check_draft(d, sources, in_packet=True):
     ans, why_not = (None, "")
     if not problems and sents:
         ans, why_not = ask_facts_judge(d["caption"], sents, cited)
-    v, lines = facts_verdict(problems, sents, ans, why_not)
+    v, lines = facts_verdict(problems, sents, ans, why_not, must_claim(sents, d.get("ledger")))
     return {"verdict": v, "layer": "code" if problems else "judge", "lines": [[s, r] for s, r in lines],
             "problems": [list(p) for p in problems],
             "cited": {k: list(v_) for k, v_ in cited.items()},
@@ -1447,6 +1548,10 @@ def cmd_facts(args):
             fact_lessons(date, rec)
         verdicts.append(rec["verdict"])
     save_day(day)
+    if "pass" in verdicts:
+        print("next: `social pick` (it picks among the drafts that passed and queues the winner); post only the draft it queues")
+    else:
+        print("no draft passed: `social pick` sends the closer one to Taylor for post / swap / skip")
     # one passing draft is enough for the morning to go on to `social pick`; otherwise the worst reason
     sys.exit(0 if "pass" in verdicts else (FACTS_EXIT["couldnt"] if "couldnt" in verdicts else FACTS_EXIT["fail"]))
 
@@ -1592,6 +1697,8 @@ def cmd_lessons(args):
             die(f"usage: social lessons {op} N  (N from 1 to {len(prop['rules'])})")
         rule = prop["rules"][int(words[1]) - 1]
         prop["rules"][int(words[1]) - 1] = None
+        if op == "keep" and len(taste) >= TASTE_CAP:
+            die(f"there are {len(taste)} taste lines already (at most {TASTE_CAP}); retire one first (`social lessons retire`)")
         if op == "keep":
             taste.append(f"- {today_str(args)} · {rule} (kept by Taylor)")
             write_lessons(head, facts, taste)
@@ -1623,7 +1730,7 @@ The rule sheet the writers had:
 
 {rules}
 
-If you splice, keep every factual sentence word for word from A or B (with its sources), because a new sentence is a new claim and goes back through the check; a splice that fails it falls back to the draft you name in "prefer". Your budget is about ten minutes and one answer.
+If you splice, keep every factual sentence word for word from A or B (with its sources), because a new sentence is a new claim and goes back through the check; a splice that fails it falls back to the draft you name in "prefer". Your budget is about three minutes and one answer.
 
 Reply with one JSON object and nothing after it:
 {{"choice": one of "A" / "B" / "splice", "prefer": one of "A" / "B", "caption": "only for a splice: the spliced caption", "ledger": [{{"sentence": "...", "sources": ["S1"]}}], "argument": "the one argument that decided it, in a sentence"}}
@@ -1636,7 +1743,7 @@ def draft_text(label, d):
 
 
 def picker_model():
-    return os.environ.get("SOCIAL_PICKER_MODEL") or "fable"
+    return os.environ.get("SOCIAL_PICKER_MODEL") or "opus"    # background jobs stay off Fable (plan capacity)
 
 
 def ask_picker(day, a, b):
@@ -1676,6 +1783,7 @@ def cmd_pick(args):
         day["pick"] = pick
         save_day(day)
         append_pick(pick)
+        ledger_line(day, None)
         if best:
             print(f"no draft passed the fact check; the closer one ({best['writer']}) goes to Taylor for post / swap / skip:")
             print(best["caption"])
@@ -1700,8 +1808,16 @@ def cmd_pick(args):
             pick.update(how="fallback", won=win["writer"],
                         argument=f"the picker couldn't choose ({why_not or 'no A, B or splice'}); the shorter draft went up")
         elif choice == "SPLICE":
-            splice = {"writer": "splice", "status": "ok", "caption": str(ans.get("caption") or "").strip(),
-                      "ledger": [e for e in ans.get("ledger") or [] if isinstance(e, dict)], "why": [ans.get("argument") or ""]}
+            caption = str(ans.get("caption") or "").strip()
+            # each sentence keeps the source its writer gave it: matched by sentence in code, the picker's own
+            # ledger only where neither draft had the sentence
+            carried = []
+            for sent in sentences(caption):
+                e = ledger_for(sent, (a.get("ledger") or []) + (b.get("ledger") or [])) or \
+                    ledger_for(sent, [x for x in ans.get("ledger") or [] if isinstance(x, dict)])
+                if e is not None:
+                    carried.append(dict(e, sentence=sent))
+            splice = {"writer": "splice", "status": "ok", "caption": caption, "ledger": carried, "why": [ans.get("argument") or ""]}
             splice["facts"] = check_draft(splice, day.get("sources") or {}) if splice["caption"] else \
                 {"verdict": "fail", "layer": "code", "lines": [["", "the splice was empty"]], "problems": [], "cited": {}}
             fact_lessons(date, splice["facts"])
@@ -1721,6 +1837,8 @@ def cmd_pick(args):
     day["pick"] = pick
     day["winner"] = win
     append_pick(pick)
+    save_day(day)                     # folds this run's costs in before the ledger line reads them
+    ledger_line(day, win)
     print(f"winner ({pick['how']}, {win['writer']}): {win['caption']}")
     if pick.get("argument"):
         print(f"  because: {pick['argument']}")
@@ -1729,6 +1847,24 @@ def cmd_pick(args):
         day["queued"] = n
         print(f"queued as draft {n}: `social check {n}`, then `social post patchlamp {n}`")
     save_day(day)
+
+
+def ledger_line(day, win):
+    """One line a morning in the toolbelt's cost ledger, the way `img` writes one an image: the models the words
+    took, what they cost at list price (Claude on the subscription; Codex doesn't report), and the verdict."""
+    path = Path(os.environ.get("SOCIAL_LEDGER") or os.environ.get("IMG_LEDGER") or Path.home() / ".local/state/claude-tools/ledger.jsonl")
+    costs = day.get("costs") or []
+    event = {"ts": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00"), "kind": "social-words",
+             "day": day["date"], "models": sorted({w for w, _ in costs}) + (["codex"] if any(
+                 d["writer"] == "codex" and d.get("status") in ("ok", "declined") for d in day.get("drafts") or []) else []),
+             "cost_usd": round(sum(c for _, c in costs), 4), "billed_to": "subscription",
+             "verdict": (win or {}).get("facts", {}).get("verdict") if win else "none", "won": (win or {}).get("writer")}
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a") as f:
+            f.write(json.dumps(event) + "\n")
+    except OSError as exc:
+        print(f"social: ledger write failed ({exc})", file=sys.stderr)
 
 
 def append_pick(pick):
@@ -1809,7 +1945,9 @@ def receipt_lines(day, picture=None):
     if picture:
         out.append(f"  picture: {picture}")
     if day.get("costs"):
-        out.append(f"  the words cost ${sum(c for _, c in day['costs']):.2f} at list price ({len(day['costs'])} model runs, on the subscription)")
+        codex_ran = any(d["writer"] == "codex" and d.get("status") in ("ok", "declined") for d in day.get("drafts") or [])
+        out.append(f"  the words cost ${sum(c for _, c in day['costs']):.2f} at list price ({len(day['costs'])} Claude runs, "
+                   f"on the subscription)" + ("; Codex: cost not reported" if codex_ran else ""))
     return out[:12]
 
 
@@ -1926,6 +2064,7 @@ def main():
     p.add_argument("--page")
     p.add_argument("--x-text", help="the X version, if the caption cut to 280 won't do")
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--unchecked", action="store_true", help="post a queued draft whose words weren't checked (by hand only, never the 8am run)")
     p.add_argument("--project", default=argparse.SUPPRESS)
     p.set_defaults(fn=cmd_post)
     q = sub.add_parser("queue")

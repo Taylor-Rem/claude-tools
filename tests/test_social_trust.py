@@ -76,6 +76,7 @@ final class Prices
             'name' => 'Hosting',
             'monthly' => 2_000,
             'usage' => 1_000,
+            'topup' => 5_000,
         ],
         'starter' => [
             'name' => 'Starter',
@@ -138,7 +139,8 @@ class TrustTest(unittest.TestCase):
 
     def run_social(self, *args, **env_extra):
         env = dict(os.environ, SOCIAL_DIR=str(self.social), SOCIAL_PROJECTS=str(self.projects),
-                   SOCIAL_MARKETING_DIR=str(self.marketing), CLAUDE_TOOLS_ENV=str(self.root / "no-env"))
+                   SOCIAL_MARKETING_DIR=str(self.marketing), CLAUDE_TOOLS_ENV=str(self.root / "no-env"),
+                   SOCIAL_LEDGER=str(self.root / "ledger.jsonl"))
         for k in ("SOCIAL_WRITER_OPUS", "SOCIAL_WRITER_CODEX", "SOCIAL_FACTS_JUDGE", "SOCIAL_PICKER"):
             env.pop(k, None)
         env.update(env_extra)
@@ -203,7 +205,7 @@ class TrustTest(unittest.TestCase):
         d = {"caption": "A site kept right by text, $79 a month. Patched.", "ledger": []}
         r = self.run_social("facts", "--draft", self.draft_file(d), "--no-lessons")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("$79 is not a price on /pricing", r.stdout)
+        self.assertIn("$79 is not a plan price on /pricing", r.stdout)
         d = {"caption": "Starter is $99 a month. Patched.", "ledger": [{"sentence": "Starter is $99 a month.", "sources": ["/pricing:starter"]}]}
         r = self.run_social("facts", "--draft", self.draft_file(d), "--no-lessons",
                             SOCIAL_FACTS_JUDGE=self.stand_in(judge_says("supported")))
@@ -230,6 +232,60 @@ class TrustTest(unittest.TestCase):
         r = self.run_social("facts", "--draft", self.draft_file(d), "--no-lessons")
         self.assertEqual(r.returncode, 1)
         self.assertIn("182 is not in the line it cites", r.stdout)
+
+    def test_spelled_out_numbers_and_units_are_checked(self):
+        d = {"caption": "Twenty-four trades checked this week. Patched.", "ledger": []}
+        r = self.run_social("facts", "--draft", self.draft_file(d), "--no-lessons")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("it has a number (24)", r.stdout)
+        # 181 is in the line, but as a count, not a percentage
+        d = {"caption": "181% of businesses send visitors to a dead link. Patched.",
+             "ledger": [{"sentence": "181% of businesses send visitors to a dead link.", "sources": [f"client-leads/DATA_STORY_STATS.md:{L_DEAD}"]}]}
+        r = self.run_social("facts", "--draft", self.draft_file(d), "--no-lessons")
+        self.assertIn("181% is not in the line it cites", r.stdout)
+        d = {"caption": "Three percent of them send visitors to a dead link. Patched.",
+             "ledger": [{"sentence": "Three percent of them send visitors to a dead link.", "sources": [f"client-leads/DATA_STORY_STATS.md:{L_ROW}"]}]}
+        r = self.run_social("facts", "--draft", self.draft_file(d), "--no-lessons",
+                            SOCIAL_FACTS_JUDGE=self.stand_in(judge_says("supported")))
+        self.assertEqual(r.returncode, 0, r.stdout)          # "three percent" is "3%" and the row says 3%
+
+    def test_only_plan_prices_are_prices(self):
+        d = {"caption": "Top-ups are $50. Patched.", "ledger": [{"sentence": "Top-ups are $50.", "sources": ["/pricing:hosting"]}]}
+        r = self.run_social("facts", "--draft", self.draft_file(d), "--no-lessons")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("$50 is not a plan price", r.stdout)
+
+    def test_a_draft_or_topic_line_is_never_a_source(self):
+        (self.marketing / "copy" / "feed-2026-10-06.md").write_text("24 trades\n")
+        (self.social / "facts").mkdir()
+        (self.social / "facts" / f"{DATE}.md").write_text("kits: 24 trades\n")
+        for ref, ok in (("marketing/copy/feed-2026-10-06.md:1", False), ("social/topics/patchlamp.md:2", False),
+                        (f"social/facts/{DATE}.md:1", True)):
+            d = {"caption": "24 trades this week. Patched.", "ledger": [{"sentence": "24 trades this week.", "sources": [ref]}]}
+            r = self.run_social("facts", "--draft", self.draft_file(d), "--no-lessons",
+                                SOCIAL_FACTS_JUDGE=self.stand_in(judge_says("supported")))
+            self.assertEqual(r.returncode == 0, ok, ref + r.stdout)
+            if not ok:
+                self.assertIn("is not a source", r.stdout)
+
+    def test_an_empty_packet_fails_every_cite(self):
+        (self.social / "topics" / "patchlamp.md").write_text("# nothing\n")
+        self.run_social("packet", "--date", DATE)
+        self.run_social("draft", "--date", DATE, "--no-codex", SOCIAL_WRITER_OPUS=self.stand_in(
+            {"caption": "181 businesses send visitors to a dead link. Patched.",
+             "ledger": [{"sentence": "181 businesses send visitors to a dead link.", "sources": [f"client-leads/DATA_STORY_STATS.md:{L_DEAD}"]}]}))
+        r = self.run_social("facts", "--date", DATE, SOCIAL_FACTS_JUDGE=self.stand_in(judge_says("supported")))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("today's packet holds no source lines", r.stdout)
+
+    def test_no_claim_cant_wave_a_fact_through(self):
+        d = {"caption": "Most owners fix it in a day. Is yours one? Patched.",
+             "ledger": [{"sentence": "Most owners fix it in a day.", "sources": [f"client-leads/DATA_STORY_STATS.md:{L_DEAD}"]}]}
+        r = self.run_social("facts", "--draft", self.draft_file(d), "--no-lessons",
+                            SOCIAL_FACTS_JUDGE=self.stand_in(judge_says("no claim", "no claim")))
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("\"Most owners fix it in a day.\" — unsure: called no claim", r.stdout)
+        self.assertIn("\"Is yours one?\" — no claim", r.stdout)
 
     def test_a_clock_time_needs_no_source(self):
         d = {"caption": "2:14am. Zero calls. Made a portrait of the mug instead. Patched.", "ledger": []}
@@ -315,6 +371,7 @@ class TrustTest(unittest.TestCase):
         out = r.stdout
         self.assertIn("written by Opus (the only draft)", out)
         self.assertIn("one draft today: Codex timeout", out)
+        self.assertNotIn("Codex: cost not reported", out)
         self.assertIn(f"client-leads/DATA_STORY_STATS.md:{L_DEAD}", out)
         self.assertIn("facts: pass", out)
         self.assertLessEqual(len(out.splitlines()), 12)
@@ -357,7 +414,23 @@ class TrustTest(unittest.TestCase):
         row = json.loads((self.social / "picks.jsonl").read_text().splitlines()[-1])
         self.assertEqual(row["how"], "splice-failed")
         self.assertEqual(row["won"], row["labels"]["B"])
-        self.assertIn("$5 is not a price on /pricing", self.lessons())
+        self.assertIn("$5 is not a plan price on /pricing", self.lessons())
+
+    def test_a_splice_keeps_each_sentence_s_source(self):
+        self.run_social("packet", "--date", DATE)
+        self.run_social("draft", "--date", DATE, SOCIAL_WRITER_OPUS=self.stand_in(self.opus_answer()),
+                        SOCIAL_WRITER_CODEX=self.stand_in(self.opus_answer()))
+        self.run_social("facts", "--date", DATE,
+                        SOCIAL_FACTS_JUDGE=self.stand_in(judge_says("supported", "supported", "supported", "no claim")))
+        r = self.run_social("pick", "--date", DATE, SOCIAL_PICKER=self.stand_in(
+            {"choice": "splice", "prefer": "A", "argument": "the dead link and the share, no aside",
+             "caption": "181 businesses from Ogden to Santaquin send Google's visitors to a dead link. That is 3% of the 5,865 I checked. Patched."}),
+            SOCIAL_FACTS_JUDGE=self.stand_in(judge_says("supported", "supported")))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        row = json.loads((self.social / "picks.jsonl").read_text().splitlines()[-1])
+        self.assertEqual(row["how"], "splice")
+        led = [json.loads(x) for x in (self.root / "ledger.jsonl").read_text().splitlines()]
+        self.assertEqual((led[-1]["kind"], led[-1]["verdict"], led[-1]["won"]), ("social-words", "pass", "splice"))
 
     def test_a_writer_that_declines_is_passed_on_and_no_draft_means_none(self):
         self.run_social("packet", "--date", DATE)
@@ -393,12 +466,19 @@ class TrustTest(unittest.TestCase):
         r = self.run_social("lessons", "keep", "1")
         self.assertNotEqual(r.returncode, 0)     # nothing left to keep
 
+    def test_taste_lines_are_capped(self):
+        (self.social / "lessons.md").write_text("# l\n\n## Facts\n\n## Taste\n\n" + "".join(f"- rule {i}\n" for i in range(12)))
+        self.run_social("lessons", "propose", "one more")
+        r = self.run_social("lessons", "keep", "1")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("retire one first", r.stderr)
+
     def test_fact_lessons_dedupe(self):
         d = {"caption": "A site for $79. Patched.", "ledger": []}
         f = self.draft_file(d)
         self.run_social("facts", "--draft", f)
         self.run_social("facts", "--draft", f)
-        self.assertEqual(self.lessons().count("$79 is not a price"), 1)
+        self.assertEqual(self.lessons().count("$79 is not a plan price"), 1)
 
 
 if __name__ == "__main__":

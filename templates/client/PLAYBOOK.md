@@ -190,6 +190,34 @@ us from the site", "an RSVP".
 **Afterwards:** "did anyone fill in the form" → `newsletter forms` (or
 `--form booking`). Read them what came in.
 
+**Answering within the minute (form replies, `LEAD-REPLY`).** A form
+that waits in an inbox loses the customer to whoever answers first. Every
+post to a form (not the newsletter box, not a booking) reaches the owner
+as a text within the minute: the name, number, email, what they asked,
+and a line they could send, plus their record when the number is in the
+customer book. That's off mode, the default. When the owner says
+"answer them yourself", the relay also writes the customer back by email
+within the minute, from `facts.md` and nothing else: hours, area, what
+is and isn't offered, the `## For customers` lines, and "<who answers>
+will reach you <when>". Anything the file doesn't answer gets "I'll have
+<who answers> answer that", never a guess and never a price the file
+doesn't hold (the relay checks every dollar figure against the file and
+holds the reply if one isn't there). The email is signed by the business
+and says it's an automatic reply; it goes only to the address typed into
+the form. Then the owner gets the text, with what was sent.
+
+Before you turn it on, fill `## For customers` in `facts.md` with the
+owner, in their words: `Who answers:` (a first name), `Reply within:`
+("one business day", "by tomorrow noon"), and any standing answer they
+want given (deposits, turnaround, what's not offered). Read the lines back
+to them, because a customer will read them as a promise. Then put
+`LEAD-REPLY: on` on its own line at the end of your reply; the relay
+confirms under it. `LEAD-REPLY: off` stops it, `LEAD-REPLY: status` says
+which it is. Say it plainly: "From now on, when someone fills in your quote
+form, I'll email them back within the minute from your facts, and text you
+what I said. Anything the facts don't cover, I tell them you'll answer."
+Text replies to the customer wait until the business has its own number.
+
 **What you can't do:** file uploads, payments through the form (a link to pay is § Payments), a calendar. If they want
 to *see* what came in themselves, in a list, that's the next page (Data).
 Say so for the rest and FORWARD-TO-TAYLOR.
@@ -1092,9 +1120,13 @@ way out; a second question; the bundle held until they answer; an argument
 with the reason. Making it right means Taylor fixing the thing, never a price
 (the Bleu Grave lesson).
 
-**Afterwards:** the site keeps serving at its address for thirty days. The
-repository moved to their own GitHub account, or their domain pointed
-somewhere new, is Taylor's step: `FORWARD-TO-TAYLOR:` it.
+**Afterwards:** the site keeps serving at its address for thirty days. If they
+tell you where the new site is, pass it on with the address:
+`FORWARD-TO-TAYLOR: <client> moved to <url>; forward their patchlamp.site address`.
+Taylor's `site retire <repo> --forward <url>` makes the free address redirect
+there for 90 days, then it stops. The repository moved to their own GitHub
+account, or their own domain pointed somewhere new, is Taylor's step too:
+`FORWARD-TO-TAYLOR:` it.
 
 **"Can I have my files?" without leaving** — the same `site handover`, no
 question, no offer. It is theirs whenever they ask.
@@ -1211,18 +1243,51 @@ owner can fix a gap they know about; they can't fix one nobody mentioned.
 
 ## Custom domain
 
-**When they ask:** "can the site be at ourband.com", "we bought a domain".
+**When they ask:** "can the site be at ourband.com", "we bought a domain",
+"put it on example.com".
 
-**What to say:**
+**What to say:** give me the domain and I'll do it now; you set two
+nameservers at the registrar, here's the picture.
 
-> Yes. Point the domain at the site — two settings at wherever you bought
-> it — and it's live with a secure certificate within the hour. I'll send
-> you the exact two lines to enter (or Taylor can do it with you).
+> Yes, I've put it on. One setting is yours, because only you can sign in
+> where you bought the domain: change its two nameservers to these two.
+> Here's a picture of where that is. Once they change, it's live with a
+> secure certificate, usually within the hour.
 
-**What to run:** nothing yourself — attaching the domain is one of the few
-Taylor steps: `FORWARD-TO-TAYLOR: <client> wants <domain> on
-<repo>` and tell the client Taylor will send the two DNS lines. (Taylor
-runs `SITE_ADMIN=1 site domain <repo> <domain>`, which prints them.)
+**What to run:** `site domain <repo> <domain> --picture`. It does the whole
+job in one run: the domain becomes a zone on our Cloudflare account, the site
+takes the domain and its `www`, and it prints the two nameservers, the
+registrar's help page and, on its last line, the picture's path. Send the two
+nameservers exactly as printed with the help page, and attach the picture:
+`SEND-FILE: <the path> | where the nameservers go at <registrar>`. When the
+last line says there's no picture for that registrar, send the help page alone.
+This is yours to do since 2026-10-05; there's nothing to forward.
+
+It takes the other way by itself when moving the nameservers would do harm,
+and says why in one line: a domain that already receives mail (the mail would
+move with the nameservers), a subdomain like shop.example.com, a second domain
+for the same business, or a zone it couldn't make. Then it prints two records
+(ALIAS and CNAME) to enter at the registrar instead; send those the same way.
+`--records` asks for that way on purpose, for an owner who'd rather keep their
+DNS where it is.
+
+**Afterwards:** `site domain <repo>` (no domain) shows where it's at: the zone
+pending, then active, then the certificate. Still pending a day later means the
+nameservers didn't change; ask them to look again, with the picture. Anything
+it says you can't fix: `ESCALATE:` it with the output. The domain stays theirs:
+they buy it and renew it, and we never register one for them.
+
+**The free address:** every site also has `<name>.patchlamp.site`, free on
+every plan and theirs while they're on one (`site ls` shows it as
+`address=`). It works on a QR code, as a link and on the Google listing. A
+domain of their own comes on top of it, not instead. A site made before the
+address existed gets it with `site address <repo>`.
+
+**When a site first goes live**, `site new` prints a `text:` line. Send that
+sentence as it is once the line above it says serving ("Your site's live:
+https://<name>.patchlamp.site. Patched."). If it says the certificate isn't
+there yet, wait a few minutes and check with `site domain <repo>` first: an
+address that doesn't answer yet is a bad first link to send.
 
 ---
 
@@ -1277,10 +1342,9 @@ rebuild of the old one is a Standard job."
    > fix it; when you're happy, say the word and I'll move your domain over.
 
    Attach a picture: `SEND-FILE: shots/<file>.png | the new home page on a phone`.
-6. **When they say go:** the domain is Taylor's step (see *Custom domain*):
-   `FORWARD-TO-TAYLOR: <client> is happy with <pages.dev URL>; move
-   <their domain> over`. Tell them Taylor will send the two lines, or do it
-   with them, and that the old site keeps serving until those change.
+6. **When they say go:** `site domain <name> <their domain> --picture` (see
+   *Custom domain*) and send the two nameservers and the picture. Tell them
+   the old site keeps serving until the nameservers change.
 
 **Afterwards:** it's an ordinary site: edits by text, `site publish`, done.
 The old site is theirs to switch off once the domain has moved.

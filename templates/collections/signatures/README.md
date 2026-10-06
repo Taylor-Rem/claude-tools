@@ -34,8 +34,10 @@ under the customer as a job "Signed: <title>" (done, that day) when the
 site keeps the customer book. Emailing the PDF to the owner and the signer
 needs a customer-mail path that carries a file; B118's
 `POST /internal/relay/projects/{slug}/customer-mail` (relay `customers.py
-send()`, not merged on 2026-10-06) is the seam, and it takes text only. Until
-then `sign pdf` prints both emails as drafts, Patch sends the owner the PDF
+send()`, on main since 2026-10-06) is the seam: text only, called by the relay
+alone, so the signer's copy by email is a relay change (a `waiver` kind and a
+queue it drains, as `relay/reviews.py` does). Until then `sign pdf` prints
+both emails as the owner's drafts, Patch sends the owner the PDF
 (SEND-FILE), and the signer's copy is the signed page itself, which they can
 print or save, or the PDF the owner forwards.
 

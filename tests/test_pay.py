@@ -89,8 +89,8 @@ class Fake(BaseHTTPRequestHandler):
         if path == "/v1/customers/search":
             return self._send(200, {"data": s.get("by_name", [])})
         if path == "/v1/invoices":
-            return self._send(200, {"data": [{"id": "in_1", "number": "FERN-0001", "amount_due": 45000, "status": "paid",
-                                              "customer_name": "Smith"}]})
+            return self._send(200, {"data": s.get("invoices") or [{"id": "in_1", "number": "FERN-0001", "amount_due": 45000,
+                                                                   "status": "paid", "customer_name": "Smith"}]})
         if path == "/v1/charges":
             return self._send(200, {"data": [{"amount": 4500, "paid": True, "status": "succeeded",
                                               "description": "June service", "billing_details": {"name": "Smith"}}]})
@@ -256,6 +256,32 @@ class PayTest(unittest.TestCase):
         r = self.pay("invoice", "Smith", "400", "x", "--line", "work", "450", "--line", "credit", "-50", env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("-5000", [c["body"].get("amount") for c in self.stripe_calls()])
+
+    def test_an_idempotency_key_and_a_ref_never_bill_twice(self):
+        """estimate sync may run again after pay succeeded (B123 review): the same key gives the same
+        Idempotency-Keys, and an invoice already made for the ref is handed back, not made again."""
+        env = {"STRIPE_CONNECTED_ACCOUNT": ACCT}
+        Fake.state["by_email"] = [{"id": "cus_smith", "name": "Smith", "email": "s@x.test"}]
+        args = ("invoice", "Smith", "450", "Estimate E-0001", "--email", "s@x.test", "--ref", "E-0001",
+                "--idempotency-key", "estimate:E-0001:tok123", "--json")
+        r = self.pay(*args, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        keys = [c["idem"] for c in self.stripe_calls() if c["method"] == "POST"]
+        self.assertEqual(keys[0], "estimate:E-0001:tok123:/v1/invoices:0")
+        self.assertEqual(len(set(keys)), len(keys), "one key a request")
+        Fake.state["sent"] = []
+        self.pay(*args, env=env)
+        self.assertEqual([c["idem"] for c in self.stripe_calls() if c["method"] == "POST"], keys, "a retry sends the same keys")
+        Fake.state["sent"] = []
+        Fake.state["invoices"] = [{"id": "in_9", "number": "FERN-0009", "status": "open", "amount_due": 45000,
+                                   "metadata": {"ref": "E-0001"}, "hosted_invoice_url": "https://invoice.stripe.com/i/x/9"}]
+        r = self.pay(*args, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        out = json.loads(r.stdout)
+        self.assertEqual((out["id"], out["existing"]), ("in_9", True))
+        self.assertEqual([c for c in self.stripe_calls() if c["method"] == "POST"], [], "nothing made again")
+        Fake.state["invoices"][0]["status"] = "draft"
+        self.assertIn("draft invoice for E-0001", self.pay(*args, env=env).stderr)
 
     def test_invoice_to_a_known_email_reuses_the_customer_and_send_emails_it(self):
         Fake.state["by_email"] = [{"id": "cus_smith", "name": "Pat Smith", "email": "smith@x.test"}]

@@ -28,7 +28,9 @@ CREATE TABLE IF NOT EXISTS estimates (
   accepted_agent TEXT,
   invoice_id     TEXT,                      -- Stripe's invoice (or the deposit's payment link) once followed through
   invoice_url    TEXT,
-  booking_id     INTEGER,
+  booking_id     INTEGER,                   -- the booking, once a time is agreed (estimate sync N --when …)
+  job_id         INTEGER,                   -- the job in the customer book, filed once
+  followed_at    TEXT,                      -- when the invoice (or deposit link) and the job were both done
   owner_notes    TEXT,
   created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
   updated_at     TEXT

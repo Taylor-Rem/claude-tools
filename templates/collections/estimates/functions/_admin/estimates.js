@@ -11,8 +11,11 @@ export default {
   json: "lines",
   sum: ["total_cents"],
   statuses: ["draft", "sent", "accepted", "declined", "void"],
+  // Only these two by hand: sent and accepted are written by `estimate send` and by the customer's
+  // own acceptance, and setting a status back to sent would let the page take a second acceptance
+  // over the first one's name. Declined or void close the page to the customer.
+  quick: ["declined", "void"],
   edit: [
-    { name: "status", label: "Status", type: "select" },
     { name: "owner_notes", label: "Notes (only you see these)", type: "textarea" },
   ],
   touch: "updated_at",

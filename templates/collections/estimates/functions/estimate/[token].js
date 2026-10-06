@@ -10,9 +10,10 @@
 //         as typed, the time and the IP address are kept as the record of it.
 //         The owner is emailed through patchlamp.com like a form (form
 //         `estimate-accepted`, no customer email in it, so nothing answers
-//         the customer automatically); `estimate sync` (Patch, by text) does
+//         the customer automatically); the page says the business has been
+//         told only when that post succeeded; `estimate sync` (Patch, by text) does
 //         the rest: the invoice or deposit link on the owner's Stripe, the
-//         booking request, the customer book.
+//         customer book, and the booking once a time is agreed.
 //
 // The token is 32 random characters made by `estimate new`; there is no list
 // of estimates anywhere public. Unknown token, a draft or a void estimate:
@@ -64,19 +65,22 @@ async function find(env, token) {
 const today = (env) => localNow(env).slice(0, 10);
 const open = (row, env) => row.status === "sent" && (!row.valid_until || row.valid_until >= today(env));
 
-function render(row, env, { error = "", justAccepted = false } = {}) {
+function render(row, env, { error = "", justAccepted = false, told = true } = {}) {
   let lines = [];
   try { lines = JSON.parse(row.lines || "[]"); } catch { lines = []; }
   const items = lines.map((l) => `<tr><td>${esc(l.what)}</td><td class="amt">${money(l.cents)}</td></tr>`).join("");
   const tax = row.tax_cents ? `<tr><td class="muted">Subtotal</td><td class="amt">${money(row.subtotal_cents)}</td></tr>
 <tr><td class="muted">${esc(row.tax_label || "Tax")}</td><td class="amt">${money(row.tax_cents)}</td></tr>` : "";
-  const deposit = row.deposit_cents ? `<p>A deposit of <strong>${money(row.deposit_cents)}</strong> is due when you accept; the rest is invoiced as the work is done.</p>` : "";
+  const deposit = row.deposit_cents ? `<p>A deposit of <strong>${money(row.deposit_cents)}</strong> is due when you accept; ${esc(row.business || "the business")} invoices the rest.</p>` : "";
   const valid = row.valid_until ? `<p class="muted">Good until ${esc(day(row.valid_until))}.</p>` : "";
   const note = row.note ? `<p>${esc(row.note)}</p>` : "";
   const terms = row.terms ? `<h2>Terms</h2><p class="terms">${esc(row.terms)}</p>` : "";
   let action = "";
   if (row.status === "accepted") {
-    action = `<p class="done">${justAccepted ? "Thank you. " : ""}Accepted by ${esc(row.accepted_name)} on ${esc(day(String(row.accepted_at || "").slice(0, 10)))}. ${esc(row.business || "The business")} has been told; ${row.deposit_cents ? "the deposit link" : "the invoice"} comes from them next.</p>`;
+    const next = justAccepted && !told
+      ? `Save this page; ${esc(row.business || "the business")} will confirm, and ${row.deposit_cents ? "the deposit link" : "the invoice"} comes from them.`
+      : `${justAccepted ? `${esc(row.business || "The business")} has been told; ` : ""}${row.deposit_cents ? "the deposit link" : "the invoice"} comes from them next.`;
+    action = `<p class="done">${justAccepted ? "Thank you. " : ""}Accepted by ${esc(row.accepted_name)} on ${esc(day(String(row.accepted_at || "").slice(0, 10)))}. ${next}</p>`;
   } else if (row.status === "declined") {
     action = `<p class="muted">This estimate was declined.</p>`;
   } else if (!open(row, env)) {
@@ -104,7 +108,7 @@ export async function onRequestGet({ params, env }) {
   return row ? render(row, env) : notFound();
 }
 
-export async function onRequestPost({ request, params, env, waitUntil }) {
+export async function onRequestPost({ request, params, env }) {
   if (!sameOrigin(request)) return new Response("Forbidden", { status: 403 });
   const row = await find(env, params.token);
   if (!row) return notFound();
@@ -122,17 +126,26 @@ export async function onRequestPost({ request, params, env, waitUntil }) {
   ).bind(name, at, ip || null, agent || null, at, params.token, today(env)).run();
   const now = await env.DB.prepare("SELECT * FROM estimates WHERE token = ?").bind(params.token).first();
   if (!res.meta.changes) return render(now, env);                             // past its day, or accepted a moment ago
+  // The owner is emailed through patchlamp.com; the page says "has been told" only when that
+  // worked, so a customer is never told something that didn't happen. Awaited (five seconds at
+  // most), not left to waitUntil, because the answer decides the sentence.
+  let told = false;
   if (env.PATCHLAMP_SLUG && env.FORWARD_EMAIL !== "off") {
     const base = (env.PATCHLAMP_URL || "https://patchlamp.com").replace(/\/$/, "");
     const origin = env.MAIL_ORIGIN || new URL(request.url).origin;
     const fields = { estimate: now.number, customer: now.customer, accepted_by: name, total: money(now.total_cents),
                      deposit: now.deposit_cents ? money(now.deposit_cents) : "none",
-                     next: "Text Patch: estimate sync (the invoice or deposit link, the booking request, the customer book)" };
-    waitUntil(fetch(`${base}/f/${encodeURIComponent(env.PATCHLAMP_SLUG)}/estimate-accepted`, {
-      method: "POST", body: new URLSearchParams(fields),
-      headers: { origin, referer: `${origin}/`, accept: "application/json", "content-type": "application/x-www-form-urlencoded" },
-    }).then((r) => { if (!r.ok) console.error(`forward: patchlamp.com answered ${r.status}`); })
-      .catch((e) => console.error(`forward: ${e}`)));
+                     next: "Text Patch: estimate sync (the invoice or deposit link, the customer book)" };
+    try {
+      const r = await fetch(`${base}/f/${encodeURIComponent(env.PATCHLAMP_SLUG)}/estimate-accepted`, {
+        method: "POST", body: new URLSearchParams(fields), signal: AbortSignal.timeout(5000),
+        headers: { origin, referer: `${origin}/`, accept: "application/json", "content-type": "application/x-www-form-urlencoded" },
+      });
+      told = r.ok;
+      if (!r.ok) console.error(`forward: patchlamp.com answered ${r.status}`);
+    } catch (e) {
+      console.error(`forward: ${e}`);
+    }
   }
-  return render(now, env, { justAccepted: true });
+  return render(now, env, { justAccepted: true, told });
 }

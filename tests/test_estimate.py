@@ -155,21 +155,62 @@ class EstimateTest(unittest.TestCase):
         self.assertEqual(inv["body"]["metadata[ref]"], "E-0001")
         self.assertTrue(all(c["auth"] == f"Bearer {test_pay.TEST}" for c in calls), "test key only")
         self.assertTrue(all(c["account"] == test_pay.ACCT for c in calls))
-        done = self.q("SELECT invoice_id, invoice_url, booking_id FROM estimates")[0]
+        self.assertEqual(inv["idem"], f"estimate-E-0001-{row['token']}:/v1/invoices:0", "one key per estimate: no second bill")
+        self.assertIn("move it to a time", r.stdout)
+        done = self.q("SELECT invoice_id, invoice_url, booking_id, job_id, followed_at FROM estimates")[0]
         self.assertEqual(done["invoice_id"], "in_1")
-        b = self.q(f"SELECT name, email, status, notes FROM bookings WHERE id = {done['booking_id']}")[0]
-        self.assertEqual((b["name"], b["status"]), ("John Smith", "requested"))
-        self.assertIn("E-0001", b["notes"])
-        self.assertEqual(self.q("SELECT status FROM booking_slots")[0]["status"], "closed", "never on the public calendar")
+        self.assertIsNone(done["booking_id"], "no booking without a time")
+        self.assertEqual(self.q("SELECT id FROM bookings"), [])
+        self.assertTrue(done["job_id"] and done["followed_at"])
         job = self.q("SELECT what, amount_cents, status, source, ref, customer_id FROM jobs")
         self.assertEqual([j["customer_id"] for j in job], [sent["customer_id"]], "the job is on the customer send filed")
         self.assertEqual(len(self.q("SELECT id FROM customers")), before, "and no second John Smith")
         self.assertEqual([(j["amount_cents"], j["status"], j["source"], j["ref"]) for j in job], [(45000, "booked", "estimate", "E-0001")])
-        # a second sync does nothing twice
+        # the owner moves the job on; no later sync touches it, and nothing is billed twice
+        self.db("exec", f"UPDATE jobs SET status = 'done', date = '2026-10-01' WHERE id = {done['job_id']}")
         n = len(test_pay.Fake.state["sent"])
         self.assertIn("nothing to follow through", self.est("sync", "--test").stdout)
+        r = self.est("sync", "E-0001", "--test")
+        self.assertIn("filed already", r.stdout)
         self.assertEqual(len(test_pay.Fake.state["sent"]), n)
+        self.assertEqual([(j["status"], j["date"]) for j in self.q("SELECT status, date FROM jobs")], [("done", "2026-10-01")])
+        # the time, once agreed: a booking at it, on a slot of its own that is full the moment it's made
+        self.assertIn("a time like 2026-10-12 09:00", self.est("sync", "E-0001", "--when", "next tuesday").stderr)
+        r = self.est("sync", "E-0001", "--when", "2026-10-12 09:00", "--test")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("booking #1 at 2026-10-12 09:00", r.stdout)
+        b = self.q("SELECT b.name, b.status, b.starts_at, b.notes, s.capacity, s.status AS slot FROM bookings b "
+                   "JOIN booking_slots s ON s.id = b.slot_id")
+        self.assertEqual([(x["name"], x["status"], x["starts_at"], x["capacity"], x["slot"]) for x in b],
+                         [("John Smith", "requested", "2026-10-12T09:00", 1, "open")])
+        self.assertIn("booking #1 already", self.est("sync", "E-0001", "--when", "2026-10-13 09:00", "--test").stdout)
         self.assertEqual(len(self.q("SELECT id FROM bookings")), 1)
+
+    def test_a_phone_acceptance_with_no_contact_files_one_customer_and_the_job_once(self):
+        """B123 review: no bookings on the site, a name-only customer, two syncs."""
+        self.db("add", "customers")
+        self.est("new", "Pat Lee", "--line", "Heater", "1000", "--deposit", "250", "--no-pdf")
+        r = self.est("accept", "1", "--name", "Pat Lee", "--by", "phone", "--test")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("deposit link", r.stdout)
+        self.assertIn("balance ($750.00) is the owner's to invoice", r.stdout)
+        self.assertIn("no bookings", r.stdout)
+        row = self.q("SELECT job_id, customer_id, followed_at FROM estimates")[0]
+        self.assertTrue(row["job_id"] and row["customer_id"] and row["followed_at"], (r.stdout, row))
+        self.db("exec", "UPDATE jobs SET status = 'done', date = '2026-10-01'")
+        self.est("sync", "--test")
+        self.est("sync", "1", "--test")
+        self.assertEqual(len(self.q("SELECT id FROM customers WHERE name = 'Pat Lee'")), 1)
+        self.assertEqual([(j["status"], j["date"]) for j in self.q("SELECT status, date FROM jobs")], [("done", "2026-10-01")])
+
+    def test_amounts_that_arent_money_and_a_total_past_stripes_limit_are_refused(self):
+        self.db("add", "customers")
+        for bad in ("Infinity", "NaN", "-5"):
+            r = self.est("new", "X", "--line", "a", bad, "--no-pdf")
+            self.assertNotEqual(r.returncode, 0)
+            self.assertNotIn("Traceback", r.stderr)
+        r = self.est("new", "X", "--line", "a", "600000", "--line", "b", "500000", "--no-pdf")
+        self.assertIn("more than one Stripe payment", r.stderr)
 
     def test_an_invoice_waits_for_an_email_and_sync_email_adds_it(self):
         """Stripe refuses a sent invoice to a customer with no email (found on demo-service, 2026-10-06)."""
@@ -269,7 +310,9 @@ const DB = { prepare(q) { const st = { args: [], bind(...a) { st.args = norm(a);
   async all() { return { results: sql.prepare(q).all(...st.args) }; },
   async run() { const r = sql.prepare(q).run(...st.args); return { meta: { changes: Number(r.changes) } }; } }; return st; } };
 const forwarded = [];
-globalThis.fetch = async (url, init) => { forwarded.push([url, Object.fromEntries(new URLSearchParams(init.body))]); return new Response("{}", { status: 201 }); };
+let down = false;
+globalThis.fetch = async (url, init) => { if (down) return new Response("{}", { status: 503 });
+  forwarded.push([url, Object.fromEntries(new URLSearchParams(init.body))]); return new Response("{}", { status: 201 }); };
 const env = { DB, TIMEZONE: "America/Denver", PATCHLAMP_SLUG: "acme" };
 const T = "tok_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", D = "tok_dddddddddddddddddddddddddddddd", X = "tok_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
 const ins = sql.prepare("INSERT INTO estimates (number, token, business, customer, lines, subtotal_cents, total_cents, deposit_cents, valid_until, terms, status) VALUES (?, ?, 'Acme Pools', 'John Smith', ?, 45000, 45000, 0, ?, 'Half up front.', ?)");
@@ -277,6 +320,9 @@ const lines = JSON.stringify([{ what: "3 windows", cents: 30000 }, { what: "2 <b
 ins.run("E-0001", T, lines, "2099-01-01", "sent");
 ins.run("E-0002", D, lines, "2099-01-01", "draft");
 ins.run("E-0003", X, lines, "2020-01-01", "sent");
+const P = "tok_pppppppppppppppppppppppppppppp";
+ins.run("E-0004", P, lines, "2099-01-01", "sent");
+sql.prepare("UPDATE estimates SET deposit_cents = 10000 WHERE token = ?").run(P);
 const waits = [];
 const ctx = (token, req) => ({ request: req, env, params: { token }, waitUntil: (p) => waits.push(p) });
 const get = async (token) => { const r = await onRequestGet(ctx(token, new Request(`https://s.example/estimate/${token}`))); return [r.status, await r.text()]; };
@@ -296,7 +342,11 @@ out.honeypot = await post(T, { name: "Bot", website: "x" });
 out.afterBot = sql.prepare("SELECT status FROM estimates WHERE token = ?").get(T).status;
 [s, h] = await post(T, { name: "  John   Smith " });
 await Promise.all(waits);
-out.accepted = [s, h.includes("Accepted by John Smith"), h.includes("Accept estimate")];
+out.accepted = [s, h.includes("Accepted by John Smith"), h.includes("Accept estimate"), h.includes("Acme Pools has been told")];
+out.depositPage = (await get(P))[1].includes("Acme Pools invoices the rest");
+down = true;
+[s, h] = await post(P, { name: "Pat Lee" });
+out.notTold = [h.includes("has been told"), h.includes("Save this page; Acme Pools will confirm")];
 out.row = sql.prepare("SELECT status, accepted_name, accepted_ip, accepted_agent, accepted_at FROM estimates WHERE token = ?").get(T);
 await post(T, { name: "Someone Else" });
 out.again = sql.prepare("SELECT accepted_name FROM estimates WHERE token = ?").get(T).accepted_name;
@@ -312,7 +362,9 @@ console.log(JSON.stringify(out));
         self.assertEqual(out["foreign"], 403)
         self.assertTrue(out["noName"])
         self.assertEqual(out["afterBot"], "sent", "the honeypot accepts nothing")
-        self.assertEqual(out["accepted"], [200, True, False])
+        self.assertEqual(out["accepted"], [200, True, False, True])
+        self.assertTrue(out["depositPage"], "the balance is the business's to invoice, as it is")
+        self.assertEqual(out["notTold"], [False, True], "told only when patchlamp.com took the forward")
         row = out["row"]
         self.assertEqual((row["status"], row["accepted_name"], row["accepted_ip"], row["accepted_agent"]),
                          ("accepted", "John Smith", "203.0.113.9", "UA"))

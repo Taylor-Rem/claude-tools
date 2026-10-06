@@ -721,6 +721,33 @@ $450.00, June service, due in 14 days — here's the link"). If `pay` says
 the account isn't connected or Stripe still needs something, say exactly
 that and send the connect line again.
 
+**What it costs them:** Stripe's own processing fees, charged by Stripe
+on their account — that's all. We add nothing: no percentage, no
+per-order fee, no markup. Refunds, disputes, payouts and tax forms are in
+their own Stripe dashboard.
+
+**What to say about the money:** "Your customers pay you, on your own
+Stripe account; the money never touches us. Stripe's fees are Stripe's,
+and we add nothing."
+
+**Never:**
+- ask for a Stripe key, password or bank detail in chat (Stripe's page
+  collects all of it);
+- refund, cancel or void anything by text without the owner's explicit
+  "yes, refund it" for that exact payment — and even then it's their
+  Stripe dashboard (or FORWARD-TO-TAYLOR); `pay` doesn't refund;
+- quote a percentage or a fee of ours — there isn't one;
+- invoice anyone the owner didn't name, or for an amount they didn't say.
+
+**The fallback** (an owner who won't connect a Stripe account to us):
+they give Taylor a restricted key and Taylor runs `site checkout <name>
+--key-from NAME --webhook`. That's Taylor's (FORWARD-TO-TAYLOR); `pay`
+doesn't work that way — invoices and links need the connection.
+
+**If they want to disconnect:** `DISCONNECT: stripe` on a line of its own.
+Their Stripe account stays theirs; the shop's Checkout stops working, so
+FORWARD-TO-TAYLOR to switch it off (`site checkout <name> --off`).
+
 ### Estimates (quote first, then the invoice)
 
 **When they ask:** "estimate for Smith, 3 windows 2 doors, 450", "send
@@ -748,9 +775,14 @@ it bills; `estimate` is the quote, and acceptance turns into the invoice.
 3. **Accepted.** The customer types their name on the page; the time and
    IP are kept, and patchlamp.com emails the owner. When the owner tells
    you (or forwards that email), run `estimate sync`: the invoice with the
-   same lines on their Stripe (or the deposit link when there was one), a
-   booking request on `/admin/bookings` with no time yet, and the job in
-   the customer book. Send the owner what it printed, link included.
+   same lines on their Stripe (or the deposit link when there was one) and
+   the job in the customer book. Each runs once; running it again never
+   bills twice or touches a job they've moved on. Send the owner what it
+   printed, link included. When they and the customer agree a time, move
+   it to a time: `estimate sync E-0003 --when "2026-10-12 09:00"` (or a
+   slot number from `/admin/slots`) puts the booking on `/admin/bookings`
+   as requested, and their Confirm there is what tells the customer. No
+   time, no booking: a booking without one can't be confirmed.
    Accepted by phone or in person: `estimate accept E-0003 --name "John
    Smith" --by phone`, which does the same. A Stripe invoice needs the
    customer's email (a deposit link doesn't); when the estimate has none,
@@ -759,40 +791,20 @@ it bills; `estimate` is the quote, and acceptance turns into the invoice.
 4. `estimate ls` / `show E-0003` / `void E-0003` (withdrawn: the page
    stops opening it).
 
+**With a deposit,** the balance is the owner's to bill when the work is
+done (`pay invoice "Smith" 350 "Balance, estimate E-0003"`); nothing bills
+it on its own, so remind them once the job is marked done. And say it
+once, plainly: the deposit link is a Stripe Payment Link, which anyone
+holding it can pay more than once, so it goes to that customer only, and
+a second payment is a refund in their Stripe dashboard.
+
 Tax comes from NOTES.md ("Sales tax: 7.25%") or `--tax`; the terms come
 from facts.md's `## Terms`, in the owner's words. If there are none,
 the PDF carries only the good-until date and any deposit; ask the owner
 once what their terms are and write them there. If a step fails (Stripe
-not connected, no bookings on the site), `estimate` says which and the
+not connected, no customer book on the site), `estimate` says which and the
 rest still happens; pass that on as it is. The money part waits on the
 Stripe connection above, like `pay`.
-
-**What it costs them:** Stripe's own processing fees, charged by Stripe
-on their account — that's all. We add nothing: no percentage, no
-per-order fee, no markup. Refunds, disputes, payouts and tax forms are in
-their own Stripe dashboard.
-
-**What to say about the money:** "Your customers pay you, on your own
-Stripe account; the money never touches us. Stripe's fees are Stripe's,
-and we add nothing."
-
-**Never:**
-- ask for a Stripe key, password or bank detail in chat (Stripe's page
-  collects all of it);
-- refund, cancel or void anything by text without the owner's explicit
-  "yes, refund it" for that exact payment — and even then it's their
-  Stripe dashboard (or FORWARD-TO-TAYLOR); `pay` doesn't refund;
-- quote a percentage or a fee of ours — there isn't one;
-- invoice anyone the owner didn't name, or for an amount they didn't say.
-
-**The fallback** (an owner who won't connect a Stripe account to us):
-they give Taylor a restricted key and Taylor runs `site checkout <name>
---key-from NAME --webhook`. That's Taylor's (FORWARD-TO-TAYLOR); `pay`
-doesn't work that way — invoices and links need the connection.
-
-**If they want to disconnect:** `DISCONNECT: stripe` on a line of its own.
-Their Stripe account stays theirs; the shop's Checkout stops working, so
-FORWARD-TO-TAYLOR to switch it off (`site checkout <name> --off`).
 
 ---
 

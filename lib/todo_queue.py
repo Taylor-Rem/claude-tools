@@ -250,6 +250,11 @@ KEY_RULES = [
 ]
 
 
+def key_of(e):
+    """The repeat key `todo audit` counts an entry under: its own, else the Rule 9 hint, else the title's."""
+    return e["meta"].get("repeat_key") or rule9(e)[2] or repeat_key(e)
+
+
 def repeat_key(e):
     k = e["meta"].get("repeat_key")
     if k:
@@ -349,11 +354,26 @@ def queue(entries, rows=None, today=None):
     return picked
 
 
+def now_minutes(entries, replies=None, rows=None, today=None):
+    """-> (total, {repeat key: minutes}): what `todo now`'s head line totals, by key (B145). Replies waiting
+    count three minutes each under the key `replies-waiting`."""
+    by = {}
+    for p in queue(entries, rows, today):
+        m, _ = minutes(p["entry"])
+        k = key_of(p["entry"])
+        by[k] = by.get(k, 0) + m
+    if isinstance(replies, int) and replies:
+        by["replies-waiting"] = by.get("replies-waiting", 0) + replies * 3
+    return sum(by.values()), by
+
+
 def now_lines(entries, *, numbers, replies=None, due=None, paused=None, day_sends=None, proposed=0,
-              rows=None, today=None, max_lines=11, short=False):
+              rows=None, today=None, max_lines=11, short=False, downstream=None):
     """The `todo now` message: under twelve lines, grouped. replies/due are ints or an error string
     ("couldn't read …"); paused is the pause's reason or None; day_sends a one-line pointer or None;
-    numbers maps an entry's start line to its `todo ls` number."""
+    numbers maps an entry's start line to its `todo ls` number; downstream the capacity lines
+    (lib/downstream.py `message_lines`, B145), printed under the head and taken from the line budget."""
+    downstream = list(downstream or [])
     q = queue(entries, rows, today)
     total = 0
     guessed = 0
@@ -367,7 +387,8 @@ def now_lines(entries, *, numbers, replies=None, due=None, paused=None, day_send
             + (f" ({guessed} without an estimate, counted at {DEFAULT_MINUTES})" if guessed else "") + ".")
     if short:
         first = q[0] if q else None
-        return [head + (f" First: {short_title(first['entry']['title'], 50)} (~{first['min']} min)." if first else "")
+        return [head + "".join(" " + d for d in downstream)
+                + (f" First: {short_title(first['entry']['title'], 50)} (~{first['min']} min)." if first else "")
                 + " `todo now` for the list."]
     fixed = []
     if isinstance(replies, int):
@@ -390,7 +411,7 @@ def now_lines(entries, *, numbers, replies=None, due=None, paused=None, day_send
     if proposed:
         fixed.append(f"Decide first: say \"reconcile: yes\" — {proposed} entries leave the list "
                      f"(`todo reconcile` shows why) · ~5 min")
-    budget = max_lines - 1 - len(fixed) - 1           # header, fixed lines, the "more" line
+    budget = max_lines - 1 - len(downstream) - len(fixed) - 1      # header, downstream, fixed lines, "more"
     setup = [p for p in q if p["group"] == "setup"]
     decide = [p for p in q if p["group"] == "decide"]
     # both groups get room: two headers, then entries alternate by priority until the budget is spent
@@ -414,7 +435,7 @@ def now_lines(entries, *, numbers, replies=None, due=None, paused=None, day_send
         later = f" (from {NOT_BEFORE.search(e['title']).group(1)[5:]})" if p["later"] else ""
         return f"  {n}. {short_title(e['title'])}{later} — {command_for(e, n)} · {mark}"
 
-    out = [head]
+    out = [head] + downstream
     if setup:
         out.append("Setup that blocks the lane:" if setup[0]["funnel"] else "Setup:")
         out += [line(p) for p in setup[:n_setup]]

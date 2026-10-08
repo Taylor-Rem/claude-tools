@@ -17,7 +17,10 @@ GitHub API with a fine-grained token Taylor pastes once in the browser.
                                asks for the three at a terminal, derives them otherwise; written as a
                                hidden `<!-- todo: … -->` line the web page doesn't show
   todo now [--short] [--offline] [--json]   the queue (B138): under twelve lines, grouped (setup that
-                               blocks the lane · replies waiting · send today · decide), minutes each
+                               blocks the lane · replies waiting · send today · decide), minutes each;
+                               writes the day's total by repeat key (B145) and, after three days over
+                               TODO_DAILY_MINUTES (45), leads with the downstream hold and its top keys
+  todo downstream [--json]     the three-day window rule 7 reads (lib/downstream.py): hold or go, and why
   todo show N                  one entry in full
   todo pause "why" | --off     sends paused (an owner's decision): `todo now` says so instead of listing them
   todo audit [--sunday] [--json]   Rule 9 per entry (human-only / automatable + how / unsure) and
@@ -614,6 +617,7 @@ def cmd_add(args):
 
 sys.path.insert(0, str(HERE / "lib"))
 import todo_queue as tq  # noqa: E402
+import downstream as ds  # noqa: E402
 
 HISTORY_FILE = Path(os.environ.get("TODO_HISTORY", str(WORK_TREE / "HISTORY.md"))).expanduser()
 ROADMAP_FILE = Path(os.environ.get("TODO_ROADMAP", str(WORK_TREE / "ROADMAP.md"))).expanduser()
@@ -700,8 +704,45 @@ def now_message(offline=False, short=False):
         due = probe(["leads", "due"], _count_due)
     plan = tq.reconcile_plan(entries, rows)
     proposed = sum(1 for p in plan if p["target"] != p["entry"]["section"] and not p.get("unsure"))
+    d = downstream_today(entries, rows, replies, today)
     return tq.now_lines(entries, numbers=ls_numbers(text), replies=replies, due=due, paused=sends_paused(),
-                        day_sends=day_sends(today), proposed=proposed, rows=rows, today=today, short=short)
+                        day_sends=day_sends(today), proposed=proposed, rows=rows, today=today, short=short,
+                        downstream=ds.message_lines(d, short=short))
+
+
+def downstream_today(entries, rows, replies, today):
+    """B145: write today's `todo now` total (by repeat key, with the row that would remove each key) to the
+    state file, then measure the three-day window rule 7 reads (lib/downstream.py). A failure here costs the
+    measurement, never the morning message."""
+    try:
+        total, by_key = tq.now_minutes(entries, replies, rows, today)
+        a = tq.audit(entries, tq.done_trail(_read(HISTORY_FILE)), today)
+        key_rows = {k: ds.row_for(entries, k, a["proposals"], rk=tq.key_of) for k in by_key}
+        onboarding = sum(1 for e in entries if not e["done"] and e["section"] in ("1", "1b") and ds.is_onboarding(e))
+        ds.record_day(ds.state_path(), today, total, by_key, key_rows, onboarding)
+        return ds.capacity(today=today)
+    except Exception as exc:          # noqa: BLE001 - the message goes out without the line
+        print(f"todo: downstream not measured ({type(exc).__name__}: {exc})", file=sys.stderr)
+        return None
+
+
+def cmd_downstream(args):
+    """The three-day window rule 7 reads (B145): read-only, from the state file `todo now` keeps."""
+    d = ds.capacity()
+    if args.json:
+        print(json.dumps(d, indent=1, ensure_ascii=False))
+        return
+    if not d["known_days"]:
+        print(f"Downstream: no `todo now` total recorded in the last {ds.LOOKBACK} days, so no hold "
+              f"(budget {d['budget']} min a day, {ds.BUDGET_ENV}).")
+        return
+    print(f"Downstream: budget {d['budget']} min a day ({ds.BUDGET_ENV}); the last {d['known_days']} recorded "
+          f"days: " + ", ".join(f"{x} {d['minutes_by_day'][x]} min" for x in d["window"])
+          + f"; over on {d['over_budget_days']}. First touches: " + ("HOLD" if d["hold"] else "go") + ".")
+    if d["hold"]:
+        print("\n".join(ds.message_lines(d)[1:]))
+    elif d["top_keys"]:
+        print("  Most minutes: " + "; ".join(f"{t['repeat_key']} {t['minutes']} min" for t in d["top_keys"]))
 
 
 def cmd_now(args):
@@ -747,7 +788,9 @@ def cmd_audit(args):
     text, entries, rows = queue_context()
     trail = tq.done_trail(_read(HISTORY_FILE))
     a = tq.audit(entries, trail)
+    d = ds.capacity()
     if args.json:
+        a["downstream"] = d
         print(json.dumps(a, indent=1, ensure_ascii=False, default=str))
         return
     nums = ls_numbers(text)
@@ -761,6 +804,8 @@ def cmd_audit(args):
             print(f"       {'how' if r['class'] == 'automatable' else 'why'}: {r['why']}")
         print()
     print(sunday_lines(a))
+    if d["hold"]:                    # B145: the minutes over budget, attributed to their keys
+        print("\n" + "\n".join(ds.message_lines(d)))
     m = a["measured"]
     print(f"\nMeasured: {m['minutes_asked']} min asked in § 1; days until ticked, median "
           f"{m['days_until_ticked_median'] if m['days_until_ticked_median'] is not None else 'n/a'} "
@@ -1381,6 +1426,8 @@ def main():
     p.add_argument("--short", action="store_true", help="one line: the count, the minutes, the first item")
     p.add_argument("--offline", action="store_true", help="the file only; don't ask outreach / leads")
     p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_now)
+    p = sub.add_parser("downstream", help="the three-day window rule 7 reads: hold or go (B145)")
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_downstream)
     p = sub.add_parser("show", help="one entry in full, by its `todo ls` number"); p.add_argument("n", type=int)
     p.set_defaults(fn=cmd_show)
     p = sub.add_parser("pause", help="sends paused: todo pause \"why\" | todo pause --off | todo pause")

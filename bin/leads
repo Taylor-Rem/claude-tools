@@ -7767,16 +7767,29 @@ def prospect_records(today=None):
 
 
 def prospect_capacity():
-    """The registry as outreach enters it (on a copy), its usage today and the default cap, for route(); None when
-    outreach can't be read."""
+    """The registry as outreach enters it (on a copy), its usage today and the default cap, for route(), with rule 7's
+    downstream window and today's date; the registry part is empty when outreach can't be read."""
     _, pol = _prospects_lib()
     o = outreach_mod()
+    down, today = prospect_downstream(), dt.date.today().isoformat()
+    unread = pol.capacity_view(None, {}, 0, downstream=down, today=today)    # rule 7 and follow-ups still read
     if not o:
-        return None
+        return unread
     try:
         import assets as _assets
-        return pol.capacity_view(_assets.snapshot(o.registry(), V.tenant), o.registry_usage(), o.cap_on())
+        return pol.capacity_view(_assets.snapshot(o.registry(), V.tenant), o.registry_usage(), o.cap_on(),
+                                 downstream=down, today=today)
     except Exception:                 # noqa: BLE001 - the plan says "the registry wasn't read" instead
+        return unread
+
+
+def prospect_downstream():
+    """Rule 7's input (B145): the three-day window of `todo now` totals lib/downstream.py measures; None when the
+    state file can't be read (the plan then notes that downstream capacity wasn't read)."""
+    try:
+        import downstream as _ds
+        return _ds.capacity()
+    except Exception:                 # noqa: BLE001
         return None
 
 

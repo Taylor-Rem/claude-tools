@@ -7,7 +7,8 @@ VISION § Decided "Autonomous acquisition" #1, #4).
 
 `prospect` is one record of the prospects table (lib/prospects.py `record()` says each key). `capacity` is what
 the registry says the lanes may carry today, as `capacity_view()` packs it (lib/assets.py's snapshot, the day's
-usage and the default cap; `downstream` for rule 7 when B145 measures it), or None when nobody read the registry.
+usage and the default cap; `downstream`, rule 7's input, lib/downstream.py's measure; `today`, the date a follow-up's
+due day is read against), or None when nobody read the registry.
 
 **The rules.** Seven, numbered as plan 55 § 5.2 numbers them, each citing the decision it comes from. A change is a
 VISION line first, then RULES below, then the playbook page (`policy.md` beside Steel's playbook in
@@ -17,7 +18,8 @@ decision. They are read in ORDER, and the first one that applies decides:
     1  suppressed, held, won, lost, no proposition       -> nothing
     6  a reply or a text is open                          -> the conversation (the consent machine for a text;
                                                              an interested email reply gets the close arm)
-    7  downstream: the human queue over budget 3 days     -> first touches hold (B145; never applies yet)
+    7  downstream: the human queue over budget 3 days     -> first touches hold (B145); a follow-up in flight
+                                                             goes on (the email lane, its sequence's next letter)
     2  strong, and a confirmed written channel Taylor works -> Taylor's queue; the email as touch three
     3  an email proposition, an address the gate admits,  -> the email lane, on a PERMITTED mailbox the registry
        and the facts its letter needs                        chooses (lib/assets.py plan_tick)
@@ -34,9 +36,15 @@ too: lane `nothing`, with the reason each rule gave.
 verdict arrive on the record (lib/prospects.py fills them by asking outreach's deal and the consent machine), so
 neither is copied here.
 
-**What a plan is:** {lane, status, rule, decision, reason, asset_kind, asset, touch, sequence, proposition,
-experiment, arm, handler, notes}. `lane` is one of LANES; `status` is `ready` (the lane may take it now), `waiting`
-(the lane is right and has no room or isn't built: `reason` says which) or `none` (lane `nothing`).
+**What a plan is:** {lane, status, action, rule, decision, reason, asset_kind, asset, touch, sequence,
+proposition, experiment, arm, handler, notes}. `lane` is one of LANES; `status` is `ready` (the lane may take it
+now), `waiting` (the lane is right and has no room or isn't built: `reason` says which) or `none` (lane
+`nothing`). `action` is the plan in one word, for a reader and a test: `send` (a touch may go now), `answer` (the
+conversation), `hold first touches` (rule 7), `wait` or `nothing`.
+
+**A follow-up** (B145) is the next letter of a sequence the email lane started: the record has the lane's own
+touches and no reply. It is not a first touch, so rule 7 never holds it; it is rule 3's (the email lane), on the
+thread's mailbox, `ready` once its day has come (`capacity["today"]`) and `waiting` before.
 """
 
 import copy
@@ -81,17 +89,19 @@ RULES = (
          "A reply or a text is open: the conversation loop. A text goes to the consent machine, which alone says "
          "whether a reply may go; an interested email reply gets the arm the close experiment deals."),
     Rule(7, "downstream", "hold", ("AA#8",),
-         "When the human queue has been over Taylor's daily budget for three days, first touches hold while "
-         "follow-ups, replies and the close arm continue. Not measured yet (B145): today it never holds."),
+         "When the human queue has been over the owner's daily budget for three days, first touches hold while "
+         "follow-ups, replies and the close arm continue, and the morning message names the keys taking the "
+         "minutes and the row that would remove each (lib/downstream.py; it lifts when the window is back under)."),
 )
 BY_N = {r.n: r for r in RULES}
 ORDER = (1, 6, 7, 2, 3, 4, 5)
 
 
-def capacity_view(snapshot, usage, default_cap, offset=0, downstream=None):
-    """The `capacity` argument: the registry as lib/assets.py reads it, plus rule 7's input (None until B145)."""
+def capacity_view(snapshot, usage, default_cap, offset=0, downstream=None, today=None):
+    """The `capacity` argument: the registry as lib/assets.py reads it, plus rule 7's input (lib/downstream.py's
+    measure, None when it wasn't read) and the day a follow-up's due date is read against (an ISO string)."""
     return {"snapshot": snapshot, "usage": usage or {}, "default_cap": default_cap, "offset": offset,
-            "downstream": downstream}
+            "downstream": downstream, "today": str(today) if today else None}
 
 
 def _plan(rule, lane, status, reason, **kw):
@@ -100,7 +110,18 @@ def _plan(rule, lane, status, reason, **kw):
          "reason": reason, "asset_kind": None, "asset": None, "touch": None, "sequence": [], "proposition": None,
          "experiment": None, "arm": None, "handler": None, "notes": []}
     p.update(kw)
+    p["action"] = _action(p)
     return p
+
+
+def _action(p):
+    if p["lane"] == "hold":
+        return "hold first touches"
+    if p["lane"] == "conversation":
+        return "answer"
+    if p["lane"] == "nothing":
+        return "nothing"
+    return "send" if p["status"] == "ready" else "wait"
 
 
 def _routes(p, channel):
@@ -181,6 +202,54 @@ def _downstream(capacity):
     return None
 
 
+def _no_hold_note(capacity):
+    d = (capacity or {}).get("downstream")
+    if not d:
+        return "rule 7: no hold (downstream capacity wasn't read)"
+    known = d.get("known_days") or 0
+    if known < 3:
+        return f"rule 7: no hold (the human queue has {known} recorded day{'s' if known != 1 else ''} of 3)"
+    return f"rule 7: no hold (over the daily budget {d.get('over_budget_days') or 0} of the last {known} days)"
+
+
+SEQUENCE_DAYS = (0, 3, 10)
+
+
+def _sent(p):
+    """The email lane's own touches on this record, oldest first."""
+    return sorted((t for t in p.get("touches") or [] if t.get("actor") == "machine" and t.get("channel") == "email"
+                   and t.get("date")), key=lambda t: t["date"])
+
+
+def _follow_up(p, capacity, propositions, notes):
+    """The sequence's next letter when the email lane has written and nobody answered; None otherwise (a first
+    touch, a finished sequence, a reply). Rule 3's, never rule 7's: a hold stops first touches only."""
+    sent = _sent(p)
+    if not sent or (p.get("outcomes") or {}).get("reply"):
+        return None
+    pid, spec = _prop(p, propositions)
+    letters = list(spec.get("letters") or ())
+    k = len(sent)
+    if spec.get("lane") != "email" or k >= min(len(letters), len(SEQUENCE_DAYS)):
+        return None
+    import datetime as _dt
+    n = SEQUENCE_DAYS[k]
+    due = (_dt.date.fromisoformat(sent[0]["date"][:10]) + _dt.timedelta(days=n)).isoformat()
+    today = (capacity or {}).get("today")
+    ready = bool(today) and today >= due
+    pr = p.get("proposition") or {}
+    if _downstream(capacity):
+        notes.append("rule 7: a follow-up goes on under the downstream hold (first touches hold)")
+    touch = {"n": n, "channel": "email", "actor": "machine", "template": letters[k], "due": due}
+    return _plan(3, "email", "ready" if ready else "waiting",
+                 f"{pid}: the follow-up, day {n} of the sequence"
+                 + ("" if ready else (f", due {due}" if today else f", due {due} (no date given to read it against)")),
+                 asset_kind="mailbox", asset=sent[-1].get("asset"), touch=touch, proposition=pid,
+                 experiment=pr.get("experiment"), arm=pr.get("arm"), handler=f"outreach send --touch {n}",
+                 sequence=[{"n": d, "channel": "email", "template": t} for d, t in zip(SEQUENCE_DAYS, letters)],
+                 notes=notes)
+
+
 def _email_plan(p, capacity, pid, spec, rule, actor_first=None):
     """Rule 3: the mailbox the registry chooses for one first letter, by assets.plan_tick (its rules 1-4)."""
     pr = p.get("proposition") or {}
@@ -210,18 +279,24 @@ def route(prospect, capacity=None, propositions=None):
     notes = []
 
     stop = _stop(p, propositions)
-    if stop:
+    if stop and not stop.startswith("held: "):
         return _plan(1, "nothing", "none", stop, proposition=(p.get("proposition") or {}).get("id"))
 
     convo = _conversation(p)
     if convo:
         return convo
 
+    follow = _follow_up(p, capacity, propositions, notes)       # not a first touch: rule 7 never holds it
+    if follow:
+        return follow
+    if stop:
+        return _plan(1, "nothing", "none", stop, proposition=(p.get("proposition") or {}).get("id"))
+
     hold = _downstream(capacity)
     if hold:
         return _plan(7, "hold", "waiting", f"first touches hold: {hold}",
                      proposition=(p.get("proposition") or {}).get("id"))
-    notes.append("rule 7: no hold (downstream capacity isn't measured yet, B145)")
+    notes.append(_no_hold_note(capacity))
 
     level = (p.get("strength") or {}).get("level")
     pid, spec = _prop(p, propositions)

@@ -54,6 +54,8 @@ CLASSES = {
     "bounce-to-card": ("nothing", "card"),   # rule 4: an address that bounced goes to the card lane (not built, B54)
     "p0-kit": ("taylor", "nothing"),         # the kit DMs a page-only business the venture gives no proposition (P0:
                                              # presence `unknown`, no site of its own read)
+    "follow-up": ("nothing", "email"),       # B145: the email lane wrote and nobody answered; the capture reads first
+                                             # touches (held), route() names the sequence's next letter (rule 3)
 }
 DIFFERENCES = {
     "FX_B16": "second-look",
@@ -64,6 +66,7 @@ DIFFERENCES = {
     "FX_S07": "no-phone-to-card",
     "FX_P504": "bounce-to-card",
     "FX_S08": "p0-kit",
+    "FX_P503": "follow-up",
 }
 
 
@@ -158,9 +161,9 @@ class TheRules(unittest.TestCase):
         p = self.route(rec(state={"suppressed": "replied no"}, conversation={"open": True, "channel": "email"}))
         self.assertEqual(p["rule"], 1)
 
-    def test_rule_7_never_holds_yet_and_holds_when_told(self):
+    def test_rule_7_holds_when_told(self):
         p = self.route(rec())
-        self.assertIn("rule 7: no hold (downstream capacity isn't measured yet, B145)", p["notes"])
+        self.assertIn("rule 7: no hold (downstream capacity wasn't read)", p["notes"])
         cap = dict(self.cap, downstream={"hold": True, "why": "three days over budget"})
         p = self.route(rec(), cap)
         self.assertEqual((p["lane"], p["rule"], p["decision"]), ("hold", 7, ["AA#8"]))

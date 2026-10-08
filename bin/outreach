@@ -3237,7 +3237,8 @@ def close_test_state():
         missing.append(f"{V.sender.postal_address_env} isn't set")
     if not claim_links_live():
         missing.append("the see host has no claim links yet, so the claim link would have to be on the product's "
-                       "own domain (OUTREACH_CLAIM_LINKS=1 once it serves them)")
+                       f"own domain (the relay's links sync says so once the app serves them: {press_state_file()}; "
+                       "OUTREACH_CLAIM_LINKS=1 forces it on)")
     if not (TEMPLATES / f"{CLOSE_TEMPLATE}.md").exists():
         missing.append(f"there is no {CLOSE_TEMPLATE}.md")
     else:
@@ -3260,11 +3261,39 @@ def call_windows():
     return toolbelt("OUTREACH_CALL_WINDOWS") or V.sender.call_windows
 
 
+def press_state_file():
+    """The relay's press poll state (sms-relay relay/press.py), where it keeps the kinds the app said it serves
+    on the last links sync. OUTREACH_PRESS_STATE points elsewhere; RELAY_STATE_DIR is the relay's own override."""
+    p = toolbelt("OUTREACH_PRESS_STATE")
+    if p:
+        return Path(p)
+    d = os.environ.get("RELAY_STATE_DIR")
+    return Path(d) / "press.json" if d else Path.home() / "projects/sms-relay/state/press.json"
+
+
 def claim_links_live():
     """The claim link goes out on the sending domain too (plan 37 § 3: the product's domain is in no cold-lane
-    message), as a see-link of kind `claim` whose target is the preview's claim URL. The see host serves that
-    kind only once its own row ships; until then OUTREACH_CLAIM_LINKS is unset and arm B stays off."""
-    return toolbelt("OUTREACH_CLAIM_LINKS") == "1"
+    message), as a see-link of kind `claim` whose target is the preview's claim URL (B147). True once the app
+    serves that kind: its answer to the relay's links sync says so (`kinds`), and the relay keeps it in its
+    press state. OUTREACH_CLAIM_LINKS=1 forces it on (a manual override, e.g. before the first sync) and =0
+    forces it off; unset, the relay's word decides, and with no word arm B stays off."""
+    forced = toolbelt("OUTREACH_CLAIM_LINKS")
+    if forced in ("1", "0"):
+        return forced == "1"
+    try:
+        kinds = json.loads(press_state_file().read_text()).get("kinds") or []
+    except (OSError, ValueError, AttributeError):
+        return False
+    return isinstance(kinds, list) and "claim" in kinds
+
+
+def claim_target(target):
+    """The see host redirects a claim link only to the claim start's host and path (the app refuses anything
+    else); a target from `leads` that isn't one falls back to the claim start itself."""
+    a, b = urllib.parse.urlsplit(str(target or "")), urllib.parse.urlsplit(claim_start())
+    same = (a.scheme == b.scheme and a.hostname and a.hostname == b.hostname and a.port == b.port
+            and not a.username and a.path == b.path and not a.fragment)
+    return target if same else claim_start()
 
 
 def claim_see_url(seq, target):
@@ -3275,7 +3304,7 @@ def claim_see_url(seq, target):
         return ""
     if not seq.get("claim_token"):
         seq["claim_token"] = secrets.token_urlsafe(9)
-    seq["claim_target"] = target
+    seq["claim_target"] = claim_target(target)
     return f"{base}/{seq['claim_token']}"
 
 
@@ -3350,10 +3379,14 @@ def interested_problems(body, vals):
         n = body.count(vals[k]) if vals.get(k) else 0
         if n != 1:
             bad.append(f"{{{k}}} is in the letter {n} times, not once")
+    sending = [d.lower() for d in V.outreach.domains] + [
+        (urllib.parse.urlsplit(u).hostname or "").lower() for u in (link_base(), sample_link_base()) if u]
     for k in ("preview_url", "start_url"):    # on the sending domain, never the product's (plan 37 § 3)
         host = (urllib.parse.urlsplit(vals.get(k) or "").hostname or "").lower()
         if host and any(host == h or host.endswith("." + h) for h in (V.site_host, V.previews.host)):
             bad.append(f"{{{k}}} is on {host}, the product's domain; it goes out as a see-link")
+        elif vals.get(k) and not any(host == h or host.endswith("." + h) for h in sending if h):
+            bad.append(f"{{{k}}} is on {host or 'no host'}, not the sending domain; it goes out as a see-link")
     found = links(body)
     if len(found) != 3:
         bad.append(f"the letter has {len(found)} links, not three (the site, the claim, the booking): {found}")
@@ -3381,7 +3414,7 @@ def interested_problems(body, vals):
 
 def check_interested_template():
     t = load_template(CLOSE_TEMPLATE)
-    vals = sample_values()
+    vals = dict(sample_values(), preview_url=sample_link_base() + "-site")   # arm B's site link: a see-link too
     subject, body = t.render(vals)
     bad = interested_problems(body, vals)
     if not subject.strip():

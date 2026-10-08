@@ -3707,9 +3707,13 @@ def preview_place_json(args):
 # sending domain knows only sha256(token). Two calls, both one JSON object on stdout, made by the relay's
 # press poll (sms-relay/relay/press.py), never by a timer of their own:
 #
-#   leads preview --press-tokens --json      {"ok", "links": [{"hash", "state": active|removed}]} for every
-#                                            sequence with a token; removed = its address, the address's domain,
-#                                            or its place is suppressed. No list without the suppression list.
+#   leads preview --press-tokens --json      {"ok", "links": [{"hash", "state": active|removed, "kind", "target"}],
+#                                            "watch"} for every sequence with a token; removed = its address, the
+#                                            address's domain, or its place is suppressed. No list without the
+#                                            suppression list. kind (B147): `press` (target null), or `claim` for
+#                                            the close arm's claim token, whose target is the preview's claim URL
+#                                            (only on CLAIM_START's host and path; the app checks again). `watch`
+#                                            is sequences.json, so the relay re-reads the list when it changes.
 #   leads preview --from-press HASH|TOKEN --json
 #                                            {"ok", "state": ready|removed|unknown|failed, "url", "reused",
 #                                            "place_id", "name", "city", "first", "brief", "why", "build_tail"}
@@ -3724,16 +3728,28 @@ def press_hash(token):
     return hashlib.sha256(str(token).encode()).hexdigest()
 
 
+def press_sequences_file():
+    return Path(os.environ.get("OUTREACH_STATE") or Path.home() / ".local/state/claude-tools/outreach") / "sequences.json"
+
+
 def press_sequences():
     """outreach's sequences, read-only (its OUTREACH_STATE, the same default as outreach's)."""
-    d = Path(os.environ.get("OUTREACH_STATE") or Path.home() / ".local/state/claude-tools/outreach")
+    d = press_sequences_file().parent
     try:
         data = json.loads((d / "sequences.json").read_text())
     except FileNotFoundError:
         return []
     except (OSError, ValueError) as exc:
         raise RuntimeError(f"{d / 'sequences.json'}: {exc}")
-    return [x for x in data if isinstance(x, dict) and x.get("token")] if isinstance(data, list) else []
+    return [x for x in data if isinstance(x, dict) and (x.get("token") or x.get("claim_token"))] \
+        if isinstance(data, list) else []
+
+
+def claim_target_ok(url):
+    """A claim link's target (B147) is the claim start itself or it with a query: same scheme, host and path."""
+    a, b = urllib.parse.urlsplit(str(url or "")), urllib.parse.urlsplit(CLAIM_START)
+    return bool(a.scheme == b.scheme == "https" and a.hostname and a.hostname == b.hostname and a.port == b.port
+                and not a.username and a.path == b.path and not a.fragment)
 
 
 def press_removed(seq, supp):
@@ -3756,14 +3772,21 @@ def press_tokens(args):
         seqs = press_sequences()
     except RuntimeError as exc:
         press_out({"ok": False, "links": [], "why": str(exc)}, 2)
-    links, seen = [], set()
+    links, seen, skipped = [], set(), []
     for q in seqs:
-        h = press_hash(q["token"])
-        if h in seen:
-            continue
-        seen.add(h)
-        links.append({"hash": h, "state": "removed" if press_removed(q, supp) else "active"})
-    press_out({"ok": True, "links": links, "count": len(links)})
+        state = "removed" if press_removed(q, supp) else "active"
+        for kind, tok in (("press", q.get("token")), ("claim", q.get("claim_token"))):
+            h = press_hash(tok) if tok else None
+            if not h or h in seen:
+                continue
+            seen.add(h)
+            target = q.get("claim_target") if kind == "claim" else None
+            if kind == "claim" and not claim_target_ok(target):
+                skipped.append({"hash": h, "why": "its target isn't on the claim start's host and path"})
+                continue
+            links.append({"hash": h, "state": state, "kind": kind, "target": target})
+    press_out({"ok": True, "links": links, "count": len(links), "watch": str(press_sequences_file()),
+               **({"skipped": skipped} if skipped else {})})
 
 
 def press_log():
@@ -3824,9 +3847,13 @@ def press_answer(args):
     out = {"ok": False, "state": "unknown", "hash": h, "url": None, "reused": False, "place_id": None,
            "name": None, "city": None, "first": False, "brief": None, "why": None, "build_tail": None}
     try:
-        seq = next((q for q in press_sequences() if press_hash(q["token"]) == h), None)
+        seqs = press_sequences()
     except RuntimeError as exc:
         press_out(dict(out, state="failed", why=str(exc)), 2)
+    if any(q.get("claim_token") and press_hash(q["claim_token"]) == h for q in seqs):
+        # B147: a claim link only redirects to the sign-up; a press on it is never a build
+        press_out(dict(out, state="refused", why="a claim link opens the sign-up; it builds nothing"), 2)
+    seq = next((q for q in seqs if q.get("token") and press_hash(q["token"]) == h), None)
     if not seq:
         press_out(dict(out, why="no letter carries this link"))
     pid, name = seq.get("place_id"), clean_name(seq.get("name") or "")

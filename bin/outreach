@@ -37,6 +37,10 @@
                                # B132, plan 53: the AI-line test. Open, each batch is dealt a third each
                                # to none / intro / foot; start and stop are Taylor's word only, as `go` is
   outreach warmup [start DATE] # the warm-up state and the ramp; `start` records the day warm-up began
+  outreach assets [--json|--check]   # B141: the capacity registry, mailbox -> domain -> tenant -> provider,
+                               # each row's state, caps, counts and the contract verdict; --check exits 1
+                               # on a broken rule (the evening check). `assets state NAME STATE --why "…"`,
+                               # `assets incident NAME "…"`, `assets set NAME --cap N --verdict V …` change one
   outreach approve             # Taylor's one command after reading templates/outreach/*.md
   outreach doctor              # keys by name, the address, the template, the caps, the provider
 
@@ -217,6 +221,7 @@ TZ = ZoneInfo("America/Denver")
 
 sys.path.insert(0, str(TOOLS / "lib"))
 import outreach_mail as mail  # noqa: E402  the SMTP/IMAP wire under the `google` provider
+import assets  # noqa: E402  the capacity registry (B141)
 from venture import from_argv  # noqa: E402
 
 V = from_argv()                      # the business this works for (ventures/<name>/venture.toml, B146)
@@ -3742,6 +3747,7 @@ def cmd_status(args):
     bad = approval_problems(ALL_TEMPLATES)
     say("  templates: " + ("all approved" if not bad else "; ".join(bad)))
     batch_status()
+    assets_status_lines()
 
 
 def batch_status():
@@ -3778,6 +3784,281 @@ def batch_status():
         say("  a stop rule is crossed: " + "; ".join(reasons))
     else:
         say("  stop rules: none crossed")
+
+
+# ---- the capacity registry (B141, lib/assets.py; plan 55 § 5.3) --------------------
+# `outreach assets` and the registry lines in `status` are views of it. Each run enters the lane as it
+# stands (the venture's tenant and domains, OUTREACH_MAILBOXES, the provider the SMTP host belongs to),
+# mirrors the lane's pause file and its Postmaster readings onto the rows, and drains a domain on a bad
+# reading; rows already there keep what was set on them. The tick doesn't read it yet: the policy (B140)
+# and the Factory (B144) route through assets.plan_tick(); until then OUTREACH_MAILBOX_PER_DAY=0 holds the
+# Workspace mailboxes, and `outreach assets --check` fails if that ever stops being true.
+
+def registry_provider_key():
+    """The provider the lane's mailboxes send through, as the registry names it: OUTREACH_MAILBOX_PROVIDER,
+    else google-workspace when the SMTP host is Google's, else `smtp:<host>` (unreviewed, so it sends
+    nothing cold until someone reads its terms and enters a verdict)."""
+    explicit = (toolbelt("OUTREACH_MAILBOX_PROVIDER") or "").strip().lower()
+    if explicit:
+        return explicit
+    host = str(toolbelt("OUTREACH_SMTP_HOST", "smtp.gmail.com:465")).split(":")[0].lower()
+    return "google-workspace" if host.endswith(("gmail.com", "google.com", "googlemail.com")) else f"smtp:{host}"
+
+
+def registry_path():
+    """$ASSETS_DB, else assets.db beside the outreach state dir (~/.local/state/claude-tools/assets.db by
+    default; a test's OUTREACH_STATE keeps its registry in its own temp dir)."""
+    return Path(os.environ.get("ASSETS_DB") or STATE.parent / "assets.db")
+
+
+def registry(refresh_renewals=False):
+    """The registry with today's lane entered (idempotent). Under --dry-run it works on a copy."""
+    path = registry_path()
+    if DRY:
+        import shutil
+        import tempfile
+        tmp = Path(tempfile.mkdtemp(prefix="assets-dry-")) / "assets.db"
+        if path.exists():
+            shutil.copy2(path, tmp)
+        path = tmp
+    reg = assets.Registry(path)
+    start, _ = warmup_start()
+    warmed = start is not None and (today() - start).days >= 14
+    assets.seed(reg, V.tenant, registry_provider_key(), V.outreach.domains, mailboxes(),
+                initial_state="active" if warmed else "warming")
+    assets.sync_pauses(reg, V.tenant, paused_boxes())
+    for r in reg.rows(V.tenant):                       # the Postmaster readings the lane holds (B136 fills them)
+        if r["kind"] != "domain":
+            continue
+        for p in read_jsonl(postmaster_file()):
+            if str(p.get("domain") or "").lower() != r["name"]:
+                continue
+            day = str(p.get("date") or p.get("ts") or "")[:10]
+            if p.get("rate") is not None:
+                reg.record_reading(r["id"], "postmaster", "spam_rate", p["rate"], day)
+            if p.get("reputation"):
+                reg.record_reading(r["id"], "postmaster", "reputation", p["reputation"], day)
+    assets.drain_on_reputation(reg, V.tenant, env_num("OUTREACH_SPAM_RATE_MAX_PCT", DEFAULT_SPAM_RATE_PCT))
+    if refresh_renewals:
+        assets.refresh_renewals(reg, V.tenant)
+    return reg
+
+
+def registry_usage(day=None):
+    """{mailbox: counts} from the lane's own records: today's letters (first and follow-up), the 30-day
+    stop-rule inputs (sent, bounced, angry, no) and the threads still open (sequences that will send
+    again, replies waiting on Taylor)."""
+    day = day or today()
+    stamp, since = day.isoformat(), (day - dt.timedelta(days=30)).isoformat()
+    zero = {"today": 0, "first_today": 0, "follow_today": 0, "sent30": 0, "bounced30": 0, "angry30": 0, "no30": 0,
+            "open_threads": 0}
+    u = {}
+
+    def at(mb):
+        return u.setdefault(str(mb or "").lower(), dict(zero))
+    for r in cold_sends():
+        e = at(r.get("mailbox"))
+        if r.get("date") == stamp:
+            e["today"] += 1
+            e["first_today" if int(r.get("touch") or 0) == 0 else "follow_today"] += 1
+        if str(r.get("date") or "") >= since:
+            e["sent30"] += 1
+    for b in read_jsonl(bounces_file()):
+        if str(b.get("ts") or "")[:10] >= since:
+            at(b.get("mailbox"))["bounced30"] += 1
+    for r in read_jsonl(replies_file()):
+        if str(r.get("ts") or "")[:10] >= since and r.get("class") in ("angry", "no"):
+            at(r.get("mailbox"))["angry30" if r.get("class") == "angry" else "no30"] += 1
+    for s in seqs_load():
+        if s.get("mailbox") and s.get("status") in ("active", "held"):
+            at(s["mailbox"])["open_threads"] += 1
+    for t in reply_threads():
+        if is_open(t["last"]) and t["last"].get("mailbox"):
+            at(t["last"]["mailbox"])["open_threads"] += 1
+    return u
+
+
+def _fmt_reading(rd):
+    bits = []
+    for metric, label in (("reputation", "reputation"), ("spam_rate", "spam"), ("inbox_pct", "inbox")):
+        x = rd.get(metric)
+        if x:
+            val = f"{float(x['value']):.2f}%" if metric != "reputation" else str(x["value"]).upper()
+            bits.append(f"{label} {val} ({x['source']}, {x['date']})")
+    return ", ".join(bits) or "no reading"
+
+
+def assets_view(reg, as_json=False):
+    snap = assets.snapshot(reg, V.tenant)
+    usage = registry_usage()
+    default_cap = cap_on()
+    cap = assets.capacity(snap, usage, default_cap)
+    bad = assets.breaches(snap, usage, default_cap)
+    warn = assets.warnings(snap, today())
+    if as_json:
+        rows = []
+        for r in snap["rows"]:
+            row = {k: r[k] for k in ("id", "tenant", "kind", "name", "parent_id", "state", "state_why", "state_ts",
+                                     "cap_day", "contract", "clause", "clause_date", "suspension_scope",
+                                     "cost_usd_month", "renews", "renews_source", "renews_checked",
+                                     "human_steps_open", "note")}
+            row["reputation"] = r["reading"]
+            row["verdict"] = assets.verdict(r)
+            if r["kind"] == "mailbox":
+                row.update(usage=usage.get(r["name"], {}), **{k: cap["mailboxes"][r["name"]][k] for k in
+                                                              ("cap", "first_ok", "first_why", "follow_ok", "follow_why")})
+            rows.append(row)
+        print(json.dumps({"tenant": V.tenant, "date": today().isoformat(), "default_cap": default_cap,
+                          "first_capacity": cap["first_capacity"], "contract_limit": cap["contract_limit"],
+                          "domains": cap["domains"], "providers": cap["providers"], "rows": rows,
+                          "breaches": bad, "warnings": warn}, indent=1))
+        return bad
+    say(f"Capacity registry — tenant {V.tenant} · {today().isoformat()} · a mailbox's cap defaults to "
+        f"{default_cap} today (OUTREACH_MAILBOX_PER_DAY)")
+    kids = {}
+    for r in snap["rows"]:
+        kids.setdefault(r["parent_id"], []).append(r)
+
+    def cost(r):
+        return f" · ${r['cost_usd_month']:g}/mo" if r.get("cost_usd_month") is not None else ""
+
+    def show(r, depth):
+        pad = "  " * depth
+        if r["kind"] == "provider":
+            v = cap["providers"].get(r["name"], {})
+            say(f"{pad}provider {r['name']}  [{r['state']}]  contract {r.get('contract') or 'UNREVIEWED'}"
+                + (f" (read {r['clause_date']})" if r.get("clause_date") else "")
+                + f" · cap {r['cap_day'] if r.get('cap_day') is not None else '—'} · today {v.get('today', 0)}"
+                + f" · first letters {v.get('first_today', 0)} of at most {cap['contract_limit'].get(r['name'], 0):g}"
+                + cost(r))
+            if r.get("clause"):
+                say(f"{pad}    clause: {r['clause']}")
+            if r.get("suspension_scope"):
+                say(f"{pad}    a suspension takes: {r['suspension_scope']}")
+        elif r["kind"] == "tenant":
+            say(f"{pad}tenant {r['name']}  [{r['state']}]{cost(r)}")
+        elif r["kind"] == "domain":
+            v = cap["domains"].get(r["name"], {})
+            ren = (f"renews {r['renews'][:10]} ({r.get('renews_source') or '?'})" if r.get("renews")
+                   else "renews unknown")
+            say(f"{pad}domain {r['name']}  [{r['state']}]  cap {r['cap_day'] if r.get('cap_day') is not None else '—'}"
+                f" · today {v.get('today', 0)} · {ren} · {_fmt_reading(r['reading'])}{cost(r)}")
+        else:
+            c, u = cap["mailboxes"][r["name"]], usage.get(r["name"], {})
+            say(f"{pad}mailbox {r['name']}  [{r['state']}]  cap {c['cap']} · today {c['today']} · 30 days: "
+                f"{u.get('sent30', 0)} sent, {u.get('bounced30', 0)} bounced, {u.get('angry30', 0)} angry, "
+                f"{u.get('no30', 0)} no · open threads {u.get('open_threads', 0)}{cost(r)}")
+            say(f"{pad}    first letter: " + ("yes" if c["first_ok"] else f"no — {c['first_why']}")
+                + " · follow-up: " + ("yes" if c["follow_ok"] else f"no — {c['follow_why']}"))
+        if r["state"] != "active" and r.get("state_why"):
+            say(f"{pad}    {r['state']} since {str(r['state_ts'])[:10]}: {r['state_why']}")
+        for k in kids.get(r["id"], []):
+            show(k, depth + 1)
+    for r in kids.get(None, []):
+        show(r, 0)
+    if not snap["rows"]:
+        say("  nothing entered: no OUTREACH_MAILBOXES and no sending domains in the venture")
+    n_ok = sum(1 for c in cap["mailboxes"].values() if c["first_ok"])
+    say(f"\nfirst-touch capacity today: {cap['first_capacity']} letters across {n_ok} mailbox(es) a first letter "
+        f"may go through; no contract carries more than half")
+    for e in reg.events(tenant=V.tenant, kind="incident", limit=3):
+        r = reg.get(e["asset_id"]) or {}
+        say(f"incident {str(e['ts'])[:10]} {r.get('kind')} {r.get('name')}: {e['text']}")
+    for w in warn:
+        say(f"note: {w}")
+    say("rules: " + ("none breached" if not bad else "BREACHED"))
+    for b in bad:
+        say(f"  BREACH: {b}")
+    return bad
+
+
+def assets_status_lines():
+    """The registry's lines in `outreach status` (B141)."""
+    try:
+        reg = registry()
+        snap = assets.snapshot(reg, V.tenant)
+        usage = registry_usage()
+        cap = assets.capacity(snap, usage, cap_on())
+        bad = assets.breaches(snap, usage, cap_on())
+    except Exception as exc:          # a view: never let it take `status` down with it
+        say(f"\nRegistry (B141): couldn't read it ({exc})")
+        return
+    provs = [r for r in snap["rows"] if r["kind"] == "provider"]
+    say("\nRegistry (B141) · `outreach assets`")
+    say("  " + "; ".join(f"{p['name']} {p.get('contract') or 'UNREVIEWED'}" for p in provs) if provs else "  empty")
+    say(f"  {sum(1 for r in snap['rows'] if r['kind'] == 'domain')} domain(s), {len(snap['mailboxes'])} mailbox(es); "
+        f"first-touch capacity today {cap['first_capacity']}")
+    say("  rules: " + ("none breached" if not bad else "BREACHED — " + "; ".join(bad)))
+
+
+def cmd_assets(args):
+    """`outreach assets [--json|--check]` and the changes a person (or B144's Factory) makes to a row."""
+    act = args.action
+    if not act:
+        reg = registry(refresh_renewals=True)
+        bad = assets_view(reg, as_json=args.json)
+        if args.check and bad:
+            sys.exit(1)
+        return
+    if not args.ref:
+        die(f"outreach assets {act} wants an asset: a name (taylor@example.com, example.com) or kind:name")
+    reg = registry()
+    try:
+        row = reg.find(V.tenant, args.ref)
+        if act == "state":
+            if not args.value:
+                die("say the state: " + " | ".join(assets.STATES))
+            if not args.why:
+                die("say why (--why \"…\"): the reason is the record")
+            opn = sum(int(registry_usage().get(r["name"], {}).get("open_threads", 0))
+                      for r in [row] + reg.descendants(row) if r["kind"] == "mailbox")
+            changed = reg.set_state(row["id"], args.value, args.why, open_threads=opn, cascade=args.cascade)
+            for kind, name, a, b in changed:
+                say(f"{kind} {name}: {a} -> {b}")
+            if not changed:
+                say(f"{row['kind']} {row['name']} is already {args.value}")
+        elif act == "incident":
+            if not args.value:
+                die("say what happened: outreach assets incident NAME \"text\"")
+            reg.incident(row["id"], args.value)
+            say(f"incident recorded on {row['kind']} {row['name']}")
+        elif act == "set":
+            fields = {}
+            if args.cap is not None:
+                fields["cap_day"] = None if args.cap.lower() in ("none", "-") else int(args.cap)
+            if args.cost is not None:
+                fields["cost_usd_month"] = float(args.cost)
+            if args.renews:
+                fields.update(renews=dt.date.fromisoformat(args.renews).isoformat(), renews_source="hand")
+            if args.verdict:
+                if row["kind"] != "provider":
+                    die("a contract verdict goes on a provider row")
+                fields["contract"] = args.verdict.upper()
+                if args.clause:
+                    fields["clause"] = args.clause
+                fields["clause_date"] = args.clause_date or today().isoformat()
+                if args.verdict.upper() == "ACCEPTED_RISK":
+                    say("note: ACCEPTED_RISK is Taylor's word, written into VISION by name; record where he said it "
+                        "in --clause")
+            steps = list(json.loads(row.get("human_steps_open") or "[]"))
+            for s in args.step or []:
+                if s not in steps:
+                    steps.append(s)
+            for s in args.step_done or []:
+                steps = [x for x in steps if x != s]
+            if args.step or args.step_done:
+                fields["human_steps_open"] = steps
+            if not fields:
+                die("nothing to set: --cap N|none, --cost USD, --renews DATE, --verdict V [--clause …], --step TITLE, "
+                    "--step-done TITLE")
+            reg.set_fields(row["id"], **fields)
+            say(f"{row['kind']} {row['name']}: " + ", ".join(f"{k}={v}" for k, v in fields.items()))
+    except assets.AssetError as exc:
+        die(str(exc))
+    except ValueError as exc:
+        die(f"that value doesn't parse: {exc}")
+    if DRY:
+        say("(dry run: the registry itself was not changed)")
 
 
 def cmd_warmup(args):
@@ -4244,6 +4525,25 @@ def main():
     s.add_argument("--by", choices=tuple(BY_CUTS), help="B132: delivered → clicks → replies → positive → customers "
                                                          "per group, each per hundred delivered")
     s.set_defaults(fn=cmd_status)
+
+    s = sub.add_parser("assets", parents=[common], help="B141: the capacity registry — mailbox, domain, tenant, provider")
+    s.add_argument("action", nargs="?", choices=("state", "incident", "set"))
+    s.add_argument("ref", nargs="?", help="an asset: its name, or kind:name")
+    s.add_argument("value", nargs="?", help="state: the new state; incident: what happened")
+    s.add_argument("--why", help="state: the reason (required)")
+    s.add_argument("--cascade", action="store_true", help="state: everything under it too")
+    s.add_argument("--json", action="store_true")
+    s.add_argument("--check", action="store_true", help="exit 1 when a rule is breached (the evening check)")
+    s.add_argument("--cap", help="set: the daily cap, or none")
+    s.add_argument("--cost", help="set: USD a month")
+    s.add_argument("--renews", help="set: the renewal date by hand (YYYY-MM-DD)")
+    s.add_argument("--verdict", choices=assets.VERDICTS + tuple(v.lower() for v in assets.VERDICTS),
+                   help="set, a provider: the contract verdict")
+    s.add_argument("--clause", help="set: the clause the verdict rests on")
+    s.add_argument("--clause-date", help="set: the day it was read (default today)")
+    s.add_argument("--step", action="append", help="set: a TAYLOR-TODO entry it waits on (repeatable)")
+    s.add_argument("--step-done", action="append", help="set: that entry no longer open")
+    s.set_defaults(fn=cmd_assets)
 
     s = sub.add_parser("ai-test", parents=[common], help="B132: the AI-line test — start | stop [--keep V] | show "
                                                          "(start and stop on Taylor's word only)")

@@ -2714,9 +2714,11 @@ def cmd_bookings_open(a):
     days = sorted({t[:10] for t in times})
     clocks = sorted({t[11:16] for t in times})
     verb = "would open" if a.dry_run else "opened"
-    say(f"{verb} {len(new) + len(closed)} time(s): {', '.join(clock_text(c) for c in clocks)} on "
-        f"{len(days)} day(s), {day_text(datetime.date.fromisoformat(days[0]))} to "
-        f"{day_text(datetime.date.fromisoformat(days[-1]))} ({minutes} minutes, {a.capacity} place(s) each)"
+    span = (f"on {day_text(datetime.date.fromisoformat(days[0]))}" if len(days) == 1 else
+            f"on {len(days)} days, {day_text(datetime.date.fromisoformat(days[0]))} to "
+            f"{day_text(datetime.date.fromisoformat(days[-1]))}")
+    say(f"{verb} {len(new) + len(closed)} time(s): {', '.join(clock_text(c) for c in clocks)} {span} "
+        f"({minutes} minutes, {a.capacity} place(s) each)"
         + (f"; {len(closed)} of them reopened (they'd been closed)" if closed else "")
         + (f"; {len(open_at)} already open, left as they were" if open_at else "") + ".")
     if not a.dry_run:

@@ -150,7 +150,7 @@ class DbBookingsDayTest(unittest.TestCase):
     def test_open_says_it_back_and_refuses_what_it_cannot_read(self):
         r = self.db("bookings", "open", "--on", "tue,thu", "--from", "9am", "--to", "11am", "--weeks", "2", "--dry-run")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("would open 6 time(s): 9:00am, 10:00am on 3 day(s)", r.stdout)
+        self.assertIn("would open 6 time(s): 9:00am, 10:00am on 3 days", r.stdout)
         self.assertEqual(json.loads(self.db("query", "SELECT COUNT(*) AS n FROM booking_slots", "--json").stdout)[0]["n"], 0)
         r = self.db("bookings", "open", "--on", "tue", "--from", "9", "--to", "8am", "--weeks", "1")
         self.assertNotEqual(r.returncode, 0)

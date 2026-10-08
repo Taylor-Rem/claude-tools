@@ -1,0 +1,7 @@
+[Unit]
+Description=Outreach: the Google Postmaster reading for every sending domain (outreach postmaster fetch; ROADMAP B136)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/outreach postmaster fetch
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin

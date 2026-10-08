@@ -1,0 +1,8 @@
+{
+  "domainStats": [
+    {"name": "domains/trybrightwell.example/domainStats/a1", "metric": "spam_rate",
+     "date": {"year": 2026, "month": 10, "day": 6}, "value": {"doubleValue": 0.0004}},
+    {"name": "domains/trybrightwell.example/domainStats/a2", "metric": "spam_rate",
+     "date": {"year": 2026, "month": 10, "day": 7}, "value": {"doubleValue": 0.0002}}
+  ]
+}

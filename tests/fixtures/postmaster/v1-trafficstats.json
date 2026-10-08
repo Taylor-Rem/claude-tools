@@ -1,0 +1,8 @@
+{
+  "trafficStats": [
+    {"name": "domains/trybrightwell.example/trafficStats/20261006", "userReportedSpamRatio": 0.0004,
+     "domainReputation": "MEDIUM", "spfSuccessRatio": 1, "dkimSuccessRatio": 1, "dmarcSuccessRatio": 1},
+    {"name": "domains/trybrightwell.example/trafficStats/20261007", "userReportedSpamRatio": 0.0002,
+     "domainReputation": "HIGH", "spfSuccessRatio": 1, "dkimSuccessRatio": 1, "dmarcSuccessRatio": 1}
+  ]
+}

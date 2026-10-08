@@ -104,15 +104,15 @@
     ],
     [
       "\" places)\"",
-      "\" lugares)\""
+      "\" cupos)\""
     ],
     [
       "This form goes live when the site is claimed.",
-      "Este formulario se activa cuando se reclama el sitio."
+      "Este formulario se activa cuando el negocio active su sitio."
     ],
     [
       "This calendar goes live when the site is claimed.",
-      "Este calendario se activa cuando se reclama el sitio."
+      "Este calendario se activa cuando el negocio active su sitio."
     ],
     [
       "aria-label=\"Site\"",
@@ -312,7 +312,7 @@
     ],
     [
       "Open it on this device within ${TOKEN_MINUTES} minutes.</p>",
-      "Ábralo en este dispositivo antes de ${TOKEN_MINUTES} minutos.</p>"
+      "Ábralo en este dispositivo en los próximos ${TOKEN_MINUTES} minutos.</p>"
     ],
     [
       "page(env, \"Link expired\", `<h1>That link has expired</h1>",
@@ -436,7 +436,7 @@
     ],
     [
       "`<p>No ${esc(plural(v))} ${s.q ? `match “${esc(s.q)}”` : \"here\"}${s.status ? ` marked ${esc(s.status)}` : \"\"}",
-      "`<p>No hay ${esc(plural(v))} ${s.q ? `que coincidan con “${esc(s.q)}”` : \"aquí\"}${s.status ? ` marcados ${esc(s.status)}` : \"\"}"
+      "`<p>No hay ${esc(plural(v))} ${s.q ? `que coincidan con “${esc(s.q)}”` : \"aquí\"}${s.status ? ` con estado ${esc(s.status)}` : \"\"}"
     ],
     [
       "status: { name: \"status\", label: \"Status\", type: \"select\" }",
@@ -636,7 +636,7 @@
     ],
     [
       "esc(env.SITE_NAME || \"this business\")",
-      "esc(env.SITE_NAME || \"el negocio\")"
+      "esc(env.SITE_NAME || \"este negocio\")"
     ],
     [
       "<p>To change a booking, reply to your booking email and ${site} will sort it out, or <a href=\"/#book\">book a time</a> again.</p>",
@@ -656,7 +656,7 @@
     ],
     [
       "<p>A deposit of <strong>${money(row.deposit_cents)}</strong> is due when you accept; ${esc(row.business || \"the business\")} invoices the rest.</p>",
-      "<p>Al aceptar se paga un depósito de <strong>${money(row.deposit_cents)}</strong>; ${esc(row.business || \"el negocio\")} le facturará el resto.</p>"
+      "<p>Al aceptar se paga un depósito de <strong>${money(row.deposit_cents)}</strong>; ${esc(row.business || \"este negocio\")} le facturará el resto.</p>"
     ],
     [
       "<p class=\"muted\">Good until ${esc(day(row.valid_until))}.</p>",
@@ -668,11 +668,11 @@
     ],
     [
       "`Save this page; ${esc(row.business || \"the business\")} will confirm, and ${row.deposit_cents ? \"the deposit link\" : \"the invoice\"} comes from them.`",
-      "`Guarde esta página; ${esc(row.business || \"el negocio\")} se la confirmará y le enviará ${row.deposit_cents ? \"el enlace del depósito\" : \"la factura\"}.`"
+      "`Guarde esta página; ${esc(row.business || \"este negocio\")} se la confirmará y le enviará ${row.deposit_cents ? \"el enlace del depósito\" : \"la factura\"}.`"
     ],
     [
       "`${justAccepted ? `${esc(row.business || \"The business\")} has been told; ` : \"\"}${row.deposit_cents ? \"the deposit link\" : \"the invoice\"} comes from them next.`",
-      "`${justAccepted ? `Ya le avisamos a ${esc(row.business || \"el negocio\")}; ` : \"\"}${row.deposit_cents ? \"el enlace del depósito\" : \"la factura\"} se lo enviará el negocio.`"
+      "`${justAccepted ? `Ya le avisamos a ${esc(row.business || \"este negocio\")}; ` : \"\"}${row.deposit_cents ? \"el enlace del depósito\" : \"la factura\"} se lo enviará el negocio.`"
     ],
     [
       "${justAccepted ? \"Thank you. \" : \"\"}Accepted by ${esc(row.accepted_name)} on ${esc(day(String(row.accepted_at || \"\").slice(0, 10)))}. ${next}",
@@ -684,7 +684,7 @@
     ],
     [
       "<p class=\"muted\">This estimate was good until ${esc(day(row.valid_until))}, so it can't be accepted here any more. Ask ${esc(row.business || \"the business\")} for a fresh one.</p>",
-      "<p class=\"muted\">Esta cotización era válida hasta el ${esc(day(row.valid_until))}, así que ya no se puede aceptar aquí. Pídale una nueva a ${esc(row.business || \"el negocio\")}.</p>"
+      "<p class=\"muted\">Esta cotización era válida hasta el ${esc(day(row.valid_until))}, así que ya no se puede aceptar aquí. Pídale una nueva a ${esc(row.business || \"este negocio\")}.</p>"
     ],
     [
       "<label for=\"name\"><strong>To accept, type your full name</strong></label>",
@@ -692,7 +692,7 @@
     ],
     [
       "<p class=\"muted\">Typing your name and pressing Accept tells ${esc(row.business || \"the business\")} you accept this estimate as written. It isn't a payment; ${row.deposit_cents ? \"the deposit link\" : \"an invoice\"} comes next. The time and your connection's IP address are kept with your name as the record.</p>",
-      "<p class=\"muted\">Al escribir su nombre y pulsar Aceptar, le dice a ${esc(row.business || \"el negocio\")} que acepta esta cotización tal como está escrita. No es un pago; después llega ${row.deposit_cents ? \"el enlace del depósito\" : \"una factura\"}. La hora y la dirección IP de su conexión se guardan con su nombre como constancia.</p>"
+      "<p class=\"muted\">Al escribir su nombre y pulsar Aceptar, le dice a ${esc(row.business || \"este negocio\")} que acepta esta cotización tal como está escrita. No es un pago; después llega ${row.deposit_cents ? \"el enlace del depósito\" : \"una factura\"}. La hora y la dirección IP de su conexión se guardan con su nombre como constancia.</p>"
     ],
     [
       "<button type=\"submit\">Accept estimate</button>",

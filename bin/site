@@ -1669,19 +1669,43 @@ def cmd_lang(a):
     label = site_lang.NAMES.get(code, code)
     say(f"repos/{name}: {'would change' if DRY else 'changed'} {sum(done.values())} built-in line(s) in "
         f"{len(done)} file(s) to {label}" + (f": {', '.join(sorted(done))}" if done else ""))
-    entry = site_entry(meta, name)
-    if not DRY and entry:
-        registry_set(meta, name, lang=None if back else code)
-    if not done or DRY:
+    if DRY:
         return
-    git(d, "add", "--", *sorted(done))
-    git(d, "-c", "user.name=Patch (claude-tools site)", "-c", "user.email=noreply@anthropic.com",
-        "commit", "-q", "-m", a.message or f"The site's built-in lines in {label}")
-    if a.no_publish:
-        say("  committed; not pushed or published (--no-publish)")
+    if done:
+        git(d, "add", "--", *sorted(done))
+        git(d, "-c", "user.name=Patch (claude-tools site)", "-c", "user.email=noreply@anthropic.com",
+            "commit", "-q", "-m", a.message or f"The site's built-in lines in {label}")
+        if a.no_publish:
+            say("  committed; not pushed or published (--no-publish), so the registry still says "
+                f"{site_lang.NAMES.get(have, have)} until `site lang {name} {code}` publishes it")
+            return
+        git(d, "push", "-q")
+        cmd_publish(argparse.Namespace(name=name, dry_run=False))
+    else:                                            # an earlier run that didn't get out: finish it
+        if a.no_publish:
+            return
+        _, ahead = git(d, "rev-list", "--count", "@{u}..HEAD", check=False)
+        ahead = int(ahead) if ahead.strip().isdigit() else 0
+        if ahead:
+            say(f"  {ahead} commit(s) not pushed yet: pushing them")
+            git(d, "push", "-q")
+        if ahead or (site_entry(meta, name) or {}).get("lang") != (None if code == "en" else code):
+            cmd_publish(argparse.Namespace(name=name, dry_run=False))
+    lang_record(meta, name, code)                    # only once what's live says it
+
+
+def lang_record(meta, name, code):
+    """The registry's `lang` for a site: set for a language, gone for English (no null left behind)."""
+    if not site_entry(meta, name):
         return
-    git(d, "push", "-q")
-    cmd_publish(argparse.Namespace(name=name, dry_run=False))
+    if code == "en":
+        reg = registry_load()
+        row = (reg.get(meta["slug"]) or {}).get(name)
+        if row and "lang" in row:
+            row.pop("lang")
+            registry_save(reg)
+    else:
+        registry_set(meta, name, lang=code)
 
 
 def cmd_render(a):

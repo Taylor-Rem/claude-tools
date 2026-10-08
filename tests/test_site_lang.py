@@ -65,6 +65,11 @@ class TheSet(unittest.TestCase):
             for en in keys:
                 self.assertNotIn(en, es, f"the Spanish {es[:40]!r} holds the English {en[:40]!r}: a second pass would change it")
 
+    def test_review_round_wording(self):
+        text = " ".join(es for _, es in site_lang.load("es")["pairs"])
+        for bad in ('"el negocio")', "reclama", "antes de ${TOKEN_MINUTES}", "marcados ${", " lugares)"):
+            self.assertNotIn(bad, text)
+
     def test_usted_on_the_customer_side(self):
         text = " ".join(es for _, es in site_lang.load("es")["pairs"])
         for tu in ("Elige ", "Escribe ", "Responde ", " tu reserva", "Pide "):
@@ -165,3 +170,74 @@ class Render(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SiteLangCommand(unittest.TestCase):
+    """`site lang NAME es|en` on a real local repo with a bare upstream; publish is stubbed.
+    The registry's `lang` is written only once the push and the publish went through, and going
+    back to English removes the key instead of leaving a null."""
+
+    def setUp(self):
+        from unittest import mock
+        self.site = load_site()
+        self.td = tempfile.TemporaryDirectory()
+        self.addCleanup(self.td.cleanup)
+        root = Path(self.td.name)
+        self.ws = root / "ws"
+        self.repo = self.ws / "repos" / "ana-site"
+        bare = root / "remote.git"
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(bare)], check=True)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.site.cmd_render(argparse.Namespace(template="service", dir=str(self.repo), lang=None, name="Ana",
+                                                    tagline=None, no_db=False))
+        g = ["git", "-C", str(self.repo)]
+        subprocess.run(g + ["init", "-q", "-b", "main"], check=True)
+        subprocess.run(g + ["add", "-A"], check=True)
+        subprocess.run(g + ["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "x"], check=True)
+        subprocess.run(g + ["remote", "add", "origin", str(bare)], check=True)
+        subprocess.run(g + ["push", "-q", "-u", "origin", "main"], check=True, capture_output=True)
+        self.reg = root / "sites.json"
+        self.reg.write_text('{"ana": {"ana-site": {"host": "cloudflare", "project": "ana-site"}}}')
+        self.meta = {"slug": "ana", "name": "Ana"}
+        self.published = []
+        for p in (mock.patch.object(self.site, "REGISTRY", self.reg),
+                  mock.patch.object(self.site, "workspace", lambda: (self.ws, self.meta)),
+                  mock.patch.object(self.site, "cmd_publish", lambda a: self.published.append(a.name))):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def run_lang(self, code, **kw):
+        args = dict(name="ana-site", code=code, check=False, no_publish=False, message=None, dry_run=False)
+        args.update(kw)
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.site.cmd_lang(argparse.Namespace(**args))
+        return out.getvalue()
+
+    def row(self):
+        import json
+        return json.loads(self.reg.read_text())["ana"]["ana-site"]
+
+    def test_es_then_back_to_en(self):
+        self.run_lang("es")
+        self.assertEqual(self.published, ["ana-site"])
+        self.assertEqual(self.row().get("lang"), "es")
+        self.assertIn("¿Qué necesita?", (self.repo / "index.html").read_text())
+        self.run_lang("en")
+        self.assertNotIn("lang", self.row())
+        self.assertIn("What do you need?", (self.repo / "index.html").read_text())
+
+    def test_a_failed_publish_leaves_the_registry_alone_and_the_next_run_finishes_it(self):
+        def boom(a):
+            raise SystemExit("publish failed")
+        from unittest import mock
+        with mock.patch.object(self.site, "cmd_publish", boom), self.assertRaises(SystemExit):
+            self.run_lang("es")
+        self.assertNotIn("lang", self.row())
+        self.run_lang("es")                                   # nothing left to translate; still records once out
+        self.assertEqual(self.published, ["ana-site"])
+        self.assertEqual(self.row().get("lang"), "es")
+
+    def test_no_publish_doesnt_record(self):
+        out = self.run_lang("es", no_publish=True)
+        self.assertIn("not pushed or published", out)
+        self.assertNotIn("lang", self.row())

@@ -5,6 +5,9 @@
 # to Taylor instead. {preview_url} is the see-link on the sending domain
 # (OUTREACH_LINK_BASE + the business's token), never previews.patchlamp.com: with no link
 # base the reply goes to Taylor with the preview's address. Hashed in APPROVED.
+# The last line (B132, plan 53): a thread whose cold letters carried no AI sentence (the `none` side
+# of the AI-line test) is told here instead, in Codex's variant-B words (`[?ai_none]`); every other
+# thread keeps today's line (`[!ai_none]`).
 # Placeholders: {first} {business} {preview_url} {price_line} {phone} {address}.
 # Body by Codex (marketing/copy/2026-10-05-answer-yes.md), Taylor's yes 2026-10-05; the letter needs his
 # `outreach approve` again, like any edit here.
@@ -27,4 +30,5 @@ Taylor Remund · Patchlamp
 {address}
 
 You wrote back to my note, so this is a reply, and it's still an advertisement for my own service. Reply "no thanks" and you won't hear from me again.
-Patch, my AI operator, sent this reply in words I approved; I'm told of every one.
+[?ai_none] Patch, my AI operator, drafted my outreach and sent this reply in words I approved.
+[!ai_none] Patch, my AI operator, sent this reply in words I approved; I'm told of every one.

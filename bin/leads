@@ -4447,6 +4447,17 @@ def cmd_log(args):
              "channel": channel}
     if args.next is not None and nxt:
         event["next_by"] = "hand"          # a date Taylor named; the cadence never writes over it
+    if getattr(args, "tag", None):
+        # B132: what the outbound letter was (outreach's variant, fault key, segment, sha, prebuilt), so a
+        # reply or a win can be cut by it later; stored as given, true/false read as booleans
+        out = {}
+        for t in args.tag:
+            k, sep, v = t.partition("=")
+            if not sep or not k.strip():
+                die(f"--tag is key=value, not {t!r}")
+            v = v.strip()
+            out[k.strip()] = {"true": True, "false": False}.get(v.lower(), v)
+        event["outbound"] = out
     rc = None
     if row:
         rc = business_reach(row) if is_business(row) else reach(row)
@@ -7563,6 +7574,9 @@ def main():
     lg.add_argument("--place", help="census place id, when the name matched the wrong one")
     lg.add_argument("--channel", help="where this touch went: " + "|".join(CHANNELS)
                                        + " (required on messaged; B116)")
+    lg.add_argument("--tag", action="append", metavar="KEY=VALUE",
+                    help="repeatable; kept under `outbound` on the event (B132: outreach passes the letter's "
+                         "variant, fault_key, segment, letter_sha and prebuilt)")
     lg.add_argument("--n", type=int, default=6, help="size of tomorrow's list")
     lg.set_defaults(fn=cmd_log)
 

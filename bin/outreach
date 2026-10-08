@@ -29,6 +29,13 @@
   outreach pressed PLACE_ID [--url U]       # B91: a press on the see link stops its touches, offers build
   outreach suppress ls [--json]            # --json: [{value, kind: address|domain|place_id}] for `leads batch`
   outreach status              # today's sends, the caps, replies by class, bounces, complaints
+  outreach status --by variant|fault|segment|letter|prebuilt
+                               # B132: per group, one business once: delivered → preview clicks →
+                               # replies → positive replies → customers, each per hundred delivered,
+                               # and "too few to decide" below the floor (100 a group, 20 positive)
+  outreach ai-test start | stop [--keep intro|foot|none] | show
+                               # B132, plan 53: the AI-line test. Open, each batch is dealt a third each
+                               # to none / intro / foot; start and stop are Taylor's word only, as `go` is
   outreach warmup [start DATE] # the warm-up state and the ramp; `start` records the day warm-up began
   outreach approve             # Taylor's one command after reading templates/outreach/*.md
   outreach doctor              # keys by name, the address, the template, the caps, the provider
@@ -221,6 +228,27 @@ BATCH_TOUCHES = ((0, "batch-first"), (3, "batch-second"), (10, "batch-third"))
 CLASSES = ("interested", "yes", "question", "not now", "no", "angry", "bounce", "out of office",
            "unsure", "other")
 DISCLOSURE_BATCH = "Patch, my AI operator, drafted this note for my approval of the batch."   # Codex, 2026-10-05 (was "found this and drafted it; I approve each batch.")
+
+# The AI line, tested (ROADMAP B132, plan ~/projects/plans/53-the-ai-line-tested.md; Taylor 2026-10-05,
+# TODO § 3 "sure, let's do the test"). While the test is open each batch is dealt three ways, a third
+# each: `none` (no AI sentence in the three cold touches; the machine's first answer says it), `intro`
+# (the sentence beside the introduction, as before) and `foot` (the same sentence as the body's last
+# line). Each key below is the template placeholder that turns its line on. The test starts and stops
+# on Taylor's word only (`outreach ai-test start|stop`), never by itself.
+AI_VARIANTS = ("none", "intro", "foot")
+AI_KEYS = {"none": "ai_none", "intro": "ai_intro", "foot": "ai_foot"}
+AI_DEFAULT = "intro"
+AI_NONE_ANSWER = "Patch, my AI operator, drafted my outreach and sent this reply in words I approved."   # Codex, 2026-10-05 (variant B)
+AI_NONE_REFUSAL = ("a letter with no AI sentence goes out only inside the AI-line test (TODO § 3, 2026-10-05: "
+                   "AI is said, never hidden; the test is the one exception Taylor allowed, and the reply to a "
+                   "yes says it)")
+# What every batch send row and the lead's pipeline event carry, so replies can be cut by any of them.
+OUTBOUND_FIELDS = ("variant", "fault_key", "segment", "letter_sha", "prebuilt")
+# The floor below which `status --by` says "too few to decide" (plan 53 § Open: a guess, kept honest).
+TEST_FLOOR_DELIVERED = 100
+TEST_FLOOR_POSITIVE = 20
+POSITIVE_CLASSES = ("yes", "interested", "question")
+NOT_A_REPLY = ("bounce", "out of office", "probe", "pressed")    # a press is counted as a click, not a reply
 OFFER_SENTENCE = ("I can build you a preview of a site for {business} from your Google listing, free, "
                   "nothing to sign.")   # the ask ("Want to see it? Just reply.") closes the letter since 2026-10-05
 
@@ -606,10 +634,33 @@ def links(text):
     return URL_RE.findall(text) + [h for h in BARE_HOST_RE.findall(text) if not URL_RE.search(h)]
 
 
-def check_batch_template(name):
+def ai_placement_problems(body, variant, where=""):
+    """Where the AI sentence sits in one rendered batch letter (B132, plan 53 § Changes 3): `intro` once,
+    in the introduction's paragraph; `foot` once, as the body's last line before the signature; `none`
+    not at all. Returns [problem, ...]."""
+    n = body.count(DISCLOSURE_BATCH)
+    letter = letter_body(body)
+    paras = [p for p in letter.split("\n\n") if p.strip()]
+    if variant == "none":
+        return [f"the AI sentence is still in a `none` letter{where}"] if n or "patch, my ai" in body.lower() else []
+    if n != 1:
+        return [f"the disclosure isn't there exactly once: \"{DISCLOSURE_BATCH}\" ({n} times){where}"]
+    if variant == "intro" and not (paras and DISCLOSURE_BATCH in paras[0].splitlines()):
+        return [f"the disclosure isn't beside the introduction{where}"]
+    if variant == "foot" and not (paras and paras[-1].splitlines()[-1].strip() == DISCLOSURE_BATCH):
+        return [f"the disclosure isn't the body's last line, before the signature{where}"]
+    return []
+
+
+def check_batch_template(name, none_ok=None):
     """The batch letters' rules (plan 37 § 3), checked on a rendered sample, both with and
-    without a link base for the follow-ups. Returns [problem, ...]."""
+    without a link base for the follow-ups, and (B132) once for each placement of the AI
+    sentence: none, intro, foot. `none` passes only while the AI-line test is open (or after
+    Taylor's stop kept it); `none_ok=True` checks its shape alone, for a caller that isn't
+    dealing a new one (approve, doctor, the tick finishing threads the test began).
+    Returns [problem, ...]."""
     t = load_template(name)
+    none_ok = ai_none_allowed() if none_ok is None else none_ok
     bad = []
     variants = [("no link base", sample_values())]
     if name == "batch-first":
@@ -620,12 +671,15 @@ def check_batch_template(name):
         v = sample_values()
         v["see_url"] = sample_link_base()
         variants.append(("with a link base", v))
+    variants = [(f"{label}, {ai}", {**vals, **ai_values(ai)}) for label, vals in variants for ai in AI_VARIANTS]
+    if not none_ok:
+        bad.append(f"`none`: {AI_NONE_REFUSAL}")
     for label, vals in variants:
         subject, body = t.render(vals)
         low = body.lower()
         where = f" ({label})"
-        if DISCLOSURE_BATCH not in body:
-            bad.append(f"the disclosure isn't there exactly: \"{DISCLOSURE_BATCH}\"{where}")
+        ai = next(v for v, k in AI_KEYS.items() if vals.get(k))
+        bad += ai_placement_problems(body, ai, where)
         if "no thanks" not in low:
             bad.append(f"no opt-out line{where}")
         if "advertisement" not in low:
@@ -668,14 +722,22 @@ def check_batch_template(name):
     return sorted(set(bad), key=bad.index)
 
 
-def check_template(name):
+def check_template(name, none_ok=None):
     """The rules a letter has to keep, run against a rendered sample. Returns [problem, ...]."""
     if name in BATCH_LETTERS:
-        return check_batch_template(name)
+        return check_batch_template(name, none_ok=none_ok)
     t = load_template(name)
     subject, body = t.render(sample_values(), fault=sample_values()["fault"])
     bad = []
     low = body.lower()
+    if name == "answer-yes":
+        # B132: a `none` thread hears it here, in Codex's variant-B words, and every other thread keeps
+        # the usual line; both renderings say it once.
+        _, nbody = t.render({**sample_values(), "ai_none": "1"})
+        if nbody.count(AI_NONE_ANSWER) != 1:
+            bad.append(f"the answer to a yes in a `none` thread doesn't say \"{AI_NONE_ANSWER}\" once")
+        if AI_NONE_ANSWER in body:
+            bad.append("the answer to a yes outside a `none` thread carries the `none` sentence")
     if name == "answer-yes" and sample_values()["preview_url"] not in body:
         bad.append("the answer to a yes doesn't carry the preview's address")
     if "no thanks" not in low:
@@ -1414,8 +1476,10 @@ def run_tool(args, why):
     return r.returncode == 0, (r.stdout or "").strip()
 
 
-def leads_log(name, outcome, note, place_id=None, email=None, via="email", next_when=None):
+def leads_log(name, outcome, note, place_id=None, email=None, via="email", next_when=None, tags=None):
     cmd = [tool_path("leads"), "log", name, outcome, note, "--via", via]
+    for k, v in (tags or {}).items():          # B132: kept under `outbound` on the pipeline event
+        cmd += ["--tag", f"{k}={str(v).lower() if isinstance(v, bool) else v}"]
     if via == "email":
         cmd += ["--channel", "email"]           # B116: this lane's touches went by email; `leads log` needs it on messaged
     if place_id:
@@ -1752,7 +1816,8 @@ def details_of(pick):
         kind = str(f.get("kind") or "fault").strip().lower() if isinstance(f, dict) else "fault"
         # an entry whose kind is neither is kept as "bad", so screen_batch refuses the pick with
         # that reason rather than guessing which sentence the letter should call a fault
-        out.append({"sentence": sent, "kind": kind if kind in ("fault", "fact") else "bad"})
+        key = str(f.get("key") or "").strip() if isinstance(f, dict) else ""
+        out.append({"sentence": sent, "kind": kind if kind in ("fault", "fact") else "bad", "key": key})
     return sorted(out, key=lambda d: d["kind"] != "fault")
 
 
@@ -2456,17 +2521,114 @@ def screen_batch(batch):
     return plan, skipped
 
 
-def new_sequence(batch, p, faults):
+def new_sequence(batch, p, faults, variant=None, test=None):
+    """One business's three touches. `variant` is where its letters carry the AI sentence (B132), kept to
+    the end of the thread; `test` is the AI-line test's start stamp when the test dealt it, so a `none`
+    thread can show it began inside the test. The fault key, segment and prebuilt flag ride along so
+    every send row and pipeline event can be cut by them later."""
     return {"id": f"{batch['batch_id']}/{p.get('place_id') or p.get('email')}", "batch_id": batch["batch_id"],
             "place_id": p.get("place_id"), "name": p.get("name"), "first": p.get("first") or "",
             "email": str(p.get("email")).strip(), "email_kind": p.get("email_kind"),
             "email_mx": p.get("email_mx"), "mx_ok": p.get("mx_ok"), "city": p.get("city"),
             "category": p.get("category"), "faults": [d["sentence"] for d in faults],
             "kinds": [d["kind"] for d in faults], "preview_url": p.get("preview_url") or "",
+            "variant": variant or AI_DEFAULT, "ai_test": test,
+            "fault_key": (faults[0].get("key") if faults else "") or "",
+            "segment": p.get("segment") or batch.get("segment") or "",
+            "prebuilt": bool(str(p.get("preview_url") or "").strip()),
             "token": secrets.token_urlsafe(9), "mailbox": None, "status": "active", "why": "",
             "queued": today().isoformat(), "queued_ts": now_iso(),
             "touches": [{"touch": d, "template": t, "sent_ts": None, "message_id": None, "subject": None}
                         for d, t in BATCH_TOUCHES]}
+
+
+# ---- the AI-line test (B132) ---------------------------------------------------------
+
+def ai_test_file():
+    return state_dir("ai-test.json")
+
+
+def ai_test():
+    """{open, started, stopped, keep}: the test's state. No file means it was never started."""
+    d = read_json(ai_test_file(), {}) or {}
+    return {"open": bool(d.get("open")), "started": d.get("started"), "stopped": d.get("stopped"),
+            "keep": d.get("keep") if d.get("keep") in AI_VARIANTS else None}
+
+
+def ai_none_allowed():
+    """A letter with no AI sentence may be dealt only inside the test, or after Taylor's stop kept `none`
+    (his word on the rule itself)."""
+    t = ai_test()
+    return t["open"] or t["keep"] == "none"
+
+
+def ai_variant_outside_test():
+    t = ai_test()
+    return t["keep"] or AI_DEFAULT
+
+
+def deal_variants(plan):
+    """[(i, p, faults)] -> {i: variant}. While the test is open: ordered within each fault key by
+    sha256(place_id) and dealt none, intro, foot in turn across the whole batch, so thirty give ten
+    each and no variant collects one kind of fault. Outside the test every business gets the kept
+    placement (intro unless Taylor's stop said otherwise)."""
+    if not ai_test()["open"]:
+        v = ai_variant_outside_test()
+        return {i: v for i, _, _ in plan}
+    def order(item):
+        i, p, faults = item
+        key = (faults[0].get("key") if faults else "") or ""
+        ident = str(p.get("place_id") or p.get("email") or i)
+        return (key, hashlib.sha256(ident.encode()).hexdigest())
+    return {i: AI_VARIANTS[n % len(AI_VARIANTS)] for n, (i, _, _) in enumerate(sorted(plan, key=order))}
+
+
+def cmd_ai_test(args):
+    """`outreach ai-test start|stop [--keep V]|show`. Start and stop are Taylor's word only (his text, as
+    `go` is): the test never stops itself, and `status --by variant` only reports."""
+    t = ai_test()
+    act = args.action or "show"
+    if act == "show":
+        say(ai_test_line(t))
+        return
+    if act == "start":
+        if t["open"]:
+            say(f"The AI-line test is already open (since {t['started']}); nothing changed.")
+            return
+        row = {"open": True, "started": now_iso(), "stopped": None, "keep": None}
+        if DRY:
+            say("[dry-run] would open the AI-line test")
+            return
+        write_json(ai_test_file(), row)
+        append_jsonl(state_dir("ai-test.jsonl"), {"ts": now_iso(), "action": "start"})
+        say(f"The AI-line test is open from {row['started']}: each new batch is dealt a third each to none, "
+            "intro and foot. `outreach status --by variant` reads it; it stops only on Taylor's word "
+            "(`outreach ai-test stop --keep intro|foot|none`).")
+        return
+    # stop
+    keep = args.keep or AI_DEFAULT
+    if not t["open"]:
+        say("The AI-line test isn't open; nothing to stop." + (f" New letters go out {t['keep']}." if t["keep"] else ""))
+        return
+    row = {"open": False, "started": t["started"], "stopped": now_iso(), "keep": keep}
+    if DRY:
+        say(f"[dry-run] would stop the AI-line test, keeping {keep}")
+        return
+    write_json(ai_test_file(), row)
+    append_jsonl(state_dir("ai-test.jsonl"), {"ts": now_iso(), "action": "stop", "keep": keep})
+    say(f"The AI-line test stopped at {row['stopped']}. New sequences go out {keep}"
+        + ("" if args.keep else " (no --keep given, so the placement from before the test)")
+        + "; sequences already running finish as they began.")
+
+
+def ai_test_line(t=None):
+    t = t or ai_test()
+    if t["open"]:
+        return (f"AI-line test: open since {t['started']} — new batches are dealt none / intro / foot, a third "
+                "each; it stops only on Taylor's word (`outreach ai-test stop --keep X`)")
+    if t["stopped"]:
+        return f"AI-line test: stopped {t['stopped']}, kept {t['keep'] or AI_DEFAULT}; new letters go out that way"
+    return f"AI-line test: not started; every letter carries the AI sentence beside the introduction ({AI_DEFAULT})"
 
 
 def see_url(seq):
@@ -2490,7 +2652,13 @@ def batch_values(seq, touch):
         "see_url": see_url(seq) if touch > 0 else "",
         "thread_subject": re.sub(r"^(?:re:\s*)+", "", first_subject, flags=re.I),
         "preview_url": seq.get("preview_url") or "",
+        **ai_values(seq.get("variant") or AI_DEFAULT),
     }
+
+
+def ai_values(variant):
+    """The one `[?ai_*]` key the variant names turns on; the others stay empty, so their lines drop."""
+    return {k: ("1" if v == variant else "") for v, k in AI_KEYS.items()}
 
 
 def claims_a_site(letter, preview_url):
@@ -2498,32 +2666,51 @@ def claims_a_site(letter, preview_url):
     return bool(BUILT_RE.search(letter)) and not str(preview_url or "").strip()
 
 
-def batch_problems():
-    """What must hold before any batch letter leaves."""
+def batch_problems(none_ok=True):
+    """What must hold before any batch letter leaves. `none_ok=False` when a new `none` sequence is
+    about to be dealt outside the AI-line test (it never is: deal_variants only deals it inside)."""
     bad = []
     if not toolbelt("LEADS_MAIL_ADDRESS"):
         bad.append("LEADS_MAIL_ADDRESS isn't set (US law wants a postal address on every commercial email)")
     bad += approval_problems(BATCH_LETTERS)
     for n in BATCH_LETTERS:
-        bad += [f"{n}: {b}" for b in check_template(n)]
+        bad += [f"{n}: {b}" for b in check_template(n, none_ok=none_ok)]
     return bad
 
 
 def cmd_send_batch(args, provider_name):
     batch = load_batch(args.batch)
     plan, skipped = screen_batch(batch)
-    problems = batch_problems()
+    # Taylor's `hold 4` / `only 1 3` after the batch, by its numbers (as in the kit lane)
+    if args.only or args.hold:
+        try:
+            only = {int(i) for i in args.only or []}
+            hold = {int(i) for i in args.hold or []}
+        except ValueError:
+            die("--only and --hold take the batch's numbers, e.g. --hold 4")
+        kept = {i for i, _p, _f in plan if (not only or i in only) and i not in hold}
+        skipped += [(i, p.get("name") or "?", "held back by Taylor") for i, p, _f in plan if i not in kept]
+        plan = [x for x in plan if x[0] in kept]
+    dealt = deal_variants(plan)
+    test = ai_test()
+    problems = batch_problems(none_ok=("none" not in dealt.values()) or ai_none_allowed())
+    if test["open"] and plan:
+        counts = {v: sum(1 for x in dealt.values() if x == v) for v in AI_VARIANTS}
+        ai_line = "AI-line test open: " + ", ".join(f"{counts[v]} {v}" for v in AI_VARIANTS)
+    else:
+        ai_line = f"AI sentence: {ai_variant_outside_test()} for every letter (no AI-line test open)"
     city = batch.get("city")
     where = "across the corridor" if not city or str(city).lower() == "any" else f"in {city}"
     say(f"Batch {batch['batch_id']} · {batch.get('category') or '?'} {where} · "
         f"{len(batch.get('picks') or [])} picks, {len(plan)} to write to · three touches each (day 0, 3, 10)"
         f"{' · DRY RUN' if DRY else ''}")
+    say(ai_line)
     if DRY:
         tpl = load_template("batch-first")
         for i, p, faults in plan:
-            seq = new_sequence(batch, p, faults)
+            seq = new_sequence(batch, p, faults, dealt[i])
             subject, letter = tpl.render(batch_values(seq, 0))
-            say(f"\n{i}. {p.get('name')} <{p.get('email')}> — \"{subject}\"")
+            say(f"\n{i}. {p.get('name')} <{p.get('email')}> — \"{subject}\" [AI sentence: {dealt[i]}]")
             say("".join(f"   | {l}\n" for l in letter.splitlines()), )
         for i, name, why in skipped:
             say(f"  {i}. {name} — skipped: {why}")
@@ -2557,10 +2744,13 @@ def cmd_send_batch(args, provider_name):
             sys.exit(1)
         seqs = seqs_load()
         for i, p, faults in plan:
-            seqs.append(new_sequence(batch, p, faults))
+            seqs.append(new_sequence(batch, p, faults, dealt[i], test["started"] if test["open"] else None))
         seqs_save(seqs)
         append_jsonl(state_dir("batches.jsonl"), {"ts": now_iso(), "batch_id": batch["batch_id"], "queued": len(plan),
-                                                  "skipped": len(skipped), "approved": "go"})
+                                                  "skipped": len(skipped), "approved": "go",
+                                                  "variants": {v: sum(1 for i, _, _ in plan if dealt[i] == v)
+                                                               for v in AI_VARIANTS},
+                                                  "ai_test": test["started"] if test["open"] else None})
         say(f"Queued {len(plan)} businesses, three touches each; the tick sends them across working hours.")
         for i, name, why in skipped:
             say(f"  {i}. {name} — skipped: {why}")
@@ -2585,8 +2775,15 @@ def send_touch(provider, seq, mb):
     if t is None:
         return False
     tname, touch = t["template"], int(t["touch"])
+    variant = seq.get("variant") or AI_DEFAULT
+    if variant == "none" and not seq.get("ai_test") and not ai_none_allowed():
+        # a `none` thread the test didn't deal (a hand edit, a stray state file): the rule holds
+        seq.update(status="stopped", why=AI_NONE_REFUSAL)
+        say(f"  REFUSED {seq.get('name')}: {AI_NONE_REFUSAL}")
+        return False
     vals = batch_values(seq, touch)
-    subject, letter = load_template(tname).render(vals)
+    tpl = load_template(tname)
+    subject, letter = tpl.render(vals)
     if claims_a_site(letter, seq.get("preview_url")):
         seq.update(status="stopped", why=f"{tname} says a site was built and none exists; fix the letter")
         say(f"  REFUSED {seq.get('name')}: {tname} says a site was built, and there is no preview for it")
@@ -2612,6 +2809,7 @@ def send_touch(provider, seq, mb):
            "email": seq["email"], "subject": subject, "provider": provider.name, "provider_id": res.get("id"),
            "mailbox": mb, "message_id": mid, "thread_root": seq["touches"][0].get("message_id"),
            "batch_id": seq.get("batch_id"), "seq_id": seq.get("id")}
+    row.update(outbound_of(seq, tpl.sha), ai_test=seq.get("ai_test"))
     if not DRY:
         append_jsonl(sends_file(), row)
     ledger_append({"ts": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()), "kind": "outreach_email",
@@ -2620,8 +2818,15 @@ def send_touch(provider, seq, mb):
                    "for": f"{tname} day{touch} -> {seq.get('name')} <{seq['email']}>"})
     say(f"  {now().strftime('%H:%M')} {mb} -> {seq.get('name')} <{seq['email']}> day {touch}: \"{subject}\"")
     leads_log(seq.get("name") or seq["email"], "messaged", f"email day {touch}: {subject}",
-              place_id=seq.get("place_id"), email=seq["email"])
+              place_id=seq.get("place_id"), email=seq["email"],
+              tags={k: row[k] for k in OUTBOUND_FIELDS})
     return True
+
+
+def outbound_of(seq, sha):
+    """The five fields every batch send row carries (B132), so a reply can be cut by any of them."""
+    return {"variant": seq.get("variant") or AI_DEFAULT, "fault_key": seq.get("fault_key") or "",
+            "segment": seq.get("segment") or "", "letter_sha": sha, "prebuilt": bool(seq.get("prebuilt"))}
 
 
 def cmd_tick(args):
@@ -2809,6 +3014,8 @@ def answer_yes(provider, r, row, name, pid, email, first, first200, room):
                          f"built at {url} for you to send")
     vals = values_for({"name": name, "first": first, "faults": []}, 0)
     vals["preview_url"] = link
+    # B132: a `none` thread's cold letters said nothing about AI, so this first answer says it
+    vals.update(ai_values(seq.get("variant") or AI_DEFAULT))
     subject, letter = load_template("answer-yes").render(vals)
     theirs = (r.get("subject") or "").strip()
     if theirs:
@@ -2818,7 +3025,8 @@ def answer_yes(provider, r, row, name, pid, email, first, first200, room):
         provider.reply_to(r, subject, letter)
     except (Unreachable, ProviderError) as exc:
         return hand_over(f"the reply didn't go: {exc}")
-    row.update(answered=True, answer_template="answer-yes", preview_url=url)
+    row.update(answered=True, answer_template="answer-yes", preview_url=url,
+               answer_ai=AI_NONE_ANSWER if seq.get("variant") == "none" else None)
     notify(f"{name} said yes; their preview went back: {url}. `leads brief {name}` before a call"
            f"{offer_build(row, pid)}")
     log_interested(name, f"said yes; preview sent: {url}", place_id=pid, email=email, next_when="tomorrow")
@@ -2989,6 +3197,8 @@ def cmd_inbox(args):
         sent_row = send_row_for(r) or {}
         mb = str(r.get("mailbox") or sent_row.get("mailbox") or "").lower() or None
         row["mailbox"], row["batch_id"] = mb, sent_row.get("batch_id")
+        # B132: the letter's variant, fault key, segment, sha and prebuilt flag, so replies cut by them
+        row.update({k: sent_row[k] for k in OUTBOUND_FIELDS if k in sent_row})
         if cls not in ("out of office",):
             # Any answer from a person ends that business's remaining touches (a bounce too).
             left = stop_sequence(email, r.get("our_message_id") or sent_row.get("message_id"),
@@ -3065,7 +3275,9 @@ def cmd_inbox(args):
             tail = f"reply yes to book {when}" if when else f"reply yes to send the booking link ({book})"
             # an "unsure" carries the classifier's reason to Taylor, as its prompt promises
             because = f" (the classifier was unsure: {why})" if cls == "unsure" and why else ""
-            notify(f"{name} replied: {first200}{because} — leads brief pending; {tail}"
+            quiet = (" (AI-line test: this thread's letters carried no AI sentence, so the first answer "
+                     "should say Patch drafted them)") if row.get("variant") == "none" else ""
+            notify(f"{name} replied: {first200}{because}{quiet} — leads brief pending; {tail}"
                    + (offer_build(row, pid) if cls == "interested" else "."))
             log_interested(name, f"replied to the email: {first200[:120]}",
                       place_id=pid, email=email, next_when="tomorrow")
@@ -3366,7 +3578,103 @@ def cmd_suppress(args):
         say(f"{'suppressed' if added else 'already suppressed'}: {v}")
 
 
+BY_CUTS = {"variant": "variant", "fault": "fault_key", "segment": "segment", "letter": "letter_sha",
+           "prebuilt": "prebuilt"}
+
+
+def pipeline_file():
+    return Path(toolbelt("LEADS_PIPELINE") or PROJECTS / "private-docs/leads/pipeline.jsonl")
+
+
+def cut_label(by, row):
+    v = row.get(BY_CUTS[by])
+    if by == "prebuilt":
+        return "(not recorded)" if v is None else ("prebuilt" if v else "not prebuilt")
+    if v in (None, ""):
+        return "(not recorded)"
+    return str(v)[:12] if by == "letter" else str(v)
+
+
+def cut_numbers(by):
+    """{group: {delivered, clicks, replies, positive, customers}} for the batch lane, one business once.
+    Delivered is a first letter sent and not bounced; a click is a press on its link (B91); a reply is any
+    class but bounce, out of office, probe; positive is yes, interested or a question; a customer is a
+    `won` line in the pipeline for that place. `--by variant` counts the AI-line test's own businesses
+    when a test was ever started, since letters before it carried no variant."""
+    test = ai_test()
+    firsts = {}
+    for r in cold_sends():
+        if not r.get("batch_id") or int(r.get("touch") or 0) != 0:
+            continue
+        if by == "variant" and test["started"] and r.get("ai_test") != test["started"]:
+            continue
+        key = r.get("place_id") or str(r.get("email") or "").lower()
+        firsts.setdefault(key, r)
+    reps = read_jsonl(replies_file())
+    def mine(r, row):
+        return bool((row.get("place_id") and r.get("place_id") == row.get("place_id"))
+                    or (row.get("email") and str(r.get("email") or "").lower() == str(row["email"]).lower()))
+    won = {e.get("place_id") for e in read_jsonl(pipeline_file()) if e.get("outcome") == "won" and e.get("place_id")}
+    out = {}
+    for row in firsts.values():
+        g = out.setdefault(cut_label(by, row), {"delivered": 0, "clicks": 0, "replies": 0, "positive": 0,
+                                                "customers": 0})
+        theirs = [r for r in reps if mine(r, row)]
+        if any(r.get("class") == "bounce" for r in theirs):
+            continue
+        g["delivered"] += 1
+        g["clicks"] += any(r.get("class") == "pressed" for r in theirs)
+        g["replies"] += any(r.get("class") not in NOT_A_REPLY for r in theirs)
+        g["positive"] += any(r.get("class") in POSITIVE_CLASSES for r in theirs)
+        g["customers"] += bool(row.get("place_id") and row["place_id"] in won)
+    return out
+
+
+def per_hundred(n, d):
+    return f"{n} ({100.0 * n / d:.1f})" if d else f"{n} (–)"
+
+
+def cut_report(by):
+    """`outreach status --by variant|fault|segment|letter|prebuilt`: the five counts a group, each also per
+    hundred delivered, and a plain word on whether the numbers can decide anything. It reports; it never
+    stops the test (that is Taylor's word)."""
+    test = ai_test()
+    groups = cut_numbers(by)
+    say(ai_test_line(test))
+    scope = ("the businesses the AI-line test dealt" if by == "variant" and test["started"]
+             else "every business the batch lane wrote to")
+    say(f"By {by} — {scope}; one business counts once; (per 100 delivered)")
+    if not groups:
+        say("  nothing delivered yet, so nothing to compare")
+        return
+    order = [v for v in AI_VARIANTS if v in groups] if by == "variant" else []
+    order += sorted(g for g in groups if g not in order)
+    w = max(len(by), *(len(g) for g in order))
+    say(f"  {by:<{w}}  {'delivered':>9}  {'preview clicks':>14}  {'replies':>12}  {'positive':>12}  {'customers':>12}")
+    for g in order:
+        n = groups[g]
+        d = n["delivered"]
+        say(f"  {g:<{w}}  {d:>9}  {per_hundred(n['clicks'], d):>14}  {per_hundred(n['replies'], d):>12}  "
+            f"{per_hundred(n['positive'], d):>12}  {per_hundred(n['customers'], d):>12}")
+    smallest = min(groups[g]["delivered"] for g in order)
+    positive = sum(groups[g]["positive"] for g in order)
+    if smallest < TEST_FLOOR_DELIVERED or positive < TEST_FLOOR_POSITIVE:
+        say(f"Too few to decide: the smallest group has {smallest} delivered (the floor is {TEST_FLOOR_DELIVERED} a "
+            f"group) and {positive} positive repl{'y' if positive == 1 else 'ies'} in all (the floor is "
+            f"{TEST_FLOOR_POSITIVE}). At about "
+            "six replies in a hundred, 200 letters give roughly four replies a variant, so a gap of one or two is "
+            "chance. The counts above are what there is; the test goes on until Taylor says stop.")
+        return
+    rates = sorted(((100.0 * groups[g]["replies"] / groups[g]["delivered"], g) for g in order), reverse=True)
+    rest = ", ".join(f"{r:.1f} ({g})" for r, g in rates[1:])
+    say(f"Directional, not proven: {rates[0][1]} leads with {rates[0][0]:.1f} replies per hundred delivered, "
+        f"against {rest}. A real gap of two or three in a hundred needs several hundred letters a group to show "
+        "clearly; the test goes on until Taylor says stop.")
+
+
 def cmd_status(args):
+    if getattr(args, "by", None):
+        return cut_report(args.by)
     provider = pick_provider(args.provider)
     per_day = int(env_num("OUTREACH_PER_DAY", DEFAULT_PER_DAY, int))
     cap = int(env_num("OUTREACH_MAX_REPLIES_PER_DAY", DEFAULT_MAX_REPLIES, int))
@@ -3424,6 +3732,7 @@ def batch_status():
     for x in seqs:
         by[x.get("status")] = by.get(x.get("status"), 0) + 1
     say("  sequences: " + (", ".join(f"{k} {v}" for k, v in sorted(by.items())) if by else "none"))
+    say("  " + ai_test_line() + " · `outreach status --by variant`")
     n = stop_numbers()
     pm = n["postmaster"]
     say(f"  since {n['since']}: {n['sends']} sent, {n['bounces']} bounced; angry {n['angry']} + no {n['no']} over "
@@ -3534,11 +3843,21 @@ def cmd_approve(args):
         vals = sample_values()
         if n in ("batch-second", "batch-third"):
             vals["see_url"] = sample_link_base()     # shown with the link; checked both ways
-        subject, body = t.render(vals, fault=vals["fault"])
-        say(f"───── {n}.md ─────")
-        say(f"Subject: {subject}")
-        say(body)
-        bad = check_template(n)
+        # B132: a batch letter goes out three ways during the AI-line test and the answer to a yes two ways;
+        # each is the text Taylor is approving, so each is shown
+        if n in BATCH_LETTERS:
+            shown = [(f" — AI sentence {v}" + (" (only inside the AI-line test)" if v == "none" else ""),
+                      {**vals, **ai_values(v)}) for v in ("intro", "foot", "none")]
+        elif n == "answer-yes":
+            shown = [("", vals), (" — in a `none` thread of the AI-line test", {**vals, "ai_none": "1"})]
+        else:
+            shown = [("", vals)]
+        for label, v in shown:
+            subject, body = t.render(v, fault=vals["fault"])
+            say(f"───── {n}.md{label} ─────")
+            say(f"Subject: {subject}")
+            say(body)
+        bad = check_template(n, none_ok=True)
         money = money_in(n)
         if bad:
             problems += [f"{n}: {b}" for b in bad]
@@ -3676,7 +3995,7 @@ def cmd_doctor(args):
             ok = False
             continue
         t = load_template(n)
-        bad = check_template(n)
+        bad = check_template(n, none_ok=True)     # the `none` rule is about sending: see the AI-line test line
         state = "approved" if appr.get(n) == t.sha else ("STALE — the text changed" if n in appr else "NOT APPROVED")
         say(f"  {n}: {state}; sha {t.sha[:12]}…; {'rules ok' if not bad else 'PROBLEMS: ' + '; '.join(bad)}")
         if bad or appr.get(n) != t.sha:
@@ -3801,6 +4120,7 @@ def doctor_batch():
         f"{env_num('OUTREACH_SPAM_RATE_MAX_PCT', DEFAULT_SPAM_RATE_PCT):g}% "
         f"(now: {n['bounces']} bounces, {n['angry']} angry, {n['no']} no, "
         + (f"Postmaster {float(n['postmaster']['rate']):.2f}%" if n["postmaster"] else "no Postmaster reading") + ")")
+    say("  " + ai_test_line())
     if latch():
         say(f"  THE LANE IS STOPPED: {latch().get('why')}")
     for mb, d in paused_boxes().items():
@@ -3885,7 +4205,15 @@ def main():
     s.set_defaults(fn=cmd_suppress)
 
     s = sub.add_parser("status", parents=[common], help="today's sends, the caps, the replies, the bounce rate")
+    s.add_argument("--by", choices=tuple(BY_CUTS), help="B132: delivered → clicks → replies → positive → customers "
+                                                         "per group, each per hundred delivered")
     s.set_defaults(fn=cmd_status)
+
+    s = sub.add_parser("ai-test", parents=[common], help="B132: the AI-line test — start | stop [--keep V] | show "
+                                                         "(start and stop on Taylor's word only)")
+    s.add_argument("action", nargs="?", choices=("start", "stop", "show"))
+    s.add_argument("--keep", choices=AI_VARIANTS, help="stop: the placement new letters take from now on")
+    s.set_defaults(fn=cmd_ai_test)
 
     s = sub.add_parser("warmup", parents=[common], help="the warm-up state and the ramp")
     s.add_argument("action", nargs="?", choices=("start",))

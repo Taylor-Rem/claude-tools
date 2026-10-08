@@ -228,10 +228,20 @@ class MarkChanged(unittest.TestCase):
             "<p>Spring cleanup.</p>", "<p>Spring cleanup.</p><p>Aeration in April.</p>")
         html = s.mark_changed(PAGE, after)
         self.assertEqual(html.count("data-patch-mark>"), 2)
-        self.assertIn("<li data-patch-mark>Sat: 8am-3pm</li>", html)
-        self.assertIn("<p data-patch-mark>Aeration in April.</p>", html)
+        self.assertIn("<li>Sat: <span data-patch-mark>8am-3pm</span></li>", html)   # the edited words, not the line
+        self.assertIn("<p data-patch-mark>Aeration in April.</p>", html)            # a new element whole
         self.assertIn("[data-patch-mark]", html.split("</head>")[0])
         self.assertIsNone(s.mark_changed(PAGE, PAGE.replace("li{margin:8px 0}", "li{margin:9px 0}")))
+
+    def test_words_added_to_a_paragraph_are_marked_alone_and_a_rewrite_marks_the_element(self):
+        s = load_social()
+        self.assertEqual(s._mark_words("Weekly mowing. Edging too.", "Weekly mowing."),
+                         "Weekly mowing. <span data-patch-mark>Edging too.</span>")
+        self.assertEqual(s._mark_words("a b c d new1 e f new2 new3", "a b c d old e f"),
+                         "a b c d <span data-patch-mark>new1</span> e f <span data-patch-mark>new2 new3</span>")
+        self.assertIsNone(s._mark_words("all new words", "nothing alike here"))
+        html = s.mark_changed(PAGE, PAGE.replace("<p>Mowing, edging and leaves.</p>", "<p>Mowing, <b>edging</b> and snow.</p>"))
+        self.assertIn("<p data-patch-mark>Mowing, ", html)    # child tags inside: the element whole
 
 
 class ChangeQuestion(unittest.TestCase):

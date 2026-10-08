@@ -70,6 +70,7 @@ import re
 import tempfile
 import urllib.error
 import urllib.request
+from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
@@ -2084,7 +2085,7 @@ EDITOR_PROMPT = """You are Patch, working on a copy of the {slug} demo site for 
 
 The site's files are in `repos/{repo}/` in this directory. `CLAUDE.md` here is the demo workspace's own notes: read it for how the site is put together and what a demo keeps (the "This is a demo" bar stays). Make the change by editing files under `repos/{repo}/` with Edit or Write. This is a throwaway copy: there is no shell, nothing to commit and nothing to publish, and the live demo is not touched, because strangers are texting it.
 
-Change only what the text asks for and leave everything else as it is, because the picture marks whatever changed and anything extra would read as part of the ask. Make it visible on the page `{page}` as a phone shows it, since that page is what the picture shows. Don't name a real business or person.
+Change only what the text asks for and leave everything else as it is, because the picture marks whatever changed and anything extra would read as part of the ask. Write it the way the site already talks, and keep exactly what the owner meant: the picture puts their text beside your words, so a line that says something slightly different reads as a mistake. Make it visible on the page `{page}` as a phone shows it, since that page is what the picture shows. Don't name a real business or person.
 
 Your budget is about ten minutes. If you can't make the change, or it wouldn't show on that page, "I couldn't, because ..." is a fine answer: it is passed on as you write it, and no one asks you again the same way.
 
@@ -2193,6 +2194,11 @@ def pixels(png):
 MARK_RGB = b"\xff\x00\xff"      # the outline the marked shot draws round the changed elements: a colour no demo uses
 MARK_CSS = ("<style>[data-patch-mark]{outline:4px solid #ff00ff !important;outline-offset:0 !important;"
             "box-shadow:none !important}</style>")
+# the mark in the picture: a highlighter behind the changed words with a thin amber edge, so no letter beside them is
+# covered (a box drawn over the shot hid the comma and the "t" next to "e-bike repairs," in the first cold read)
+HIGHLIGHT_CSS = ("<style>[data-patch-mark]{background-color:rgba(240,166,58,.45) !important;"
+                 "box-shadow:0 0 0 3px #F0A63A !important;border-radius:3px !important;"
+                 "-webkit-box-decoration-break:clone;box-decoration-break:clone}</style>")
 SKIP_TAGS = ("script", "style", "title", "head", "noscript", "template")
 VOID_TAGS = ("img", "br", "hr", "input", "meta", "link", "source", "area", "base", "col", "embed", "param", "track", "wbr")
 
@@ -2240,27 +2246,71 @@ def flat(html):
     return sorted(f.items)
 
 
-def mark_changed(before_html, after_html):
-    """AFTER's HTML with `data-patch-mark` on each element whose own text (or image) is new or different, and the
-    style that outlines them; None when no element's text changed (a style change, a script-drawn page)."""
+def _plain_content(html, at, tag):
+    """(start, end) of an element's content when it is text only (no child tags), else None."""
+    gt = html.find(">", at)
+    lt = html.find("<", gt + 1) if gt >= 0 else -1
+    if lt < 0 or html[lt:lt + 2 + len(tag)].lower() != "</" + tag:
+        return None
+    return gt + 1, lt
+
+
+def _mark_words(raw, before_text):
+    """RAW (an element's text-only content) with the words that aren't in BEFORE_TEXT wrapped in a marked span, or
+    None when most of it is new (the whole element is marked then). The mark sits on what the text changed, not on
+    the paragraph round it: a cold read of the first tiles couldn't tell which words in a boxed paragraph were new."""
+    tokens = re.split(r"(\s+)", raw)
+    words = [(i, t) for i, t in enumerate(tokens) if t and not t.isspace()]
+    if not words:
+        return None
+    sm = difflib.SequenceMatcher(None, before_text.split(), [unescape(t) for _, t in words], autojunk=False)
+    new = {words[j][0] for op, _, _, j1, j2 in sm.get_opcodes() if op in ("replace", "insert") for j in range(j1, j2)}
+    if not new or len(new) > 0.7 * len(words):
+        return None
+    out = []
+    for i, t in enumerate(tokens):
+        if i in new and (i - 2) not in new:    # tokens alternate word, space: the word before this one is i - 2
+            out.append("<span data-patch-mark>")
+        out.append(t)
+        if i in new and (i + 2) not in new:
+            out.append("</span>")
+    return "".join(out)
+
+
+def mark_changed(before_html, after_html, css=MARK_CSS):
+    """AFTER's HTML with the changed text marked: the new words inside an element whose text was edited, or the whole
+    element when it is new or mostly new (an image, a line added); and the style that outlines them. None when no
+    element's text changed (a style change, a script-drawn page)."""
     a, b = flat(before_html), flat(after_html)
     sm = difflib.SequenceMatcher(None, [(t, x) for _, t, x in a], [(t, x) for _, t, x in b], autojunk=False)
-    changed = [b[j] for op, _, _, j1, j2 in sm.get_opcodes() if op in ("replace", "insert") for j in range(j1, j2)]
+    changed = []                                   # (after item, the before text it replaced, or None)
+    for op, i1, i2, j1, j2 in sm.get_opcodes():
+        if op == "insert" or (op == "replace" and i2 - i1 != j2 - j1):
+            changed += [(b[j], None) for j in range(j1, j2)]
+        elif op == "replace":
+            changed += [(b[j1 + k], a[i1 + k][2] if a[i1 + k][1] == b[j1 + k][1] else None) for k in range(j2 - j1)]
     if not changed:
         return None
     starts = [0]
     for line in after_html.splitlines(keepends=True):
         starts.append(starts[-1] + len(line))
-    html = after_html
-    for (line, col), tag, _ in sorted(changed, reverse=True):
+    edits = []                                     # (start, end, replacement), applied from the end
+    for ((line, col), tag, _), was in changed:
         at = starts[line - 1] + col
-        if html[at:at + 1 + len(tag)].lower() != "<" + tag:
+        if after_html[at:at + 1 + len(tag)].lower() != "<" + tag:
             continue
-        at += 1 + len(tag)
-        html = html[:at] + " data-patch-mark" + html[at:]
+        span = _plain_content(after_html, at, tag) if was is not None and tag != "img" else None
+        marked = _mark_words(after_html[span[0]:span[1]], was) if span else None
+        if marked is not None:
+            edits.append((span[0], span[1], marked))
+        else:
+            edits.append((at + 1 + len(tag), at + 1 + len(tag), " data-patch-mark"))
+    html = after_html
+    for s_, e_, text in sorted(edits, reverse=True):
+        html = html[:s_] + text + html[e_:]
     low = html.lower()
     i = low.find("</head>")
-    return html[:i] + MARK_CSS + html[i:] if i >= 0 else MARK_CSS + html
+    return html[:i] + css + html[i:] if i >= 0 else css + html
 
 
 def marked_box(before_site, after_site, page, shots):
@@ -2293,7 +2343,10 @@ def marked_box(before_site, after_site, page, shots):
         x0, x1, y0, y1 = min(x0, i // 3), max(x1, j // 3), min(y0, y), max(y1, y)
     if x1 < 0:
         return None
-    return {"x": x0, "y": y0, "w": x1 - x0 + 1, "h": y1 - y0 + 1, "page_h": h, "page_w": w, "pad": (16, 3)}
+    target.write_text(mark_changed(bf.read_text(errors="replace"), af_file.read_text(errors="replace"), HIGHLIGHT_CSS))
+    shoot(target if af != after_site else marked, shots / "highlight.png")
+    return {"x": x0, "y": y0, "w": x1 - x0 + 1, "h": y1 - y0 + 1, "page_h": h, "page_w": w, "pad": (14, 10),
+            "picture": str(shots / "highlight.png")}
 
 
 def change_box(before, after):
@@ -2366,6 +2419,11 @@ def compose_demo(ask, after_png, box, out, portrait=None, work=None):
     y0 = max(0, min(ph - win_h, mid - win_h // 2))
     if by0 - y0 < win_h // 6 and y0 > 0:              # keep some page above the change for context
         y0 = max(0, min(ph - win_h, by0 - win_h // 4))
+    _, _, rows = pixels(after_png)                    # start the slice in a gap between blocks, not mid-paragraph
+    blank = [r == r[:3] * (len(r) // 3) for r in rows]
+    near = sorted(range(max(0, y0 - 400, by1 - win_h + 10), min(ph - win_h, by0 - 10, y0 + 400) + 1), key=lambda y: abs(y - y0))
+    y0 = 0 if 0 in near else next((y for y in near if y >= 32 and all(blank[y - 32:y + 1])),
+                                  next((y for y in near if blank[y]), y0))
     shown_w, shown_h = int(pw * scale), int(win_h * scale)
     # the page slice, the change boxed, the corners rounded
     page = work / "page.png"
@@ -2373,8 +2431,10 @@ def compose_demo(ask, after_png, box, out, portrait=None, work=None):
     rx1, ry1 = int(bx1 * scale), int((by1 - y0) * scale)
     rx0, rx1 = max(4, rx0), min(shown_w - 5, rx1)
     ry0, ry1 = max(4, ry0), min(shown_h - 5, ry1)
-    im(after_png, "-crop", f"{pw}x{win_h}+0+{y0}", "+repage", "-resize", f"{shown_w}x{shown_h}!",
-       "-fill", "none", "-stroke", AMBER, "-strokewidth", "7", "-draw", f"roundrectangle {rx0},{ry0} {rx1},{ry1} 10,10",
+    marked_in_page = bool(box.get("picture"))         # the page carries its own highlight; else a box goes on top
+    im(box.get("picture") or after_png, "-crop", f"{pw}x{win_h}+0+{y0}", "+repage", "-resize", f"{shown_w}x{shown_h}!",
+       *([] if marked_in_page else ["-fill", "none", "-stroke", AMBER, "-strokewidth", "6",
+                                    "-draw", f"roundrectangle {rx0},{ry0} {rx1},{ry1} 10,10"]),
        "(", "+clone", "-alpha", "extract", "-fill", "black", "-colorize", "100", "-fill", "white",
        "-draw", f"roundrectangle 0,0 {shown_w - 1},{shown_h - 1} 22,22", ")",
        "-alpha", "off", "-compose", "CopyOpacity", "-composite", page)
@@ -2386,8 +2446,11 @@ def compose_demo(ask, after_png, box, out, portrait=None, work=None):
     tw, th = (int(v) for v in im(text, "-format", "%w %h", "info:").split())
     bw, bh = tw + 64, th + 52
     bubble = work / "bubble.png"
-    im("-size", f"{bw + 2}x{bh + 26}", "xc:none", "-fill", PANEL, "-draw", f"roundrectangle 0,0 {bw},{bh} 34,34",
-       "-draw", f"polygon 22,{bh - 30} 66,{bh - 4} 6,{bh + 24}", text, "-geometry", "+32+26", "-composite", bubble)
+    # a text message's bubble, not a speech balloon: the small tail tucked in at the bottom corner (two judges read
+    # the first tiles' long tail as "a speech bubble rather than a text")
+    im("-size", f"{bw + 12}x{bh + 2}", "xc:none", "-fill", PANEL, "-draw", f"roundrectangle 10,0 {bw + 10},{bh} 34,34",
+       "-draw", f"path 'M 12,{bh - 40} L 44,{bh - 40} L 44,{bh} Q 22,{bh + 1} 0,{bh} Q 13,{bh - 10} 12,{bh - 40} Z'",
+       text, "-geometry", "+42+26", "-composite", bubble)
     # the bubble sits level with the change, an amber line from it to the box
     box_mid = PAGE_Y + (PAGE_H - shown_h) // 2 + (ry0 + ry1) // 2
     top_y = max(150, min(TILE_H - 260 - bh, box_mid - bh // 2))
@@ -2397,7 +2460,7 @@ def compose_demo(ask, after_png, box, out, portrait=None, work=None):
     args = ["-size", f"{TILE_W}x{TILE_H}", f"xc:{ROOM}",
             "-fill", LINE, "-draw", f"roundrectangle {page_x - 3},{page_y - 3} {page_x + shown_w + 2},{page_y + shown_h + 2} 24,24",
             page, "-geometry", f"+{page_x}+{page_y}", "-composite",
-            bubble, "-geometry", f"+60+{top_y}", "-composite",
+            bubble, "-geometry", f"+50+{top_y}", "-composite",
             "-stroke", AMBER, "-strokewidth", "5", "-draw", f"line {60 + bw + 14},{line_y} {page_x - 16},{page_y + (ry0 + ry1) // 2}",
             "-stroke", "none", "-fill", AMBER, "-draw", f"circle {page_x - 16},{page_y + (ry0 + ry1) // 2} {page_x - 7},{page_y + (ry0 + ry1) // 2}",
             "-fill", BRASS, "-font", FONT_BOLD, "-pointsize", "34", "-kerning", "9", "-annotate", "+62+92", "DEMO"]

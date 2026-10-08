@@ -133,7 +133,57 @@ class AiTest(Base):
         self.assertEqual(4, len(self.seqs()))
         self.assertNotIn(self.picks()[1]["email"], {s["email"] for s in self.seqs()})
 
+    def test_only_queues_just_those_picks(self):
+        self.queue(5, "b-only", "--only", "1", "3")
+        five = self.picks()[:5]
+        self.assertEqual({five[0]["email"], five[2]["email"]}, {s["email"] for s in self.seqs()})
+
+    def test_only_and_hold_together(self):
+        self.queue(5, "b-only-hold", "--only", "1", "2", "3", "--hold", "2")
+        five = self.picks()[:5]
+        self.assertEqual({five[0]["email"], five[2]["email"]}, {s["email"] for s in self.seqs()})
+
+    def test_a_run_of_small_batches_keeps_the_three_within_one(self):
+        self.run_it("ai-test", "start")
+        picks, at = self.picks(), 0
+        for k, size in enumerate([2, 1, 2, 2, 1, 2, 1, 1, 2, 2, 1, 2]):
+            batch = picks[at:at + size]
+            at += size
+            self.run_it("send", "--batch", str(self.write_batch(batch, f"b-small-{k}")), "--go")
+            c = collections.Counter(s["variant"] for s in self.seqs())
+            counts = [c.get(v, 0) for v in ("none", "intro", "foot")]
+            with self.subTest(after_batch=k):
+                self.assertLessEqual(max(counts) - min(counts), 1, dict(c))
+        self.assertEqual(at, len(self.seqs()))
+
+    def test_the_deal_does_not_depend_on_the_order_picks_arrive_in(self):
+        self.run_it("ai-test", "start")
+        picks = self.picks()[:9]
+        a = self.run_it("send", "--batch", str(self.write_batch(picks, "b-ord")), "--dry-run").stdout
+        b = self.run_it("send", "--batch", str(self.write_batch(picks[::-1], "b-ord")), "--dry-run").stdout
+        pat = r"<([^>]+)> — \"[^\"]*\" \[AI sentence: (\w+)\]"
+        self.assertEqual(dict(re.findall(pat, a)), dict(re.findall(pat, b)))
+
     # -- start and stop ----------------------------------------------------------------
+    def test_keeping_none_says_it_changes_the_rule_and_what_must_follow(self):
+        self.run_it("ai-test", "start")
+        r = self.run_it("ai-test", "stop", "--keep", "none")
+        for words in ("changes the brand rule", "a business that says no never hears it",
+                      "the second and third touches never say it", "VISION § Decided",
+                      "CLAIMS § The batch letters", "Taylor's to change", "honoured"):
+            self.assertIn(words, r.stdout)
+        self.assertIn("Taylor's to change", self.run_it("ai-test", "show").stdout)
+        q = self.queue(2, "b-kept-none")
+        self.assertIn("AI sentence: none for every letter", q.stdout)
+        self.assertIn("Taylor's to change", q.stdout)
+        self.assertEqual({"none"}, {s["variant"] for s in self.seqs()})
+        self.assertIn("Taylor's to change", self.run_it("doctor", expect=None).stdout)
+
+    def test_keeping_intro_or_foot_says_nothing_about_the_rule(self):
+        self.run_it("ai-test", "start")
+        r = self.run_it("ai-test", "stop", "--keep", "foot")
+        self.assertNotIn("brand rule", r.stdout)
+
     def test_stop_keeps_a_placement_and_threads_in_flight_finish_as_they_began(self):
         self.run_it("ai-test", "start")
         self.queue(6, "b-before")

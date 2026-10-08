@@ -239,6 +239,11 @@ AI_VARIANTS = ("none", "intro", "foot")
 AI_KEYS = {"none": "ai_none", "intro": "ai_intro", "foot": "ai_foot"}
 AI_DEFAULT = "intro"
 AI_NONE_ANSWER = "Patch, my AI operator, drafted my outreach and sent this reply in words I approved."   # Codex, 2026-10-05 (variant B)
+AI_NONE_KEPT = ("`none` was kept after the AI-line test, so cold letters now carry no AI sentence outside any "
+                "test: a business that says no never hears it, and the second and third touches never say it. "
+                "That changes the brand rule (AI is said, never hidden), which is Taylor's to change: it needs his "
+                "decision line in VISION § Decided and the CLAIMS § The batch letters rows reworded. Until both "
+                "are written his kept value is honoured, and this note stays")
 AI_NONE_REFUSAL = ("a letter with no AI sentence goes out only inside the AI-line test (TODO § 3, 2026-10-05: "
                    "AI is said, never hidden; the test is the one exception Taylor allowed, and the reply to a "
                    "yes says it)")
@@ -656,8 +661,9 @@ def check_batch_template(name, none_ok=None):
     """The batch letters' rules (plan 37 § 3), checked on a rendered sample, both with and
     without a link base for the follow-ups, and (B132) once for each placement of the AI
     sentence: none, intro, foot. `none` passes only while the AI-line test is open (or after
-    Taylor's stop kept it); `none_ok=True` checks its shape alone, for a caller that isn't
-    dealing a new one (approve, doctor, the tick finishing threads the test began).
+    Taylor's stop kept it: honoured, with AI_NONE_KEPT said wherever the checker reports, since
+    that changes the brand rule and the rule is his); `none_ok=True` checks its shape alone, for a
+    caller that isn't dealing a new one (approve, doctor, the tick finishing threads the test began).
     Returns [problem, ...]."""
     t = load_template(name)
     none_ok = ai_none_allowed() if none_ok is None else none_ok
@@ -2562,6 +2568,12 @@ def ai_none_allowed():
     return t["open"] or t["keep"] == "none"
 
 
+def ai_kept_none():
+    """Taylor's stop kept `none`: honoured, and every place the checker speaks says the rule is his to change."""
+    t = ai_test()
+    return not t["open"] and t["keep"] == "none"
+
+
 def ai_variant_outside_test():
     t = ai_test()
     return t["keep"] or AI_DEFAULT
@@ -2569,10 +2581,15 @@ def ai_variant_outside_test():
 
 def deal_variants(plan):
     """[(i, p, faults)] -> {i: variant}. While the test is open: ordered within each fault key by
-    sha256(place_id) and dealt none, intro, foot in turn across the whole batch, so thirty give ten
-    each and no variant collects one kind of fault. Outside the test every business gets the kept
-    placement (intro unless Taylor's stop said otherwise)."""
-    if not ai_test()["open"]:
+    sha256(place_id) and dealt none, intro, foot in turn, so no variant collects one kind of fault.
+    The deal carries on from where the test's last batch stopped (the count of sequences this test has
+    already dealt), so leftovers rotate: thirty give ten each, and a run of small or uneven batches
+    (holds, caps) keeps the three within one of each other instead of piling the odd ones on `none`.
+    It depends only on the picks and the test's state, never on the order picks arrive in, so a dry run
+    shows what `go` will deal. Outside the test every business gets the kept placement (intro unless
+    Taylor's stop said otherwise)."""
+    t = ai_test()
+    if not t["open"]:
         v = ai_variant_outside_test()
         return {i: v for i, _, _ in plan}
     def order(item):
@@ -2580,7 +2597,8 @@ def deal_variants(plan):
         key = (faults[0].get("key") if faults else "") or ""
         ident = str(p.get("place_id") or p.get("email") or i)
         return (key, hashlib.sha256(ident.encode()).hexdigest())
-    return {i: AI_VARIANTS[n % len(AI_VARIANTS)] for n, (i, _, _) in enumerate(sorted(plan, key=order))}
+    start = sum(1 for s in seqs_load() if s.get("ai_test") == t["started"])
+    return {i: AI_VARIANTS[(start + n) % len(AI_VARIANTS)] for n, (i, _, _) in enumerate(sorted(plan, key=order))}
 
 
 def cmd_ai_test(args):
@@ -2619,6 +2637,8 @@ def cmd_ai_test(args):
     say(f"The AI-line test stopped at {row['stopped']}. New sequences go out {keep}"
         + ("" if args.keep else " (no --keep given, so the placement from before the test)")
         + "; sequences already running finish as they began.")
+    if keep == "none":
+        say(f"Note: {AI_NONE_KEPT}.")
 
 
 def ai_test_line(t=None):
@@ -2627,7 +2647,8 @@ def ai_test_line(t=None):
         return (f"AI-line test: open since {t['started']} — new batches are dealt none / intro / foot, a third "
                 "each; it stops only on Taylor's word (`outreach ai-test stop --keep X`)")
     if t["stopped"]:
-        return f"AI-line test: stopped {t['stopped']}, kept {t['keep'] or AI_DEFAULT}; new letters go out that way"
+        line = f"AI-line test: stopped {t['stopped']}, kept {t['keep'] or AI_DEFAULT}; new letters go out that way"
+        return line + (f". {AI_NONE_KEPT}" if t["keep"] == "none" else "")
     return f"AI-line test: not started; every letter carries the AI sentence beside the introduction ({AI_DEFAULT})"
 
 
@@ -2699,6 +2720,8 @@ def cmd_send_batch(args, provider_name):
         ai_line = "AI-line test open: " + ", ".join(f"{counts[v]} {v}" for v in AI_VARIANTS)
     else:
         ai_line = f"AI sentence: {ai_variant_outside_test()} for every letter (no AI-line test open)"
+        if ai_kept_none():
+            ai_line += f"\nNote: {AI_NONE_KEPT}."
     city = batch.get("city")
     where = "across the corridor" if not city or str(city).lower() == "any" else f"in {city}"
     say(f"Batch {batch['batch_id']} · {batch.get('category') or '?'} {where} · "
@@ -3858,6 +3881,8 @@ def cmd_approve(args):
             say(f"Subject: {subject}")
             say(body)
         bad = check_template(n, none_ok=True)
+        if n in BATCH_LETTERS and ai_kept_none():
+            say(f"  NOTE: {AI_NONE_KEPT}.")
         money = money_in(n)
         if bad:
             problems += [f"{n}: {b}" for b in bad]
@@ -3996,6 +4021,8 @@ def cmd_doctor(args):
             continue
         t = load_template(n)
         bad = check_template(n, none_ok=True)     # the `none` rule is about sending: see the AI-line test line
+        if n in BATCH_LETTERS and ai_kept_none():
+            say(f"  {n}: `none` goes out outside any test — {AI_NONE_KEPT}")
         state = "approved" if appr.get(n) == t.sha else ("STALE — the text changed" if n in appr else "NOT APPROVED")
         say(f"  {n}: {state}; sha {t.sha[:12]}…; {'rules ok' if not bad else 'PROBLEMS: ' + '; '.join(bad)}")
         if bad or appr.get(n) != t.sha:

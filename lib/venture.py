@@ -34,7 +34,7 @@ TOOLS = Path(__file__).resolve().parent.parent
 
 # dotted field -> type. `list[str]` and `list[float]` are checked element by element.
 FIELDS = {
-    "name": str, "slug": str, "prices_module": str, "legal_name": str, "brand_line": str, "mascot": str, "site": str, "site_host": str,
+    "name": str, "slug": str, "tenant": str, "prices_module": str, "legal_name": str, "brand_line": str, "mascot": str, "site": str, "site_host": str,
     "sender.first_name": str, "sender.from_name": str, "sender.reply_email": str, "sender.town": str,
     "sender.state": str, "sender.state_name": str, "sender.home": "list[float]",
     "sender.postal_address_env": str, "sender.phone_env": str, "sender.demo_number_env": str,

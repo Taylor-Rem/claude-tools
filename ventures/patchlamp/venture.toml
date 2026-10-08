@@ -11,13 +11,14 @@
 # as before, because they are Taylor's to set (setenv.sh) and the address is his to keep off disk.
 
 name = "Patchlamp"                   # as written in a sentence
-slug = "patchlamp"                   # lower case: file names, the social brand, the Cloud app, the registry tenant
+slug = "patchlamp"                   # lower case: the stem of its domains, file names
 legal_name = "Plateful LLC"          # the entity on the email footer and the 1099-K
 brand_line = "keeps a small business's website and Google listing right by text: the owner texts a change and it is done"
 mascot = "Patch"                     # the voice of the feed and the bot a client texts
 site = "https://patchlamp.com"       # the product's own site (front, social and the relay endpoints talk to it)
-prices_module = "prices.py"         # the plan prices (a symlink to lib/prices.py, where outreach and leads have always read them)
 site_host = "patchlamp.com"
+tenant = "patchlamp"                 # the registry's tenant (plan 55 § 5.1; B141 reads it)
+prices_module = "prices.py"          # beside this file: a symlink to lib/prices.py, where outreach and leads have always read them
 
 [sender]                             # who a cold letter or a DM is from
 first_name = "Taylor"

@@ -8,6 +8,7 @@ legal_name = "Brightwell Works LLC"
 brand_line = "keeps a small shop's price list and opening hours right by email"
 mascot = "Wren"
 site = "https://brightwell.example"
+tenant = "brightwell"
 prices_module = "prices.py"
 site_host = "brightwell.example"
 

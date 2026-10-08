@@ -77,6 +77,30 @@ The same file also holds one non-secret setting, `SITE_ORG` (the GitHub org
 `site` creates repos under), because a client session can't set environment
 variables. `setenv.sh SITE_ORG` writes it.
 
+## The venture (B146)
+
+The engine tools (`leads`, `outreach`, `prep`, `social`, `front`, `books`,
+`cloud`) know no product. The business they work for — its name, site,
+who a letter is from and the town he writes from, the sending domains, the
+preview host, the free-address zone, the census, the claims file, the env
+names of the postal address and phone, the prices module, the Stripe key
+names, the Cloud app, the social brand — is one file,
+`ventures/<name>/venture.toml`, read by `lib/venture.py` (`V = from_argv()`;
+`V.sender.town`, `V.fill("text with {v:site_host}")`). Which one: `--venture
+NAME` on any of the seven, else `VENTURE` in the environment, else the name in
+`ventures/DEFAULT` (today `patchlamp`). Every field is required and typed; a
+missing or mistyped one stops the tool with a sentence naming the file.
+
+`tests/test_portable.py` greps those seven tools and `lib/` (less the
+product's `site_*`, `sandbox_tools`, `prices`) for every venture's literals —
+taken from the venture files themselves — and fails on a hit: a new literal
+goes into the venture, not into the tool. The product tools (`site`, `pay`,
+`gbp`, `newsletter`, `connections`, `db`) are the product and keep theirs;
+the outreach letters in `templates/outreach/` still name Patchlamp in their
+signatures (Taylor's approved text) and move when a second venture needs its
+own. `tests/fixtures/ventures/example/` is a made-up second venture the tests
+run the tools as.
+
 ## Adding a tool
 
 Drop an executable in `bin/`, have it read keys the same way (`img` has a

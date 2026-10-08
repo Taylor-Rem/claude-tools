@@ -17,13 +17,14 @@ human one is human. Read it before a live run, and correct it the day something 
 | 3b | registrant verification email (if the registrar sends one) | **Taylor** | filed by the tool when the provider says so | an identity: the registrant is him. Registries suspend an unverified domain after fifteen days |
 | 4 | SPF, DKIM, DMARC, MX | API (the vendor sets them) | `set_auth_dns`; we read them back from public DNS | — |
 | 5 | mailboxes | API | `create_mailbox` with a password made here, written to the toolbelt env by asset id *before* the call | — |
-| 6 | warm-up on | API, until confirmed: **dashboard** | `start_warmup`; on Infraforge a filed step until the endpoint is confirmed | automatable once the endpoint is known |
+| 6 | warm-up on | API with the two Salesforge ids, else **Taylor's click** | `start_warmup`: Infraforge's export to Salesforge with `warmupActivated` when `INFRA_SALESFORGE_WORKSPACE` and `INFRA_WARMFORGE_WORKSPACE` are set; else a filed click in Warmforge. `infra warmup --go` runs the export later for mailboxes still waiting on the click and ticks it (B150) | the ids come with a Salesforge subscription (TODO § 1 "Warm-up: Warmforge") |
 | 7 | VERIFY | machine | DNS answers from 1.1.1.1 (`dig`), an SMTP and IMAP login per mailbox | the API's "ok" is never the proof |
 | 8 | COMMIT | machine | registry rows `warming`, the commit ledger line, a HISTORY line printed for Flint | — |
 | 9 | add the domain to Google Postmaster Tools | **Taylor** (one click and a paste) | filed by the tool at commit; the TXT value goes through `infra dns-txt D VALUE` | Postmaster has no API for adding a domain, and the account is his identity |
 | 10 | seed inboxes (once, not per domain) | **Taylor** | filed by `certify` or `seeds` when `INFRA_SEED_INBOXES` is empty | new Google and Microsoft accounts need a person (phone verification) |
 | 11 | seed sends, seven days | machine | `infra seeds send --all`, then `infra seeds read --all`, once a weekday | a schedule line Flint adds after the first commit (not built in this row) |
-| 12 | CERTIFY | machine | `infra certify D`: every check below, then `active` | — |
+| 12 | CERTIFY | machine | `infra certify D`, or the daily `infra tick` for every domain past its date: every check below, then `active` | — |
+| 13 | the lane | machine | nothing: `outreach` reads the registry (B150), so an `active` mailbox under a PERMITTED contract takes first letters from the next send window, under `OUTREACH_MAILBOX_PER_DAY` (its ramp counted from the mailbox's own day in `warming`) or its own registry cap | no env edit; `infra drain D` takes it out the same way |
 
 ## What `certify` checks (all of them, or the domain stays `warming`)
 
@@ -39,6 +40,23 @@ human one is human. Read it before a live run, and correct it the day something 
 - **The vendor's placement probe**, when the vendor has one: at or above the registry's floor (50% in the inbox);
   recorded as a `probe` reading. The lowest-trust signal; never the only one.
 - **No human step open** for the domain in TAYLOR-TODO (each is filed with `infra_step=<key>`; a ticked entry is closed).
+
+## The tick (B150): demand on a timer
+
+`infra tick` is `systemd/infra-tick.timer` (06:40 daily; Flint enables it, it isn't enabled by install). Every day it
+certifies each `committed` domain whose warming days are up (the same checks as `infra certify`; a failure is a line
+in its report and the proposal, never an exit code). On weekdays it runs the plan with the pool from `INFRA_POOL_CMD`
+(default `leads batch --stats --json`, whose `qualify` is the businesses a first letter may go to; `INFRA_POOL_KEY`
+picks another field) and writes `STATE/proposal.json`, whose `line` the morning message (`leads today`) prints for
+three days. When the plan wants units it names candidate domains (the venture's name with a verb before or a word
+after, checked with the vendor's availability call) and the exact `infra provision … --go` line for Taylor.
+
+It buys on its own only when **both** hold: sixty clean days and `INFRA_AUTO_PURCHASE=1`. Clean days are counted
+from the registry's own events, so no flag stands in for them: the first Factory COMMIT's `warming` starts the
+count; an incident on a Factory row, a drain on reputation or a rollback restarts it (a VERIFY that failed before
+its COMMIT doesn't: DNS propagating is the usual cause, and the re-run is the compensation). Then it runs the
+provision lines itself under `INFRA_USD_PER_DAY` and `INFRA_UNITS_PER_WEEK`, and stops at the first cap, the halt
+or an unknown purchase. Until then a purchase is Taylor's money and waits on his word.
 
 ## The control plane
 
@@ -67,8 +85,8 @@ Every operation is PLAN → APPLY → VERIFY → COMMIT, journalled in `~/.local
 A Factory mailbox's login lives in the toolbelt env under its registry row's id:
 `OUTREACH_MAILBOX_<ID>_PASSWORD`, `_USER`, `_SMTP`, `_IMAP`. `lib/outreach_mail.py credentials()` reads those
 first and falls back to the old `OUTREACH_APP_PASSWORD_<ADDRESS>` on the lane's hosts, so the Workspace mailboxes
-keep working unchanged and a Factory mailbox can be added to `OUTREACH_MAILBOXES` with nothing else set. Which
-mailboxes send cold, and when, is the registry's rule (`active` under a PERMITTED contract), not this file's.
+keep working unchanged, and a Factory mailbox needs no entry in `OUTREACH_MAILBOXES` at all (B150: the lane reads the
+registry). Which mailboxes send cold, and when, is the registry's rule (`active` under a PERMITTED contract), not this file's.
 Keys stay on this box: `infra` never runs inside a sandboxed or headless client run (plan 55 § 5.8).
 
 ## The Infraforge adapter: confirmed on the first live unit (2026-10-08)

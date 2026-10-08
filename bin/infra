@@ -15,6 +15,13 @@ this tool, with its repeat key and the exact click.
   infra seeds send D | --all      one probe from each mailbox of D to each seed inbox (INFRA_SEED_INBOXES)
   infra seeds read D | --all      where the probes landed (inbox or spam) and the receivers' SPF/DKIM/DMARC
   infra plan [--pool N] [--json]  what it would provision next and why; changes nothing
+  infra tick [--dry-run] [--force]  B150, the daily timer (systemd/infra-tick.timer): certify every warming domain
+                                  past its date; weekdays, the plan on INFRA_POOL_CMD (default `leads batch --stats
+                                  --json`), the proposal in STATE/proposal.json for the morning message, and after
+                                  sixty clean days with INFRA_AUTO_PURCHASE=1 the provision lines under the caps
+  infra warmup [--domain D] [--go]  B150: Warmforge's warm-up by API (the Salesforge export) for mailboxes whose
+                                  warm-up is still a filed click; needs INFRA_SALESFORGE_WORKSPACE and
+                                  INFRA_WARMFORGE_WORKSPACE
   infra status [--json]           the halt flag, operations in flight, the Factory's rows, open human steps
   infra drain D --why "…"         no first letters; open threads finish (registry only)
   infra retire D                  mailboxes deleted, auto-renew off, rows retired; refused with open threads
@@ -47,7 +54,9 @@ Env (names only; values are never printed):
   INFRA_UNITS_PER_WEEK (2)    the most domains it may start provisioning in seven days
   INFRA_AUTO_PURCHASE=1       after sixty clean days, a purchase no longer waits on `--go`
   INFRA_MAILBOX_CAP (15)      a mailbox's first-touch day in `plan`'s arithmetic
-  INFRA_POOL_CMD              a command printing the propositions' pool as a number (B135's)
+  INFRA_POOL_CMD              a command printing the pool as a number, or JSON with INFRA_POOL_KEY (default
+                              `qualify`); the tick's default is `leads batch --stats --json`
+  INFRA_SALESFORGE_WORKSPACE / INFRA_WARMFORGE_WORKSPACE   warm-up by API (B150); unset, a filed click
   INFRA_SEED_INBOXES          our own seed inboxes, comma-separated (a Gmail, an Outlook, a Workspace
                               address), never given to the vendor
   INFRA_SEED_PASSWORD_<ADDR> / INFRA_SEED_IMAP_<ADDR>   each seed's app password and IMAP host:port
@@ -334,6 +343,23 @@ def file_human_step(hs):
     return "filed"
 
 
+def todo_tick(step_key, note):
+    """Tick the entry this tool filed for `step_key` once the machine has done the step itself (B150: warm-up by
+    API). Only an entry carrying our own infra_step marker, and only when it is still open. -> True when ticked."""
+    lines = _todo_lines()
+    marker = f"infra_step={step_key} "
+    for i, l in enumerate(lines):
+        if marker in l + " " and "<!-- todo:" in l:
+            for j in range(i, -1, -1):
+                if lines[j].startswith("- ["):
+                    if not lines[j].startswith("- [ ]"):
+                        return False
+                    lines[j] = "- [x]" + lines[j][5:].rstrip("\n") + f" _(done by the Factory {today().isoformat()}: {note})_\n"
+                    TODO_FILE.write_text("".join(lines))
+                    return True
+    return False
+
+
 def note_human(hs, op=None):
     d = hs.as_dict() if isinstance(hs, HumanStep) else hs
     how = file_human_step(d)
@@ -575,20 +601,54 @@ def mailbox_locals(n):
     return shapes[:n]
 
 
-def clean_days():
-    """Days since the Factory's first committed unit without a rollback or incident after it (None: none yet)."""
+FACTORY_COMMIT = "provisioned by the Factory"     # the state_why COMMIT writes; the clean-day count starts at the first
+
+
+def clean_days(reg=None):
+    """Days since the Factory's first committed unit with nothing wrong after it (None: no unit yet).
+
+    Read from the registry's own events, the record of what happened, so no flag or setting can stand in for
+    it (B150): the first `warming` a Factory COMMIT wrote starts the count; an incident on a Factory row (its
+    domains and mailboxes, and the tenant and provider above them), a drain on reputation, or a rollback after that restarts it. A VERIFY that failed before its COMMIT is not counted:
+    DNS still propagating is the usual cause, and the re-run that commits is the compensation. history.jsonl's
+    rollbacks and incidents count as well, and its commits stand in when the registry has none."""
+    reg = reg or registry()
+    doms = set(factory_domains(reg))
+    snap = assets.snapshot(reg, V.tenant)
+    rows = {r["id"] for r in snap["rows"]
+            if (r["kind"] == "domain" and r["name"] in doms) or (r["kind"] == "mailbox" and r["name"].split("@")[-1] in doms)}
+    for r in snap["rows"]:              # a vendor-level suspension restarts the count too: the tenant and provider rows
+        if r["kind"] == "domain" and r["name"] in doms:
+            rows |= {p["id"] for p in r["parents"].values()}
+    evs = [e for e in reg.events(tenant=V.tenant, limit=1_000_000) if e["asset_id"] in rows]
     hist = read_jsonl(STATE / "history.jsonl")
-    commits = [h for h in hist if h.get("what") == "commit"]
-    if not commits:
+    starts = [str(e["ts"])[:10] for e in evs if e["kind"] == "state" and e["to_state"] == "warming"
+              and str(e["text"] or "").startswith(FACTORY_COMMIT)]
+    starts = starts or [h["ts"][:10] for h in hist if h.get("what") == "commit"]
+    if not starts:
         return None
-    start = min(h["ts"][:10] for h in commits)
-    bad = [h["ts"][:10] for h in hist if h.get("what") in ("rollback", "incident")]
+    start = min(starts)
+    bad = [str(e["ts"])[:10] for e in evs
+           if (e["kind"] == "incident" and not str(e["text"] or "").startswith("verify failed"))
+           or (e["kind"] == "state" and e["to_state"] == "draining" and str(e["text"] or "").startswith("reputation"))
+           or (e["kind"] == "state" and e["to_state"] == "retired" and "rolled back" in str(e["text"] or ""))]
+    bad += [h["ts"][:10] for h in hist if h.get("what") in ("rollback", "incident")]
+    bad = [b for b in bad if b >= start]
     if bad:
-        start = max(start, max(bad))
+        start = max(bad)
     return (today() - dt.date.fromisoformat(start)).days
 
 
-def purchase_authorised(go):
+FAKE_CLOCK_REFUSAL = ("INFRA_NOW is set (the test clock), so no real purchase is authorised: the clock decides the "
+                      "sixty clean days and the daily and weekly caps, and money is never spent on a made-up date. "
+                      "Unset it; the fake provider is the only one that buys under it")
+
+
+def purchase_authorised(go, provider=None):
+    """(ok, how). Taylor's go, or sixty clean days with INFRA_AUTO_PURCHASE=1. Never with the test clock set on a
+    real provider (B150): INFRA_NOW moves the clean days and the caps, so it can't be what lets money go."""
+    if os.environ.get("INFRA_NOW") and (provider or get("INFRA_PROVIDER", "infraforge")) != "fake":
+        return False, FAKE_CLOCK_REFUSAL
     if go:
         return True, "Taylor's go"
     days = clean_days()
@@ -670,7 +730,8 @@ def cmd_provision(args):
             raise Stop(f"{adapter.title} needs {', '.join(missing)} (TODO § 1 \"The production line's provider\"); "
                        "`--dry-run` prints the calls without them.", EXIT_REFUSED)
 
-    op = Op(f"provision-{domain}", adapter, dry=args.dry_run or not args.go, retry_purchase=args.retry_purchase,
+    applying = args.go or getattr(args, "auto", False)     # auto: the tick, after sixty clean days (B150)
+    op = Op(f"provision-{domain}", adapter, dry=args.dry_run or not applying, retry_purchase=args.retry_purchase,
             kind="provision", domain=domain, provider=pname, mailboxes=n, prewarmed=bool(args.prewarmed),
             locals=mailbox_locals(n))
     j = op.j
@@ -709,11 +770,11 @@ def cmd_provision(args):
                    else "warm-up on, the provider's schedule; fourteen days before certification"))
     say(f"  5. registry rows `warming`; then `infra certify {domain}`")
     say(f"  costs now: ${buy_cost:.2f}; then ${monthly:.2f} a month")
-    if not args.go:
+    if not args.go and not getattr(args, "auto", False):
         h, why = halted()
         say("")
         say("Nothing was bought or changed." + (f" (The factory is halted: {why}.)" if h else ""))
-        auth, how = purchase_authorised(False)
+        auth, how = purchase_authorised(False, pname)
         if auth:
             say(f"Authorised by {how}: re-run with --go to apply.")
         else:
@@ -723,9 +784,12 @@ def cmd_provision(args):
     if args.dry_run:
         say("\nDRY RUN: the calls, none made")
     elif op.new or not j.get("applied"):
-        auth, how = purchase_authorised(args.go)
+        auth, how = purchase_authorised(args.go, pname)
+        if not auth and how == FAKE_CLOCK_REFUSAL:
+            raise Stop(how, EXIT_REFUSED)
         if not auth:
-            raise Stop("a purchase waits on Taylor's go until sixty clean days", EXIT_REFUSED)
+            raise Stop("a purchase waits on Taylor's go until sixty clean days with INFRA_AUTO_PURCHASE=1 (money: "
+                       "the schedule earns the right to spend by sixty days of units that ran clean)", EXIT_REFUSED)
         limits_check(domain, buy_cost)
         require_unhalted(f"provisioning {domain}")
         j["applied"] = now_iso()
@@ -738,7 +802,7 @@ def cmd_provision(args):
     else:
         prow = provider_row(reg, pname)
         tid = tenant_row(reg, prow["id"], pname)
-        did = reg.ensure(V.tenant, "domain", domain, parent_id=tid, state="provisioning",
+        did = reg.ensure(V.tenant, "domain", domain, parent_id=tid, state="provisioning", now=now(),
                          note=f"the Factory ({pname}); operation provision-{domain}")
     if owned and not op.step("buy").get("status") and f"{op.id}:buy" not in ledger_keys():
         op.mark("buy", "done", result={"attached": True, "id": owned.get("id"), "prewarmed": owned.get("prewarmed")})
@@ -757,7 +821,7 @@ def cmd_provision(args):
             op.call(name, "create_mailbox", {"address": addr}, lambda key, l=local: adapter.create_mailbox(domain, l, "{generated}", key),
                     cost=prices["mailbox_usd_month"])
             continue
-        mid = reg.ensure(V.tenant, "mailbox", addr, parent_id=did, state="provisioning")
+        mid = reg.ensure(V.tenant, "mailbox", addr, parent_id=did, state="provisioning", now=now())
         reg.set_fields(mid, note=f"credentials: {mail.asset_prefix(mid)}*  (the Factory, {pname})")
         p = mail.asset_prefix(mid)
         if not get(p + "PASSWORD"):
@@ -787,7 +851,7 @@ def cmd_provision(args):
     if failures:
         j["verify"] = {"ts": now_iso(), "failures": failures}
         op.phase("verify-failed")
-        reg.incident(did, "verify failed: " + "; ".join(failures))
+        reg.incident(did, "verify failed: " + "; ".join(failures), now=now())
         say("VERIFY failed:")
         for f in failures:
             say(f"  - {f}")
@@ -800,7 +864,8 @@ def cmd_provision(args):
     if not seed_inboxes():
         note_human(seeds_step(), op)      # filed now: the seven days of seed sends belong inside the warm-up
     open_titles = [h["title"] for k, h in j.get("human", {}).items() if todo_state(k) != "done"]
-    reg.set_state(did, "warming", f"provisioned by the Factory ({pname}); verified {today().isoformat()}", cascade=True)
+    reg.set_state(did, "warming", f"{FACTORY_COMMIT} ({pname}); verified {today().isoformat()}", cascade=True,
+                  now=now())
     reg.set_fields(did, cost_usd_month=round(prices["domain_usd_year"] / 12, 2), human_steps_open=open_titles)
     for addr, mid in j.get("assets", {}).items():
         reg.set_fields(mid, cost_usd_month=prices["mailbox_usd_month"])
@@ -1044,17 +1109,26 @@ def cmd_certify(args):
     if args.dry_run:
         say(f"\nEvery check passes; without --dry-run {domain} and its mailboxes go `active`.")
         return
+    h = certify_commit(reg, j, checks)
+    say(f"\n{domain} and its mailboxes are `active`; the lane sends from them from the next send window "
+        "(B150: the registry's rotation, under OUTREACH_MAILBOX_PER_DAY's ramp from their own warm-up, or a cap set "
+        "with `outreach assets set`).")
+    say(f"HISTORY: {h['ts'][:10]} — infra certify {domain}: active.")
+
+
+def certify_commit(reg, j, checks):
+    """Every check passed: the domain and its mailboxes `active` (which is all it takes to join the lane), the
+    journal, the ledger and the history line."""
+    domain = j["domain"]
+    row = reg.find(V.tenant, f"domain:{domain}")
     reg.set_state(row["id"], "active", f"certified {today().isoformat()}: " + "; ".join(n for n, _, _ in checks),
-                  cascade=True)
+                  cascade=True, now=now())
     reg.set_fields(row["id"], human_steps_open=[])
     j["phase"], j["certified"] = "certified", now_iso()
     (ops_dir() / f"{j['id']}.json").write_text(json.dumps(j, indent=1, sort_keys=True))
     ledger_line("certify", op=j["id"], key=f"{j['id']}:certify", provider=j["provider"], cost_usd=0,
                 result={"domain": domain, "state": "active"})
-    h = history("certify", domain=domain)
-    say(f"\n{domain} and its mailboxes are `active`; the registry's rotation may route through them "
-        "(the mailbox caps are the lane's ramp, set with `outreach assets set`).")
-    say(f"HISTORY: {h['ts'][:10]} — infra certify {domain}: active.")
+    return history("certify", domain=domain)
 
 
 # ---- drain, retire, rollback -----------------------------------------------------------------
@@ -1063,7 +1137,8 @@ def cmd_drain(args):
     reg = registry()
     try:
         row = reg.find(V.tenant, f"domain:{args.domain.lower()}")
-        changed = reg.set_state(row["id"], "draining", args.why or "drained by hand (infra drain)", cascade=True)
+        changed = reg.set_state(row["id"], "draining", args.why or "drained by hand (infra drain)", cascade=True,
+                                now=now())
     except assets.AssetError as exc:
         die(str(exc))
     for kind, name, a, b in changed:
@@ -1101,7 +1176,8 @@ def release(op, reg, domain, why, final_state):
     try:
         row = reg.find(V.tenant, f"domain:{domain}")
         state = final_state if not threads else "draining"
-        reg.set_state(row["id"], state, why, open_threads=0 if state != "retired" else threads, cascade=True)
+        reg.set_state(row["id"], state, why, open_threads=0 if state != "retired" else threads, cascade=True,
+                      now=now())
     except assets.AssetError as exc:
         say(f"  registry: {exc}")
 
@@ -1211,6 +1287,293 @@ def cmd_resume(args):
         say(f"Still halted: {why} (lift it where it was set).")
 
 
+# ---- warm-up by API (B150) ------------------------------------------------------------------
+# Infraforge doesn't warm; Warmforge does (Taylor, 2026-10-08). The one API path is Infraforge's export to a
+# Salesforge workspace with warm-up on (lib/providers/infraforge.py start_warmup), which needs
+# INFRA_SALESFORGE_WORKSPACE and INFRA_WARMFORGE_WORKSPACE. With both set, provision's warm-up step is that call;
+# without them it is a filed click. `infra warmup` runs the call for mailboxes already provisioned whose step is
+# still a click, so "warmforge in" is one command.
+
+SALESFORGE_IDS = ("INFRA_SALESFORGE_WORKSPACE", "INFRA_WARMFORGE_WORKSPACE")
+
+
+def warmup_pending(domain=None, by_hand=None):
+    """[(op journal, address, step status)] for every Factory mailbox whose warm-up isn't done. A step whose filed
+    click is ticked in TAYLOR-TODO was done (by hand, or by an export someone ran) and is never called again: a
+    second export could enrol the mailbox twice. Those go into `by_hand` when a list is passed."""
+    out = []
+    for j in all_ops():
+        if j.get("kind") != "provision" or j.get("prewarmed") or j.get("phase") == "rolled_back":
+            continue
+        if domain and j.get("domain") != domain:
+            continue
+        for addr in j.get("assets", {}):
+            st = (j.get("steps") or {}).get(f"warmup:{addr}") or {}
+            if st.get("status") == "done":
+                continue
+            if st.get("status") == "human" and todo_state(f"warmup:{addr}") == "done":
+                if by_hand is not None:
+                    by_hand.append((j, addr))
+                continue
+            out.append((j, addr, st.get("status") or "not started"))
+    return out
+
+
+def cmd_warmup(args):
+    by_hand = []
+    pend = warmup_pending(args.domain.lower() if args.domain else None, by_hand)
+    have = [k for k in SALESFORGE_IDS if get(k)]
+    for j, addr in by_hand:
+        say(f"  {addr}: done (its click is ticked in TAYLOR-TODO), not called again")
+        if args.go:                         # the journal catches up with what happened; nothing external
+            op = Op(j["id"], None)
+            op.mark(f"warmup:{addr}", "done", verified_by="ticked in TAYLOR-TODO")
+    say(f"warm-up: {len(pend)} Factory mailbox(es) wait on it" + ("" if pend else "; nothing to do"))
+    for j, addr, st in pend:
+        say(f"  {addr} ({j['domain']}): {st}")
+    if not pend:
+        return
+    if not args.go:
+        say("Without --go nothing is called. " + (
+            "Both workspace ids are set, so --go exports them to Warmforge with warm-up on." if len(have) == 2 else
+            f"{' and '.join(k for k in SALESFORGE_IDS if k not in have)} unset: the export can't be called, so each "
+            "stays a click in Warmforge (TODO § 1)."))
+        return
+    done = clicks = failed = 0
+    reg = registry()
+    for j, addr, _ in pend:
+        adapter = providers.get(j["provider"], get, say=say)
+        op = Op(j["id"], adapter)
+        name = f"warmup:{addr}"
+        op.j["steps"].setdefault(name, {})["status"] = "pending"     # a filed click is asked again, by API now
+        try:
+            got = op.call(name, "start_warmup", {"address": addr}, lambda key, a=addr: adapter.start_warmup(a, key))
+        except Stop as exc:
+            failed += 1
+            say(f"  {addr}: {exc}")
+            if exc.code == EXIT_HALTED:
+                raise
+            continue
+        if isinstance(got, dict) and got.get("human"):
+            clicks += 1
+            say(f"  {addr}: still a click (the export needs {' and '.join(SALESFORGE_IDS)}); it stays in TODO § 1")
+            continue
+        try:
+            w = adapter.warmup(addr)
+        except ProviderError:
+            w = None
+        how = ("read back: the vendor shows it enrolled" if w and w.get("enrolled") else
+               "the call's 2xx (the vendor shows no warm-up state to read back)" if w is None else None)
+        if how is None:
+            failed += 1
+            op.mark(name, "failed", error="the vendor answered the export but shows the mailbox not enrolled")
+            say(f"  {addr}: exported, but the vendor shows it not enrolled; re-run, or look in Warmforge")
+            continue
+        op.j["steps"][name]["verified_by"] = how
+        hk = (op.j.get("human") or {}).pop(name, None) and name
+        op.save()
+        ticked = todo_tick(name, "warm-up switched on by API") if hk or todo_state(name) == "open" else False
+        aid = mail.asset_id_of(addr, V.tenant, reg.path)
+        if aid is not None:
+            reg.set_fields(aid, note=f"warm-up: Warmforge by API ({today().isoformat()})")
+        done += 1
+        say(f"  {addr}: warm-up on ({how})" + ("; its TODO entry ticked" if ticked else ""))
+    history("warmup", done=done, clicks=clicks, failed=failed)
+    say(f"{done} on, {clicks} still a click, {failed} failed.")
+    if failed:
+        sys.exit(1)
+
+
+# ---- the tick: certify what's due, plan, propose, and (after sixty clean days) buy (B150) ---------------------
+
+def proposal_path():
+    """What the morning message reads (`leads today`): the tick's latest proposal, one JSON file."""
+    return STATE / "proposal.json"
+
+
+def name_candidates(reg):
+    """Sending-domain names for the venture, in the shapes the first unit used: a verb before the venture's own
+    name, or a short word after it. Never the product's site, a name the registry or a journal already has, or
+    one of the venture's own sending domains."""
+    base = re.sub(r"[^a-z0-9]", "", V.venture_name.lower())
+    known = ({r["name"] for r in reg.rows(V.tenant) if r["kind"] == "domain"} | {j.get("domain") for j in all_ops()}
+             | {d.lower() for d in V.outreach.domains} | {V.site_host})
+    shapes = ([f"{p}{base}.com" for p in ("get", "try", "use", "meet", "hello", "with", "go", "join")]
+              + [f"{base}{x}.com" for x in ("hq", "app", "team", "mail", "now", "co")])
+    return [d for d in shapes if d not in known]
+
+
+def pick_names(adapter, reg, k):
+    """-> ([available names, up to k], checked: bool, [notes]). A name is only bought once the vendor said it's
+    available; when it can't be asked, the names are suggestions marked unchecked."""
+    names, notes = [], []
+    for d in name_candidates(reg):
+        if len(names) >= k:
+            break
+        try:
+            a = adapter.available(d)
+        except (ProviderError, HumanStep) as exc:
+            notes.append(f"couldn't ask {adapter.title} about names ({exc})")
+            return name_candidates(reg)[:k], False, notes
+        if a.get("available"):
+            names.append(d)
+    return names, True, notes
+
+
+def due_for_certify():
+    """[(op journal, due date)] for every committed Factory domain, its date past or not."""
+    out = []
+    for j in all_ops():
+        if j.get("kind") == "provision" and j.get("phase") == "committed" and j.get("warming_since"):
+            need = PREWARMED_DAYS if j.get("prewarmed") else WARM_DAYS
+            out.append((j, dt.date.fromisoformat(j["warming_since"]) + dt.timedelta(days=need)))
+    return out
+
+
+def cmd_tick(args):
+    """The Factory's daily run (systemd/infra-tick.timer). Certify every warming domain past its date, every day;
+    on weekdays, the plan with the pool from INFRA_POOL_CMD (default `leads batch --stats --json`), the proposal
+    filed where the morning message reads it, and — only after sixty clean days with INFRA_AUTO_PURCHASE=1 — the
+    provision lines run under INFRA_USD_PER_DAY and INFRA_UNITS_PER_WEEK. Before that a purchase waits on
+    Taylor's go: money is his until the schedule has run sixty days clean. It never exits non-zero for what it
+    found; a check that fails or a step it couldn't take is in the report and the proposal, with the reason."""
+    reg = registry()
+    t = today()
+    prop = {"date": t.isoformat(), "ts": now_iso(), "certified": [], "certify_failed": {}, "bought": [],
+            "problems": [], "lines": []}
+    say(f"infra tick {t.isoformat()} for {V.name}")
+    # 1. certification, every day
+    for j, due in due_for_certify():
+        if due > t:
+            say(f"  certify {j['domain']}: due {due.isoformat()}")
+            continue
+        try:
+            checks = certify_checks(reg, j)
+        except (Exception, SystemExit) as exc:     # Rule 8: say what couldn't be checked, and carry on
+            prop["problems"].append(f"certify {j['domain']}: couldn't run the checks ({type(exc).__name__}: {exc})")
+            say(f"  certify {j['domain']}: couldn't run the checks ({exc})")
+            continue
+        bad = [f"{n}: {why}" for n, ok, why in checks if not ok]
+        if bad:
+            prop["certify_failed"][j["domain"]] = bad
+            say(f"  certify {j['domain']}: stays warming — " + "; ".join(bad))
+            continue
+        if args.dry_run:
+            say(f"  certify {j['domain']}: every check passes (dry run: not moved)")
+            continue
+        try:
+            certify_commit(reg, j, checks)
+        except (Exception, SystemExit) as exc:
+            prop["problems"].append(f"certify {j['domain']}: the checks passed but the commit failed "
+                                    f"({type(exc).__name__}: {exc})")
+            continue
+        prop["certified"].append(j["domain"])
+        say(f"  certify {j['domain']}: every check passes; active, in the lane from the next send window")
+    if prop["certified"]:
+        prop["lines"].append(f"Factory: {', '.join(prop['certified'])} certified today; the lane sends from it from "
+                             "the next send window.")
+    # 2. the plan, on weekdays
+    try:
+        if t.weekday() < 5 or args.force:
+            pool, src = pool_size(args, default_cmd=DEFAULT_POOL_CMD)
+            n, lines = plan_report(reg, pool, src)
+            for line in lines[1:]:
+                say(line)
+            prop.update(pool=pool, pool_source=src, units_wanted=n["units_wanted"], uncovered=n["uncovered"],
+                        clean_days=clean_days(reg))
+            if pool is None:
+                prop["problems"].append(f"no pool: {src}")
+            if n["units_wanted"]:
+                pname = get("INFRA_PROVIDER", "infraforge")
+                adapter = providers.get(pname, get, say=say)
+                want = min(2 * n["units_wanted"], n["units_left_this_week"])
+                names, checked, notes = pick_names(adapter, reg, max(want, 1))
+                prop["problems"] += notes
+                prop.update(names=names, names_checked=checked, provider=pname)
+                prop["commands"] = [f"infra provision --domain {d} --mailboxes 2 --provider {pname} --go" for d in names]
+                auth, how = purchase_authorised(False, pname)
+                h, hwhy = halted()
+                days = prop["clean_days"]
+                if auth and not h and checked and want > 0:
+                    prop["auto"] = how
+                    for d in names[:want]:
+                        if args.dry_run:
+                            say(f"  would buy {d} ({how}); dry run")
+                            continue
+                        ns = argparse.Namespace(domain=d, mailboxes=2, provider=pname, prewarmed=False, go=False, auto=True,
+                                                dry_run=False, retry_purchase=False)
+                        try:
+                            cmd_provision(ns)
+                            prop["bought"].append(d)
+                        except Stop as exc:
+                            prop["problems"].append(f"{d}: {exc}")
+                            say(f"  {d}: {exc}")
+                            if exc.code in (EXIT_REFUSED, EXIT_HALTED, EXIT_UNCERTAIN):
+                                break        # a cap, the halt or an unknown purchase: no second name today
+                        except (Exception, SystemExit) as exc:   # die(), a provider or registry error: said, not raised
+                            prop["problems"].append(f"{d}: {type(exc).__name__}: {exc}")
+                            say(f"  {d}: couldn't ({type(exc).__name__}: {exc})")
+                            break
+                    prop["lines"].append(f"Factory: bought {', '.join(prop['bought']) or 'nothing'} on its own ({how})"
+                                         + (f"; {'; '.join(prop['problems'][-2:])}" if prop["problems"] else "") + ".")
+                else:
+                    if how == FAKE_CLOCK_REFUSAL:
+                        why = how
+                    elif want <= 0:
+                        why = "this week's INFRA_UNITS_PER_WEEK is spent"
+                    elif h:
+                        why = f"the factory is halted ({hwhy})"
+                    elif auth and not checked:
+                        why = "the names couldn't be checked with the vendor"
+                    else:
+                        why = (f"a purchase waits on Taylor's go until sixty clean days "
+                               f"({'no unit yet' if days is None else f'{days} of 60'}"
+                               + (", and INFRA_AUTO_PURCHASE isn't 1" if get("INFRA_AUTO_PURCHASE") != "1" else "") + ")")
+                    prop["auto"] = None
+                    prop["waits"] = why
+                    cost = adapter.prices()
+                    first = prop["commands"][0] if prop["commands"] else "infra provision --domain <a name> --mailboxes 2 --go"
+                    prop["lines"].append(
+                        f"Factory: the pool ({pool}) outruns thirty days' capacity by {n['uncovered']:g} → "
+                        f"{n['units_wanted']} unit(s) of 2 domains × 2 mailboxes, about ${cost['domain_usd_year']:.0f} a "
+                        f"domain and ${2 * cost['mailbox_usd_month']:.0f} a month for its two mailboxes. {why[0].upper() + why[1:]}. "
+                        f"Taylor's go buys one: {first}"
+                        + ("" if checked else " (name not checked with the vendor)") + ".")
+            say(f"  clean days: {prop['clean_days'] if prop['clean_days'] is not None else 'no unit committed yet'} of {CLEAN_DAYS}")
+        else:
+            say("  plan: weekends only certify")
+    except (Exception, SystemExit) as exc:      # Rule 8: the tick says what it couldn't and why, and files the rest
+        prop["problems"].append(f"the plan: {type(exc).__name__}: {exc}")
+        say(f"  the plan couldn't run ({type(exc).__name__}: {exc})")
+    prop["line"] = " ".join(prop["lines"])
+    for p in prop["problems"]:
+        say(f"  couldn't: {p}")
+    if not args.dry_run:
+        STATE.mkdir(parents=True, exist_ok=True)
+        tmp = proposal_path().with_suffix(".tmp")
+        tmp.write_text(json.dumps(prop, indent=1, sort_keys=True))
+        tmp.replace(proposal_path())
+        history("tick", certified=prop["certified"], bought=prop["bought"], units_wanted=prop.get("units_wanted"))
+    say("proposal: " + (prop["line"] or "nothing to say") + ("" if args.dry_run else f"  ({proposal_path()})"))
+
+
+def factory_week(reg):
+    """(4) What the Factory added to the lane this week, in one line, and its numbers."""
+    doms = set(factory_domains(reg))
+    rows = [r for r in reg.rows(V.tenant) if r["kind"] == "mailbox" and r["name"].split("@")[-1] in doms]
+    mv = assets.week_moves(reg, V.tenant, (today() - dt.timedelta(days=7)).isoformat(), {r["name"] for r in rows})
+    active = sum(1 for r in rows if r["state"] == "active")
+    warming = sum(1 for r in rows if r["state"] in ("warming", "provisioning"))
+    nxt = sorted((due, j["domain"]) for j, due in due_for_certify())
+    line = (f"this week the Factory added {len(mv['joined'])} mailbox(es) to the lane"
+            + (f" ({', '.join(mv['joined'])})" if mv["joined"] else "")
+            + f", {len(mv['left'])} left" + (f" ({', '.join(mv['left'])})" if mv["left"] else "")
+            + f"; {active} active, {warming} warming"
+            + (f"; next certification {nxt[0][0].isoformat()} ({nxt[0][1]})" if nxt else ""))
+    return line, {"joined": mv["joined"], "left": mv["left"], "active": active, "warming": warming,
+                  "next_certification": nxt[0][0].isoformat() if nxt else None}
+
+
 # ---- status, plan, doctor ---------------------------------------------------------------------
 
 def cmd_status(args):
@@ -1231,13 +1594,23 @@ def cmd_status(args):
             "ops": [{"id": j["id"], "phase": j.get("phase"), "domain": j.get("domain"),
                      "steps": {k: v.get("status") for k, v in j.get("steps", {}).items()}} for j in ops],
             "rows": [{"kind": r["kind"], "name": r["name"], "state": r["state"]} for r in rows],
-            "human_open": human, "clean_days": clean_days()}
+            "human_open": human, "clean_days": clean_days(reg)}
+    week, data["week"] = factory_week(reg)
+    data["week_line"] = week
     if args.json:
         print(json.dumps(data, indent=1, sort_keys=True))
         return
     say(f"The Factory for {V.name} (tenant {V.tenant})")
     say(f"  halt: {'HALTED — ' + why if h else 'off'}")
-    say(f"  clean days: {data['clean_days'] if data['clean_days'] is not None else 'no unit committed yet'}")
+    say(f"  {week}")
+    say(f"  clean days: {data['clean_days'] if data['clean_days'] is not None else 'no unit committed yet'} of "
+        f"{CLEAN_DAYS} (a purchase waits on Taylor's go until then; INFRA_AUTO_PURCHASE="
+        f"{'1' if get('INFRA_AUTO_PURCHASE') == '1' else 'unset'})")
+    try:
+        prop = json.loads(proposal_path().read_text())
+        say(f"  the tick, {prop.get('date')}: {prop.get('line') or 'nothing to propose'}")
+    except (OSError, json.JSONDecodeError):
+        say("  the tick: hasn't run (systemd/infra-tick.timer)")
     if not ops:
         say("  no operations yet")
     for j in ops:
@@ -1252,17 +1625,34 @@ def cmd_status(args):
         say(f"  waits on Taylor: {x['title']} ({x['todo']})")
 
 
-def pool_size(args):
-    if args.pool is not None:
+DEFAULT_POOL_CMD = "leads batch --stats --json"   # the tick's pool when INFRA_POOL_CMD is unset (B150)
+DEFAULT_POOL_KEY = "qualify"                      # in its JSON: businesses a first letter may go to, after exclusions
+
+
+def run_pool_cmd(cmd):
+    """-> (n, source). The command prints a number, or JSON whose INFRA_POOL_KEY (default `qualify`, what
+    `leads batch --stats --json` calls the businesses that qualify for a first letter) is the number."""
+    try:
+        r = subprocess.run(shlex.split(cmd), capture_output=True, text=True, timeout=300)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return None, f"{cmd} didn't run ({type(exc).__name__})"
+    out = r.stdout.strip()
+    try:
+        if out.startswith("{"):
+            key = get("INFRA_POOL_KEY", DEFAULT_POOL_KEY)
+            return int(json.loads(out)[key]), f"{cmd} ({key})"
+        return int(out.split()[0]), cmd
+    except (ValueError, IndexError, KeyError, TypeError):
+        return None, f"{cmd} gave no number" + (f" (exit {r.returncode})" if r.returncode else "")
+
+
+def pool_size(args, default_cmd=None):
+    if getattr(args, "pool", None) is not None:
         return int(args.pool), "--pool"
-    cmd = get("INFRA_POOL_CMD")
+    cmd = get("INFRA_POOL_CMD") or default_cmd
     if cmd:
-        try:
-            r = subprocess.run(shlex.split(cmd), capture_output=True, text=True, timeout=120)
-            return int(r.stdout.strip().split()[0]), cmd
-        except (OSError, ValueError, IndexError, subprocess.TimeoutExpired):
-            return None, f"{cmd} gave no number"
-    return None, "unknown (INFRA_POOL_CMD unset; B135's leads gives the count, or pass --pool N)"
+        return run_pool_cmd(cmd)
+    return None, ("unknown (INFRA_POOL_CMD unset; `infra tick` asks `" + DEFAULT_POOL_CMD + "`, or pass --pool N)")
 
 
 def plan_numbers(reg, pool):
@@ -1289,41 +1679,52 @@ def plan_numbers(reg, pool):
             "share_behind_one_contract": share}
 
 
+def units_left_this_week():
+    week_ago = (now() - dt.timedelta(days=7)).isoformat()
+    started = len({j["domain"] for j in all_ops() if j.get("kind") == "provision" and str(j.get("applied") or "") >= week_ago})
+    return max(0, int(env_num("INFRA_UNITS_PER_WEEK", DEFAULT_UNITS_PER_WEEK, int)) - started)
+
+
+def plan_report(reg, pool, src):
+    """The plan's numbers and its sentences, for `infra plan` and the tick. -> (n, [lines])."""
+    n = plan_numbers(reg, pool)
+    per_day = env_num("INFRA_USD_PER_DAY", DEFAULT_USD_PER_DAY)
+    n.update(pool_source=src, units_left_this_week=units_left_this_week(),
+             usd_left_today=round(per_day - spent_today(), 2), halted=halted()[0])
+    lines = [f"infra plan for {V.name} — what the Factory would provision next, and why. Nothing is done.",
+             f"  demand: the propositions' pool is {pool if pool is not None else '?'} ({src})",
+             f"  supply: active mailboxes carry {n['active_first_per_day']:g} first letters a weekday, "
+             f"{n['active_30d']:g} in thirty days; warming ones add {n['warming_30d']:g} once certified"]
+    if n["permitted_contracts"] <= 1:
+        lines.append(f"  the rule: no contract carries more than half of first-touch capacity, so with one PERMITTED "
+                     f"contract each new unit (2 domains × 2 mailboxes) adds {n['unit_first_per_day']:g} a weekday, not "
+                     f"{n['unit_first_per_day'] * 2:g}. A second contract (a second vendor, or our own server) is the "
+                     "bigger lever once the registry asks for one (past ~50 mailboxes).")
+    if pool is None:
+        lines.append("  verdict: can't say without the pool; nothing proposed.")
+    elif not n["units_wanted"]:
+        lines.append("  verdict: the active and warming lanes cover the pool for thirty days; nothing to provision.")
+    else:
+        k = n["units_wanted"]
+        lines.append(f"  verdict: {n['uncovered']:g} prospects uncovered in thirty days → {k} unit(s) of 2 domains × "
+                     f"2 mailboxes ({2 * k} provision lines, one a domain)")
+        lines.append(f"  limits: {n['units_left_this_week']} domain(s) left this week (INFRA_UNITS_PER_WEEK), "
+                     f"${n['usd_left_today']:.2f} left today (INFRA_USD_PER_DAY)"
+                     + ("; the factory is HALTED" if n["halted"] else ""))
+        lines.append("  each domain is one line, Taylor's `go` before the first purchase:")
+        lines.append("    infra provision --domain <a name you pick> --mailboxes 2 --go")
+    return n, lines
+
+
 def cmd_plan(args):
     reg = registry()
     pool, src = pool_size(args)
-    n = plan_numbers(reg, pool)
-    per_day = env_num("INFRA_USD_PER_DAY", DEFAULT_USD_PER_DAY)
-    week_ago = (now() - dt.timedelta(days=7)).isoformat()
-    started = len({j["domain"] for j in all_ops() if j.get("kind") == "provision" and str(j.get("applied") or "") >= week_ago})
-    units_left = max(0, int(env_num("INFRA_UNITS_PER_WEEK", DEFAULT_UNITS_PER_WEEK, int)) - started)
-    n.update(pool_source=src, units_left_this_week=units_left, usd_left_today=round(per_day - spent_today(), 2),
-             halted=halted()[0])
+    n, lines = plan_report(reg, pool, src)
     if args.json:
         print(json.dumps(n, indent=1, sort_keys=True))
         return
-    say(f"infra plan for {V.name} — what the Factory would provision next, and why. Nothing is done.")
-    say(f"  demand: the propositions' pool is {pool if pool is not None else '?'} ({src})")
-    say(f"  supply: active mailboxes carry {n['active_first_per_day']:g} first letters a weekday, "
-        f"{n['active_30d']:g} in thirty days; warming ones add {n['warming_30d']:g} once certified")
-    if n["permitted_contracts"] <= 1:
-        say(f"  the rule: no contract carries more than half of first-touch capacity, so with one PERMITTED "
-            f"contract each new unit (2 domains × 2 mailboxes) adds {n['unit_first_per_day']:g} a weekday, not "
-            f"{n['unit_first_per_day'] * 2:g}. A second contract (a second vendor, or our own server) is the "
-            "bigger lever once the registry asks for one (past ~50 mailboxes).")
-    if pool is None:
-        say("  verdict: can't say without the pool; nothing proposed.")
-    elif not n["units_wanted"]:
-        say("  verdict: the active and warming lanes cover the pool for thirty days; nothing to provision.")
-    else:
-        k = n["units_wanted"]
-        say(f"  verdict: {n['uncovered']:g} prospects uncovered in thirty days → {k} unit(s) of 2 domains × "
-            f"2 mailboxes ({2 * k} provision lines, one a domain)")
-        say(f"  limits: {units_left} domain(s) left this week (INFRA_UNITS_PER_WEEK), "
-            f"${n['usd_left_today']:.2f} left today (INFRA_USD_PER_DAY)"
-            + ("; the factory is HALTED" if n["halted"] else ""))
-        say("  each domain is one line, Taylor's `go` before the first purchase:")
-        say("    infra provision --domain <a name you pick> --mailboxes 2 --go")
+    for line in lines:
+        say(line)
 
 
 def cmd_doctor(args):
@@ -1348,6 +1749,12 @@ def cmd_doctor(args):
     verdict = (prow or {}).get("contract") or assets.CONTRACTS.get(pname, {}).get("contract") or "unreviewed"
     say(f"  contract verdict: {verdict}" + ("" if verdict == "PERMITTED" else "  (provision refuses until PERMITTED)"))
     ok = ok and verdict == "PERMITTED"
+    have = [k for k in SALESFORGE_IDS if get(k)]
+    say("  warm-up by API: " + ("on (" + ", ".join(SALESFORGE_IDS) + " set)" if len(have) == 2 else
+                                "off: " + " and ".join(k for k in SALESFORGE_IDS if k not in have)
+                                + " unset, so warm-up is a filed click (`infra warmup` once they're set)"))
+    say(f"  the tick's pool: {get('INFRA_POOL_CMD') or DEFAULT_POOL_CMD}"
+        + ("" if get("INFRA_POOL_CMD") else " (the default)"))
     seeds = seed_inboxes()
     say(f"  seed inboxes: {len(seeds)}" + ("" if seeds else "  (INFRA_SEED_INBOXES; certification needs them)"))
     for s in seeds:
@@ -1389,6 +1796,16 @@ def main():
     s.add_argument("--pool", type=int)
     s.add_argument("--json", action="store_true")
     s.set_defaults(fn=cmd_plan)
+    s = sub.add_parser("tick", help="the daily run: certify what's due; weekdays plan, propose, and buy only "
+                                     "after sixty clean days with INFRA_AUTO_PURCHASE=1")
+    s.add_argument("--pool", type=int)
+    s.add_argument("--force", action="store_true", help="plan on a weekend too")
+    s.add_argument("--dry-run", action="store_true")
+    s.set_defaults(fn=cmd_tick)
+    s = sub.add_parser("warmup", help="Warmforge's warm-up by API for the Factory's mailboxes still waiting on it")
+    s.add_argument("--domain")
+    s.add_argument("--go", action="store_true")
+    s.set_defaults(fn=cmd_warmup)
     s = sub.add_parser("status")
     s.add_argument("--json", action="store_true")
     s.set_defaults(fn=cmd_status)

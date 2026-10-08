@@ -327,6 +327,10 @@ class OutreachAssetsTest(unittest.TestCase):
 
     def test_check_fails_when_workspace_could_send(self):
         self.run_it("assets", "--check")
+        # B150: the env's cap never lands on a PROHIBITED row (the lane gives it 0), so a lane-wide 5 is quiet;
+        # a cap set on the row itself is the breach
+        self.run_it("assets", "--check", OUTREACH_MAILBOX_PER_DAY="5")
+        self.run_it("assets", "set", "a@send.example", "--cap", "5")
         r = self.run_it("assets", "--check", expect=1, OUTREACH_MAILBOX_PER_DAY="5")
         self.assertIn("cold-mail cap of 5 today under contract PROHIBITED", r.stdout)
         st = self.run_it("status", OUTREACH_MAILBOX_PER_DAY="5").stdout

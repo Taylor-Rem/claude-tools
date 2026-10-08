@@ -1,0 +1,9 @@
+[Unit]
+Description=The Factory's tick at 06:40 daily, before the morning message (it buys nothing before sixty clean days and INFRA_AUTO_PURCHASE=1; until then it proposes)
+
+[Timer]
+OnCalendar=*-*-* 06:40:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,7 @@
+[Unit]
+Description=The Factory's daily tick (infra tick; ROADMAP B150, plan 55 § 5.7): certify what's due; weekdays, the plan, the proposal for the morning message, and a purchase only after sixty clean days with INFRA_AUTO_PURCHASE=1
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/infra tick
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin

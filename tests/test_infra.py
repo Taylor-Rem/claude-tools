@@ -357,5 +357,173 @@ class CredentialsTest(unittest.TestCase):
         self.assertEqual(mail.auth_results(raw), {"spf": "softfail", "dkim": "pass", "dmarc": "fail"})
 
 
+class TickTest(Base):
+    """B150: the daily tick. It certifies what's due, proposes a unit when the pool outruns thirty days of
+    capacity, files the proposal for the morning message, and buys nothing until sixty clean days."""
+
+    def pool(self, n):
+        script = self.tmp / "pool.py"
+        script.write_text(f"import json; print(json.dumps({{'qualify': {n}, 'with_address': 9999}}))\n")
+        return f"{sys.executable} {script}"
+
+    def proposal(self):
+        return json.loads((self.tmp / "infra" / "proposal.json").read_text())
+
+    def test_proposes_a_unit_and_buys_nothing_before_sixty_days(self):
+        r = self.run_infra("tick", INFRA_POOL_CMD=self.pool(2000), INFRA_AUTO_PURCHASE="1")
+        p = self.proposal()
+        self.assertEqual(p["units_wanted"], 4)
+        self.assertEqual(p["bought"], [])
+        self.assertEqual(len(p["names"]), 2)                       # INFRA_UNITS_PER_WEEK's two
+        self.assertIn("waits on Taylor's go until sixty clean days (no unit yet)", p["line"])
+        self.assertIn("infra provision --domain", p["line"])
+        self.assertNotIn("purchases", self.fake())
+        self.assertIn("proposal: Factory:", r.stdout)
+        self.provision()                                            # a unit, Taylor's go: day 0 of 60
+        self.run_infra("tick", INFRA_POOL_CMD=self.pool(2000), INFRA_AUTO_PURCHASE="1",
+                       INFRA_NOW="2026-11-20T15:00:00+00:00")
+        p = self.proposal()
+        self.assertEqual(p["clean_days"], 43)
+        self.assertEqual(p["bought"], [])
+        self.assertIn("43 of 60", p["line"])
+        self.assertEqual(list(self.fake()["purchases"]), [D])
+
+    def test_covered_pool_proposes_nothing(self):
+        self.run_infra("tick", INFRA_POOL_CMD=self.pool(0))
+        p = self.proposal()
+        self.assertEqual(p["units_wanted"], 0)
+        self.assertEqual(p["line"], "")
+
+    def test_no_pool_is_said_not_guessed(self):
+        r = self.run_infra("tick", INFRA_POOL_CMD=f"{sys.executable} -c pass")
+        self.assertIn("couldn't: no pool", r.stdout)
+        self.assertEqual(self.proposal()["units_wanted"], None)
+
+    def test_after_sixty_clean_days_with_the_flag_it_buys_under_the_caps(self):
+        self.provision()
+        later = "2026-12-08T15:00:00+00:00"                          # 61 days on
+        self.run_infra("tick", INFRA_POOL_CMD=self.pool(2000), INFRA_NOW=later)
+        self.assertEqual(self.proposal()["bought"], [], "no INFRA_AUTO_PURCHASE, no purchase")
+        r = self.run_infra("tick", INFRA_POOL_CMD=self.pool(2000), INFRA_NOW=later, INFRA_AUTO_PURCHASE="1")
+        p = self.proposal()
+        self.assertEqual(len(p["bought"]), 2, r.stdout)
+        self.assertIn("61 clean days and INFRA_AUTO_PURCHASE=1", p["line"])
+        self.assertEqual(len(self.fake()["purchases"]), 3)
+        rows = self.rows()
+        for d in p["bought"]:
+            self.assertEqual(rows[("domain", d)]["state"], "warming")
+            self.assertNotIn(d, ("patchlamp.com",))
+        r = self.run_infra("tick", INFRA_POOL_CMD=self.pool(2000), INFRA_NOW=later, INFRA_AUTO_PURCHASE="1")
+        self.assertEqual(self.proposal()["bought"], [], "the week's two units are spent")
+        self.assertIn("INFRA_UNITS_PER_WEEK is spent", self.proposal()["line"])
+
+    def test_an_incident_restarts_the_clean_days(self):
+        self.provision()
+        reg = assets.Registry(self.tmp / "assets.db")
+        did = reg.find("patchlamp", f"domain:{D}")["id"]
+        reg.incident(did, "a bounce storm", now=dt.datetime(2026, 11, 1, tzinfo=dt.timezone.utc))
+        self.run_infra("tick", INFRA_POOL_CMD=self.pool(2000), INFRA_NOW="2026-12-08T15:00:00+00:00",
+                       INFRA_AUTO_PURCHASE="1")
+        p = self.proposal()
+        self.assertEqual(p["clean_days"], 37)
+        self.assertEqual(p["bought"], [])
+
+    def test_the_weekend_only_certifies(self):
+        r = self.run_infra("tick", INFRA_POOL_CMD=self.pool(2000), INFRA_NOW="2026-10-10T15:00:00+00:00")
+        self.assertIn("weekends only certify", r.stdout)
+        self.assertNotIn("units_wanted", self.proposal())
+
+
+    def test_a_failure_inside_the_tick_is_said_and_the_proposal_still_written(self):
+        r = self.run_infra("tick", INFRA_POOL_CMD=self.pool(2000), INFRA_UNITS_PER_WEEK="lots")
+        self.assertIn("the plan couldn't run (SystemExit", r.stdout)
+        self.assertTrue(any("the plan: SystemExit" in x for x in self.proposal()["problems"]))
+
+    def test_an_incident_on_the_provider_restarts_the_clean_days(self):
+        self.provision()
+        reg = assets.Registry(self.tmp / "assets.db")
+        pid = reg.find("patchlamp", "provider:fake")["id"]
+        reg.incident(pid, "the vendor suspended the account", now=dt.datetime(2026, 11, 2, tzinfo=dt.timezone.utc))
+        self.run_infra("tick", INFRA_POOL_CMD=self.pool(2000), INFRA_NOW="2026-12-08T15:00:00+00:00",
+                       INFRA_AUTO_PURCHASE="1")
+        self.assertEqual(self.proposal()["clean_days"], 36)
+        self.assertEqual(self.proposal()["bought"], [])
+
+
+class FakeClockTest(Base):
+    """B150: INFRA_NOW (the test clock) never lets money go on a real provider, Taylor's go included."""
+
+    def test_the_test_clock_refuses_a_real_purchase(self):
+        self.run_infra("contract", "infraforge", "--verdict", "PERMITTED", "--clause", "test", "--word", "a test")
+        r = self.run_infra("provision", "--domain", "real-one.example", "--provider", "infraforge", "--go", ok=2,
+                           INFRA_PROVIDER="infraforge", INFRA_PROVIDER_API_KEY="k-test",
+                           INFRA_PROVIDER_API_BASE="http://127.0.0.1:9")
+        self.assertIn("INFRA_NOW is set (the test clock), so no real purchase is authorised", r.stderr)
+        self.assertFalse([l for l in self.ledger() if l.get("phase") == "intent"])
+
+
+class TickCertifyTest(CertifyTest):
+    def test_the_tick_certifies_a_domain_past_its_date(self):
+        self.ready()
+        self.tick_todo()
+        early = "2026-10-15T15:00:00+00:00"
+        r = self.run_infra("tick", "--pool", "0", INFRA_NOW=early, INFRA_SEED_INBOXES=self.SEEDS)
+        self.assertIn(f"certify {D}: due 2026-10-22", r.stdout)
+        self.assertEqual(self.rows()[("domain", D)]["state"], "warming")
+        r = self.run_infra("tick", "--pool", "0", INFRA_NOW=self.when, INFRA_SEED_INBOXES=self.SEEDS)
+        self.assertEqual(self.rows()[("domain", D)]["state"], "active", r.stdout)
+        self.assertIn(D, self.proposal_line())
+        st = self.run_infra("status", INFRA_NOW=self.when).stdout
+        self.assertIn("this week the Factory added 2 mailbox(es) to the lane", st)
+
+    def proposal_line(self):
+        return json.loads((self.tmp / "infra" / "proposal.json").read_text())["line"]
+
+
+class WarmupTest(Base):
+    IDS = {"INFRA_SALESFORGE_WORKSPACE": "sf-1", "INFRA_WARMFORGE_WORKSPACE": "wf-1"}
+
+    def test_without_the_ids_it_is_a_filed_click_and_warmup_turns_it_on_by_api(self):
+        self.provision(INFRA_FAKE_WARMUP="export")
+        self.assertIn("infra_step=warmup:", self.todo())
+        self.assertEqual(self.fake().get("exports"), None)
+        r = self.run_infra("warmup", INFRA_FAKE_WARMUP="export")
+        self.assertIn("2 Factory mailbox(es) wait on it", r.stdout)
+        self.assertIn("INFRA_SALESFORGE_WORKSPACE and INFRA_WARMFORGE_WORKSPACE unset", r.stdout)
+        r = self.run_infra("warmup", "--go", INFRA_FAKE_WARMUP="export")
+        self.assertIn("0 on, 2 still a click", r.stdout)
+        self.assertEqual(self.todo().count("infra_step=warmup:"), 2, "filed twice")
+        r = self.run_infra("warmup", "--go", INFRA_FAKE_WARMUP="export", **self.IDS)
+        self.assertIn("2 on, 0 still a click, 0 failed", r.stdout)
+        self.assertIn("read back: the vendor shows it enrolled", r.stdout)
+        self.assertEqual(len(self.fake()["exports"]), 2)
+        self.assertNotIn("- [ ] **Connect", self.todo())
+        self.assertIn("done by the Factory", self.todo())
+        j = json.loads((self.tmp / "infra" / "ops" / f"provision-{D}.json").read_text())
+        self.assertFalse([k for k in j["human"] if k.startswith("warmup:")])
+        self.assertIn("nothing to do", self.run_infra("warmup", "--go", INFRA_FAKE_WARMUP="export", **self.IDS).stdout)
+
+    def test_a_click_ticked_in_todo_is_never_exported_again(self):
+        self.provision(INFRA_FAKE_WARMUP="export")
+        (self.tmp / "TODO.md").write_text(self.todo().replace("- [ ] **Connect", "- [x] **Connect"))
+        r = self.run_infra("warmup", "--go", INFRA_FAKE_WARMUP="export", **self.IDS)
+        self.assertIn("not called again", r.stdout)
+        self.assertIn("nothing to do", r.stdout)
+        self.assertEqual(self.fake().get("exports"), None)
+        j = json.loads((self.tmp / "infra" / "ops" / f"provision-{D}.json").read_text())
+        self.assertEqual({j["steps"][k]["status"] for k in j["steps"] if k.startswith("warmup:")}, {"done"})
+
+    def test_with_the_ids_provision_warms_by_api(self):
+        self.provision(INFRA_FAKE_WARMUP="export", **self.IDS)
+        self.assertNotIn("infra_step=warmup:", self.todo())
+        self.assertEqual(len(self.fake()["exports"]), 2)
+
+    def test_halted_warmup_calls_nothing(self):
+        self.provision(INFRA_FAKE_WARMUP="export")
+        self.run_infra("halt", "test")
+        self.run_infra("warmup", "--go", ok=5, INFRA_FAKE_WARMUP="export", **self.IDS)
+        self.assertEqual(self.fake().get("exports"), None)
+
+
 if __name__ == "__main__":
     unittest.main()

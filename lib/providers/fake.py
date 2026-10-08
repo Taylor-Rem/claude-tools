@@ -17,6 +17,9 @@ Knobs, by env (tests only):
   INFRA_FAKE_PLACEMENT=92                      the vendor's own placement probe, percent in the inbox
   INFRA_FAKE_SEED_FOLDER=INBOX|Spam            where a probe lands in a seed inbox
   INFRA_FAKE_AUTH=pass|fail                    the seeds' Authentication-Results verdicts
+  INFRA_FAKE_WARMUP=export                     warm-up as on Infraforge (B150): an API call only when
+                                               INFRA_SALESFORGE_WORKSPACE and INFRA_WARMFORGE_WORKSPACE are set,
+                                               else the non-blocking click in Warmforge
 """
 
 import json
@@ -60,7 +63,7 @@ class Adapter:
     needs = ()          # env names it needs: none
 
     def __init__(self, get_env, dry_run=False, say=print):
-        self.dry_run, self.say = dry_run, say
+        self.get, self.dry_run, self.say = get_env, dry_run, say
 
     # ---- the plumbing every call goes through ----------------------------------------
 
@@ -193,10 +196,17 @@ class Adapter:
         return self._mutate("delete_mailbox", key, fn)
 
     def start_warmup(self, address, key):
+        if os.environ.get("INFRA_FAKE_WARMUP") == "export" and not (
+                self.get("INFRA_SALESFORGE_WORKSPACE") and self.get("INFRA_WARMFORGE_WORKSPACE")):
+            raise HumanStep(f"warmup:{address}", "warmup-enrol", f"Connect {address} in Warmforge and switch warm-up on",
+                            ["Open Warmforge → Mailboxes → Add.", "Switch warm-up on and save."], "judgment", 2,
+                            then="(automatable: the two workspace ids make it an API call)", blocking=False)
+
         def fn(st):
             if address not in st["mailboxes"]:
                 raise ProviderError(f"{address} doesn't exist")
             st["mailboxes"][address]["warmup"] = True
+            st.setdefault("exports", []).append(address)
             return {}
         return self._mutate("start_warmup", key, fn)
 

@@ -389,6 +389,52 @@ def sync_pauses(reg, tenant, paused, now=None):
     return out
 
 
+def sync_warmup(reg, tenant, mailboxes, warmed, why, now=None):
+    """B150: the lane's own entry (OUTREACH_MAILBOXES) is seeded `warming` while its warm-up is young; once the
+    lane's warm-up start is fourteen days old (`warmed`), those seeded rows go `active`, as the cap's ramp
+    always said. Only rows seed() made and nobody moved since (no state_why): a Factory row or a hand-set
+    state is never touched. -> [(name, from, to)]."""
+    out = []
+    if not warmed:
+        return out
+    want = {m.lower() for m in mailboxes}
+    for r in reg.rows(tenant):
+        if r["kind"] == "mailbox" and r["name"] in want and r["state"] == "warming" and not r["state_why"]:
+            reg.set_state(r["id"], "active", why, now=now)
+            out.append((r["name"], "warming", "active"))
+    return out
+
+
+def entered(reg, asset_id, state):
+    """The day (YYYY-MM-DD) a row first entered `state`, from its events; None when it never has."""
+    with reg._db() as db:
+        r = db.execute("SELECT ts FROM events WHERE asset_id=? AND kind='state' AND to_state=? ORDER BY id LIMIT 1",
+                       (asset_id, state)).fetchone()
+    return str(r["ts"])[:10] if r else None
+
+
+def week_moves(reg, tenant, since, names=None):
+    """B150: what moved in and out of the lane since `since` (YYYY-MM-DD), mailboxes only, optionally only
+    those in `names`: {"joined": [name], "left": [name]}. Joined is warming|provisioning|paused -> active
+    (a certification, or a resume); left is -> draining|retired. A row that did both is in both."""
+    out = {"joined": [], "left": []}
+    kinds = {r["id"]: r for r in reg.rows(tenant) if r["kind"] == "mailbox"}
+    with reg._db() as db:
+        evs = [dict(e) for e in db.execute("SELECT * FROM events WHERE tenant=? AND kind='state' AND ts>=? ORDER BY id",
+                                           (tenant, str(since)))]
+    for e in evs:
+        r = kinds.get(e["asset_id"])
+        if r is None or (names is not None and r["name"] not in names):
+            continue
+        if e["to_state"] == "active" and e["from_state"] in ("warming", "provisioning"):
+            if r["name"] not in out["joined"]:
+                out["joined"].append(r["name"])
+        elif e["to_state"] in ("draining", "retired") and e["from_state"] not in ("draining", "retired"):
+            if r["name"] not in out["left"]:
+                out["left"].append(r["name"])
+    return out
+
+
 # ---- the tree --------------------------------------------------------------------
 
 def snapshot(reg, tenant):
@@ -463,7 +509,17 @@ def follow_up_ok(mb):
 
 
 def mailbox_cap(mb, default_cap):
-    return int(mb["cap_day"]) if mb.get("cap_day") is not None else int(default_cap or 0)
+    """A mailbox's cap today: its own `cap_day` when set, else the caller's default. The default is a number
+    (every mailbox the same), or (B150) a callable taking the mailbox row, or a {name: cap} dict, so the lane
+    can count each Factory mailbox's ramp from its own warm-up start while the Workspace entry keeps
+    OUTREACH_WARMUP_START's."""
+    if mb.get("cap_day") is not None:
+        return int(mb["cap_day"])
+    if callable(default_cap):
+        return int(default_cap(mb) or 0)
+    if isinstance(default_cap, dict):
+        return int(default_cap.get(mb["name"], 0) or 0)
+    return int(default_cap or 0)
 
 
 def capacity(snap, usage, default_cap):

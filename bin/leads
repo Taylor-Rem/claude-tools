@@ -3691,7 +3691,8 @@ def preview_place_json(args):
     m = made[0] if made else {}
     out = {"ok": bool(made) and ok, "place_id": args.place, "url": m.get("url"), "slug": m.get("slug"),
            "name": m.get("name"), "category": m.get("category"), "city": m.get("city"),
-           "expires": m.get("expires"), "published": bool(made) and ok and not args.no_publish and not args.dry_run}
+           "expires": m.get("expires"), "published": bool(made) and ok and not args.no_publish and not args.dry_run,
+           "claim_url": m.get("claim_url")}    # B137: the link the preview's "Claim it" opens, for outreach's arm B
     if not out["ok"]:
         out["why"] = "the publish failed; the filled pages are under " + str(preview_site_dir())
     print(json.dumps(out, indent=1))
@@ -4455,6 +4456,8 @@ def cmd_log(args):
              "next": nxt.isoformat() if nxt else None, "note": " ".join(args.note).strip() or None,
              "who": args.who, "email": args.email, "phone": args.phone or (row or {}).get("phone"), "via": args.via,
              "channel": channel}
+    if getattr(args, "arm", None):
+        event["arm"], event["experiment_id"] = args.arm, args.experiment   # B137: outreach's close test (E3)
     if args.next is not None and nxt:
         event["next_by"] = "hand"          # a date Taylor named; the cadence never writes over it
     if getattr(args, "tag", None):
@@ -7587,6 +7590,8 @@ def main():
     lg.add_argument("--tag", action="append", metavar="KEY=VALUE",
                     help="repeatable; kept under `outbound` on the event (B132: outreach passes the letter's "
                          "variant, fault_key, segment, letter_sha and prebuilt)")
+    lg.add_argument("--arm", help="B137: the arm of the experiment this business was dealt (outreach's close test)")
+    lg.add_argument("--experiment", help="B137: that experiment's id (E3), kept beside --arm")
     lg.add_argument("--n", type=int, default=6, help="size of tomorrow's list")
     lg.set_defaults(fn=cmd_log)
 

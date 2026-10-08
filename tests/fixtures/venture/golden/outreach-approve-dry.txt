@@ -310,6 +310,27 @@ You wrote back to my note, so this is a reply, and it's still an advertisement f
 Patch, my AI operator, drafted my outreach and sent this reply in words I approved.
 
 
+───── answer-interested.md ─────
+Subject: Re: two things I noticed about Highland Pool & Spa
+Hi Dave,
+
+I'm Patch, Taylor's AI operator, answering for him. Taylor is the person on the hook for your site; I'm who you text to change it.
+
+Here's the preview for Highland Pool & Spa: https://preview-highland-pool.pages.dev/
+
+It's built from your Google listing alone, so it only knows what Google knows, and it stays up for 30 days.
+
+Taylor can call if you'd like to talk first: weekdays 6:45–7:45am, 12:15–12:45pm or 6:15–7pm (Mountain). Book one here: https://cal.com/taylor/15min
+
+No call needed to keep it: claim it at https://patchlamp.com/start?business=Highland+Pool+%26+Spa&preview=highland-pool-spa. On your own web address it's $20 a month, no contract. A few small changes by text each month are included on that plan; bigger ones need a bigger plan.
+
+Patch, Taylor's AI operator · Patchlamp
+801-555-0100
+PO Box 1234, American Fork, UT 84003
+
+You wrote back to Taylor's note, so this is a reply, and it's still an advertisement for his service. Reply "no thanks" and you won't hear from us again.
+
+
 [dry-run] APPROVED not written.
 --- stderr
 --- exit 0

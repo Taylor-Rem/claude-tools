@@ -126,6 +126,16 @@ class MorningTest(Base):
         self.assertNotIn("$", r.stdout)                      # no price in the morning message
         self.assertFalse((self.t / "ledger.jsonl").exists(), "census-only costs nothing")
 
+    def test_the_factorys_proposal_is_in_the_message_while_fresh(self):
+        """B150: `infra tick` files its proposal beside the state dir; the morning message carries its line."""
+        (self.t / "infra").mkdir()
+        p = self.t / "infra" / "proposal.json"
+        p.write_text(json.dumps({"date": ANCHOR.isoformat(), "line": "Factory: the pool outruns capacity. Taylor's go."}))
+        r = self.run_leads("today", "--census-only", now=ANCHOR)
+        self.assertIn("\nFactory: the pool outruns capacity. Taylor's go.\n", r.stdout)
+        p.write_text(json.dumps({"date": (ANCHOR - dt.timedelta(days=5)).isoformat(), "line": "Factory: old news."}))
+        self.assertNotIn("Factory:", self.run_leads("today", "--census-only", now=ANCHOR).stdout)
+
     def test_a_pick_with_only_a_phone_gets_the_call_and_the_opener(self):
         r = self.run_leads("today", "--census-only", now=ANCHOR)
         lines = r.stdout.splitlines()

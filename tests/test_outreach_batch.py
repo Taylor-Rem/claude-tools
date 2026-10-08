@@ -305,6 +305,9 @@ class Base(unittest.TestCase):
             "STUB_LOG": str(self.log), "TAYLOR_TODO": str(self.todo),
             "LEADS_MAIL_ADDRESS": ADDRESS, "PATCHLAMP_VOICE_NUMBER": "801-555-0100",
             "OUTREACH_PROVIDER": "google", "OUTREACH_MAILBOXES": ",".join(BOXES),
+            # B150: the registry decides who sends, and a first letter goes only under a PERMITTED contract;
+            # the test lane's mailboxes are on the test provider's (lib/assets.py CONTRACTS["fake"])
+            "OUTREACH_MAILBOX_PROVIDER": "fake",
             "OUTREACH_SMTP_HOST": f"127.0.0.1:{self.smtp.server_address[1]}",
             "OUTREACH_IMAP_HOST": f"127.0.0.1:{self.imap.server_address[1]}",
             "OUTREACH_MAILBOX_PER_DAY": "25", "OUTREACH_WARMUP_START": "2026-08-01",
@@ -561,7 +564,9 @@ class Sending(Base):
         self.assertIn("Queued 50 businesses", r.stdout)
         self.assertIn("Outside the sending window", r.stdout)     # 07:00: the go queues, the tick waits
         self.assertEqual([], Mail.sent)
-        self.tick_day(MONDAY)
+        # B150: one contract carries at most half the day's first-touch capacity (lib/assets.py rule 4), so the
+        # three mailboxes' caps of 50 make room for 75 first letters, not 150
+        self.tick_day(MONDAY, OUTREACH_MAILBOX_PER_DAY="50")
         self.assertEqual(50, len(Mail.sent))
         times = {}
         for m in Mail.sent:
@@ -601,9 +606,12 @@ class Sending(Base):
     def test_the_cap_holds_and_the_rest_wait_for_tomorrow(self):
         self.run_it("send", "--batch", str(self.write_batch(self.picks(9))), "--go")
         self.tick_day(MONDAY, OUTREACH_MAILBOX_PER_DAY="2")
-        self.assertEqual(6, len(Mail.sent))
-        self.assertEqual({2}, {sum(1 for m in Mail.sent if m["user"] == b) for b in BOXES})
+        # B150: three caps of two are six first letters, and one contract carries half of them (rule 4)
+        self.assertEqual(3, len(Mail.sent))
+        self.assertTrue(all(sum(1 for m in Mail.sent if m["user"] == b) <= 2 for b in BOXES))
         self.tick_day("2026-10-20", OUTREACH_MAILBOX_PER_DAY="2")
+        self.assertEqual(6, len(Mail.sent))
+        self.tick_day("2026-10-21", OUTREACH_MAILBOX_PER_DAY="2")
         self.assertEqual(9, len(Mail.sent))
 
     def test_cap_zero_sends_nothing(self):
@@ -614,7 +622,7 @@ class Sending(Base):
 
     def test_a_ramp_counts_from_the_warm_up_start(self):
         self.run_it("send", "--batch", str(self.write_batch(self.picks(12))), "--go")
-        ramp = "14:1,21:20"
+        ramp = "14:2,21:20"                 # B150: three caps of two, half of them for the one contract
         # day 13 of warm-up: nothing; day 14: one a mailbox
         self.tick_day(MONDAY, OUTREACH_MAILBOX_PER_DAY=ramp, OUTREACH_WARMUP_START="2026-10-06")
         self.assertEqual([], Mail.sent)
@@ -623,7 +631,7 @@ class Sending(Base):
         r = self.run_it("warmup", OUTREACH_MAILBOX_PER_DAY=ramp, OUTREACH_WARMUP_START="2026-10-06",
                         OUTREACH_NOW="2026-10-20T10:00:00")
         self.assertIn("day 14", r.stdout)
-        self.assertIn("cap today 1 a mailbox", r.stdout)
+        self.assertIn("cap today 2 a mailbox", r.stdout)
 
     def test_a_ramp_with_no_recorded_start_sends_nothing_until_flint_records_it(self):
         self.run_it("send", "--batch", str(self.write_batch(self.picks(3))), "--go")
@@ -637,7 +645,7 @@ class Sending(Base):
         p = self.picks(6)
         self.run_it("send", "--batch", str(self.write_batch(p)), "--go")
         for day in (MONDAY, "2026-10-20", "2026-10-21", "2026-10-22", "2026-10-29", "2026-11-05", "2026-11-12"):
-            self.tick_day(day, start="08:00", end="17:05", step=10, OUTREACH_MAILBOX_PER_DAY="2")
+            self.tick_day(day, start="08:00", end="17:05", step=10, OUTREACH_MAILBOX_PER_DAY="4")   # B150: half is 6
         for pick in p:
             with self.subTest(pick=pick["name"]):
                 got = self.sent_to(pick["email"])
@@ -657,11 +665,14 @@ class Sending(Base):
     def test_follow_ups_count_toward_the_cap_and_go_first(self):
         self.run_it("send", "--batch", str(self.write_batch(self.picks(6), "b-one")), "--go")
         self.tick_day(MONDAY, start="08:00", end="17:05", step=10, OUTREACH_MAILBOX_PER_DAY="2")
+        # B150: half of three caps of two is three first letters on Monday, one a mailbox (rule 4)
+        self.assertEqual({1}, {sum(1 for m in Mail.sent if m["user"] == b) for b in BOXES})
         self.run_it("send", "--batch", str(self.write_batch(self.picks()[10:16], "b-two")), "--go",
                     OUTREACH_NOW="2026-10-22T07:00:00")
-        self.tick_day("2026-10-22", start="08:00", end="17:05", step=10, OUTREACH_MAILBOX_PER_DAY="2")
+        # Thursday, a cap of one: each mailbox's one follow-up takes it, and no first letter goes
+        self.tick_day("2026-10-22", start="08:00", end="17:05", step=10, OUTREACH_MAILBOX_PER_DAY="1")
         thursday = [m for m in Mail.sent if "22 Oct 2026" in parsed(m["raw"])["Date"]]
-        self.assertEqual(6, len(thursday))
+        self.assertEqual(3, len(thursday))
         self.assertTrue(all(parsed(m["raw"])["Subject"].startswith("Re: ") for m in thursday),
                         "a new first letter took a follow-up's place")
 
@@ -1233,12 +1244,12 @@ class OnFake(Base):
 
     def test_the_per_mailbox_cap_and_the_day(self):
         self.run_it("send", "--batch", str(self.write_batch(self.picks(9))), "--go")
-        self.tick_day(MONDAY, OUTREACH_MAILBOX_PER_DAY="2")
+        self.tick_day(MONDAY, OUTREACH_MAILBOX_PER_DAY="4")
         out = self.outbox()
-        self.assertEqual(6, len(out))
-        self.assertEqual({2}, {sum(1 for m in out if m["from"] == b) for b in BOXES})
+        self.assertEqual(6, len(out))                  # B150: half of three caps of four (rule 4)
+        self.assertTrue(all(sum(1 for m in out if m["from"] == b) <= 4 for b in BOXES))
         self.assertEqual([], Mail.sent, "the fake provider opened a mail connection")
-        self.tick_day("2026-10-20", OUTREACH_MAILBOX_PER_DAY="2")
+        self.tick_day("2026-10-20", OUTREACH_MAILBOX_PER_DAY="4")
         self.assertEqual(9, len(self.outbox()))
 
     def test_the_default_cap_is_zero_and_sends_nothing(self):

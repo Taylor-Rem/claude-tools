@@ -1284,6 +1284,117 @@ def sends_on(mailbox, day=None):
                if r.get("date") == stamp and str(r.get("mailbox") or "").lower() == mailbox)
 
 
+# ---- the lane as the registry sees it (B150, plan 55 § 5.3) -------------------------
+# Which mailboxes send is the registry's rule, not the env's: a first letter goes only through a mailbox that is
+# `active` (domain, tenant and provider too) under a PERMITTED contract, no contract carrying more than half of the
+# day's first-touch capacity; a follow-up goes from the thread's own mailbox. OUTREACH_MAILBOXES and the venture's
+# domains are the Workspace lane's entry into the registry (seed()), nothing more: a Factory mailbox joins the day
+# `infra certify` makes it `active` and leaves the day it drains, with no env edit. Every mailbox's cap is its row's
+# `cap_day` when set, else OUTREACH_MAILBOX_PER_DAY (0 holds everything, as before); a ramp counts from the
+# Workspace entry's OUTREACH_WARMUP_START for that entry and from each Factory mailbox's own day in `warming`.
+
+LANE_STATES = ("active", "paused", "draining")       # a mailbox that may carry a letter or a reply
+
+
+def lane_mailboxes():
+    """Every mailbox the lane sends from or reads: the Workspace entry (OUTREACH_MAILBOXES), then the registry's
+    rows that can carry a letter or a reply. A `warming` Factory mailbox isn't one: it has written to nobody, and
+    the warm-up network's mail is not ours to read. Read-only; no registry, the env list alone."""
+    boxes = mailboxes()
+    path = registry_path()
+    if path.exists():
+        try:
+            rows = assets.Registry(path).rows(V.tenant)
+        except Exception as exc:                    # a view of a file: say so and fall back to the env
+            print(f"outreach: couldn't read the registry ({exc}); the env's mailboxes only", file=sys.stderr)
+            rows = []
+        boxes += sorted(r["name"] for r in rows if r["kind"] == "mailbox" and r["state"] in LANE_STATES)
+    return list(dict.fromkeys(boxes))
+
+
+def ramp_cap(steps, rd):
+    cap = 0
+    for d, c in steps:
+        if rd is not None and rd >= d:
+            cap = c
+    return cap
+
+
+def lane(day=None, reg=None):
+    """The registry's lane for one day. -> {"boxes": {name: {"row", "cap", "used", "first_ok", "first_why",
+    "follow_ok", "follow_why", "provider", "entry"}}, "order": [name], "contract_limit": {provider: n},
+    "first_today": {provider: n}, "first_capacity": n, "reg": reg}.
+
+    `entry` marks the Workspace lane's own mailboxes (OUTREACH_MAILBOXES). A thread one of them began keeps
+    finishing from it as before B150 (Flint's word, 2026-10-08: the thread's own mailbox, whatever its contract,
+    so a stranger's thread never has two senders), under OUTREACH_MAILBOX_PER_DAY; the registry's rule 2 would
+    hold a PROHIBITED mailbox's follow-ups, and `outreach assets --check` still flags a cap on one. No new thread
+    begins there: a first letter is the registry's rule 1 only."""
+    day = day or today()
+    reg = reg or registry()
+    snap = assets.snapshot(reg, V.tenant)
+    entry = mailboxes()
+    kind, steps = parse_cap(toolbelt("OUTREACH_MAILBOX_PER_DAY", "0"))
+
+    def default_cap(mb):
+        if mb["name"] in entry:
+            return cap_on(day)
+        if kind == "flat":
+            return steps
+        start = assets.entered(reg, mb["id"], "warming") or str(mb.get("created") or "")[:10]
+        try:
+            return ramp_cap(steps, (day - dt.date.fromisoformat(start)).days)
+        except ValueError:
+            return 0
+    usage = registry_usage(day)
+    cap = assets.capacity(snap, usage, default_cap)
+    paused = paused_boxes()
+    boxes = {}
+    for mb in snap["mailboxes"]:
+        c = cap["mailboxes"][mb["name"]]
+        fok, fwhy = c["follow_ok"], c["follow_why"]
+        if not fok and mb["name"] in entry and mb["name"] not in paused and mb["state"] not in ("paused", "retired"):
+            fok, fwhy = True, "the Workspace entry: a thread it began finishes from it"
+        boxes[mb["name"]] = {"row": mb, "cap": c["cap"], "used": c["today"], "first_ok": c["first_ok"],
+                             "first_why": c["first_why"], "follow_ok": fok, "follow_why": fwhy,
+                             "provider": (mb.get("provider") or {}).get("name"), "entry": mb["name"] in entry}
+    order = [b for b in entry if b in boxes] + sorted(b for b in boxes if b not in entry)
+    return {"boxes": boxes, "order": order, "contract_limit": cap["contract_limit"],
+            "first_today": {p: v["first_today"] for p, v in cap["providers"].items()},
+            "first_capacity": cap["first_capacity"], "reg": reg}
+
+
+def first_room(ln, mb):
+    """May `mb` take a first letter now, by the registry's rules? -> (ok, why-not). Its cap is checked by the caller."""
+    b = ln["boxes"][mb]
+    if not b["first_ok"]:
+        return False, b["first_why"]
+    p = b["provider"]
+    limit = ln["contract_limit"].get(p, 0)
+    if ln["first_today"].get(p, 0) + 1 > limit:
+        return False, (f"contract {p} has carried {ln['first_today'].get(p, 0)} of today's first-touch capacity of "
+                       f"{ln['first_capacity']}; no contract above half ({limit:g})")
+    return True, ""
+
+
+def factory_week_line(reg=None):
+    """`outreach status` and `infra status`: what the Factory added to the lane this week, in one line. The
+    Factory's mailboxes are the registry's rows that are not the Workspace entry."""
+    try:
+        reg = reg or assets.Registry(registry_path())
+        rows = [r for r in reg.rows(V.tenant) if r["kind"] == "mailbox" and r["name"] not in mailboxes()]
+        since = (today() - dt.timedelta(days=7)).isoformat()
+        mv = assets.week_moves(reg, V.tenant, since, names={r["name"] for r in rows})
+    except Exception as exc:
+        return f"the Factory this week: couldn't read the registry ({exc})"
+    active = sum(1 for r in rows if r["state"] == "active")
+    warming = sum(1 for r in rows if r["state"] in ("warming", "provisioning"))
+    return (f"the Factory this week: {len(mv['joined'])} mailbox(es) joined the lane"
+            + (f" ({', '.join(mv['joined'])})" if mv["joined"] else "")
+            + f", {len(mv['left'])} left" + (f" ({', '.join(mv['left'])})" if mv["left"] else "")
+            + f"; {active} active, {warming} warming")
+
+
 def send_window(day=None):
     raw = toolbelt("OUTREACH_SEND_HOURS", DEFAULT_SEND_HOURS)
     m = re.fullmatch(r"\s*(\d{1,2})(?::(\d\d))?\s*-\s*(\d{1,2})(?::(\d\d))?\s*", str(raw))
@@ -1309,7 +1420,7 @@ def link_base():
     if not raw:
         return ""
     host = (urllib.parse.urlsplit(raw).hostname or "").lower()
-    domains = {mail.domain_of(b) for b in mailboxes()} - {""}
+    domains = {mail.domain_of(b) for b in lane_mailboxes()} - {""}
     if not host or raw.split(":", 1)[0] != "https" or V.site_host == host or host.endswith("." + V.site_host):
         return ""
     if not any(host == d or host.endswith("." + d) for d in domains):
@@ -1348,13 +1459,17 @@ class Google(Provider):
         return None
 
     def pick_mailbox(self):
-        """For the six-a-day kit lane: the mailbox with the most room under today's cap."""
-        cap = cap_on()
+        """For the six-a-day kit lane, a first letter: the mailbox with the most room under today's cap among
+        those the registry lets carry one (B150: active, PERMITTED, no contract past half)."""
+        ln = lane()
         paused = paused_boxes()
-        room = [(cap - sends_on(mb), mb) for mb in self.boxes if mb not in paused]
+        room = [(ln["boxes"][mb]["cap"] - sends_on(mb), mb) for mb in ln["order"]
+                if mb not in paused and first_room(ln, mb)[0]]
         room = [x for x in room if x[0] > 0]
         if not room:
-            raise ProviderError("every mailbox is at its cap today (OUTREACH_MAILBOX_PER_DAY) or paused")
+            raise ProviderError("no mailbox may take a first letter today: each is at its cap "
+                                "(OUTREACH_MAILBOX_PER_DAY or the registry's), paused, or not an active mailbox under "
+                                "a PERMITTED contract (`outreach assets` says which)")
         return max(room)[1]
 
     def send(self, pick, subject, body, mailbox=None, thread=None):
@@ -1528,9 +1643,10 @@ def pick_provider(want=None):
     if DRY or want == "fake":
         return Fake(eaccount)
     if want == "google":
-        boxes = mailboxes()
+        boxes = lane_mailboxes()          # B150: the Workspace entry and the registry's Factory mailboxes
         if not boxes:
-            die("OUTREACH_MAILBOXES isn't set, so the google provider has nobody to send as (see `outreach doctor`)")
+            die("no mailboxes: OUTREACH_MAILBOXES isn't set and the registry has none in the lane, so the google "
+                "provider has nobody to send as (see `outreach doctor`)")
         return Google(boxes)
     if want != "instantly":
         die(f"provider is google, instantly or fake, not {want!r}")
@@ -3067,25 +3183,27 @@ def run_tick(provider):
         say(f"Outside the sending window ({start:%H:%M}–{end:%H:%M} weekdays); {len(live)} sequences wait.")
         seqs_save(seqs)
         return 0
-    boxes, paused = mailboxes(), paused_boxes()
-    if not boxes:
-        say("No mailboxes (OUTREACH_MAILBOXES); nothing sends.")
+    ln = lane(day)                          # B150: the registry decides who sends, not OUTREACH_MAILBOXES
+    paused = paused_boxes()
+    boxes = [b for b in ln["order"] if ln["boxes"][b]["row"]["state"] in LANE_STATES and b not in paused]
+    if not ln["boxes"]:
+        say("No mailboxes: the registry has none and OUTREACH_MAILBOXES is empty; nothing sends.")
         return 1
-    cap = cap_on(day)
-    if cap <= 0:
+    if not any(ln["boxes"][b]["cap"] > 0 for b in boxes):
         rd = ramp_day(day)
         say(f"Each mailbox's cap today is 0 (OUTREACH_MAILBOX_PER_DAY"
-            + (f", ramp day {rd}" if rd is not None else ", no warm-up start recorded") + "); nothing sends.")
+            + (f", ramp day {rd}" if rd is not None else ", no warm-up start recorded")
+            + ", or the registry's cap); nothing sends.")
         seqs_save(seqs)
         return 0
     _, end = send_window(day)
     ticks = read_json(state_dir("tick.json"), {})
     k = (t.hour * 60 + t.minute) // 5
-    order = boxes[k % len(boxes):] + boxes[:k % len(boxes)]
+    order = boxes[k % len(boxes):] + boxes[:k % len(boxes)] if boxes else []
     sent = 0
     for mb in order:
-        if mb in paused:
-            continue
+        b = ln["boxes"][mb]
+        cap = b["cap"]
         used = sends_on(mb, day)
         if used >= cap:
             continue
@@ -3098,17 +3216,19 @@ def run_tick(provider):
             ticks[mb] = st
             continue
         follow = []
-        for s in seqs:
-            if s.get("status") != "active" or s.get("mailbox") != mb:
-                continue
-            _, nt = next_touch(s)
-            due = touch_due(s, nt) if nt else None
-            if nt and int(nt["touch"]) > 0 and due and due <= day:
-                follow.append((due, s))
+        if b["follow_ok"]:                  # rule 2: a follow-up only from the thread's own mailbox
+            for s in seqs:
+                if s.get("status") != "active" or s.get("mailbox") != mb:
+                    continue
+                _, nt = next_touch(s)
+                due = touch_due(s, nt) if nt else None
+                if nt and int(nt["touch"]) > 0 and due and due <= day:
+                    follow.append((due, s))
         follow.sort(key=lambda x: x[0])
+        may_first, _ = first_room(ln, mb)   # rules 1 and 4: an active PERMITTED mailbox, no contract past half
         fresh = [s for s in seqs if s.get("status") == "active" and not s.get("mailbox")
                  and next_touch(s)[1] is not None and int(next_touch(s)[1]["touch"]) == 0
-                 and touch_due(s, next_touch(s)[1]) <= day]
+                 and touch_due(s, next_touch(s)[1]) <= day] if may_first else []
         chosen = follow[0][1] if follow else None
         while chosen is None and fresh:
             s = fresh.pop(0)
@@ -3123,10 +3243,13 @@ def run_tick(provider):
         if chosen is None:
             ticks[mb] = st
             continue
+        first = not follow
         if send_touch(provider, chosen, mb):
             sent += 1
             used += 1
-        others = sum(1 for b in boxes if b not in paused) or 1
+            if first:
+                ln["first_today"][b["provider"]] = ln["first_today"].get(b["provider"], 0) + 1
+        others = sum(1 for x in boxes if first_room(ln, x)[0] or ln["boxes"][x]["follow_ok"]) or 1
         remaining = min(cap - used, max(len(follow) - 1, 0) + -(-len(fresh) // others))
         rng = random.Random(f"{mb}|{t.isoformat()}")
         st["next_at"] = next_gap(t, remaining, rng, end).isoformat()
@@ -4372,10 +4495,23 @@ def batch_status():
     say(f"  OUTREACH_MAILBOX_PER_DAY: {toolbelt('OUTREACH_MAILBOX_PER_DAY', '0')} -> cap today {cap} a mailbox"
         + ("  (0: nothing sends)" if cap <= 0 else ""))
     paused = paused_boxes()
-    for mb in boxes:
-        say(f"  {mb}: {sends_on(mb)} of {cap} today" + (f" — PAUSED ({paused[mb].get('why')})" if mb in paused else ""))
-    if not boxes:
-        say("  no mailboxes (OUTREACH_MAILBOXES)")
+    try:
+        ln = lane()
+    except Exception as exc:              # a view: never let it take `status` down with it
+        ln = None
+        say(f"  couldn't read the registry's lane ({exc})")
+    for mb in (ln["order"] if ln else boxes):
+        b = (ln or {}).get("boxes", {}).get(mb)
+        c = b["cap"] if b else cap
+        how = ""
+        if b:
+            how = (" · first letters: yes" if first_room(ln, mb)[0] else f" · first letters: no — {b['first_why'] or first_room(ln, mb)[1]}")
+            how += "" if b["entry"] else " · the Factory's"
+        say(f"  {mb}: {sends_on(mb)} of {c} today" + (f" — PAUSED ({paused[mb].get('why')})" if mb in paused else "")
+            + how)
+    if not boxes and not (ln and ln["order"]):
+        say("  no mailboxes (OUTREACH_MAILBOXES, or the registry's)")
+    say("  " + factory_week_line(ln["reg"] if ln else None))
     by = {}
     for x in seqs:
         by[x.get("status")] = by.get(x.get("status"), 0) + 1
@@ -4400,9 +4536,10 @@ def batch_status():
 # `outreach assets` and the registry lines in `status` are views of it. Each run enters the lane as it
 # stands (the venture's tenant and domains, OUTREACH_MAILBOXES, the provider the SMTP host belongs to),
 # mirrors the lane's pause file and its Postmaster readings onto the rows, and drains a domain on a bad
-# reading; rows already there keep what was set on them. The tick doesn't read it yet: the policy (B140)
-# and the Factory (B144) route through assets.plan_tick(); until then OUTREACH_MAILBOX_PER_DAY=0 holds the
-# Workspace mailboxes, and `outreach assets --check` fails if that ever stops being true.
+# reading; rows already there keep what was set on them. Since B150 the tick and the kit lane choose their
+# mailboxes from it (`lane()` above): first letters through `active` rows under PERMITTED contracts only, half per
+# contract at most, follow-ups from the thread's own mailbox; `outreach assets --check` still fails on a cap on a
+# mailbox whose contract forbids cold mail.
 
 def registry_provider_key():
     """The provider the lane's mailboxes send through, as the registry names it: OUTREACH_MAILBOX_PROVIDER,
@@ -4437,6 +4574,8 @@ def registry(refresh_renewals=False):
     assets.seed(reg, V.tenant, registry_provider_key(), V.outreach.domains, mailboxes(),
                 initial_state="active" if warmed else "warming")
     assets.sync_pauses(reg, V.tenant, paused_boxes())
+    assets.sync_warmup(reg, V.tenant, mailboxes(), warmed,                    # B150: the entry's warm-up, as the ramp says
+                       f"the lane's warm-up start ({start}) is fourteen days old")
     for r in reg.rows(V.tenant):                       # the Postmaster readings the lane holds
         if r["kind"] != "domain":
             continue

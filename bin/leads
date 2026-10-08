@@ -5506,6 +5506,17 @@ def today_data(args, today):
             "due": due, "first_call": warmest(today, state), "words": words, "email_off": email_off}
 
 
+def factory_line(today):
+    """B150: the Factory's proposal (`infra tick` writes INFRA_STATE/proposal.json, beside this tool's state dir),
+    when it was written in the last three days and has something to say; else None. Absent file, None."""
+    p = Path(os.environ.get("INFRA_STATE") or STATE.parent / "infra") / "proposal.json"
+    try:
+        d = json.loads(p.read_text())
+        return d.get("line") or None if (today - dt.date.fromisoformat(d["date"])).days <= 3 else None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
 def first_letter_approved():
     """Taylor's word on the day-0 letter, read the way `outreach send` reads it: first.md's hash (with its price
     sentence, lib/prices.py) in APPROVED."""
@@ -5671,6 +5682,9 @@ def today_message(d, n_due=6):
         lines.append(f"  the brief: leads brief \"{fc['name']}\"")
     elif six:
         lines.append(f"First call: nobody warm yet — the six above are the day's work.")
+    factory = factory_line(day)                    # B150: the Factory's proposal, when it has one
+    if factory:
+        lines += ["", factory]
     if d["words"]:
         lines += ["", "Needs a word: " + " · ".join(d["words"])]
     elif d.get("email_off") and six:

@@ -36,6 +36,20 @@ sample_address = "PO Box 000, American Fork, UT 84003"   # stands in for the add
 sample_phone = "801-555-0100"
 call_windows = "weekdays 6:45–7:45am, 12:15–12:45pm or 6:15–7pm (Mountain)"   # the three call windows (GROWTH § 6.1) an interested reply may be offered (B137); OUTREACH_CALL_WINDOWS overrides
 
+[registrant]                         # the WHOIS contact a Factory-bought sending domain is registered to (B144; Infraforge's
+                                     # POST /domains needs contactDetails, confirmed on the first live call 2026-10-08). The
+                                     # business, never a home address; the phone is the business line.
+first_name = "Taylor"
+last_name = "Remund"
+organization = "Plateful LLC"
+email = "founder@patchlamp.com"
+address1 = "2601 S Mountain Vista Pkwy, Bldg 2 Suite I"
+city = "Provo"
+province = "UT"
+postal_code = "84606"
+country = "US"
+phone = "+13853233175"
+
 [outreach]
 domains = ["trypatchlamp.com"]       # the cold-mail sending domains (never site_host: a burned domain would take the product's standing with it)
 link_example = "https://see.trypatchlamp.example/k3Xq9"   # what a tracked link looks like in a preview of a letter

@@ -31,6 +31,8 @@ TITLE = "Infraforge"
 KEY = "INFRA_PROVIDER_API_KEY"
 BASE = "INFRA_PROVIDER_API_BASE"
 WORKSPACE = "INFRA_PROVIDER_WORKSPACE"          # the vendor's workspace id, if its API scopes by one
+SALESFORGE_WORKSPACE = "INFRA_SALESFORGE_WORKSPACE"   # warm-up by API goes through a Salesforge export (2026-10-08)
+WARMFORGE_WORKSPACE = "INFRA_WARMFORGE_WORKSPACE"
 TIMEOUT = 30
 UNCONFIRMED = ("warm-up enrolment", "the placement probe")   # not in the sibling's documented list
 
@@ -77,7 +79,12 @@ class Adapter:
                                  "Add a card, or move to a plan that allows the mailboxes asked for, and save."],
                                 "money", 5, then="Re-run the same `infra provision` line; it resumes where it stopped.",
                                 blocking=True) from None
-            raise ProviderError(f"{method} {path}: HTTP {e.code}") from None
+            detail = ""
+            try:
+                detail = e.read().decode("utf-8", "replace")[:300]
+            except Exception:
+                pass
+            raise ProviderError(f"{method} {path}: HTTP {e.code}" + (f" — {detail}" if detail else "")) from None
         except (urllib.error.URLError, OSError) as e:
             raise ProviderError(f"{method} {path}: {type(e).__name__}") from None
         try:
@@ -105,7 +112,8 @@ class Adapter:
 
     def _domain_row(self, name):
         for d in self._items(self._req("GET", "/domains")):
-            if str(d.get("name") or d.get("domain") or "").lower() == name:
+            listed = d.get("name") or d.get("domain") or (f'{d.get("sld")}.{d.get("tld")}' if d.get("sld") else "")
+            if str(listed).lower() == name:                # Infraforge lists sld + tld (confirmed 2026-10-08)
                 return d
         return None
 
@@ -137,15 +145,47 @@ class Adapter:
             raise ProviderError(f"{name} isn't in the Infraforge account")
         return d.get("id")
 
-    def buy_domain(self, name, key, prewarmed=False):   # CONFIRM: POST /domains {"domains": [..]}
-        body = {"domains": [name]}
-        if self.get(WORKSPACE):
-            body["workspaceId"] = self.get(WORKSPACE)
+    def buy_domain(self, name, key, prewarmed=False):
+        # Confirmed on the first live call (2026-10-08): POST /domains wants {"domains": [..], "workspaceId",
+        # "contactDetails": {firstName, lastName, email, address1, city, province, postalCode, country,
+        # organization, phone}} — the registrant, from the venture file's [registrant] (the business, never a
+        # home address). The workspace id is INFRA_PROVIDER_WORKSPACE, else the account's only workspace.
+        body = {"domains": [name], "workspaceId": self._workspace_id(), "contactDetails": self._contact()}
         if prewarmed:
-            body["prewarmed"] = True                # CONFIRM: how pre-warmed inventory is chosen
+            body["prewarmed"] = True                # CONFIRM: how pre-warmed inventory is chosen (none on offer 2026-10-08)
         got = self._req("POST", "/domains", body=body, key=key)
-        return {"id": got.get("id"), "cost_usd": float(got.get("price") or self.prices()["domain_usd_year"]),
+        item = got if isinstance(got, dict) and got.get("id") else (self._items(got) or [{}])[0]
+        if not (isinstance(got, dict) and got.get("dry_run")):
+            try:                                     # the vendor registers with auto-renew off (2026-10-08); on, so a lapse never retires a lane
+                self.set_autorenew(name, True, f"{key}:autorenew")
+            except ProviderError:
+                pass                                 # verify/commit record the asset either way; `infra status` shows renewal by RDAP
+        price = item.get("price") if isinstance(item, dict) else None
+        if price is None:
+            try:
+                price = self.available(name).get("price_usd")
+            except ProviderError:
+                price = None
+        return {"id": (item or {}).get("id"), "cost_usd": float(price or self.prices()["domain_usd_year"]),
                 "human_steps": []}
+
+    def _workspace_id(self):
+        if self.get(WORKSPACE):
+            return self.get(WORKSPACE)
+        got = self._req("GET", "/workspaces")
+        if isinstance(got, dict) and got.get("dry_run"):
+            return "{workspace}"
+        ws = self._items(got)
+        if len(ws) == 1 and ws[0].get("id"):
+            return ws[0]["id"]
+        raise ProviderError(f"{len(ws)} workspaces at Infraforge; set {WORKSPACE} to the one the lane uses")
+
+    def _contact(self):
+        import venture as _venture
+        r = _venture.venture().registrant
+        return {"firstName": r.first_name, "lastName": r.last_name, "organization": r.organization,
+                "email": r.email, "address1": r.address1, "city": r.city, "province": r.province,
+                "postalCode": r.postal_code, "country": r.country, "phone": r.phone}
 
     def set_auth_dns(self, name, key):               # CONFIRM: the vendor sets SPF/DKIM/DMARC itself on purchase;
         did = self._domain_id(name)                  # we read its records back and let verify judge them
@@ -169,13 +209,44 @@ class Adapter:
                         "(automatable: once the DNS-delete endpoint is confirmed on signup)", blocking=False)
 
     def create_mailbox(self, domain, local, password, key):   # CONFIRM: POST /mailboxes; password accepted?
-        body = {"mailboxes": [{"email": f"{local}@{domain}", "password": password}]}
+        # Confirmed on the first live call (2026-10-08): POST /mailboxes wants
+        # {"domains": [{"domain": D, "mailboxes": [{"email", "firstName", "lastName", ...}]}]}; the names are the
+        # registrant's. Whether "password" is honoured is settled by VERIFY's login (a wrong one fails there).
+        import venture as _venture
+        r = _venture.venture().registrant
+        box = {"email": f"{local}@{domain}", "firstName": r.first_name, "lastName": r.last_name, "password": password}
+        body = {"domains": [{"domain": domain, "mailboxes": [box]}]}
         got = self._req("POST", "/mailboxes", body=body, key=key)
-        m = (self._items(got) or [got])[0] if not got.get("dry_run") else {}
-        return {"id": m.get("id"), "address": f"{local}@{domain}", "user": f"{local}@{domain}",
-                "smtp": m.get("smtp_host") and f"{m['smtp_host']}:{m.get('smtp_port') or 465}",
-                "imap": m.get("imap_host") and f"{m['imap_host']}:{m.get('imap_port') or 993}",
+        if isinstance(got, dict) and got.get("dry_run"):
+            m = {}
+        else:
+            items = self._items(got) or ([got] if isinstance(got, dict) else [])
+            m = next((x for x in items if str(x.get("email") or "").lower() == f"{local}@{domain}"), items[0] if items else {})
+        # The record carries no hosts and no id in the create answer (2026-10-08): the id comes from a re-list by
+        # address, and SMTP/IMAP are the workspace's `mailserver` on 465/993 (both answered on the first unit).
+        mid = m.get("id")
+        if not mid and not (isinstance(got, dict) and got.get("dry_run")):
+            mid = next((x.get("id") for x in self._items(self._req("GET", "/mailboxes"))
+                        if str(x.get("email") or "").lower() == f"{local}@{domain}"), None)
+        if mid and not (isinstance(got, dict) and got.get("dry_run")):
+            # the create body's "password" is ignored (2026-10-08: the login was refused, 535, until this PATCH)
+            self._req("PATCH", f"/mailboxes/{mid}", body={"password": password}, key=f"{key}:password")
+        host = m.get("smtp_host") or self._mailserver()
+        return {"id": mid, "address": f"{local}@{domain}", "user": f"{local}@{domain}",
+                "smtp": host and f"{m.get('smtp_host') or host}:{m.get('smtp_port') or 465}",
+                "imap": host and f"{m.get('imap_host') or host}:{m.get('imap_port') or 993}",
                 "cost_usd_month": self.prices()["mailbox_usd_month"]}
+
+    def _mailserver(self):
+        """The workspace's mail host (GET /workspaces → `mailserver`), the SMTP and IMAP host of every mailbox in
+        it; None in a dry run or when the account doesn't say."""
+        got = self._req("GET", "/workspaces")
+        if isinstance(got, dict) and got.get("dry_run"):
+            return None
+        for w in self._items(got):
+            if w.get("mailserver") and (not self.get(WORKSPACE) or w.get("id") == self.get(WORKSPACE)):
+                return w["mailserver"]
+        return None
 
     def delete_mailbox(self, address, key):          # CONFIRM: DELETE /mailboxes/{id}
         mid = "{id}"
@@ -188,12 +259,29 @@ class Adapter:
         return {}
 
     def start_warmup(self, address, key):
-        # Not in the documented API yet: a dashboard switch until it is confirmed on signup.
-        raise HumanStep(f"warmup:{address}", "warmup-enrol", f"Turn on warm-up for {address} at Infraforge",
-                        [f"Open Infraforge's dashboard → Mailboxes → {address}.",
-                         "Switch warm-up on (the vendor's default schedule) and save."],
+        # Infraforge doesn't warm (Taylor, 2026-10-08: "infraforge doesn't warm. I have to use warmforge for that").
+        # Warm-up is Warmforge's, and the one API path to it is Infraforge's export to a Salesforge workspace
+        # with `warmupActivated` (POST /mailboxes/export-to-salesforge: fromWorkspaceId, toWorkspaceId = the
+        # Salesforge workspace, toWarmforgeWorkspaceId, tagName, warmupActivated, includedIds). With both ids in
+        # env it is an API call; without them it is Taylor's click in Warmforge (connect the mailbox, warm-up on).
+        sf, wf = self.get(SALESFORGE_WORKSPACE), self.get(WARMFORGE_WORKSPACE)
+        if sf and wf:
+            mid = next((x.get("id") for x in self._items(self._req("GET", "/mailboxes"))
+                        if str(x.get("email") or "").lower() == address.lower()), None)
+            if not mid:
+                raise ProviderError(f"{address} isn't in the Infraforge account, so it can't be exported to warm-up")
+            body = {"fromWorkspaceId": self._workspace_id(), "toWorkspaceId": sf, "toWarmforgeWorkspaceId": wf,
+                    "tagName": self.get("INFRA_EXPORT_TAG") or "factory", "warmupActivated": True, "includedIds": [mid]}
+            self._req("POST", "/mailboxes/export-to-salesforge", body=body, key=key)
+            return {"warmup": "warmforge", "via": "salesforge-export"}
+        raise HumanStep(f"warmup:{address}", "warmup-enrol", f"Connect {address} in Warmforge and switch warm-up on",
+                        ["Open Warmforge (app.warmforge.ai) → Mailboxes → Add → pick the Infraforge mailbox "
+                         f"{address} (the Forge products see each other's workspaces).",
+                         "Switch warm-up on (the default schedule) and save."],
                         "judgment", 2, then="Certification counts fourteen days of warming from the day it is on. "
-                        "(automatable: once the warm-up endpoint is confirmed on signup)", blocking=False)
+                        f"(automatable: with a Salesforge subscription, {SALESFORGE_WORKSPACE} and "
+                        f"{WARMFORGE_WORKSPACE} in env make this an API call — TODO § 1 \"Warm-up: Warmforge\")",
+                        blocking=False)
 
     def set_autorenew(self, name, on, key):          # CONFIRM: PUT /domains/{id}/enable-autorenew|disable-autorenew
         did = self._domain_id(name)

@@ -71,30 +71,28 @@ keep working unchanged and a Factory mailbox can be added to `OUTREACH_MAILBOXES
 mailboxes send cold, and when, is the registry's rule (`active` under a PERMITTED contract), not this file's.
 Keys stay on this box: `infra` never runs inside a sandboxed or headless client run (plan 55 § 5.8).
 
-## The Infraforge adapter: documented, and confirmed on signup
+## The Infraforge adapter: confirmed on the first live unit (2026-10-08)
 
-Infraforge's own API reference wasn't reachable before signup. Its sibling Mailforge (the same company's
-shared-IP tier) documents `https://api.mailforge.ai/public`, the key in the `Authorization` header. The adapter
-follows that shape; each line below is checked against Infraforge's reference on the day the account exists and
-corrected in `lib/providers/infraforge.py` before the first live call.
+Base `https://api.infraforge.ai/public` (`INFRA_PROVIDER_API_BASE`), `Authorization: <key>`. Confirmed by the
+first two domains (getpatchlamp.com, patchlamphq.com; Flint with Taylor's go), corrected in
+`lib/providers/infraforge.py` the same afternoon:
 
-| what | path the adapter uses | status |
+| what | what Infraforge actually wants | status |
 |---|---|---|
-| base URL | `INFRA_PROVIDER_API_BASE` (no default) | confirmed on signup |
-| auth | `Authorization: <INFRA_PROVIDER_API_KEY>` | Mailforge-documented; confirm |
-| availability | `GET /check-domain-availability?domain=` | Mailforge-documented; confirm |
-| purchase | `POST /domains` | Mailforge-documented; confirm the body and pre-warmed selection |
-| list domains | `GET /domains` | Mailforge-documented; confirm |
-| DNS read / write | `GET` / `PUT /domains/{id}/dns` | Mailforge-documented; confirm whether SPF/DKIM/DMARC are set on purchase |
-| DNS delete | none | not documented: a filed dashboard step |
-| auto-renew | `PUT /domains/{id}/enable-autorenew` / `disable-autorenew` | Mailforge-documented; confirm |
-| mailboxes | `POST` / `GET /mailboxes`, `DELETE /mailboxes/{id}` | Mailforge-documented; confirm that a password can be set on create and where SMTP/IMAP hosts come back |
-| warm-up enrolment | none | not documented: a filed dashboard step until confirmed |
-| placement probe | none | not documented; certification rests on our seeds |
-| idempotency | an `Idempotency-Key` header is sent | not documented: our ledger key is the guard either way |
-| payment required | HTTP 402 → a filed "add a card" step | Mailforge-documented code |
+| workspaces | `GET /workspaces` → `[{id, name, slug, mailserver}]`; `mailserver` is every mailbox's SMTP (465) and IMAP (993) host | confirmed |
+| availability | `GET /check-domain-availability?domain=` → `{available, price, minCreationPeriodMonths}` | confirmed ($14 a .com) |
+| purchase | `POST /domains {"domains": [..], "workspaceId", "contactDetails": {firstName, lastName, email, address1, city, province, postalCode, country, organization, phone}}`; the registrant is the venture's `[registrant]` | confirmed |
+| list domains | `GET /domains` → rows with `sld` + `tld` (no `name`), `autoRenewStatus`, `expiresAt`, `status` | confirmed |
+| DNS read | `GET /domains/{id}/dns` → MX, SPF, DMARC (`p=reject`), DKIM at `default._domainkey`, all set on purchase, `editable: false` | confirmed |
+| auto-renew | `PUT /domains/{id}/enable-autorenew` → 204; the vendor registers with it **off**, so `buy_domain` turns it on | confirmed |
+| mailboxes | `POST /mailboxes {"domains": [{"domain": D, "mailboxes": [{"email", "firstName", "lastName"}]}]}`; the create body's `password` is ignored; `PATCH /mailboxes/{id} {"password"}` sets it (the login was refused, 535, until then); the record carries no hosts and no credentials | confirmed |
+| warm-up enrolment | **Infraforge doesn't warm; Warmforge does** (Taylor, 2026-10-08). The one API path: `POST /mailboxes/export-to-salesforge {fromWorkspaceId, toWorkspaceId (Salesforge), toWarmforgeWorkspaceId, tagName, warmupActivated: true, includedIds}` — needs a Salesforge subscription ($40/mo Pro, unlimited Warmforge). With `INFRA_SALESFORGE_WORKSPACE` and `INFRA_WARMFORGE_WORKSPACE` set it is a call; else a filed click in Warmforge ($10 a slot a month standalone) | confirmed (the body by probe; the call itself on the first unit with the ids) |
+| placement probe | none | certification rests on our seeds |
+| idempotency | `Idempotency-Key` sent; not documented | our ledger key is the guard |
+| DNS delete, pre-warmed inventory | not seen; none on offer 2026-10-08 ("out of pre-warmed domains") | filed steps |
 
-`infra provision … --go --dry-run` prints every call the adapter would make, without the key, and makes none.
+A 400 answers with `{"message": "invalid request body", "data": ["<field> is a required field", …]}`, and `_req`
+now carries that body in its error, so the next unknown field is read, not guessed.
 
 ## When something goes wrong
 

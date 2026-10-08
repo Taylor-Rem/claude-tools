@@ -28,6 +28,18 @@ sample_address = "PO Box 9, Springfield, OR 97477"
 sample_phone = "541-555-0100"
 call_windows = "weekdays 9–10am, 1–2pm or 5–6pm (Pacific)"
 
+[registrant]
+first_name = "Alex"
+last_name = "Example"
+organization = "Example Co LLC"
+email = "hello@example-co.test"
+address1 = "1 Example Way"
+city = "Springfield"
+province = "OR"
+postal_code = "97000"
+country = "US"
+phone = "+15035550100"
+
 [outreach]
 domains = ["trybrightwell.example"]
 link_example = "https://see.trybrightwell.example/k3Xq9"

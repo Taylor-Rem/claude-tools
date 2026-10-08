@@ -13,7 +13,17 @@ GitHub API with a fine-grained token Taylor pastes once in the browser.
 
   todo ls [--all]              open items by section, numbered
   todo done <n> [<n>...]       tick item(s) by number from `todo ls`
-  todo add "text" [--section N]   a new item (default: the "Later" section)
+  todo add "text" [--section N] [--repeat-key K --human R --minutes M]   a new item (default: "Later");
+                               asks for the three at a terminal, derives them otherwise; written as a
+                               hidden `<!-- todo: … -->` line the web page doesn't show
+  todo now [--short] [--offline] [--json]   the queue (B138): under twelve lines, grouped (setup that
+                               blocks the lane · replies waiting · send today · decide), minutes each
+  todo show N                  one entry in full
+  todo pause "why" | --off     sends paused (an owner's decision): `todo now` says so instead of listing them
+  todo audit [--sunday] [--json]   Rule 9 per entry (human-only / automatable + how / unsure) and
+                               recurrence per repeat_key from the file and HISTORY's done trail
+  todo reconcile [--json]      a class + reason for every § 1 / 1b / 1c entry; changes nothing
+  todo reconcile --apply --word "reconcile: yes" [--only N ...]   on Taylor's word: one commit
   todo sync                    local edits up, web ticks down (the timer's job)
   todo init                    one time: the private data repo, the timer
   todo site push               publish todo-site/index.html to the Pages repo
@@ -540,6 +550,33 @@ def cmd_done(args):
         cmd_sync(argparse.Namespace(quiet=True))
 
 
+def add_metadata(entry, args):
+    """The hidden line every entry carries (B138, VISION § Rules 9): the operation's repeat_key, why it
+    needs a person, and its minutes. Asked for at a terminal, with the derived value as the default;
+    derived without asking when nobody is there to answer (a session, the relay)."""
+    sys.path.insert(0, str(HERE / "lib"))
+    import todo_queue as tq
+    e = tq.parse("## x\n" + entry)[0]
+    cls, why, hint = tq.rule9(e)
+    guess = {"repeat_key": args.repeat_key or hint or tq.repeat_key(e),
+             "human_reason": args.human or (why.split(" (")[0] if cls == "human-only" else cls),
+             "estimated_minutes": str(args.minutes or tq.minutes(e)[0])}
+    asks = {"repeat_key": "repeat_key (the same operation gets the same key: env-value, dns-record, ...)",
+            "human_reason": "why it needs you (identity, contract, money, judgment, physical; or automatable)",
+            "estimated_minutes": "minutes it takes you"}
+    given = {"repeat_key": args.repeat_key, "human_reason": args.human, "estimated_minutes": args.minutes}
+    if sys.stdin.isatty() and not args.no_ask:
+        for k, q in asks.items():
+            if given[k] is None:
+                try:
+                    a = input(f"{q} [{guess[k]}]: ").strip()
+                except EOFError:
+                    a = ""
+                guess[k] = a or guess[k]
+    clean = {k: re.sub(r"[;>]|--", " ", str(v)).strip() for k, v in guess.items()}
+    return "  <!-- todo: " + "; ".join(f"{k}={v}" for k, v in clean.items()) + " -->"
+
+
 def cmd_add(args):
     text = TODO_FILE.read_text()
     lines = text.splitlines(keepends=True)
@@ -560,6 +597,7 @@ def cmd_add(args):
         at -= 1
     who = args.by or "Taylor"
     entry = f"- [ ] **{args.text.strip().rstrip('.')}.** _({who}, {date.today().isoformat()})_\n"
+    entry += add_metadata(entry, args) + "\n"
     if at == start + 1 and lines[start].endswith("\n") and not (len(lines) > start + 1 and not lines[start + 1].strip()):
         entry = "\n" + entry            # a blank line under the header, like the other sections
     lines.insert(at, entry)
@@ -567,6 +605,235 @@ def cmd_add(args):
     print(f"added to {sections[idx]['name']}: {args.text.strip()}")
     if repo_ready():
         cmd_sync(argparse.Namespace(quiet=True))
+
+
+# --- the human queue (B138) -------------------------------------------------
+# `todo now`, `todo audit`, `todo reconcile`, `todo show`, `todo pause`: plan 55 § 5.5, VISION § Rules 9.
+# The parsing and the rules live in lib/todo_queue.py (pure text in, text out); this part reads the
+# files, asks the other tools what they can say cheaply, and writes only on `reconcile --apply`.
+
+sys.path.insert(0, str(HERE / "lib"))
+import todo_queue as tq  # noqa: E402
+
+HISTORY_FILE = Path(os.environ.get("TODO_HISTORY", str(WORK_TREE / "HISTORY.md"))).expanduser()
+ROADMAP_FILE = Path(os.environ.get("TODO_ROADMAP", str(WORK_TREE / "ROADMAP.md"))).expanduser()
+DAYS_DIR = WORK_TREE / "days"
+QUEUE_STATE = Path(os.environ.get("TODO_STATE_DIR", "~/.local/state/claude-tools/todo")).expanduser()
+PAUSE_FILE = QUEUE_STATE / "sends-paused"
+PROBE_TIMEOUT = int(os.environ.get("TODO_PROBE_TIMEOUT", 30))
+RECONCILE_WORD = "reconcile: yes"
+
+
+def ls_numbers(text):
+    """{an entry's first line index: its `todo ls` number}, so every command speaks the same numbers."""
+    return {it["line"]: it["n"] for s in parse(text) for it in s["items"]}
+
+
+def _read(path):
+    try:
+        return Path(path).read_text()
+    except OSError:
+        return ""
+
+
+def probe(cmd, parse_out):
+    """Run another tool for one number. Never raises: what it couldn't read comes back as a short
+    string the message prints ("couldn't read …"), so one slow tool never empties the morning."""
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=PROBE_TIMEOUT, cwd=WORK_TREE)
+    except FileNotFoundError:
+        return f"couldn't read `{cmd[0]}` (not on PATH)"
+    except subprocess.TimeoutExpired:
+        return f"couldn't read `{' '.join(cmd[:2])}` in {PROBE_TIMEOUT}s"
+    if r.returncode:
+        return f"couldn't read `{' '.join(cmd[:2])}` (exit {r.returncode})"
+    try:
+        return parse_out(r.stdout)
+    except (ValueError, IndexError):
+        return f"couldn't read `{' '.join(cmd[:2])}`'s output"
+
+
+def _count_replies(out):
+    return int(out.strip().splitlines()[-1].strip())
+
+
+def _count_due(out):
+    first = out.strip().splitlines()[0]
+    if first.lower().startswith("no follow-up"):
+        return 0
+    m = re.match(r"(\d+) follow-ups? due", first)
+    if not m:
+        raise ValueError(first)
+    return int(m.group(1))
+
+
+def sends_paused():
+    try:
+        return PAUSE_FILE.read_text().strip() or "paused"
+    except OSError:
+        return None
+
+
+def day_sends(today):
+    """A pointer to today's sends in the day plan, if the day has a section of them."""
+    f = DAYS_DIR / f"{today.isoformat()}.md"
+    text = _read(f)
+    m = re.search(r"^#+ (.*\b(?:The six|DMs|send)\b.*)$", text, re.M | re.I)
+    if not m:
+        return None
+    return f"{f.relative_to(WORK_TREE)} § {m.group(1).strip()[:30]} · ~15 min"
+
+
+def queue_context():
+    text = TODO_FILE.read_text()
+    entries = tq.parse(text)
+    rows = tq.roadmap_status(_read(ROADMAP_FILE))
+    return text, entries, rows
+
+
+def now_message(offline=False, short=False):
+    text, entries, rows = queue_context()
+    today = date.today()
+    replies = due = "not asked (--offline)"
+    if not offline:
+        replies = probe(["outreach", "replies", "--open", "--count"], _count_replies)
+        due = probe(["leads", "due"], _count_due)
+    plan = tq.reconcile_plan(entries, rows)
+    proposed = sum(1 for p in plan if p["target"] != p["entry"]["section"] and not p.get("unsure"))
+    return tq.now_lines(entries, numbers=ls_numbers(text), replies=replies, due=due, paused=sends_paused(),
+                        day_sends=day_sends(today), proposed=proposed, rows=rows, today=today, short=short)
+
+
+def cmd_now(args):
+    if args.json:
+        text, entries, rows = queue_context()
+        nums = ls_numbers(text)
+        q = tq.queue(entries, rows)
+        print(json.dumps([{"n": nums.get(p["entry"]["start"]), "title": p["entry"]["title"],
+                           "group": p["group"], "funnel": p["funnel"], "later": p["later"],
+                           "minutes": tq.minutes(p["entry"])[0], "estimated": not tq.minutes(p["entry"])[1],
+                           "command": tq.command_for(p["entry"], nums.get(p["entry"]["start"]))} for p in q],
+                         indent=1, ensure_ascii=False))
+        return
+    print("\n".join(now_message(offline=args.offline, short=args.short)))
+
+
+def cmd_show(args):
+    text = TODO_FILE.read_text()
+    nums = ls_numbers(text)
+    for e in tq.parse(text):
+        if nums.get(e["start"]) == args.n:
+            print("\n".join(e["lines"]))
+            return
+    die(f"no item {args.n} (see `todo ls`)")
+
+
+def cmd_pause(args):
+    """Sends paused (an owner's decision written down): `todo now` says so instead of listing sends."""
+    if args.off:
+        PAUSE_FILE.unlink(missing_ok=True)
+        print("sends: on (todo now lists them again)")
+        return
+    if not args.reason:
+        p = sends_paused()
+        print(f"sends: paused — {p}" if p else "sends: on")
+        return
+    QUEUE_STATE.mkdir(parents=True, exist_ok=True)
+    PAUSE_FILE.write_text(args.reason.strip() + "\n")
+    print(f"sends: paused — {args.reason.strip()}")
+
+
+def cmd_audit(args):
+    text, entries, rows = queue_context()
+    trail = tq.done_trail(_read(HISTORY_FILE))
+    a = tq.audit(entries, trail)
+    if args.json:
+        print(json.dumps(a, indent=1, ensure_ascii=False, default=str))
+        return
+    nums = ls_numbers(text)
+    by_title = {e["title"]: nums.get(e["start"]) for e in entries}
+    if not args.sunday:
+        print("Rule 9, every open entry in § 1 / 1b / 1c (a proposal, a reader decides; `unsure` is an answer):")
+        for r in a["entries"]:
+            n = by_title.get(r["title"], "?")
+            print(f"  {n:>3}  {r['class']:<11} {r['repeat_key']:<22} ~{r['minutes']}{'?' if r['guessed'] else ''} min  "
+                  f"{tq.short_title(r['title'], 50)}")
+            print(f"       {'how' if r['class'] == 'automatable' else 'why'}: {r['why']}")
+        print()
+    print(sunday_lines(a))
+    m = a["measured"]
+    print(f"\nMeasured: {m['minutes_asked']} min asked in § 1; days until ticked, median "
+          f"{m['days_until_ticked_median'] if m['days_until_ticked_median'] is not None else 'n/a'} "
+          f"({m['ticked_with_dates']} done-trail entries carry both dates).")
+    if not args.sunday:
+        print("Cumulative minutes by key (top 8): " + "; ".join(
+            f"{k['repeat_key']} {k['cumulative_minutes']} ({k['occurrence_count']}×)" for k in a["keys"][:8]))
+
+
+def sunday_lines(a):
+    """The part of the Sunday review the audit carries: proposals, exceptions, nothing filed."""
+    out = ["Recurrence (Rule 9): the second time an automatable step comes back proposes its row, the third "
+           "queues it, 30 min in 30 days queues it regardless; nothing here is filed until you say so."]
+    if not a["proposals"] and not a["exceptions"]:
+        out.append("  nothing over its threshold this week.")
+    for p in a["proposals"]:
+        verb = {"propose": "propose a row", "queue": "queue the row", "graduate": "graduate it"}[p["action"]]
+        out.append(f"  {p['repeat_key']}: {verb} — {p['occurrence_count']}×, {p['cumulative_minutes']} min in all "
+                   f"({p['why']}); e.g. {', '.join(p['titles'][:2])}")
+    for x in a["exceptions"]:
+        out.append(f"  {x['repeat_key']}: kept manual because: {x['reason']} ({x['occurrence_count']}×, "
+                   f"{x['cumulative_minutes']} min)")
+    return "\n".join(out)
+
+
+def cmd_reconcile(args):
+    text, entries, rows = queue_context()
+    plan = tq.reconcile_plan(entries, rows)
+    nums = ls_numbers(text)
+    only = set(args.only) if args.only else None
+    if args.json and not args.apply:
+        print(json.dumps([{"i": i, "n": nums.get(p["entry"]["start"]), "section": p["entry"]["section"],
+                           "title": p["entry"]["title"], "class": p["cls"], "to": p["target"],
+                           "reason": p["reason"], "row": p.get("row"), "unsure": bool(p.get("unsure"))}
+                          for i, p in enumerate(plan, 1)], indent=1, ensure_ascii=False))
+        return
+    if not args.apply:
+        moving = 0
+        for i, p in enumerate(plan, 1):
+            e = p["entry"]
+            dest = {"trail": "done trail", "1": "§ 1", "1b": "§ 1b"}.get(p["target"], f"§ {p['target']}")
+            stay = p["target"] == e["section"]
+            moving += not stay and not p.get("unsure")
+            flag = " (unsure: applied only if named with --only)" if p.get("unsure") and not stay else ""
+            print(f"{i:>3}. [{nums.get(e['start'], '?')}] {p['cls']:<22} § {e['section']:<2} "
+                  f"{'stays' if stay else '→ ' + dest}  {tq.short_title(e['title'], 56)}")
+            print(f"       {p['reason'][:160]}{flag}")
+        print(f"\n{len(plan)} entries read; {moving} would move on \"{RECONCILE_WORD}\". Nothing has changed: "
+              f"this is the proposal. Flint reviews it; Taylor says \"{RECONCILE_WORD}\" (or names lines), and then "
+              f"`todo reconcile --apply --word \"{RECONCILE_WORD}\"` [--only N …] applies it as one commit.")
+        return
+    if (args.word or "").strip().lower() != RECONCILE_WORD:
+        die(f"--apply needs Taylor's word: --word \"{RECONCILE_WORD}\" (nothing was changed)")
+    if only is None:
+        only = {i for i, p in enumerate(plan, 1) if not p.get("unsure")}
+    new_todo, new_hist, moves = tq.apply(text, _read(HISTORY_FILE), plan, only=only)
+    # nothing open may vanish: every open entry is still in the todo file or now in the history file
+    before = {e["title"] for e in entries if not e["done"]}
+    after = {e["title"] for e in tq.parse(new_todo)} | {e["title"] for e in tq.parse(new_hist)}
+    lost = before - after
+    if lost:
+        die("refusing to write: these entries would vanish: " + "; ".join(sorted(lost))[:400])
+    TODO_FILE.write_text(new_todo)
+    if moves:
+        HISTORY_FILE.write_text(new_hist)
+    for m in moves:
+        print(f"  {m['cls']:<22} § {m['from']} → {m['to']}: {tq.short_title(m['title'], 60)}")
+    print(f"{len(moves)} moved; every entry left in § 1 / 1b carries its hidden metadata line.")
+    if repo_ready() and not args.no_commit:
+        git("add", "--", str(TODO_FILE), str(HISTORY_FILE))
+        r = git("commit", "-q", "-m", f"todo reconcile: {len(moves)} moves on \"{RECONCILE_WORD}\" (B138)", check=False)
+        print("committed in the side-car; the next `todo sync` pushes it" if r.returncode == 0
+              else f"not committed: {(r.stderr or r.stdout).strip()[:200]}")
 
 
 # --- git sync --------------------------------------------------------------
@@ -781,9 +1048,18 @@ def run_request(name):
     except FileNotFoundError:
         status = "failed: claude is not on PATH for the runner"
         body = ""
-    reply.write_text("\n".join(head + [status, "", (body or "").strip()[-20000:], ""]))
+    reply.write_text("\n".join(head + [status, ""] + now_lead() + [(body or "").strip()[-20000:], ""]))
     running.unlink(missing_ok=True)
     notify_reply(name, status, reply)
+
+
+def now_lead():
+    """The request-box reply leads with the queue (B138): one line from the file alone, so it costs
+    nothing, never calls another tool, and never pushes the answer out of the notification."""
+    try:
+        return ["_" + now_message(offline=True, short=True)[0] + "_", ""]
+    except Exception:  # noqa: BLE001  the queue line is a courtesy; the reply matters more
+        return []
 
 
 def notify_reply(name, status, reply, kind="request"):
@@ -1096,8 +1372,27 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("ls"); p.add_argument("--all", action="store_true"); p.set_defaults(fn=cmd_ls)
     p = sub.add_parser("done"); p.add_argument("n", type=int, nargs="+"); p.set_defaults(fn=cmd_done)
-    p = sub.add_parser("add"); p.add_argument("text"); p.add_argument("--section", type=int); p.add_argument("--by"); p.set_defaults(fn=cmd_add)
+    p = sub.add_parser("add"); p.add_argument("text"); p.add_argument("--section", type=int); p.add_argument("--by")
+    p.add_argument("--repeat-key"); p.add_argument("--human", help="identity | contract | money | judgment | physical")
+    p.add_argument("--minutes", type=int); p.add_argument("--no-ask", action="store_true", help="derive, don't ask")
+    p.set_defaults(fn=cmd_add)
     p = sub.add_parser("sync"); p.add_argument("--quiet", action="store_true"); p.set_defaults(fn=cmd_sync)
+    p = sub.add_parser("now", help="the queue: under twelve lines, grouped, minutes (B138)")
+    p.add_argument("--short", action="store_true", help="one line: the count, the minutes, the first item")
+    p.add_argument("--offline", action="store_true", help="the file only; don't ask outreach / leads")
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_now)
+    p = sub.add_parser("show", help="one entry in full, by its `todo ls` number"); p.add_argument("n", type=int)
+    p.set_defaults(fn=cmd_show)
+    p = sub.add_parser("pause", help="sends paused: todo pause \"why\" | todo pause --off | todo pause")
+    p.add_argument("reason", nargs="?"); p.add_argument("--off", action="store_true"); p.set_defaults(fn=cmd_pause)
+    p = sub.add_parser("audit", help="Rule 9 per entry, recurrence per repeat_key (B138)")
+    p.add_argument("--sunday", action="store_true", help="only the proposals, for the Sunday review")
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_audit)
+    p = sub.add_parser("reconcile", help="propose a class for every § 1 entry; --apply on Taylor's word (B138)")
+    p.add_argument("--apply", action="store_true"); p.add_argument("--word", help=f'Taylor\'s word: "{RECONCILE_WORD}"')
+    p.add_argument("--only", type=int, nargs="+", help="apply only these proposal numbers (a line-by-line answer)")
+    p.add_argument("--no-commit", action="store_true"); p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_reconcile)
     p = sub.add_parser("init"); p.set_defaults(fn=cmd_init)
     p = sub.add_parser("site"); p.add_argument("action", choices=["push"]); p.set_defaults(fn=cmd_site)
     p = sub.add_parser("open"); p.set_defaults(fn=cmd_open)

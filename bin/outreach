@@ -36,6 +36,13 @@
                                # and "too few to decide" below the floor (100 a group, 20 positive)
   outreach status --by arm      # B137: the close test (E3), Taylor's call vs Patch's link: interested,
                                # Patch answered, claimed, paid, each per hundred interested
+  outreach status --by experiment E1
+                               # B142: a registered experiment (the venture's experiments.json): the seven
+                               # stages per arm counted by business, "too few to decide" under the floor, the
+                               # stages past its primary endpoint bracketed and split by the next one's arm
+  outreach status --by actor|channel|provider|asset|strength
+                               # B142: the seven stages by a whole-population dimension; any other cut, or
+                               # two experiments crossed, is refused with the reason
   outreach ai-test start | stop [--keep intro|foot|none] | show
                                # B132, plan 53: the AI-line test. Open, each batch is dealt a third each
                                # to none / intro / foot; start and stop are Taylor's word only, as `go` is
@@ -226,6 +233,7 @@ sys.path.insert(0, str(TOOLS / "lib"))
 import outreach_mail as mail  # noqa: E402  the SMTP/IMAP wire under the `google` provider
 import postmaster as pmapi  # noqa: E402  B136: Google Postmaster Tools by API
 import assets  # noqa: E402  the capacity registry (B141)
+import experiments as X  # noqa: E402  the funnel by business and the experiments registry (B142)
 from venture import from_argv  # noqa: E402
 
 V = from_argv()                      # the business this works for (ventures/<name>/venture.toml, B146)
@@ -269,8 +277,10 @@ AI_NONE_REFUSAL = ("a letter with no AI sentence goes out only inside the AI-lin
 # What every batch send row and the lead's pipeline event carry, so replies can be cut by any of them.
 # B135 adds the proposition and the experiment that dealt it (E1) with its arm, under their own names: a reply row's
 # `experiment_id` / `arm` are the close test's (E3, B137), which comes after E1 in the same funnel.
+# B142 adds the channel, who sent it (the machine) and the asset (the mailbox) it went from, so the funnel can be cut by
+# each; the provider is on the send row already, the lead's strength on the pipeline line this send writes.
 OUTBOUND_FIELDS = ("variant", "fault_key", "segment", "letter_sha", "prebuilt",
-                   "proposition", "proposition_experiment", "proposition_arm")
+                   "proposition", "proposition_experiment", "proposition_arm", "channel", "actor", "asset")
 # The floor below which `status --by` says "too few to decide" (plan 53 § Open: a guess, kept honest).
 TEST_FLOOR_DELIVERED = 100
 TEST_FLOOR_POSITIVE = 20
@@ -2996,7 +3006,8 @@ def outbound_of(seq, sha):
     return {"variant": seq.get("variant") or AI_DEFAULT, "fault_key": seq.get("fault_key") or "",
             "segment": seq.get("segment") or "", "letter_sha": sha, "prebuilt": bool(seq.get("prebuilt")),
             "proposition": seq.get("proposition"), "proposition_experiment": seq.get("proposition_experiment"),
-            "proposition_arm": seq.get("proposition_arm")}
+            "proposition_arm": seq.get("proposition_arm"),
+            "channel": "email", "actor": "machine", "asset": seq.get("mailbox")}     # B142
 
 
 def cmd_tick(args):
@@ -4206,13 +4217,68 @@ def proposition_report():
         say("  " + "  |  ".join(cells))
 
 
-def cmd_status(args):
-    if getattr(args, "by", None) == "arm":
-        return arm_report()                     # B137
-    if getattr(args, "by", None) == "proposition":
+# ---- the funnel by business and the registered experiments (B142, plan 55 § 5.6) ----------------------------
+# One business counts once at each of the seven stages; a cut is a whole-population dimension or a registered
+# experiment (ventures/<name>/experiments.json, lib/experiments.py); anything else is refused with the reason. The
+# views B132, B135 and B137 built (`variant`, `fault`, `segment`, `letter`, `prebuilt`, `proposition`, `arm`) stay as
+# they were; `variant` and `arm` are E2's and E3's arms, so they count as those experiments when a cut is checked.
+
+STATUS_VIEWS = ("letter",)          # B132's: recorded on every row; kept as it was
+
+
+def claimed_previews():
+    """{place_id: the day it was claimed} from the preview manifests (LEADS_PREVIEWS, as `arm_numbers` reads them)."""
+    meta = Path(toolbelt("LEADS_PREVIEWS") or Path.home() / ".local/state/claude-tools/previews") / "meta"
+    out = {}
+    for p in (sorted(meta.glob("*.json")) if meta.is_dir() else []):
+        try:
+            m = json.loads(p.read_text())
+        except (OSError, ValueError):
+            continue
+        if m.get("claimed") and m.get("place_id"):
+            out[m["place_id"]] = m.get("claimed_on") or ""
+    return out
+
+
+def lane_businesses(reg):
+    """Every business this lane wrote to, one record each (lib/experiments.py `businesses`): the cold sends, their
+    replies, and the pipeline's lines for those businesses only (a DM-only lead isn't this lane's)."""
+    sends = cold_sends()
+    pids = {r.get("place_id") for r in sends if r.get("place_id")}
+    emails = {str(r.get("email") or "").lower() for r in sends if r.get("email")}
+    events = [e for e in read_jsonl(pipeline_file())
+              if (e.get("place_id") and e["place_id"] in pids) or str(e.get("email") or "").lower() in emails - {""}]
+    return X.businesses(sends=sends, replies=read_jsonl(replies_file()), events=events, claimed=claimed_previews(),
+                        today=today(), reg=reg, positive_classes=POSITIVE_CLASSES, not_a_reply=NOT_A_REPLY)
+
+
+def by_report(words):
+    reg = X.registry(V)
+    try:
+        cut = X.resolve_cut(words, reg, views=STATUS_VIEWS)
+    except X.Refused as e:
+        die(f"not a cut — {e}", code=2)
+    colour = X.use_colour()
+    if cut.kind == "experiment":
+        if cut.name == "arm":
+            return arm_report()                 # B137
+        if cut.name == "variant":
+            return cut_report("variant")        # B132
+        for line in X.render_experiment(lane_businesses(reg), cut.eid, reg, upto=today().isoformat(), colour=colour):
+            say(line)
+        return
+    if cut.name == "proposition":
         return proposition_report()             # B135
+    if cut.name in BY_CUTS:
+        return cut_report(cut.name)             # B132
+    for line in X.render_dim(lane_businesses(reg), cut.name, upto=today().isoformat(), colour=colour,
+                             scope="every business this lane wrote to"):
+        say(line)
+
+
+def cmd_status(args):
     if getattr(args, "by", None):
-        return cut_report(args.by)
+        return by_report(args.by)               # B132, B135, B137; B142 checks the cut first
     provider = pick_provider(args.provider)
     per_day = int(env_num("OUTREACH_PER_DAY", DEFAULT_PER_DAY, int))
     cap = int(env_num("OUTREACH_MAX_REPLIES_PER_DAY", DEFAULT_MAX_REPLIES, int))
@@ -5183,9 +5249,11 @@ def main():
     s.set_defaults(fn=cmd_suppress)
 
     s = sub.add_parser("status", parents=[common], help="today's sends, the caps, the replies, the bounce rate")
-    s.add_argument("--by", choices=(*BY_CUTS, "arm"), help="B132: delivered → clicks → replies → positive → customers "
-                                                         "per group, each per hundred delivered; B135: "
-                                                         "`proposition` per hundred sent, E1's arms side by side")
+    s.add_argument("--by", nargs="+", metavar="CUT",
+                   help="B142: `experiment E1` (the seven stages per arm, counted by business) or a whole-population "
+                        "dimension (channel, actor, provider, asset, strength); B132: variant (E2's arms), fault, "
+                        "segment, letter, prebuilt; B135: proposition; B137: arm (E3). Anything else is refused with "
+                        "the reason")
     s.set_defaults(fn=cmd_status)
 
     s = sub.add_parser("assets", parents=[common], help="B141: the capacity registry — mailbox, domain, tenant, provider")

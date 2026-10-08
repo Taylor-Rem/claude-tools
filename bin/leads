@@ -30,6 +30,10 @@ B25 (the remote lane), B7 (the pipeline: log, follow-ups, the week).
   leads strength "Name" strong "owner asked for a call in November"
                                # Taylor's word: always wins, survives every re-score; `auto` hands it back
   leads week --by strength     # outcomes by strength and by reason, and the strong, silent (B73)
+  leads week --by actor        # B142: the seven stages counted by business (delivered → reply → positive → trial
+                               #   → activated → paid → retained 30/90), +this week, cost by lane; also proposition,
+                               #   segment, provider, asset (channel/strength with --funnel) or `experiment E1`;
+                               #   any other cut is refused with the reason (the venture's experiments.json)
 
   leads today                  # the 07:30 message (B48): today's six, each with the DM to paste (or
                                # the call and what to say, B62), yesterday's replies, the follow-ups due,
@@ -269,6 +273,7 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 from venture import from_argv  # noqa: E402
+import experiments as X  # noqa: E402  the funnel by business and the experiments registry (B142)
 
 V = from_argv()                      # the business this works for (ventures/<name>/venture.toml, B146)
 # The plan prices and the letter hash: the venture's prices module (today lib/prices.py, via a symlink; shared with
@@ -5022,9 +5027,73 @@ def week_by_channel(w, start):
     return "\n".join(lines) + "\n"
 
 
+# ---- the funnel by business (B142, plan 55 § 5.6) -----------------------------------------------------------
+# `leads week --by actor|proposition|segment|provider|asset` and `--by experiment E1`: every business ever written
+# to, one record each (lib/experiments.py), counted once at each of the seven stages as of the week's end, with the
+# ones that got there this week beside it; then the cost per conversation and per paid client by lane, from the
+# ledger. A cut is a whole-population dimension or a registered experiment (the venture's experiments.json).
+
+def funnel_businesses(reg, upto):
+    out_state = Path(os.environ.get("OUTREACH_STATE") or Path.home() / ".local/state/claude-tools/outreach")
+
+    def rows(name):
+        p = out_state / name
+        out = []
+        for line in (p.read_text().splitlines() if p.exists() else []):
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        return out
+    sends = [r for r in rows("sends.jsonl") if r.get("how") != "taylor-reply"]     # his own answers aren't sends
+    claimed = {m["place_id"]: m.get("claimed_on") or "" for m in previews_all() if m.get("claimed") and m.get("place_id")}
+    return X.businesses(sends=sends, replies=rows("replies.jsonl"), events=pipeline_events(), claimed=claimed,
+                        today=upto, reg=reg)
+
+
+def ledger_rows():
+    out = []
+    for line in (LEDGER.read_text().splitlines() if LEDGER.exists() else []):
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return out
+
+
+def week_funnel(words, start, end, today, as_json=False):
+    reg = X.registry(V)
+    try:
+        cut = X.resolve_cut(words, reg)
+    except X.Refused as e:
+        die(f"not a cut — {e}")
+    upto = min(end, today).isoformat()
+    bizs = funnel_businesses(reg, upto)
+    colour = X.use_colour() and not as_json
+    if cut.kind == "experiment":
+        lines = X.render_experiment(bizs, cut.eid, reg, upto=upto, since=start.isoformat(), colour=colour)
+        group = lambda x: x["arms"].get(cut.eid)      # noqa: E731
+    else:
+        lines = X.render_dim(bizs, cut.name, upto=upto, since=start.isoformat(), colour=colour)
+        field = X.DIMENSIONS[cut.name][0]
+        group = lambda x: x["dims"].get(field, X.NOT_RECORDED)      # noqa: E731
+    lines = [f"Week of {start.strftime('%-d %b')} — the funnel by business"] + lines
+    lines += X.render_costs(bizs, ledger_rows(), V.venture_name, upto, start.isoformat())
+    if as_json:
+        cells = X.count(bizs, group, upto, start.isoformat())
+        print(json.dumps({"week_of": start.isoformat(), "to": upto, "by": cut.eid or cut.name, "stages": X.STAGES,
+                          "cells": cells, "message": "\n".join(lines) + "\n"}, indent=1, default=str))
+        return
+    print("\n".join(lines))
+
+
 def cmd_week(args):
     today = now_date()
     start, end = week_bounds(today - dt.timedelta(weeks=args.ago))
+    by = " ".join(args.by or []) or None
+    if by and (by not in ("channel", "strength") or getattr(args, "funnel", False)):
+        return week_funnel(args.by, start, end, today, as_json=args.json)     # B142
+    args.by = by
     if args.by == "strength":                    # B73: outcomes by strength and by reason, and the strong, silent
         d = week_by_strength(min(end, today))
         msg = week_strength_message(d, min(end, today))
@@ -7916,9 +7985,13 @@ def main():
 
     wk = sub.add_parser("week", help="this week's numbers")
     wk.add_argument("--ago", type=int, default=0, help="weeks back")
-    wk.add_argument("--by", choices=["channel", "strength"],
+    wk.add_argument("--by", nargs="+", metavar="CUT",
                     help="channel: the Sunday review (B52), the funnel per channel and the § 2.4 rows; "
-                         "strength: outcomes by strength and by reason (B73)")
+                         "strength: outcomes by strength and by reason (B73); B142: actor, proposition, segment, "
+                         "provider, asset (and channel or strength with --funnel) — the seven stages counted by "
+                         "business — or `experiment E1`. Anything else is refused with the reason")
+    wk.add_argument("--funnel", action="store_true",
+                    help="B142: with --by channel|strength, the seven stages by business instead of that view")
     wk.add_argument("--json", action="store_true", help="alone: the overview's counts (B102); with --by: that view as JSON")
     wk.set_defaults(fn=cmd_week)
 

@@ -1,0 +1,74 @@
+# The venture: the business the engine tools (leads, outreach, prep, social, front, books, cloud) work for.
+# ROADMAP B146, plan ~/projects/plans/55-autonomous-acquisition.md § 5.12, VISION § Rules 10.
+#
+# Every name, domain, address and path that says "this is Patchlamp" lives here and nowhere in bin/ or
+# lib/ (tests/test_portable.py greps for this file's values and fails on a hit). A second business is a
+# second directory beside this one and `VENTURE=<name>` (or `--venture <name>`); nothing else changes.
+# lib/venture.py reads it; every field below is required and typed there, so a typo is a plain error
+# naming this file rather than a wrong sentence in front of a stranger.
+#
+# Secrets are never here. The postal address and the phone are read by env NAME from the toolbelt env,
+# as before, because they are Taylor's to set (setenv.sh) and the address is his to keep off disk.
+
+name = "Patchlamp"                   # as written in a sentence
+slug = "patchlamp"                   # lower case: file names, the social brand, the Cloud app, the registry tenant
+legal_name = "Plateful LLC"          # the entity on the email footer and the 1099-K
+brand_line = "keeps a small business's website and Google listing right by text: the owner texts a change and it is done"
+mascot = "Patch"                     # the voice of the feed and the bot a client texts
+site = "https://patchlamp.com"       # the product's own site (front, social and the relay endpoints talk to it)
+site_host = "patchlamp.com"
+
+[sender]                             # who a cold letter or a DM is from
+first_name = "Taylor"
+from_name = "Taylor Remund"
+reply_email = "founder@patchlamp.com"   # the address a preview's footer and the crawler's user agent give
+town = "American Fork"
+state = "UT"
+state_name = "Utah"
+home = [40.3769, -111.7958]          # lat, lng of the town: the kit's "nearest" (LEADS_HOME overrides)
+postal_address_env = "LEADS_MAIL_ADDRESS"     # CAN-SPAM's postal address, by env name
+phone_env = "PATCHLAMP_VOICE_NUMBER"          # the phone line a letter may carry, by env name
+demo_number_env = "PATCHLAMP_DEMO_NUMBER"     # the demo line people text, by env name
+sample_address = "PO Box 000, American Fork, UT 84003"   # stands in for the address in `outreach approve --dry-run`
+sample_phone = "801-555-0100"
+
+[outreach]
+domains = ["trypatchlamp.com"]       # the cold-mail sending domains (never site_host: a burned domain would take the product's standing with it)
+link_example = "https://see.trypatchlamp.example/k3Xq9"   # what a tracked link looks like in a preview of a letter
+campaign = "Patchlamp — the email lane"
+
+[previews]
+host = "previews.patchlamp.com"      # where a lead's preview site lives (LEADS_PREVIEW_DOMAIN overrides)
+project = "patchlamp-previews"       # its Cloudflare Pages project (LEADS_PREVIEW_PROJECT overrides)
+claim_start = "https://patchlamp.com/start"   # the sign-up a preview's "Claim it" opens (LEADS_CLAIM_START overrides)
+badge = "https://patchlamp.com/?from=badge"   # the footer badge of a claimed site with no segment page
+tools_url = "patchlamp.com/tools"
+templates_url = "patchlamp.com/templates"
+
+[addresses]
+zone = "patchlamp.site"              # the free <slug>.<zone> address a client's site gets
+
+[paths]                              # relative to ~/projects (each tool's own PROJECTS override still applies)
+census = "client-leads/wasatch.db"   # LEADS_DB overrides
+claims = "patchlamp/CLAIMS.md"       # every public sentence -> the code that makes it true
+brand = "patchlamp/BRAND.md"
+prices = "patchlamp/app/Support/Prices.php"   # the plan prices the social checker admits (lib/prices.py is the toolbelt's copy)
+repo = "patchlamp"                   # the product's git clone (cloud compares its origin)
+portrait = "patchlamp/brand/patch-portrait.jpg"   # the mascot's reference picture
+topics = "topics/patchlamp.md"       # under social/: the feed's queue of lines
+
+[env]                                # the names of the settings that point at the product's site
+site_url = "PATCHLAMP_URL"
+relay_secret = "PATCHLAMP_RELAY_SHARED_SECRET"
+repo = "PATCHLAMP_REPO"
+
+[money]
+stripe_key = "STRIPE_KEY_PATCHLAMP"            # the product's Stripe account
+legal_stripe_key = "STRIPE_KEY_PLATEFUL"       # the entity's account, where the year's real money is
+
+[cloud]
+app = "patchlamp"                    # the Laravel Cloud application `cloud` picks when there are several
+
+[social]
+brand = "patchlamp"                  # the house brand `social` posts as
+handle = "@patchlamp"

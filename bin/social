@@ -4,7 +4,7 @@
 
   social                                   # what's connected here, and the last posts
   social post IMAGE "caption"              # in a client workspace: their Page + Instagram (+ Google if connected)
-  social post BRAND IMAGE "caption"        # outside one: the house brand (patchlamp) or --project SLUG
+  social post BRAND IMAGE "caption"        # outside one: the house brand ({v:social.brand}) or --project SLUG
   social post BRAND [N]                    # the oldest queued draft for that brand (or the Nth in `social queue`) — B24's "post" reply
       --only facebook,instagram,google     # a subset (default: every one that is connected)
       --page ID|NAME                       # when more than one Page is connected
@@ -30,17 +30,17 @@
   social ls [BRAND]                        # recent posts with their links
   social doctor
 
-The Page token stays on patchlamp.com: this sends the photo (as a JPEG, at
+The Page token stays on {v:site_host}: this sends the photo (as a JPEG, at
 most 1440px, which is what Instagram takes) and the caption, and prints
 what each network answered — a link, or its own refusal, one line each.
 Google goes through `gbp post` on the project's Google connection.
 
 Meta's app is in Development mode until App Review (TAYLOR-TODO §1 "Meta
-app"): only our own Page and @patchlamp can be connected until then.
+app"): only our own Page and {v:social.handle} can be connected until then.
 
 Config, by name, never printed:
-  PATCHLAMP_RELAY_SHARED_SECRET   ~/.config/claude-tools/env
-  PATCHLAMP_URL                   optional; default https://patchlamp.com
+  {v:env.relay_secret}   ~/.config/claude-tools/env
+  {v:env.site_url}                   optional; default {v:site}
   SOCIAL_DIR                      optional; default ~/projects/social (the house queue and posted.jsonl)
   SOCIAL_JUDGE                    optional; a stand-in command for the judge (tests), prompt on stdin
   SOCIAL_JUDGE_MODEL              optional; default opus (never Fable, always named)
@@ -75,14 +75,17 @@ from html.parser import HTMLParser
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 import tenant  # noqa: E402  (shared tenant-identity check, B80)
+from venture import from_argv  # noqa: E402
+
+V = from_argv()                      # the business this works for (ventures/<name>/venture.toml, B146)
 
 ENV_FILE = Path(os.environ.get("CLAUDE_TOOLS_ENV", Path.home() / ".config/claude-tools/env"))
 SOCIAL_DIR = Path(os.environ.get("SOCIAL_DIR", Path.home() / "projects/social"))
-HOUSE = ("patchlamp",)   # the one house brand since 2026-09-23 (VISION § Decided)
+HOUSE = (V.social.brand,)   # the one house brand since 2026-09-23 (VISION § Decided)
 NETWORKS = ("facebook", "instagram", "x", "google")
 MAX_SIDE = 1440
 IG_RATIO = (0.8, 1.91)          # Instagram's feed: 4:5 portrait to 1.91:1 landscape
-PATCH_REF = Path(os.environ.get("IMG_PATCH_REF", Path.home() / "projects/patchlamp/brand/patch-portrait.jpg"))
+PATCH_REF = Path(os.environ.get("IMG_PATCH_REF", Path.home() / "projects" / V.paths.portrait))
 KINDS = ("text", "raccoon", "data", "pinned", "demo")   # social/calendar.md § Three kinds of post, + the pinned explainer
                                                         # and the demo tile (B129: a text causing a change on a real demo page)
 
@@ -103,13 +106,13 @@ def read_env():
 
 
 def base_url():
-    return (os.environ.get("PATCHLAMP_URL") or read_env().get("PATCHLAMP_URL") or "https://patchlamp.com").rstrip("/")
+    return (os.environ.get(V.env.site_url) or read_env().get(V.env.site_url) or V.site).rstrip("/")
 
 
 def secret():
-    val = os.environ.get("PATCHLAMP_RELAY_SHARED_SECRET") or read_env().get("PATCHLAMP_RELAY_SHARED_SECRET")
+    val = os.environ.get(V.env.relay_secret) or read_env().get(V.env.relay_secret)
     if not val:
-        die("PATCHLAMP_RELAY_SHARED_SECRET is not in the toolbelt; this needs Taylor (setenv.sh)")
+        die(f"{V.env.relay_secret} is not in the toolbelt; this needs Taylor (setenv.sh)")
     return val
 
 
@@ -141,7 +144,7 @@ def api(method, path, body=None, ok=(200, 201), timeout=30):
         if exc.code in ok:
             return exc.code, data
         if exc.code == 404 and "could not be found" in str(data.get("message", "")):
-            die("patchlamp.com doesn't have the social endpoints yet (B19 is on `dev`; merge the PR to deploy)")
+            die(f"{V.site_host} doesn't have the social endpoints yet (B19 is on `dev`; merge the PR to deploy)")
         die(f"{data.get('error') or data.get('message') or raw[:200]} (HTTP {exc.code})")
     except urllib.error.URLError as exc:
         die(f"{method} {path}: {exc.reason}")
@@ -325,7 +328,7 @@ def cmd_post(args):
     social, google = connected(slug)
     pages = social.get("pages") or []
     xs = social.get("x") or []
-    meta_nets = [n for n in want if n in ("facebook", "instagram", "x")]     # the ones patchlamp.com posts
+    meta_nets = [n for n in want if n in ("facebook", "instagram", "x")]     # the ones the product's site posts
     if any(n in meta_nets for n in ("facebook", "instagram")) and not pages:
         if args.only and "x" not in meta_nets:
             die(f"no Facebook Page is connected on {slug} (`social connect`)")
@@ -466,13 +469,13 @@ CHANGE = ("yes", "no", "unsure")
 CHANGE_KINDS = ("demo", "text")   # B129: these are asked "can you see what changed on the page?" in place of "is a product in frame";
                                   # "no" fails a demo tile and is "unsure" on a text post (its picture is still generated)
 
-JUDGE_PROMPT = """You are looking at one picture for Patchlamp's social feed before it is posted, as a second pair of eyes. You have not seen the prompt that made it, and that is the point.
+JUDGE_PROMPT = V.fill("""You are looking at one picture for {v:name}'s social feed before it is posted, as a second pair of eyes. You have not seen the prompt that made it, and that is the point.
 
 In this directory: `draft{ext}` is the picture, and `portrait.jpg` is Patch, the raccoon who is the brand's one character. Read both files.
 
 Two questions. Answer each from what you see; there is no answer we are hoping for.
 
-1. Does the picture show what Patchlamp sells? It sells a small business's website and Google listing kept right by text: the owner texts a change and it is done. So the product, in a picture, is something like a phone with a text conversation on it, a website or page layout on a screen, a business listing being fixed, or a before-and-after of one of those. Screens show shapes rather than readable words, because the image generator misspells; message bubbles and a page layout as shapes count. Why it matters: the feed's pictures used to be a raccoon in a different art style each day and nothing else, so a stranger scrolling could not tell what the account sells. Answer "yes", "no" or "unsure", and say what you see in `product_what`.
+1. Does the picture show what {v:name} sells? It sells a small business's website and Google listing kept right by text: the owner texts a change and it is done. So the product, in a picture, is something like a phone with a text conversation on it, a website or page layout on a screen, a business listing being fixed, or a before-and-after of one of those. Screens show shapes rather than readable words, because the image generator misspells; message bubbles and a page layout as shapes count. Why it matters: the feed's pictures used to be a raccoon in a different art style each day and nothing else, so a stranger scrolling could not tell what the account sells. Answer "yes", "no" or "unsure", and say what you see in `product_what`.
 
 2. Is the raccoon in the picture the same character as the portrait? The art medium may differ (painted, clay, a flat cartoon); what should carry over is the face and its mask markings, the one notched ear, the old headset with a brass microphone boom, and the general look of him. Why it matters: one recognisable character across posts is what makes the feed read as one company. Answer "same", "different", "absent" (no raccoon in the picture) or "unsure".
 
@@ -482,17 +485,17 @@ Your budget is a few turns and about three minutes: read the two files, then ans
 
 Reply with one JSON object and nothing after it, with these keys:
 {{"looked": true or false, "product": one of "yes" / "no" / "unsure", "product_what": "what you see that is or isn't the product", "raccoon": one of "same" / "different" / "absent" / "unsure", "why": "one or two sentences on both answers"}}
-"""
+""")
 
 
 # B129 (plan ~/projects/plans/51-feed-shows-the-change.md): a drawn phone is still a picture of the idea, so a text or
 # demo post is asked whether a stranger can see what a text changed on a page. The judge says what it read as the ask
 # and the change, which is the cold read the feed is for; "unsure" posts with the doubt shown, as before.
-CHANGE_PROMPT = """You are looking at one picture for Patchlamp's social feed before it is posted, as a second pair of eyes. You have not seen how it was made, and that is the point.
+CHANGE_PROMPT = V.fill("""You are looking at one picture for {v:name}'s social feed before it is posted, as a second pair of eyes. You have not seen how it was made, and that is the point.
 
 In this directory: `draft{ext}` is the picture{portrait_file}. Read {files}.
 
-Patchlamp keeps a small business's website and Google listing right by text: the owner texts a change and it is done. A picture for this feed is meant to show that happening: a text asking for something, and a web page where the thing asked for has changed. Why it matters: {why_matters} Answer from what you see; there is no answer we are hoping for.
+{v:name} {v:brand_line}. A picture for this feed is meant to show that happening: a text asking for something, and a web page where the thing asked for has changed. Why it matters: {why_matters} Answer from what you see; there is no answer we are hoping for.
 
 1. Can you see what changed on the page? Say what was asked, as you read it in the picture, and what changed on the page, in your own words. Answer "yes" if you can point to the change, "no" if there is no page to see or nothing on it you can tell was changed, or "unsure".
 {raccoon_q}
@@ -502,18 +505,18 @@ Your budget is a few turns and about three minutes: read the {nfiles}, then answ
 
 Reply with one JSON object and nothing after it, with these keys:
 {{"looked": true or false, "change": one of "yes" / "no" / "unsure", "asked": "what was asked, as you read it, or empty", "changed": "what changed on the page, as you see it, or empty",{raccoon_key} "why": "one or two sentences"}}
-"""
+""")
 
-CHANGE_RACCOON_Q = """
+CHANGE_RACCOON_Q = V.fill("""
 2. Is the raccoon in the picture the same character as the portrait? The art medium may differ (painted, clay, a flat cartoon); what should carry over is the face and its mask markings, the one notched ear, the old headset with a brass microphone boom, and the general look of him. Why it matters: one recognisable character across posts is what makes the feed read as one company. Answer "same", "different", "absent" (no raccoon in the picture) or "unsure".
-"""
+""")
 
 
 # why the question matters, by kind: the demo tile's reason names what it replaced; a text post's picture is still that
 # kind of picture, so its reason stays neutral and doesn't lean the judge to "no"
 WHY_DEMO = ("the feed used to show a raccoon holding a drawn phone, and a drawn phone is still a picture of the idea; "
             "a stranger scrolling should be able to see a text cause a change on a page.")
-WHY_TEXT = "a stranger scrolling should be able to tell from the picture what a text to Patchlamp does."
+WHY_TEXT = f"a stranger scrolling should be able to tell from the picture what a text to {V.name} does."
 
 
 def judge_prompt(kind, ext):
@@ -716,7 +719,7 @@ def cmd_check(args):
 
 PROJECTS = Path(os.environ.get("SOCIAL_PROJECTS", Path.home() / "projects"))
 MARKETING = Path(os.environ.get("SOCIAL_MARKETING_DIR", PROJECTS / "marketing"))
-PRICES_FILE = Path(os.environ.get("SOCIAL_PRICES_FILE", PROJECTS / "patchlamp/app/Support/Prices.php"))
+PRICES_FILE = Path(os.environ.get("SOCIAL_PRICES_FILE", PROJECTS / V.paths.prices))
 WRITER_TIMEOUT = int(os.environ.get("SOCIAL_WRITER_TIMEOUT", "300"))     # five minutes a writer
 CODEX_TIMEOUT = int(os.environ.get("SOCIAL_CODEX_TIMEOUT", str(WRITER_TIMEOUT)))
 FACTS_TIMEOUT = 180                                                         # three minutes for the judge
@@ -735,8 +738,8 @@ GATED = ("only after", "after s1", "after a real", "post only once", "citable on
 LINK_CLAIMS = {"/check": ["Free no account nothing to sign What's wrong with your Google listing check",
                           "business name goes in reads that listing live opens the website link the way the census did"],
                "/templates": ["Each demo is a real site anyone can text templates"]}
-SOURCE_FILES = {"DATA_STORY": "client-leads/DATA_STORY_STATS.md", "CLAIMS": "patchlamp/CLAIMS.md",
-                "BRAND": "patchlamp/BRAND.md"}
+SOURCE_FILES = {"DATA_STORY": "client-leads/DATA_STORY_STATS.md", "CLAIMS": V.paths.claims,
+                "BRAND": V.paths.brand}
 STOP = set("that this with from have your they them their what when will just about into than then there here "
            "only once link post data never name line lines each every more most some been were also does".split())
 
@@ -812,7 +815,7 @@ def num_tokens(text):
     """The numbers in a text as (digits, unit): ('5865', ''), ('23', '%'), ('20', '$'). '23 percent' and
     '23 %' are '%'. A clock time (2:14am) is the night shift's premise, not a claim, so it is left out;
     so are links and hashtags."""
-    t = re.sub(r"https?://\S+|\S*patchlamp\.\w+\S*|#\w+", " ", text or "")
+    t = re.sub(rf"https?://\S+|\S*{re.escape(V.slug)}\.\w+\S*|#\w+", " ", text or "")
     t = CLOCK.sub(" ", words_to_digits(t))
     out = []
     for m in re.finditer(r"(\$\s?)?(\d[\d,]*(?:\.\d+)?)(\s?%|\s+percent\b)?", t, re.I):
@@ -1046,11 +1049,11 @@ def facts_file_sources(date):
 def draw_topic(kind, pillars, weekday, line_no=None):
     """(line number, text) of the topic line: --topic-line N, else the top unstruck, ungated line of the first
     pillar that has one. Tuesday prefers a DATA_STORY line, Thursday a research brief (calendar § Leans)."""
-    f = SOCIAL_DIR / "topics" / "patchlamp.md"
+    f = SOCIAL_DIR / V.paths.topics
     lines = f.read_text().splitlines() if f.exists() else []
     if line_no:
         if not 1 <= line_no <= len(lines):
-            die(f"topics/patchlamp.md has no line {line_no}")
+            die(f"{V.paths.topics} has no line {line_no}")
         return line_no, lines[line_no - 1]
     for pillar in pillars:
         cands = [(i, s) for i, s in enumerate(lines, 1)
@@ -1116,7 +1119,7 @@ def cmd_packet(args):
     md = [f"# Packet — {date}, a {kind} post" + (f" (pillar {pillars[0]})" if pillars else ""), "",
           "Built by `social packet` from the files, no model. Write only from what is quoted here.", "",
           "## Today's topic line", "",
-          (f"topics/patchlamp.md:{line_no}: {topic}" if topic else "none: " + "; ".join(notes)), "",
+          (f"{V.paths.topics}:{line_no}: {topic}" if topic else "none: " + "; ".join(notes)), "",
           "The topic line is a suggestion in someone's words, not a source. Its own claims count only where a "
           "source line below says them.", "",
           "## Sources (quoted verbatim, file and line; cite them by id)", ""]
@@ -1139,7 +1142,7 @@ def cmd_packet(args):
 
 # ---- the writers ---------------------------------------------------------------------------------
 
-WRITER_BRIEF = """You are writing one caption for Patchlamp's social feed, for {date}: a {kind} post. Patchlamp keeps a small business's website and Google listing right by text: the owner texts a change and it is done. Patch is the raccoon who does it, and the feed is in his voice.
+WRITER_BRIEF = V.fill("""You are writing one caption for {v:name}'s social feed, for {date}: a {kind} post. {v:name} {v:brand_line}. Patch is the raccoon who does it, and the feed is in his voice.
 
 The packet below holds everything you may stand on: today's topic line, the source lines quoted from their files with file and line, the last six posts, the lessons from earlier mornings and the one-page rule sheet. Use only facts that a source line in it says. The reason: after you, a checker re-reads each line you cite from its file and a separate judge reads your caption beside those lines, and a sentence they can't find in a source does not post. A number has to appear in the line you cite, written the same way. A joke, a mood or an invitation needs no source.
 
@@ -1149,17 +1152,17 @@ Your budget: about five minutes and one draft. If the packet doesn't hold enough
 
 Reply with one JSON object and nothing after it:
 {{"caption": "the caption exactly as it would post, or empty if you decline", "ledger": [{{"sentence": "a factual sentence from the caption, word for word", "sources": ["S1"]}}], "why": ["three short lines on why you wrote it this way"], "declined": "empty, or why there is nothing true to post"}}
-Every sentence that says what Patchlamp does or costs, or carries a number, goes in the ledger with the ids it stands on.
+Every sentence that says what {v:name} does or costs, or carries a number, goes in the ledger with the ids it stands on.
 
 ---
 
 {packet}
-"""
+""")
 
-CODEX_ASSIGNMENT = """# Assignment: today's feed caption ({date})
+CODEX_ASSIGNMENT = V.fill("""# Assignment: today's feed caption ({date})
 from Flint's `social draft` (stamped by code, B133) · write to `marketing/copy/{name}.md` (a new file; an older feed brief is not this one) · worth five minutes
 
-One caption for this morning's post on Patchlamp's feed, a {kind} post. Another writer drafts from the same packet, and the drafts are picked blind, so write yours as you'd want it to run.
+One caption for this morning's post on {v:name}'s feed, a {kind} post. Another writer drafts from the same packet, and the drafts are picked blind, so write yours as you'd want it to run.
 
 **What is fixed.** Everything you may stand on is in the packet below (you can't read outside `marketing/`, so it is inline): the topic line, the source lines quoted from their files with file and line, the last six posts, the lessons and the rule sheet. Use only facts a source line says, a number exactly as its line writes it. After you, code re-reads each cited line from its file and a judge reads the caption beside those lines; a sentence they can't find does not post. A joke, a mood or an invitation needs no source.
 
@@ -1171,7 +1174,7 @@ One caption for this morning's post on Patchlamp's feed, a {kind} post. Another 
 ---
 
 {packet}
-"""
+""")
 
 
 def scrubbed_env():
@@ -1416,7 +1419,7 @@ def sentences(caption):
     """The caption's sentences that could carry a claim: links, hashtags and the sign-offs are left out."""
     out = []
     for line in (caption or "").splitlines():
-        line = re.sub(r"https?://\S+|\S*patchlamp\.(?:com|site)\S*|#\w+", " ", line).strip()
+        line = re.sub(rf"https?://\S+|\S*{re.escape(V.slug)}\.(?:com|site)\S*|#\w+", " ", line).strip()
         for s in re.split(r"(?<=[.?!])\s+(?=[\"'A-Z0-9“$])", line):
             s = s.strip()
             if s and norm(s) not in SIGNOFFS and re.search(r"[A-Za-z0-9]", s):
@@ -1501,7 +1504,7 @@ def code_check(caption, ledger, sources, in_packet=True):
     return problems, cited
 
 
-FACTS_PROMPT = """You are checking the words of one post for Patchlamp's social feed before it goes up. You did not write it and you have not seen why it was written; that is the point. Patchlamp keeps a small business's website and Google listing right by text; Patch, a raccoon, is the voice.
+FACTS_PROMPT = V.fill("""You are checking the words of one post for {v:name}'s social feed before it goes up. You did not write it and you have not seen why it was written; that is the point. {v:name} keeps a small business's website and Google listing right by text; Patch, a raccoon, is the voice.
 
 Below are the caption, its sentences numbered, and the source lines the writer cited, each quoted from its file just now. For each numbered sentence, say whether the sources support it:
 - "supported": a source line says this, at least as strongly as the sentence does.
@@ -1528,7 +1531,7 @@ Reply with one JSON object and nothing after it:
 ## The cited sources
 
 {sources}
-"""
+""")
 
 
 def ask_facts_judge(caption, sents, cited):
@@ -1813,7 +1816,7 @@ def cmd_lessons(args):
 
 # ---- the pick: blind, with both sets of reasons ---------------------------------------------------
 
-PICK_PROMPT = """Two drafts of this morning's post for Patchlamp's feed (a {kind} post) both passed the fact check: every number is in its cited line and a judge called each sentence supported. Pick the one a small-business owner scrolling past is likelier to stop for and believe, or splice the two into one better caption. The writers are not named, on purpose: pick the words, not the writer.
+PICK_PROMPT = V.fill("""Two drafts of this morning's post for {v:name}'s feed (a {kind} post) both passed the fact check: every number is in its cited line and a judge called each sentence supported. Pick the one a small-business owner scrolling past is likelier to stop for and believe, or splice the two into one better caption. The writers are not named, on purpose: pick the words, not the writer.
 
 {a_and_b}
 
@@ -1825,7 +1828,7 @@ If you splice, keep every factual sentence word for word from A or B (with its s
 
 Reply with one JSON object and nothing after it:
 {{"choice": one of "A" / "B" / "splice", "prefer": one of "A" / "B", "caption": "only for a splice: the spliced caption", "ledger": [{{"sentence": "...", "sources": ["S1"]}}], "argument": "the one argument that decided it, in a sentence"}}
-"""
+""")
 
 
 def draft_text(label, d):
@@ -1936,7 +1939,7 @@ def cmd_pick(args):
     if args.image:
         n = queue_winner(day, win, args)
         day["queued"] = n
-        print(f"queued as draft {n}: `social check {n}`, then `social post patchlamp {n}`")
+        print(f"queued as draft {n}: `social check {n}`, then `social post {V.social.brand} {n}`")
     save_day(day)
 
 
@@ -1970,9 +1973,9 @@ def queue_winner(day, win, args):
         die(f"{src}: no such file")
     queue_dir().mkdir(parents=True, exist_ok=True)
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-    img = queue_dir() / f"{stamp}-patchlamp{src.suffix.lower()}"
+    img = queue_dir() / f"{stamp}-{V.social.brand}{src.suffix.lower()}"
     shutil.copy2(src, img)
-    item = {"brand": "patchlamp", "image": str(img), "caption": win["caption"], "pillar": day.get("pillar"),
+    item = {"brand": V.social.brand, "image": str(img), "caption": win["caption"], "pillar": day.get("pillar"),
             "topic": (day.get("topic") or "")[:80] or None, "mood": args.mood, "art": args.art,
             "kind": getattr(args, "kind", None) or (day["kind"] if day["kind"] in KINDS else None), "day": day["date"], "writer": win["writer"],
             "facts": win["facts"]["verdict"], "added": dt.datetime.now().isoformat(timespec="seconds")}
@@ -1984,9 +1987,9 @@ def queue_winner(day, win, args):
             meta = {}
         if meta.get("kind") == "demo":
             item["demo"] = {k: meta.get(k) for k in ("project", "page", "ask", "golden")}
-    (queue_dir() / f"{stamp}-patchlamp.json").write_text(json.dumps(item, indent=1) + "\n")
+    (queue_dir() / f"{stamp}-{V.social.brand}.json").write_text(json.dumps(item, indent=1) + "\n")
     q = drafts()
-    return next(i for i, d in enumerate(q, 1) if d["_path"].name == f"{stamp}-patchlamp.json")
+    return next(i for i, d in enumerate(q, 1) if d["_path"].name == f"{stamp}-{V.social.brand}.json")
 
 
 # ---- the receipt -----------------------------------------------------------------------------------
@@ -2102,7 +2105,7 @@ FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 PAGE_X, PAGE_Y, PAGE_W, PAGE_H = 500, 130, 520, 1160     # where the page sits on the tile
 MOST_OF_PAGE = 0.5                   # a box taller than this share of the page is no one thing to mark
 
-EDITOR_PROMPT = """You are Patch, working on a copy of the {slug} demo site for one picture on Patchlamp's social feed. The picture shows the text below as a message bubble on the left and the page after your change on the right, with the change marked, so the change you make here is what people will see.
+EDITOR_PROMPT = V.fill("""You are Patch, working on a copy of the {slug} demo site for one picture on {v:name}'s social feed. The picture shows the text below as a message bubble on the left and the page after your change on the right, with the change marked, so the change you make here is what people will see.
 
 The site's files are in `repos/{repo}/` in this directory. `CLAUDE.md` here is the demo workspace's own notes: read it for how the site is put together and what a demo keeps (the "This is a demo" bar stays). Make the change by editing files under `repos/{repo}/` with Edit or Write. This is a throwaway copy: there is no shell, nothing to commit and nothing to publish, and the live demo is not touched, because strangers are texting it.
 
@@ -2116,7 +2119,7 @@ The text, as the owner sent it:
 
 When you're done, end your reply with one JSON object and nothing after it:
 {{"done": true or false, "changed": "one sentence: what you changed and where on the page", "couldnt": "if done is false, why"}}
-"""
+""")
 
 
 def demo_repo(slug, name=None):
@@ -2590,14 +2593,14 @@ def cmd_demo(args):
             if not args.queue.strip():
                 die("--queue needs the caption (Codex's, through Flint)")
             queue_dir().mkdir(parents=True, exist_ok=True)
-            qimg = queue_dir() / f"{stamp}-patchlamp.jpg"
+            qimg = queue_dir() / f"{stamp}-{V.social.brand}.jpg"
             shutil.copy2(out, qimg)
-            item = {"brand": "patchlamp", "image": str(qimg), "caption": args.queue.strip(), "pillar": "demo",
+            item = {"brand": V.social.brand, "image": str(qimg), "caption": args.queue.strip(), "pillar": "demo",
                     "topic": ask[:80], "mood": args.mood, "art": "demo tile", "kind": "demo",
                     "demo": {k: side[k] for k in ("project", "page", "ask", "golden")},
                     "added": dt.datetime.now().isoformat(timespec="seconds")}
-            (queue_dir() / f"{stamp}-patchlamp.json").write_text(json.dumps(item, indent=1) + "\n")
-            n = next(i for i, d in enumerate(drafts(), 1) if d["_path"].name == f"{stamp}-patchlamp.json")
+            (queue_dir() / f"{stamp}-{V.social.brand}.json").write_text(json.dumps(item, indent=1) + "\n")
+            n = next(i for i, d in enumerate(drafts(), 1) if d["_path"].name == f"{stamp}-{V.social.brand}.json")
         if args.json:
             print(json.dumps({"made": True, "tile": str(out), "sidecar": str(out.with_suffix(".json")), "draft": n,
                               "changed": said, "box": side["box"]}))
@@ -2616,13 +2619,13 @@ def cmd_connect(args):
     if args.network == "x":
         code, r = api("POST", f"/internal/relay/projects/{slug}/connections/x/grant-url", {}, ok=(200, 503))
         if code == 503:
-            die(r.get("error", "X is not configured on patchlamp.com"))
-        print(f"Open this logged into X as the {slug} account (good for 24 hours) and approve Patchlamp:")
+            die(r.get("error", f"X is not configured on {V.site_host}"))
+        print(f"Open this logged into X as the {slug} account (good for 24 hours) and approve {V.name}:")
         print(r["url"])
         return
     code, r = api("POST", f"/internal/relay/projects/{slug}/connections/meta/grant-url", {}, ok=(200, 503))
     if code == 503:
-        die(r.get("error", "Meta is not configured on patchlamp.com"))
+        die(r.get("error", f"Meta is not configured on {V.site_host}"))
     print(f"Open this logged into Facebook as an admin of the {slug} Page (good for 24 hours), and tick the Page and its Instagram account:")
     print(r["url"])
     if not r.get("reviewed"):
@@ -2649,8 +2652,8 @@ def cmd_doctor(args):
         bad += 0 if ok else 1
         print(f"{'ok ' if ok else 'BAD'} {text}")
 
-    s = os.environ.get("PATCHLAMP_RELAY_SHARED_SECRET") or read_env().get("PATCHLAMP_RELAY_SHARED_SECRET")
-    line(bool(s), "PATCHLAMP_RELAY_SHARED_SECRET in the toolbelt")
+    s = os.environ.get(V.env.relay_secret) or read_env().get(V.env.relay_secret)
+    line(bool(s), f"{V.env.relay_secret} in the toolbelt")
     line(bool(magick()), "ImageMagick (the JPEG Instagram takes)")
     line(bool(shutil.which("gbp")), "gbp on PATH (the Google leg)")
     line(PATCH_REF.exists(), f"the portrait `social check` compares with: {PATCH_REF}")
@@ -2666,11 +2669,11 @@ def cmd_doctor(args):
         sys.exit(1)
     slugs = [workspace_slug()] if workspace_slug() else list(HOUSE)
     code, r = api("POST", f"/internal/relay/projects/{slugs[0]}/connections/meta/grant-url", {}, ok=(200, 503))
-    line(code == 200, "Meta app keys on patchlamp.com" + ("" if code == 200 else f" — {r.get('error')}"))
+    line(code == 200, f"Meta app keys on {V.site_host}" + ("" if code == 200 else f" — {r.get('error')}"))
     if code == 200:
-        print(f"    app review: {'approved — clients can connect' if r.get('reviewed') else 'not yet (Development mode: our own Page and @patchlamp only)'}")
+        print(f"    app review: {'approved — clients can connect' if r.get('reviewed') else f'not yet (Development mode: our own Page and {V.social.handle} only)'}")
     code, r = api("POST", f"/internal/relay/projects/{slugs[0]}/connections/x/grant-url", {}, ok=(200, 404, 503))
-    line(code == 200, "X app keys on patchlamp.com" + ("" if code == 200 else f" — {r.get('error') or 'the X endpoints are not deployed yet'}"))
+    line(code == 200, f"X app keys on {V.site_host}" + ("" if code == 200 else f" — {r.get('error') or 'the X endpoints are not deployed yet'}"))
     for slug in slugs:
         social, google = connected(slug)
         pages = social.get("pages") or []
@@ -2690,7 +2693,7 @@ def cmd_doctor(args):
 
 
 def main():
-    ap = argparse.ArgumentParser(prog="social", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(prog="social", description=V.fill(__doc__), formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--project", help="project slug, outside a client workspace")
     sub = ap.add_subparsers(dest="cmd")
     p = sub.add_parser("post")
@@ -2739,7 +2742,7 @@ def main():
     pk.add_argument("--date")
     pk.add_argument("--kind", choices=KINDS)
     pk.add_argument("--pillar")
-    pk.add_argument("--topic-line", type=int, help="draw this line of topics/patchlamp.md instead")
+    pk.add_argument("--topic-line", type=int, help=f"draw this line of {V.paths.topics} instead")
     pk.add_argument("--fresh", action="store_true", help="forget the day's drafts and pick")
     pk.set_defaults(fn=cmd_packet)
     dr = sub.add_parser("draft", help="Opus and Codex each write from the packet (B133)")

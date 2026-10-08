@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""front — the front door of patchlamp.com: who came, and who left a number.
-Patchlamp plan 06 (ROADMAP B2). The site counts its own page loads with no
+"""front — the front door of {v:site_host}: who came, and who left a number.
+{v:name} plan 06 (ROADMAP B2). The site counts its own page loads with no
 cookie (a beacon per load; a hash that changes daily) and stores every
 "leave your number". This reads both back, for Taylor in the terminal or
-for Patch on the global project when Taylor texts "how's the front door".
+for {v:mascot} on the global project when Taylor texts "how's the front door".
 
   front                      # the week: visits by day, top pages, referrers, new leads
   front visits [--days 7]    # visits by day, top pages, top referring sites
@@ -15,13 +15,13 @@ for Patch on the global project when Taylor texts "how's the front door".
 ~/projects/plans/50-site-numbers.md); inside a client workspace the same
 numbers are `site stats`, which can only read that workspace's own.
 
-Talks to patchlamp.com's /internal/relay/front/* with the relay's shared
+Talks to {v:site_host}'s /internal/relay/front/* with the relay's shared
 secret. Read-only: telling Taylor about a lead is the relay's job
 (relay/front.py), which marks each one told on the site.
 
 Config, by name, never printed:
-  PATCHLAMP_RELAY_SHARED_SECRET   ~/.config/claude-tools/env
-  PATCHLAMP_URL                   optional; default https://patchlamp.com
+  {v:env.relay_secret}   ~/.config/claude-tools/env
+  {v:env.site_url}                   optional; default {v:site}
 """
 
 import argparse
@@ -33,6 +33,10 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+from venture import from_argv  # noqa: E402
+
+V = from_argv()                      # the business this works for (ventures/<name>/venture.toml, B146)
 ENV_FILE = Path(os.environ.get("CLAUDE_TOOLS_ENV", Path.home() / ".config/claude-tools/env"))
 
 
@@ -52,13 +56,13 @@ def read_env():
 
 
 def base_url():
-    return (os.environ.get("PATCHLAMP_URL") or read_env().get("PATCHLAMP_URL") or "https://patchlamp.com").rstrip("/")
+    return (os.environ.get(V.env.site_url) or read_env().get(V.env.site_url) or V.site).rstrip("/")
 
 
 def secret():
-    val = os.environ.get("PATCHLAMP_RELAY_SHARED_SECRET") or read_env().get("PATCHLAMP_RELAY_SHARED_SECRET")
+    val = os.environ.get(V.env.relay_secret) or read_env().get(V.env.relay_secret)
     if not val:
-        die("PATCHLAMP_RELAY_SHARED_SECRET is not in the toolbelt; this needs Taylor (setenv.sh)")
+        die(f"{V.env.relay_secret} is not in the toolbelt; this needs Taylor (setenv.sh)")
     return val
 
 
@@ -84,7 +88,7 @@ def show_visits(days, as_json=False, project=None):
         params["project"] = project
     d = api("/visits", params)
     if project and d.get("project") != project:
-        die("patchlamp.com doesn't count client sites yet (the B127 app half isn't deployed)")
+        die(f"{V.site_host} doesn't count client sites yet (the B127 app half isn't deployed)")
     if as_json:
         print(json.dumps(d, indent=2))
         return
@@ -94,7 +98,7 @@ def show_visits(days, as_json=False, project=None):
         print(f"{project}'s site, {span}: {t['views']} page view{'s' if t['views'] != 1 else ''} "
               f"(page loads; nothing about a visitor is kept)")
     else:
-        print(f"patchlamp.com, {span}: {t['views']} page views, {t['visitor_days']} visitor-days")
+        print(f"{V.site_host}, {span}: {t['views']} page views, {t['visitor_days']} visitor-days")
     if not d["by_day"]:
         print("  no visits recorded yet")
     for r in d["by_day"]:
@@ -118,7 +122,7 @@ def show_leads(all_leads, as_json=False):
         return
     leads = d["leads"]
     if not leads:
-        print("no leads" + ("" if all_leads else " waiting for a reply") + " on patchlamp.com")
+        print("no leads" + ("" if all_leads else " waiting for a reply") + f" on {V.site_host}")
         return
     print(f"{len(leads)} lead{'s' if len(leads) != 1 else ''}" + ("" if all_leads else " not yet texted to Taylor") + ":")
     for x in leads:
@@ -151,9 +155,9 @@ def cmd_leads(a):
 
 def cmd_doctor(a):
     ok = True
-    print(f"patchlamp: {base_url()}")
-    if not (os.environ.get("PATCHLAMP_RELAY_SHARED_SECRET") or read_env().get("PATCHLAMP_RELAY_SHARED_SECRET")):
-        print("  FAIL no PATCHLAMP_RELAY_SHARED_SECRET in the toolbelt")
+    print(f"{V.slug}: {base_url()}")
+    if not (os.environ.get(V.env.relay_secret) or read_env().get(V.env.relay_secret)):
+        print(f"  FAIL no {V.env.relay_secret} in the toolbelt")
         ok = False
     else:
         d = api("/visits", {"days": 1})
@@ -165,8 +169,8 @@ def cmd_doctor(a):
 
 
 def main():
-    ap = argparse.ArgumentParser(prog="front", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--project", metavar="SLUG", help="a client's own site instead of patchlamp.com (B127)")
+    ap = argparse.ArgumentParser(prog="front", description=V.fill(__doc__), formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--project", metavar="SLUG", help=f"a client's own site instead of {V.site_host} (B127)")
     sub = ap.add_subparsers(dest="cmd")
     v = sub.add_parser("visits", help="visits by day, top pages, top referring sites")
     v.add_argument("--days", type=int, default=7)

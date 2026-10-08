@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """cloud — what is deployed on Laravel Cloud, read from its API (ROADMAP B88).
 
-patchlamp.com runs on Laravel Cloud and a push to `main` deploys it. Until
+{v:site_host} runs on Laravel Cloud and a push to `main` deploys it. Until
 this tool a session proved a deploy by probing the live site, and nobody could
 read the site's logs from here. This reads both back.
 
@@ -30,7 +30,7 @@ prints the HTTP status and a short reason, never the response body.
 
 Config, by name, never printed:
   LARAVEL_CLOUD_TOKEN   ~/.config/claude-tools/env (view-only token from the Cloud UI)
-  PATCHLAMP_REPO        optional; the local clone whose `origin` is compared (default ~/projects/patchlamp)
+  {v:env.repo}        optional; the local clone whose `origin` is compared (default ~/projects/{v:paths.repo})
 The key file is parsed here, never sourced by a shell: the token holds a `|`.
 """
 
@@ -46,10 +46,14 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+from venture import from_argv  # noqa: E402
+
+V = from_argv()                      # the business this works for (ventures/<name>/venture.toml, B146)
 ENV_FILE = Path(os.environ.get("CLAUDE_TOOLS_ENV", Path.home() / ".config/claude-tools/env"))
 API = "https://cloud.laravel.com/api"
 # Cloud refuses Python's default user agent with a 403; any honest one passes.
-USER_AGENT = "claude-tools-cloud/1 (+https://patchlamp.com)"
+USER_AGENT = f"claude-tools-cloud/1 (+{V.site})"
 
 SUCCEEDED = {"deployment.succeeded"}
 FAILED = {"build.failed", "deployment.failed", "failed", "cancelled"}
@@ -204,7 +208,7 @@ def resolve(args):
         app = apps[0]
     else:
         try:
-            app = pick(apps, "patchlamp", "default", "application")
+            app = pick(apps, V.cloud.app, "default", "application")
         except CloudError:
             raise CloudError("the token sees several applications; name one with --app") from None
     envs = _get(f"/applications/{app['id']}/environments").get("data") or []
@@ -316,8 +320,8 @@ def public(d):
 
 # ---------------------------------------------------------------- origin/main
 
-def patchlamp_repo():
-    return Path(setting("PATCHLAMP_REPO") or Path.home() / "projects/patchlamp").expanduser()
+def product_repo():
+    return Path(setting(V.env.repo) or Path.home() / "projects" / V.paths.repo).expanduser()
 
 
 def origin_head(branch="main"):
@@ -327,9 +331,9 @@ def origin_head(branch="main"):
     the clone changes), because the clone's own origin/main is only as fresh as
     its last fetch. Falls back to that local ref, said so, when the remote can't
     be reached."""
-    repo = patchlamp_repo()
+    repo = product_repo()
     if not (repo / ".git").exists():
-        return None, f"no git clone at {repo} (set PATCHLAMP_REPO)"
+        return None, f"no git clone at {repo} (set {V.env.repo})"
     try:
         r = subprocess.run(["git", "-C", str(repo), "ls-remote", "origin", f"refs/heads/{branch}"],
                            capture_output=True, text=True, timeout=30,
@@ -599,10 +603,11 @@ def cmd_doctor(a):
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(prog="cloud", description=__doc__.split("\n\n")[0],
-                                formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
+    doc = V.fill(__doc__)
+    p = argparse.ArgumentParser(prog="cloud", description=doc.split("\n\n")[0],
+                                formatter_class=argparse.RawDescriptionHelpFormatter, epilog=doc)
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--app", help="application name, slug or id (default: the only one, or patchlamp)")
+    common.add_argument("--app", help=f"application name, slug or id (default: the only one, or {V.cloud.app})")
     common.add_argument("--env", help="environment name, slug or id (default: the app's default environment)")
     sub = p.add_subparsers(dest="cmd", required=True)
 

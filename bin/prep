@@ -103,6 +103,10 @@ from zoneinfo import ZoneInfo
 
 TOOLBELT = Path(__file__).resolve().parent.parent
 BIN = TOOLBELT / "bin"
+sys.path.insert(0, str(TOOLBELT / "lib"))
+from venture import from_argv  # noqa: E402
+
+V = from_argv()                      # the business this works for (ventures/<name>/venture.toml, B146)
 SELF = Path(__file__).resolve()
 TEMPLATE = TOOLBELT / "templates" / "prep" / "workspace"
 LEADS_BIN = Path(os.environ.get("PREP_LEADS_BIN", BIN / "leads"))
@@ -3898,7 +3902,7 @@ def cmd_approve(args):
     frames = frame_sections()
     sample = {"business": "Pinnacle Painting", "fault": "there's no website on your listing",
               "specific": "Your listing shows kitchen cabinets as the main work, so I put that first.",
-              "preview_url": "https://previews.patchlamp.com/pinnacle-painting-sandy/"}
+              "preview_url": f"https://{V.previews.host}/pinnacle-painting-sandy/"}
     problems = []
     for k in ("message", "call"):
         if k not in frames:

@@ -12,8 +12,7 @@
   books add income|expense DATE VENDOR AMOUNT ["note"]   a cash row Stripe/the ledgers don't have; also logged in TAXES.md
   books doctor
 
-Income is Stripe: every STRIPE_KEY_* in the toolbelt is one account (PATCHLAMP,
-PLATEFUL). Balance transactions carry gross, fee and net per payment, so the
+Income is Stripe: every STRIPE_KEY_* in the toolbelt is one account ({stripe_accounts}). Balance transactions carry gross, fee and net per payment, so the
 books show gross with Stripe's fee as an expense — the way the 1099-K is
 filed. Expenses are the relay ledger's cash rows (billed_to != plan; the
 plan rows are notional and are shown on their own line, never deducted), the
@@ -37,6 +36,10 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+from venture import from_argv  # noqa: E402
+
+V = from_argv()                      # the business this works for (ventures/<name>/venture.toml, B146)
 ENV_FILE = Path(os.environ.get("CLAUDE_TOOLS_ENV", Path.home() / ".config/claude-tools/env"))
 PROJECTS = Path(os.environ.get("PROJECTS_DIR", "~/projects")).expanduser()
 PRIVATE = PROJECTS / "private-docs"
@@ -49,7 +52,7 @@ TZ = ZoneInfo("America/Denver")
 SET_ASIDE = (0.25, 0.30)
 NO_RECORD = [("Anthropic", "Claude Max subscription (flat, monthly)"), ("Twilio", "number + SMS"),
              ("Porkbun", "domains (annual)"), ("Laravel Cloud", "hosting (monthly)"), ("Resend", "email (monthly)"),
-             ("Zoho Mail", "founder@ inboxes (yearly)"), ("Cloudflare", "R2 backup bucket ($0 at this size)")]
+             ("Zoho Mail", f"{V.sender.reply_email.split('@')[0]}@ inboxes (yearly)"), ("Cloudflare", "R2 backup bucket ($0 at this size)")]
 
 
 def die(msg, code=1):
@@ -338,7 +341,7 @@ def cmd_pl_json(args):
     """`books pl --json`: one object on stdout for the owner's overview (plan 42). Stripe figures only — the
     manual cash rows and the notional plan usage stay out — and no id, email or description of any row."""
     def fail(why):
-        # the relay pushes this line to patchlamp.com: no key fragment (Stripe quotes a masked key), id or email
+        # the relay pushes this line to the product's site: no key fragment (Stripe quotes a masked key), id or email
         why = re.sub(r"\b(sk|rk|pk|cus|sub|pi|ch|acct|in|price|prod|txn|po|re)_[A-Za-z0-9*_]+", "[id]", why)
         why = re.sub(r"\S+@\S+", "[email]", why)
         print(json.dumps({"ok": False, "why": why}))
@@ -474,8 +477,9 @@ def cmd_doctor(args):
             except RuntimeError as exc:
                 print(f"  {name}: {path} FAIL — {exc}")
                 ok = False
-    if "plateful" not in accts:
-        print("  MISSING STRIPE_KEY_PLATEFUL: the Plateful LLC account (2026's real money) — TAYLOR-TODO §1")
+    legal = V.money.legal_stripe_key.removeprefix("STRIPE_KEY_").lower()
+    if legal not in accts:
+        print(f"  MISSING {V.money.legal_stripe_key}: the {V.legal_name} account (2026's real money) — TAYLOR-TODO §1")
         ok = False
     for label, p in (("relay ledger", RELAY_LEDGER), ("toolbelt ledger", TOOL_LEDGER), ("TAXES.md", TAXES)):
         print(f"  {label}: {'ok' if p.exists() else 'missing'} {p}")
@@ -485,7 +489,8 @@ def cmd_doctor(args):
 
 
 def main():
-    ap = argparse.ArgumentParser(prog="books", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(prog="books", description=V.fill(__doc__).replace("{stripe_accounts}", ",\n".join(
+        k.removeprefix("STRIPE_KEY_") for k in (V.money.stripe_key, V.money.legal_stripe_key))), formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd")
 
     def win(p):

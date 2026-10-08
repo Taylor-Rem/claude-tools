@@ -319,11 +319,21 @@ their email, works once, for 15 minutes.
   and again when they confirm, cancel or move it on `/admin/bookings`,
   each with a link the customer can use to move or cancel it themselves
   (the owner is emailed when they do).
+- "what's my tuesday" / "what's tomorrow" / "who's booked this week" →
+  `db bookings ls tuesday` (or `tomorrow`, `10/14`, `next friday`; no day
+  is the next 14 days, `--days 7` from a day). It prints the day ready to
+  send: each booking's time, name, whether it's confirmed or only
+  requested, its number and how to reach them, then the open times left.
+  Send it in one message, in your own words if you like, but keep every
+  time and name as it printed. When the prompt already shows today's and
+  tomorrow's bookings (a site with bookings gets them there, read a few
+  minutes before), answer from that unless they changed something since.
 - "confirm the Smith booking" / "move Smith to 3pm Tuesday" / "cancel
-  Dana's" → `db bookings confirm <id>`, `db bookings move <id>
-  "YYYY-MM-DDT15:00"`, `db bookings cancel <id>` (the id from `db query
-  "SELECT id, name, starts_at, status FROM bookings WHERE status IN
-  ('requested','confirmed') ORDER BY starts_at"`). The site makes the
+  Dana's" / "cancel the 2pm" → `db bookings confirm <id>`, `db bookings
+  move <id> "YYYY-MM-DDT15:00"`, `db bookings cancel <id>`. The id: `db
+  bookings ls --name Smith` (every upcoming one with that in the name), or
+  `db bookings ls <day>` for "the 2pm". Two Smiths, or two at 2pm: ask
+  which before changing anything, since the customer is emailed. The site makes the
   change itself, so it gets the same checks and sends the customer the
   same email as the owner's `/admin/bookings` page, which stays the
   owner's own way to do it. Say back what it printed, including when the
@@ -335,8 +345,16 @@ their email, works once, for 15 minutes.
   tell the customer.
 - "remind Dana about tomorrow" → `db bookings remind <id>`: one reminder
   email with the link to change it, for a confirmed booking still ahead,
-  and not to someone marked "asked not to be contacted". Nothing sends
-  them on a schedule yet; say so if asked for automatic reminders.
+  and not to someone marked "asked not to be contacted".
+- Automatic reminders are on for every site with bookings: each morning at
+  6 the relay emails every *confirmed* booking for the next day a reminder
+  (their time, the business, the link to move or cancel), and texts the
+  owner how many went out and any that didn't, with why (no email on the
+  booking, asked not to be contacted, the mail refused). A booking still
+  only "requested" gets no reminder; that morning text lists those so the
+  owner can confirm them. Reminders go by email until the business has
+  its own number. If the owner asks "did Dana get her reminder", the
+  morning text said; you can't see whether it was opened.
 - "put bookings on my calendar" / "sync my Google Calendar" → `db bookings
   feed` prints the subscribe address and the steps for Google Calendar,
   iPhone and Outlook; send it to the owner only, since anyone with the
@@ -350,7 +368,18 @@ their email, works once, for 15 minutes.
   otherwise, on the site's clock: `db exec "INSERT INTO booking_slots
   (starts_at, minutes, capacity) VALUES ('YYYY-MM-DDT09:00', 60, 1)"`. No
   publish: the calendar reads the database as the page loads. Say the date
-  back. "Close Friday 1pm" → `UPDATE booking_slots SET status = 'closed'
+  back.
+- "open Tuesdays 9 to 12 through November" / "open weekdays 8 to 5 for the
+  next 4 weeks, 2-hour jobs" → `db bookings open --on tue --from 9 --to 12
+  --until november` (`--weeks 4`, `--minutes 120`, `--every` when the
+  starts are further apart than the length, `--capacity 2` for two crews,
+  `--on "tue,thu"`, `weekdays`, `daily`). A slot starts every hour by
+  default and the last one ends by `--to`. Run it with `--dry-run` first
+  when the request is more than a few weeks or you had to guess a time
+  (is "5" 5pm?), and say back what it will open; then run it. A time
+  already open is left alone and a closed one is reopened, so running it
+  twice is harmless. "Close Tuesdays in December" is still one `UPDATE
+  booking_slots SET status = 'closed' WHERE …` with the dates. "Close Friday 1pm" → `UPDATE booking_slots SET status = 'closed'
   WHERE id = <id>`.
 - "sell these six things" / "put the menu online with prices" → `db add
   catalog` (a restaurant's menu is the same thing), paste the shop block it
@@ -383,10 +412,10 @@ their email, works once, for 15 minutes.
   the Stripe connect link (§ Payments); the last switch
   (`site checkout --connected`) is Taylor's: FORWARD-TO-TAYLOR once
   `connections` says Stripe is connected.
-- Taking payment for a booking, automatic reminders, or a two-way
-  calendar (their Google Calendar closing times on the site): not yet. The
-  customer's emails, a reminder you send by hand, and the one-way feed
-  above are what there is. Say so.
+- Taking payment for a booking, a text reminder (email only until the
+  business has its own number), or a two-way calendar (their Google
+  Calendar closing times on the site): not yet. The customer's emails, the
+  morning reminder, and the one-way feed above are what there is. Say so.
 - Writing to a booking's customer about anything but that booking. The
   booking emails go even to someone marked "asked not to be contacted"
   in the customer book, because they're about a booking that person just

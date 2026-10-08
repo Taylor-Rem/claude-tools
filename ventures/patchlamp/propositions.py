@@ -7,7 +7,8 @@ campaign hypothesis, not the addressable pool").
 
 The engine (`leads batch`) hands `classify` one prospect: the stored facts of one business, each from the census
 with its source, and nothing a model wrote. What comes back decides which letter set it may get, and `letter`
-picks the sentences that letter says. Nothing here reads the network, a file or the clock.
+picks the sentences that letter says. Nothing here reads the network or the clock; the one file it reads, once at
+import, is experiments.json beside it (E1, the experiment it deals).
 
     P1  visibly faulted: the rule as it was (two true specifics, one a fault). Its letters carry the faults packet
         the engine computes (batch-first / -second / -third), so its rule stays in one place.
@@ -34,7 +35,9 @@ invented, and a business with too few of them for its letter isn't written to.
 """
 
 import hashlib
+import json
 import re
+from pathlib import Path
 
 # A vendor's name that carries a domain ("Network Solutions (Web.com)") would put a link in a first letter, and the
 # first letter carries none (plan 37 § 3): that business isn't written to under P3/P4.
@@ -56,17 +59,16 @@ PROPOSITIONS = {
     "P0": {"label": "none", "lane": None, "packet": None, "letters": None, "slots": (), "ai_test": False},
 }
 
-# E1, registered in B142's shape (plan 55 § 5.6) from the first day; B142 moves it into experiments.json. The AI-line
-# test (E2) runs on the chore lanes only, so P5 and P6 letters carry the AI sentence beside the introduction
-# (`ai_test: False` above), and nothing else varies between the two arms.
-EXPERIMENTS = {
-    "E1": {"id": "E1", "name": "the frame", "population": "P5", "varied": "the proposition's frame",
-           "arms": ("P5", "P6"), "deal": "sha256('E1:' + place_id), first 8 hex digits, mod 2: 0 is P5, 1 is P6",
-           "held_at_default": "the AI sentence beside the introduction; the close arm as E3 assigns",
-           "primary_endpoint": "positive reply", "floor_delivered": 100,
-           "kill_rule": "an arm with 200 delivered and a positive-reply rate under half the other's is paused",
-           "decision_owner": "Taylor", "registered": "2026-10-08"},
-}
+# The experiments this file deals (E1), read from the venture's registry beside it (experiments.json, B142: the one
+# place an experiment is written down; lib/experiments.py counts it). The AI-line test (E2) runs on the chore lanes
+# only, so P5 and P6 letters carry the AI sentence beside the introduction (`ai_test: False` above), and nothing else
+# varies between the two arms. Read here with json alone, so this file still needs nothing from the engine.
+def _registered():
+    reg = json.loads((Path(__file__).resolve().parent / "experiments.json").read_text())["experiments"]
+    return {eid: dict(e, id=eid, arms=tuple(e["arms"])) for eid, e in reg.items() if e.get("dealt_by") == "propositions"}
+
+
+EXPERIMENTS = _registered()
 
 NO_SITE = ("none", "page", "dead", "directory")        # businesses.presence_class: nothing of their own to look at
 # The host check said the site isn't answering: a letter about "your site" would be about a site that's down.

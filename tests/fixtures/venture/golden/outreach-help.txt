@@ -40,6 +40,13 @@ outreach — the email lane: the one outbound channel the machine runs end to en
                                # and "too few to decide" below the floor (100 a group, 20 positive)
   outreach status --by arm      # B137: the close test (E3), Taylor's call vs Patch's link: interested,
                                # Patch answered, claimed, paid, each per hundred interested
+  outreach status --by experiment E1
+                               # B142: a registered experiment (the venture's experiments.json): the seven
+                               # stages per arm counted by business, "too few to decide" under the floor, the
+                               # stages past its primary endpoint bracketed and split by the next one's arm
+  outreach status --by actor|channel|provider|asset|strength
+                               # B142: the seven stages by a whole-population dimension; any other cut, or
+                               # two experiments crossed, is refused with the reason
   outreach ai-test start | stop [--keep intro|foot|none] | show
                                # B132, plan 53: the AI-line test. Open, each batch is dealt a third each
                                # to none / intro / foot; start and stop are Taylor's word only, as `go` is

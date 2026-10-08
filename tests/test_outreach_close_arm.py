@@ -62,7 +62,15 @@ class CloseArm(ReplyWorld):
     def on(self, **over):
         """The test's switches: the link base, the booking link, the preview and its claim link."""
         return dict(dict(OUTREACH_LINK_BASE=LINK_BASE, LEADS_BOOKING_URL=BOOKING, STUB_PREVIEW_URL=PREVIEW,
-                         STUB_CLAIM_URL=CLAIM, OUTREACH_CLAIM_LINKS="1"), **over)
+                         STUB_CLAIM_URL=CLAIM, LEADS_CLAIM_START="https://start.example/start",
+                         OUTREACH_CLAIM_LINKS="1"), **over)
+
+    def relay_says(self, *kinds):
+        """The relay's press state as `relay/press.py` keeps it after a links sync (B147): the kinds the app
+        serves. Returns the switches with the manual override unset, so the relay's word decides."""
+        p = self.tmp / "relay-press.json"
+        p.write_text(json.dumps({"inflight": {}, "kinds": list(kinds), "kinds_at": "2026-10-08T09:00:00-06:00"}))
+        return self.on(OUTREACH_CLAIM_LINKS="__unset__", OUTREACH_PRESS_STATE=str(p))
 
     def interested(self, i, text="Interested. Can you call me this week?", msgid=None):
         box, msg = self.letter_to(i)
@@ -201,7 +209,40 @@ class CloseArm(ReplyWorld):
             self.assertNotIn("--arm", argv)
         out = self.run_it("status", "--by", "arm", **self.on(OUTREACH_CLAIM_LINKS="__unset__")).stdout
         self.assertIn("off — ", out)
-        self.assertIn("OUTREACH_CLAIM_LINKS=1 once it serves them", out)
+        self.assertIn("OUTREACH_CLAIM_LINKS=1 forces it on", out)
+
+    # -- B147: the app's word on the links sync opens it -----------------------------------------
+    def test_the_state_line_turns_ready_once_the_relay_says_the_app_serves_claim_links(self):
+        out = self.run_it("status", "--by", "arm", **self.relay_says("press")).stdout
+        self.assertIn("off — the see host has no claim links yet", out)          # an app from before B147
+        out = self.run_it("status", "--by", "arm", **self.relay_says("press", "claim")).stdout
+        self.assertIn("Close test E3 (Taylor's call vs Patch's link): open", out)
+        self.assertNotIn("claim links", out)
+        out = self.run_it("status", "--by", "arm", **dict(self.relay_says("press", "claim"),
+                                                          OUTREACH_CLAIM_LINKS="0")).stdout
+        self.assertIn("off — the see host has no claim links yet", out)          # the manual override wins
+
+    def test_an_arm_b_reply_carries_both_links_on_the_sending_domain_and_the_booking_link_untouched(self):
+        self.interested(self.b)
+        r = self.inbox(**self.relay_says("press", "claim"))
+        self.assertIn("arm B, Patch answers", r.stdout)
+        body = parsed(self.answers()[0]["raw"]).get_content()
+        seq = {s["email"]: s for s in self.seqs()}[self.p[self.b]["email"]]
+        row = self.rows()[self.p[self.b]["email"]]
+        host = LINK_BASE.split("//", 1)[1]
+        for k in ("see_url", "start_url"):                       # {preview_url} and {start_url} as they went out
+            self.assertEqual(host, row[k].split("/")[2], k)
+            self.assertEqual(1, body.count(row[k]))
+        self.assertEqual(f"{LINK_BASE}/{seq['claim_token']}", row["start_url"])
+        self.assertEqual(CLAIM, seq["claim_target"])             # what the see host redirects to
+        self.assertEqual(1, body.count(BOOKING))                 # the booking link goes as it is
+        self.assertNotIn("start.example", body)
+
+    def test_a_claim_target_off_the_claim_start_falls_back_to_the_claim_start(self):
+        self.interested(self.b)
+        self.inbox(**self.on(STUB_CLAIM_URL="https://elsewhere.example/start?business=x"))
+        seq = {s["email"]: s for s in self.seqs()}[self.p[self.b]["email"]]
+        self.assertEqual("https://start.example/start", seq["claim_target"])
 
     # -- then it stops ----------------------------------------------------------------------
     def test_a_second_message_goes_to_taylor_in_either_arm_and_is_never_machine_answered(self):
@@ -286,6 +327,31 @@ class Template(Base):
             r = self.run_it("approve", "--template", "answer-interested", expect=1)
             self.assertIn(says, r.stdout + r.stderr)
         tpl.write_text(good)
+
+    def test_the_check_wants_both_see_links_on_the_sending_domain(self):
+        """B147: {preview_url} and {start_url} render on the sending domain; anywhere else is a problem, the
+        product's own domain or not."""
+        import importlib.machinery, importlib.util, os  # noqa: E401
+        from test_outreach_batch import OUTREACH
+        spec = importlib.util.spec_from_loader("outreach_mod", importlib.machinery.SourceFileLoader(
+            "outreach_mod", str(OUTREACH)))
+        mod = importlib.util.module_from_spec(spec)
+        os.environ["OUTREACH_TEMPLATES"] = str(self.tpl)
+        try:
+            spec.loader.exec_module(mod)
+            mod.TEMPLATES = self.tpl
+            vals = dict(mod.sample_values(), preview_url=mod.sample_link_base() + "-site")
+            _, body = mod.load_template("answer-interested").render(vals)
+            self.assertEqual([], mod.interested_problems(body, vals))
+            for k, url in (("start_url", "https://elsewhere.example/start?b=1"),
+                           ("preview_url", "https://preview-highland-pool.pages.dev/"),
+                           ("start_url", f"https://{mod.V.site_host}/start")):
+                v = dict(vals, **{k: url})
+                _, body = mod.load_template("answer-interested").render(v)
+                self.assertTrue([p for p in mod.interested_problems(body, v) if p.startswith("{%s} is on" % k)],
+                                f"{k} = {url} passed")
+        finally:
+            os.environ.pop("OUTREACH_TEMPLATES", None)
 
     def test_the_installed_body_is_the_picked_text_verbatim(self):
         picked = _pathlib.Path.home() / "projects" / "marketing" / "copy" / "2026-10-08-answer-interested.picked.json"

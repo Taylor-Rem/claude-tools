@@ -104,7 +104,10 @@ class AiTest(Base):
         self.assertEqual(30, len(logs))
         for argv in logs:
             tags = dict(argv[i + 1].split("=", 1) for i, a in enumerate(argv) if a == "--tag")
-            self.assertEqual({"variant", "fault_key", "segment", "letter_sha", "prebuilt"}, set(tags))
+            # B132's five, and B142's channel, actor and asset (the mailbox it went from)
+            self.assertEqual({"variant", "fault_key", "segment", "letter_sha", "prebuilt", "channel", "actor", "asset"},
+                             set(tags))
+            self.assertEqual(("email", "machine"), (tags["channel"], tags["actor"]))
             self.assertIn(tags["variant"], ("none", "intro", "foot"))
             self.assertEqual("false", tags["prebuilt"])
 

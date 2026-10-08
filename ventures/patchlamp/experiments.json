@@ -1,0 +1,60 @@
+{
+  "doc": "The venture's registered experiments (ROADMAP B142, plan 55 § 5.6, VISION § Decided 'Autonomous acquisition' #12). Read by lib/experiments.py; `outreach status --by experiment ID` and `leads week --by experiment ID` count them, and nothing that isn't here is read as a result. One dimension varied per population; never crossed; the sequencing doctrine: a later experiment varies something only after an earlier one's primary endpoint (its `entry` stage is at or past it). `fields` says where the rows write a business's arm: `experiment` (that field equals the id) or `member` (that field is set), and `arm`. E1's fields and E3's are named differently on purpose: a reply row carries E3's `experiment_id`/`arm` beside the send's `proposition_experiment`/`proposition_arm`. A new experiment is added here on its owner's word, after one closes (the Sunday review may propose it).",
+  "experiments": {
+    "E1": {
+      "name": "the frame",
+      "population": "the P5 pool (own site, no fault found)",
+      "varied": "the proposition's frame",
+      "arms": ["P5", "P6"],
+      "deal": "sha256('E1:' + place_id), first 8 hex digits, mod 2: 0 is P5, 1 is P6",
+      "dealt_by": "propositions",
+      "held_at_default": "the AI sentence beside the introduction; the close arm as E3 assigns",
+      "start": "2026-10-08",
+      "entry": "delivered",
+      "primary_endpoint": "positive",
+      "floor": {"stage": "delivered", "n": 100},
+      "floor_delivered": 100,
+      "kill_rule": "an arm with 200 delivered and a positive-reply rate under half the other's is paused",
+      "kill": {"stage": "positive", "min_base": 200, "under_ratio": 0.5},
+      "decision_owner": "Taylor",
+      "fields": {"experiment": "proposition_experiment", "arm": "proposition_arm"},
+      "status": "open",
+      "registered": "2026-10-08"
+    },
+    "E2": {
+      "name": "the AI line",
+      "population": "the chore lanes (P1, P3, P4) while the AI-line test is open",
+      "varied": "where the AI disclosure sentence sits in the letter",
+      "arms": ["none", "intro", "foot"],
+      "deal": "by sha256(place_id) within each fault key, carried across batches (B132)",
+      "held_at_default": "the proposition each business's facts fit (observational, not dealt)",
+      "start": "2026-10-07",
+      "entry": "delivered",
+      "primary_endpoint": "positive",
+      "floor": {"stage": "delivered", "n": 100},
+      "kill_rule": "B132's own: none; the test stops when Taylor says, never by itself",
+      "decision_owner": "Taylor",
+      "fields": {"member": "ai_test", "arm": "variant"},
+      "status": "built; starts on Taylor's `outreach ai-test start`",
+      "registered": "2026-10-08",
+      "note": "three arms as Taylor approved them (plan 55 § 5.6 recommends two, intro vs none; his call, § 9 #5)"
+    },
+    "E3": {
+      "name": "the close",
+      "population": "interested replies to batch letters, any lane",
+      "varied": "who answers an interested reply",
+      "arms": ["A", "B"],
+      "arm_labels": {"A": "Taylor's call", "B": "Patch's link"},
+      "deal": "by place, when the reply is classed interested and arm B can be served (B137)",
+      "start": "2026-10-08",
+      "entry": "positive",
+      "primary_endpoint": "paid",
+      "floor": {"stage": "positive", "n": 50},
+      "kill_rule": "none: the long game; reported from day one, decided when a cell passes 50 interested",
+      "decision_owner": "Taylor",
+      "fields": {"experiment": "experiment_id", "arm": "arm"},
+      "status": "open when arm B can be served (`outreach status --by arm` says)",
+      "registered": "2026-10-08"
+    }
+  }
+}

@@ -34,6 +34,10 @@ B25 (the remote lane), B7 (the pipeline: log, follow-ups, the week).
   leads strength "Name" strong "owner asked for a call in November"
                                # Taylor's word: always wins, survives every re-score; `auto` hands it back
   leads week --by strength     # outcomes by strength and by reason, and the strong, silent (B73)
+  leads week --by actor        # B142: the seven stages counted by business (delivered → reply → positive → trial
+                               #   → activated → paid → retained 30/90), +this week, cost by lane; also proposition,
+                               #   segment, provider, asset (channel/strength with --funnel) or `experiment E1`;
+                               #   any other cut is refused with the reason (the venture's experiments.json)
 
   leads today                  # the 07:30 message (B48): today's six, each with the DM to paste (or
                                # the call and what to say, B62), yesterday's replies, the follow-ups due,

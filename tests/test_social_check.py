@@ -60,22 +60,25 @@ class SocialCheckTest(unittest.TestCase):
 
     # -- the acceptance line ------------------------------------------------------------
 
-    def test_the_fixture_with_no_product_fails_a_text_post_with_its_reason(self):
-        r = self.run_social("check", "--image", str(FIXTURE), "--kind", "text",
+    # B129: a text post is asked the change question now (tests/test_social_demo.py); the product question stays
+    # for the pinned explainer, so these walk it there.
+
+    def test_the_fixture_with_no_product_fails_a_pinned_post_with_its_reason(self):
+        r = self.run_social("check", "--image", str(FIXTURE), "--kind", "pinned",
                             judge=self.says(answer(product="no", product_what="just the raccoon")))
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("no product in the picture", r.stdout)
         self.assertIn("just the raccoon", r.stdout)
 
     def test_a_product_and_the_same_raccoon_pass(self):
-        r = self.run_social("check", "--image", str(FIXTURE), "--kind", "text", judge=self.says(answer(), wrap=True))
+        r = self.run_social("check", "--image", str(FIXTURE), "--kind", "pinned", judge=self.says(answer(), wrap=True))
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertTrue(r.stdout.startswith("pass:"))
 
     # -- the other answers -------------------------------------------------------------
 
     def test_a_different_raccoon_fails_any_kind(self):
-        for kind in ("text", "pinned", "raccoon"):
+        for kind in ("pinned", "raccoon"):
             r = self.run_social("check", "--image", str(FIXTURE), "--kind", kind,
                                 judge=self.says(answer(raccoon="different")))
             self.assertEqual(r.returncode, 1, kind)
@@ -83,7 +86,7 @@ class SocialCheckTest(unittest.TestCase):
 
     def test_unsure_is_never_a_fail(self):
         for a in (answer(product="unsure"), answer(raccoon="unsure")):
-            r = self.run_social("check", "--image", str(FIXTURE), "--kind", "text", judge=self.says(a))
+            r = self.run_social("check", "--image", str(FIXTURE), "--kind", "pinned", judge=self.says(a))
             self.assertEqual(r.returncode, 3, r.stdout)
             self.assertTrue(r.stdout.startswith("unsure:"))
 

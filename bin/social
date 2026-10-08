@@ -13,8 +13,11 @@
   social queue add BRAND IMAGE "caption" [--pillar P] [--topic T] [--mood M] [--art A] [--kind K] [--hold]
       --hold                               # a bare `social post BRAND` skips it; it goes up only by `social post BRAND N`
   social queue drop N
-  social check N [--kind text|raccoon|data|pinned]   # one fresh judge looks at draft N's picture (B112)
+  social check N [--kind text|raccoon|data|pinned|demo]   # one fresh judge looks at draft N's picture (B112; B129 for demo/text)
   social check --image FILE --kind K       #   or at any image; exit 0 pass, 1 fail, 3 unsure, 4 couldn't check
+  social demo --project SLUG --ask "TEXT" [--page /path] [--after DIR] [--out DIR] [--queue "caption"]
+                                           # B129: a 1080x1350 tile from a template demo's golden copy, changed by one
+                                           # Sonnet run (or by hand, --after); the ask in a bubble, the page, the change boxed
   social packet [--date D] [--topic-line N]   # B133: today's facts quoted from their files -> social/packets/<date>.md
   social draft [--no-codex]                # Opus and Codex each write from the packet (a caption, a ledger, three lines of why)
   social facts [N] | --draft FILE          # code checks every number/price against its re-read line, then a fresh judge; 0 pass, 1 fail, 4 couldn't
@@ -41,6 +44,11 @@ Config, by name, never printed:
   SOCIAL_DIR                      optional; default ~/projects/social (the house queue and posted.jsonl)
   SOCIAL_JUDGE                    optional; a stand-in command for the judge (tests), prompt on stdin
   SOCIAL_JUDGE_MODEL              optional; default opus (never Fable, always named)
+  SOCIAL_DEMO_EDITOR              optional; a stand-in command for the demo's change run (tests), prompt on stdin, cwd the copy
+  SOCIAL_DEMO_EDITOR_MODEL        optional; default sonnet
+  SOCIAL_DEMO_TIMEOUT             optional; seconds for the change run, default 600
+  SOCIAL_CLIENTS                  optional; default ~/projects/clients (where the demos' repos are)
+  SOCIAL_DEMO_KEEP                optional; keep the temp dir and the before/after shots beside the tile
   IMG_PATCH_REF                   optional; the portrait the raccoon is compared with
   SOCIAL_WRITER_OPUS / SOCIAL_WRITER_CODEX / SOCIAL_FACTS_JUDGE / SOCIAL_PICKER   stand-ins for tests (prompt on stdin)
   SOCIAL_PICKER_MODEL             optional; default opus (background jobs stay off Fable)
@@ -52,6 +60,7 @@ Config, by name, never printed:
 import argparse
 import base64
 import datetime as dt
+import difflib
 import json
 import os
 import shutil
@@ -61,6 +70,7 @@ import re
 import tempfile
 import urllib.error
 import urllib.request
+from html.parser import HTMLParser
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 import tenant  # noqa: E402  (shared tenant-identity check, B80)
@@ -72,7 +82,8 @@ NETWORKS = ("facebook", "instagram", "x", "google")
 MAX_SIDE = 1440
 IG_RATIO = (0.8, 1.91)          # Instagram's feed: 4:5 portrait to 1.91:1 landscape
 PATCH_REF = Path(os.environ.get("IMG_PATCH_REF", Path.home() / "projects/patchlamp/brand/patch-portrait.jpg"))
-KINDS = ("text", "raccoon", "data", "pinned")   # social/calendar.md § Three kinds of post, + the pinned explainer
+KINDS = ("text", "raccoon", "data", "pinned", "demo")   # social/calendar.md § Three kinds of post, + the pinned explainer
+                                                        # and the demo tile (B129: a text causing a change on a real demo page)
 
 
 def die(msg, code=1):
@@ -244,7 +255,10 @@ def unchecked_words(draft):
     except ValueError:
         return ""
     today_kind = DAY_PLAN.get(wd, (None,))[0]
-    if today_kind and kind_of(draft) == today_kind:
+    kind = kind_of(draft)
+    if kind == "demo":           # B129: a demo tile is what a text day posts, so its words are held the same way
+        kind = "text"
+    if today_kind and kind == today_kind:
         return f"a {today_kind} draft that `social pick` didn't make"
     return ""
 
@@ -445,6 +459,8 @@ JUDGE_SCRUB = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"
 EXIT = {"pass": 0, "fail": 1, "unsure": 3, "couldnt": 4}
 PRODUCT = ("yes", "no", "unsure")
 RACCOON = ("same", "different", "absent", "unsure")
+CHANGE = ("yes", "no", "unsure")
+CHANGE_KINDS = ("demo", "text")   # B129: these are asked "can you see what changed on the page?" in place of "is a product in frame"
 
 JUDGE_PROMPT = """You are looking at one picture for Patchlamp's social feed before it is posted, as a second pair of eyes. You have not seen the prompt that made it, and that is the point.
 
@@ -463,6 +479,41 @@ Your budget is a few turns and about three minutes: read the two files, then ans
 Reply with one JSON object and nothing after it, with these keys:
 {{"looked": true or false, "product": one of "yes" / "no" / "unsure", "product_what": "what you see that is or isn't the product", "raccoon": one of "same" / "different" / "absent" / "unsure", "why": "one or two sentences on both answers"}}
 """
+
+
+# B129 (plan ~/projects/plans/51-feed-shows-the-change.md): a drawn phone is still a picture of the idea, so a text or
+# demo post is asked whether a stranger can see what a text changed on a page. The judge says what it read as the ask
+# and the change, which is the cold read the feed is for; "unsure" posts with the doubt shown, as before.
+CHANGE_PROMPT = """You are looking at one picture for Patchlamp's social feed before it is posted, as a second pair of eyes. You have not seen how it was made, and that is the point.
+
+In this directory: `draft{ext}` is the picture{portrait_file}. Read {files}.
+
+Patchlamp keeps a small business's website and Google listing right by text: the owner texts a change and it is done. A picture for this feed is meant to show that happening: a text asking for something, and a web page where the thing asked for has changed. Why it matters: the feed used to show a raccoon holding a drawn phone, and a drawn phone is still a picture of the idea; a stranger scrolling should be able to see a text cause a change on a page. Answer from what you see; there is no answer we are hoping for.
+
+1. Can you see what changed on the page? Say what was asked, as you read it in the picture, and what changed on the page, in your own words. Answer "yes" if you can point to the change, "no" if there is no page to see or nothing on it you can tell was changed, or "unsure".
+{raccoon_q}
+"unsure" is a good answer whenever you are unsure; it is passed on to Taylor as your doubt, and it does not block the post. If you could not open or see the picture, say so: set "looked" to false and say why in "why". That is a fine outcome and goes to Taylor as it is.
+
+Your budget is a few turns and about three minutes: read the {nfiles}, then answer. No other tools are needed.
+
+Reply with one JSON object and nothing after it, with these keys:
+{{"looked": true or false, "change": one of "yes" / "no" / "unsure", "asked": "what was asked, as you read it, or empty", "changed": "what changed on the page, as you see it, or empty",{raccoon_key} "why": "one or two sentences"}}
+"""
+
+CHANGE_RACCOON_Q = """
+2. Is the raccoon in the picture the same character as the portrait? The art medium may differ (painted, clay, a flat cartoon); what should carry over is the face and its mask markings, the one notched ear, the old headset with a brass microphone boom, and the general look of him. Why it matters: one recognisable character across posts is what makes the feed read as one company. Answer "same", "different", "absent" (no raccoon in the picture) or "unsure".
+"""
+
+
+def judge_prompt(kind, ext):
+    """The judge's question for KIND. A demo tile's portrait is pasted in by code, so it isn't asked about."""
+    if kind == "demo":
+        return CHANGE_PROMPT.format(ext=ext, portrait_file="", files="it", nfiles="file", raccoon_q="", raccoon_key="")
+    if kind == "text":
+        return CHANGE_PROMPT.format(ext=ext, portrait_file=", and `portrait.jpg` is Patch, the raccoon who is the brand's one character",
+                                    files="both files", nfiles="two files", raccoon_q=CHANGE_RACCOON_Q,
+                                    raccoon_key=' "raccoon": one of "same" / "different" / "absent" / "unsure",')
+    return JUDGE_PROMPT.format(ext=ext)
 
 
 def judge_model():
@@ -492,23 +543,24 @@ def last_json_object(text):
             obj, _ = json.JSONDecoder().raw_decode(text[m.start():])
         except ValueError:
             continue
-        if isinstance(obj, dict) and ("product" in obj or "raccoon" in obj or "looked" in obj):
+        if isinstance(obj, dict) and ("product" in obj or "raccoon" in obj or "looked" in obj or "change" in obj):
             return obj
     return None
 
 
-def ask_judge(image):
-    """Run one judge on IMAGE beside the portrait. Returns (answer dict or None, why-not text)."""
-    if not PATCH_REF.exists():
+def ask_judge(image, kind="text"):
+    """Run one judge on IMAGE (beside the portrait, unless it's a demo tile). Returns (answer dict or None, why-not)."""
+    if kind != "demo" and not PATCH_REF.exists():
         return None, f"the portrait to compare with isn't at {PATCH_REF}"
     tmp = tempfile.mkdtemp(prefix="social-check-")
     try:
         ext = Path(image).suffix.lower() or ".jpg"
         shutil.copy2(image, Path(tmp) / f"draft{ext}")
-        shutil.copy2(PATCH_REF, Path(tmp) / "portrait.jpg")
+        if kind != "demo":
+            shutil.copy2(PATCH_REF, Path(tmp) / "portrait.jpg")
         env = {k: v for k, v in os.environ.items() if k not in JUDGE_SCRUB}
         try:
-            r = subprocess.run(judge_cmd(), input=JUDGE_PROMPT.format(ext=ext), capture_output=True, text=True,
+            r = subprocess.run(judge_cmd(), input=judge_prompt(kind, ext), capture_output=True, text=True,
                                cwd=tmp, env=env, timeout=JUDGE_TIMEOUT)
         except subprocess.TimeoutExpired:
             return None, f"the judge did not answer within {JUDGE_TIMEOUT // 60} minutes"
@@ -559,6 +611,8 @@ def verdict(kind, ans, why_not=""):
         return "couldnt", why_not or "no answer from the judge"
     if ans.get("looked") is False:
         return "couldnt", "the judge couldn't look: " + str(ans.get("why") or "no reason given")
+    if kind in CHANGE_KINDS:
+        return change_verdict(kind, ans)
     product, raccoon = str(ans.get("product", "")).lower(), str(ans.get("raccoon", "")).lower()
     if product not in PRODUCT or raccoon not in RACCOON:
         return "couldnt", f"the judge's answer was not one of the choices (product={product!r}, raccoon={raccoon!r})"
@@ -570,6 +624,24 @@ def verdict(kind, ans, why_not=""):
     if kind == "raccoon" and raccoon == "absent":
         return "fail", "the raccoon post has no raccoon in it: " + said
     if product == "unsure" or raccoon == "unsure":
+        return "unsure", "unsure: " + said
+    return "pass", said
+
+
+def change_verdict(kind, ans):
+    """A demo or text post: can a stranger see what the text changed on the page? (B129)"""
+    change = str(ans.get("change", "")).lower()
+    raccoon = str(ans.get("raccoon", "")).lower() if kind == "text" else ""
+    if change not in CHANGE or (kind == "text" and raccoon not in RACCOON):
+        return "couldnt", (f"the judge's answer was not one of the choices (change={change!r}"
+                           + (f", raccoon={raccoon!r})" if kind == "text" else ")"))
+    said = (f"change {change} (asked: {ans.get('asked') or '-'}; changed: {ans.get('changed') or '-'})"
+            + (f"; raccoon {raccoon}" if raccoon else "") + f". {ans.get('why') or ''}").strip()
+    if raccoon == "different":
+        return "fail", "a different raccoon from the portrait: " + said
+    if change == "no":
+        return "fail", "the judge can't see what changed on the page: " + said
+    if change == "unsure" or raccoon == "unsure":
         return "unsure", "unsure: " + said
     return "pass", said
 
@@ -587,7 +659,7 @@ def cmd_check(args):
         if not image.is_file():
             die(f"{image}: no such file")
         if not args.kind:
-            die("--image needs --kind (text, raccoon, data or pinned)")
+            die("--image needs --kind (text, raccoon, data, pinned or demo)")
         kind = args.kind
     else:
         if len(args.words) != 1 or not args.words[0].isdigit():
@@ -601,7 +673,7 @@ def cmd_check(args):
         kind = args.kind or kind_of(draft)
     ans, why_not = (None, "")
     if kind != "data" and not (kind == "raccoon" and "raccoon" in recent_kinds()):
-        ans, why_not = ask_judge(image)
+        ans, why_not = ask_judge(image, kind)
     v, reason = verdict(kind, ans, why_not)
     result = {"verdict": v, "kind": kind, "reason": reason, "answer": ans,
               "model": "stand-in (SOCIAL_JUDGE)" if os.environ.get("SOCIAL_JUDGE") else (None if ans is None else judge_model()),
@@ -1888,7 +1960,7 @@ def queue_winner(day, win, args):
     shutil.copy2(src, img)
     item = {"brand": "patchlamp", "image": str(img), "caption": win["caption"], "pillar": day.get("pillar"),
             "topic": (day.get("topic") or "")[:80] or None, "mood": args.mood, "art": args.art,
-            "kind": day["kind"] if day["kind"] in KINDS else None, "day": day["date"], "writer": win["writer"],
+            "kind": getattr(args, "kind", None) or (day["kind"] if day["kind"] in KINDS else None), "day": day["date"], "writer": win["writer"],
             "facts": win["facts"]["verdict"], "added": dt.datetime.now().isoformat(timespec="seconds")}
     (queue_dir() / f"{stamp}-patchlamp.json").write_text(json.dumps(item, indent=1) + "\n")
     q = drafts()
@@ -1984,6 +2056,474 @@ def cmd_receipt(args):
                 picture = f"{r_['check'].get('verdict')} ({str(r_['check'].get('reason', ''))[:70]})"
                 break
     print("\n".join(receipt_lines(day, picture)))
+
+
+# ---- the demo tile (B129, plan ~/projects/plans/51-feed-shows-the-change.md) ------------------------
+# B112 put a phone in every generated picture, and a drawn phone is still a picture of the idea
+# (marketing/audit-2026-10-05.md § Social). A demo post shows the thing itself: the ask as a text
+# bubble on the left, a real template demo's page after the change on the right, the one changed
+# thing marked. It is made in code from screenshots, not generated, so every word on it is the
+# ask or "demo" and nothing on it can be invented. The change is made on a copy of the demo's
+# golden files, never on the live demo, because strangers are texting it.
+
+CLIENTS = Path(os.environ.get("SOCIAL_CLIENTS", PROJECTS / "clients"))
+DEMO_GOLDEN = "golden"               # bin/demo's GOLDEN: the ref the 04:10 reset returns every demo to
+EDITOR_TIMEOUT = int(os.environ.get("SOCIAL_DEMO_TIMEOUT", "600"))   # ten minutes for the change run
+EDITOR_TURNS = 40
+EDITOR_TOOLS = "Read,Edit,Write,Glob,Grep"
+EDITOR_MODEL_DEFAULT = "sonnet"
+ASK_MAX = 160                        # characters: longer than this doesn't read at feed size
+TILE_W, TILE_H = 1080, 1350          # 4:5, Instagram's tallest feed shape
+ROOM, PANEL, LINE, INK, AMBER, BRASS = "#0F1413", "#16302F", "#2A4C49", "#E9E3D6", "#F0A63A", "#B59063"
+FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+PAGE_X, PAGE_Y, PAGE_W, PAGE_H = 500, 130, 520, 1160     # where the page sits on the tile
+MOST_OF_PAGE = 0.5                   # a box taller than this share of the page is no one thing to mark
+
+EDITOR_PROMPT = """You are Patch, working on a copy of the {slug} demo site for one picture on Patchlamp's social feed. The picture shows the text below as a message bubble on the left and the page after your change on the right, with the change marked, so the change you make here is what people will see.
+
+The site's files are in `repos/{repo}/` in this directory. `CLAUDE.md` here is the demo workspace's own notes: read it for how the site is put together and what a demo keeps (the "This is a demo" bar stays). Make the change by editing files under `repos/{repo}/` with Edit or Write. This is a throwaway copy: there is no shell, nothing to commit and nothing to publish, and the live demo is not touched, because strangers are texting it.
+
+Change only what the text asks for and leave everything else as it is, because the picture marks whatever changed and anything extra would read as part of the ask. Make it visible on the page `{page}` as a phone shows it, since that page is what the picture shows. Don't name a real business or person.
+
+Your budget is about ten minutes. If you can't make the change, or it wouldn't show on that page, "I couldn't, because ..." is a fine answer: it is passed on as you write it, and no one asks you again the same way.
+
+The text, as the owner sent it:
+
+{ask}
+
+When you're done, end your reply with one JSON object and nothing after it:
+{{"done": true or false, "changed": "one sentence: what you changed and where on the page", "couldnt": "if done is false, why"}}
+"""
+
+
+def demo_repo(slug, name=None):
+    """(repo dir, golden sha) for a template demo. Only a repo with the golden ref is a demo: the six demos are
+    made-up businesses with a "This is a demo" bar on every page, so a tile from one can't be taken for a client."""
+    base = CLIENTS / slug / "repos"
+    repos = sorted(p for p in base.iterdir() if (p / ".git").exists()) if base.is_dir() else []
+    if name:
+        repos = [p for p in repos if p.name == name]
+    if not repos:
+        die(f"no repo for {slug} under {base}" + (f" named {name}" if name else ""))
+    if len(repos) > 1:
+        die(f"{slug} has {len(repos)} repos ({', '.join(p.name for p in repos)}); say which with --repo")
+    repo = repos[0]
+    r = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "-q", DEMO_GOLDEN + "^{commit}"],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        die(f"{slug} has no `{DEMO_GOLDEN}` ref, so it isn't one of the template demos; a demo tile is only "
+            "made from a demo (`demo ls`), so nothing on it can be taken for a real customer")
+    return repo, r.stdout.strip()
+
+
+def golden_copy(repo, dest):
+    dest.mkdir(parents=True, exist_ok=True)
+    arc = subprocess.run(["git", "-C", str(repo), "archive", DEMO_GOLDEN], capture_output=True)
+    if arc.returncode != 0:
+        die(f"git archive {DEMO_GOLDEN} failed in {repo}: {arc.stderr.decode(errors='replace')[:160]}")
+    t = subprocess.run(["tar", "-x", "-C", str(dest)], input=arc.stdout, capture_output=True)
+    if t.returncode != 0:
+        die(f"couldn't unpack the golden copy: {t.stderr.decode(errors='replace')[:160]}")
+
+
+def page_file(site, page):
+    """The file `shot` serves for PAGE: / is the folder, /x is x.html or x/index.html (Pages-style URLs)."""
+    p = (page or "/").split("?")[0].split("#")[0].strip("/")
+    if not p:
+        return site
+    for cand in (site / p, site / f"{p}.html", site / p / "index.html"):
+        if cand.is_file():
+            return cand
+    die(f"no page {page} in the demo (looked for {p}, {p}.html, {p}/index.html)")
+
+
+def editor_cmd():
+    if os.environ.get("SOCIAL_DEMO_EDITOR"):
+        return ["sh", "-c", os.environ["SOCIAL_DEMO_EDITOR"]]
+    m = os.environ.get("SOCIAL_DEMO_EDITOR_MODEL") or EDITOR_MODEL_DEFAULT
+    if "fable" in m.lower():
+        die("the change run never runs on Fable")
+    exe = shutil.which("claude") or "claude"
+    return [exe, "-p", "--model", m, "--output-format", "json", "--restricted", "--tools", EDITOR_TOOLS,
+            "--allowedTools", EDITOR_TOOLS, "--permission-mode", "dontAsk", "--strict-mcp-config",
+            "--disable-slash-commands", "--no-session-persistence", "--max-turns", str(EDITOR_TURNS)]
+
+
+def run_editor(work, slug, repo_name, page, ask):
+    """One change run in WORK. Returns (said, couldnt): what it changed, or why it couldn't, in its own words."""
+    prompt = EDITOR_PROMPT.format(slug=slug, repo=repo_name, page=page or "/", ask=ask)
+    try:
+        r = run_group(editor_cmd(), prompt, EDITOR_TIMEOUT, str(work), scrubbed_env())
+    except subprocess.TimeoutExpired:
+        return "", f"the change run did not finish within {plural_minutes(EDITOR_TIMEOUT)}"
+    except OSError as exc:
+        return "", f"the change run could not start ({exc})"
+    text, err = unwrap(r.stdout or "", "the change run")
+    if err:
+        return "", f"the change run: {err}"
+    ans = last_obj(text, ("done", "couldnt", "changed"))
+    if ans is None:
+        return "", f"the change run's answer had no JSON in it (exit {r.returncode}): {(text.strip() or r.stderr.strip())[-200:]}"
+    if ans.get("done") is not True:
+        return "", str(ans.get("couldnt") or ans.get("changed") or "it said it couldn't, and gave no reason")
+    return str(ans.get("changed") or "").strip(), ""
+
+
+def shoot(target, out):
+    sibling = Path(__file__).resolve().parent / "shot"     # a worktree has no node_modules, so the installed one first
+    exe = [os.environ.get("SOCIAL_SHOT") or shutil.which("shot") or str(sibling)]
+    r = subprocess.run(exe + [str(target), "--mobile", "--full", "--out", str(out)], capture_output=True, text=True,
+                       cwd=str(out.parent), timeout=120)
+    if r.returncode != 0 or not out.exists():
+        die(f"shot couldn't take {target}: {(r.stderr or r.stdout).strip()[-200:]}")
+
+
+def pixels(png):
+    """(width, height, rows) of a PNG as raw RGB rows, through ImageMagick (no imaging library here)."""
+    tool = magick() or die("ImageMagick is not installed (apt install imagemagick)")
+    ident = subprocess.run([tool, "identify", "-format", "%w %h", str(png) + "[0]"] if tool.endswith("magick")
+                           else ["identify", "-format", "%w %h", str(png) + "[0]"], capture_output=True, text=True)
+    w, h = (int(x) for x in ident.stdout.split()[:2])
+    raw = subprocess.run([tool, str(png) + "[0]", "-alpha", "off", "-depth", "8", "rgb:-"], capture_output=True).stdout
+    stride = w * 3
+    return w, h, [raw[i * stride:(i + 1) * stride] for i in range(h)]
+
+
+MARK_RGB = b"\xff\x00\xff"      # the outline the marked shot draws round the changed elements: a colour no demo uses
+MARK_CSS = ("<style>[data-patch-mark]{outline:4px solid #ff00ff !important;outline-offset:0 !important;"
+            "box-shadow:none !important}</style>")
+SKIP_TAGS = ("script", "style", "title", "head", "noscript", "template")
+VOID_TAGS = ("img", "br", "hr", "input", "meta", "link", "source", "area", "base", "col", "embed", "param", "track", "wbr")
+
+
+class _Flat(HTMLParser):
+    """Every element with text of its own (and every image), in document order, with where its start tag is."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.stack, self.items = [], []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in VOID_TAGS:
+            if tag == "img":
+                a = dict(attrs)
+                self.items.append((self.getpos(), "img", f"{a.get('src') or ''}|{a.get('alt') or ''}"))
+            return
+        self.stack.append([tag, [], self.getpos()])
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        if tag not in VOID_TAGS and self.stack:
+            self.stack.pop()
+
+    def handle_endtag(self, tag):
+        if not any(t == tag for t, _, _ in self.stack):
+            return
+        while self.stack:
+            t, buf, pos = self.stack.pop()
+            text = " ".join("".join(buf).split())
+            if text and t not in SKIP_TAGS and not any(x[0] in SKIP_TAGS for x in self.stack):
+                self.items.append((pos, t, text))
+            if t == tag:
+                break
+
+    def handle_data(self, data):
+        if self.stack:
+            self.stack[-1][1].append(data)
+
+
+def flat(html):
+    f = _Flat()
+    f.feed(html)
+    f.close()
+    return sorted(f.items)
+
+
+def mark_changed(before_html, after_html):
+    """AFTER's HTML with `data-patch-mark` on each element whose own text (or image) is new or different, and the
+    style that outlines them; None when no element's text changed (a style change, a script-drawn page)."""
+    a, b = flat(before_html), flat(after_html)
+    sm = difflib.SequenceMatcher(None, [(t, x) for _, t, x in a], [(t, x) for _, t, x in b], autojunk=False)
+    changed = [b[j] for op, _, _, j1, j2 in sm.get_opcodes() if op in ("replace", "insert") for j in range(j1, j2)]
+    if not changed:
+        return None
+    starts = [0]
+    for line in after_html.splitlines(keepends=True):
+        starts.append(starts[-1] + len(line))
+    html = after_html
+    for (line, col), tag, _ in sorted(changed, reverse=True):
+        at = starts[line - 1] + col
+        if html[at:at + 1 + len(tag)].lower() != "<" + tag:
+            continue
+        at += 1 + len(tag)
+        html = html[:at] + " data-patch-mark" + html[at:]
+    low = html.lower()
+    i = low.find("</head>")
+    return html[:i] + MARK_CSS + html[i:] if i >= 0 else MARK_CSS + html
+
+
+def marked_box(before_site, after_site, page, shots):
+    """The box round the changed elements, found by outlining them in a copy of the page and shooting that copy:
+    exact, and not thrown by everything below an added line moving down. None when there's nothing to outline."""
+    bf, af = page_file(before_site, page), page_file(after_site, page)
+    bf = bf / "index.html" if bf.is_dir() else bf
+    af_file = af / "index.html" if af.is_dir() else af
+    if not (bf.is_file() and af_file.is_file()):
+        return None
+    html = mark_changed(bf.read_text(errors="replace"), af_file.read_text(errors="replace"))
+    if html is None:
+        return None
+    marked = shots / "marked-site"
+    shutil.copytree(after_site, marked, symlinks=True)
+    target = marked / af_file.relative_to(after_site)
+    target.write_text(html)
+    shoot(target if af != after_site else marked, shots / "marked.png")
+    w, h, rows = pixels(shots / "marked.png")
+    x0, y0, x1, y1 = w, h, -1, -1
+    for y, row in enumerate(rows):
+        i = row.find(MARK_RGB)
+        while i >= 0 and i % 3:
+            i = row.find(MARK_RGB, i + 1)
+        if i < 0:
+            continue
+        j = row.rfind(MARK_RGB)
+        while j >= 0 and j % 3:
+            j = row.rfind(MARK_RGB, 0, j + 2)
+        x0, x1, y0, y1 = min(x0, i // 3), max(x1, j // 3), min(y0, y), max(y1, y)
+    if x1 < 0:
+        return None
+    return {"x": x0, "y": y0, "w": x1 - x0 + 1, "h": y1 - y0 + 1, "page_h": h, "page_w": w, "pad": (16, 3)}
+
+
+def change_box(before, after):
+    """The changed region of AFTER as {x, y, w, h}, or None when the pages are the same. Rows are matched from the
+    top and from the bottom, so a line added in the middle marks the new rows, not everything that moved down."""
+    wa, ha, A = pixels(before)
+    wb, hb, B = pixels(after)
+    if wa != wb:
+        return {"x": 0, "y": 0, "w": wb, "h": hb, "page_h": hb, "page_w": wb}
+    n = min(ha, hb)
+    top = next((i for i in range(n) if A[i] != B[i]), n)
+    if top == n and ha == hb:
+        return None
+    k = 0
+    while k < n - top and A[ha - 1 - k] == B[hb - 1 - k]:
+        k += 1
+    y0, y1 = top, max(top + 1, hb - k)
+    x0, x1 = wb, -1
+    for y in range(y0, min(y1, hb)):
+        row = B[y]
+        ref = A[y] if ha == hb else bytes(row[:3]) * wb    # a moved page: the extent of what's in the new rows
+        if row == ref:
+            continue
+        i = next(j for j in range(0, len(row), 3) if row[j:j + 3] != ref[j:j + 3])
+        jj = next(j for j in range(len(row) - 3, -1, -3) if row[j:j + 3] != ref[j:j + 3])
+        x0, x1 = min(x0, i // 3), max(x1, jj // 3)
+    if x1 < 0:
+        x0, x1 = 0, wb - 1
+    for y in range(y0, min(y1, hb)):          # the whole line the change is on, so the mark doesn't cut a word in half
+        row = B[y]
+        bg = row[:3]
+        i = next((j for j in range(0, len(row), 3) if row[j:j + 3] != bg), None)
+        if i is not None:
+            jj = next(j for j in range(len(row) - 3, -1, -3) if row[j:j + 3] != bg)
+            x0, x1 = min(x0, i // 3), max(x1, jj // 3)
+    return {"x": x0, "y": y0, "w": x1 - x0 + 1, "h": y1 - y0, "page_h": hb, "page_w": wb}
+
+
+def im_text(s):
+    """Text for ImageMagick's caption:, read literally: % escapes, backslashes and a leading @ (a file read) off."""
+    s = s.replace("\\", "\\\\").replace("%", "%%")
+    return "\\" + s if s.startswith("@") else s
+
+
+def im(*cmd):
+    tool = magick() or die("ImageMagick is not installed (apt install imagemagick)")
+    r = subprocess.run([tool, *[str(c) for c in cmd]], capture_output=True, text=True)
+    if r.returncode != 0:
+        die(f"ImageMagick: {r.stderr.strip()[:200]}")
+    return r.stdout
+
+
+def compose_demo(ask, after_png, box, out, portrait=None, work=None):
+    """The 1080x1350 tile: "DEMO" in brass small caps at the top, the ask in a text bubble on the left (ink on
+    panel), the page after the change on the right with the change boxed in amber, Patch's portrait small and
+    round at the bottom left. Returns the box as drawn on the tile."""
+    work = Path(work or tempfile.mkdtemp(prefix="social-tile-"))
+    pw, ph = box["page_w"], box["page_h"]
+    padx, pady = box.get("pad") or (max(24, pw // 26), max(10, pw // 80))   # room round the change, off the words
+    bx0, by0 = max(0, box["x"] - padx), max(0, box["y"] - pady)
+    bx1, by1 = min(pw, box["x"] + box["w"] + padx), min(ph, box["y"] + box["h"] + pady)
+    scale = PAGE_W / pw
+    win_h = int(PAGE_H / scale)                       # the slice of the page that fits, in page pixels
+    need = by1 - by0
+    if need > win_h * 0.8:                            # a tall change: show more page, smaller
+        scale = min(scale, PAGE_H * 0.8 / max(need, 1))
+        win_h = int(PAGE_H / scale)
+    win_h = min(win_h, ph)
+    mid = (by0 + by1) // 2
+    y0 = max(0, min(ph - win_h, mid - win_h // 2))
+    if by0 - y0 < win_h // 6 and y0 > 0:              # keep some page above the change for context
+        y0 = max(0, min(ph - win_h, by0 - win_h // 4))
+    shown_w, shown_h = int(pw * scale), int(win_h * scale)
+    # the page slice, the change boxed, the corners rounded
+    page = work / "page.png"
+    rx0, ry0 = int(bx0 * scale), int((by0 - y0) * scale)
+    rx1, ry1 = int(bx1 * scale), int((by1 - y0) * scale)
+    rx0, rx1 = max(4, rx0), min(shown_w - 5, rx1)
+    ry0, ry1 = max(4, ry0), min(shown_h - 5, ry1)
+    im(after_png, "-crop", f"{pw}x{win_h}+0+{y0}", "+repage", "-resize", f"{shown_w}x{shown_h}!",
+       "-fill", "none", "-stroke", AMBER, "-strokewidth", "7", "-draw", f"roundrectangle {rx0},{ry0} {rx1},{ry1} 10,10",
+       "(", "+clone", "-alpha", "extract", "-fill", "black", "-colorize", "100", "-fill", "white",
+       "-draw", f"roundrectangle 0,0 {shown_w - 1},{shown_h - 1} 22,22", ")",
+       "-alpha", "off", "-compose", "CopyOpacity", "-composite", page)
+    # the ask, in a bubble
+    size = 40 if len(ask) <= 90 else 34
+    text = work / "ask.png"
+    im("-background", "none", "-fill", INK, "-font", FONT, "-pointsize", size, "-interline-spacing", "6",
+       "-size", "320x", "caption:" + im_text(ask), text)
+    tw, th = (int(v) for v in im(text, "-format", "%w %h", "info:").split())
+    bw, bh = tw + 64, th + 52
+    bubble = work / "bubble.png"
+    im("-size", f"{bw + 2}x{bh + 26}", "xc:none", "-fill", PANEL, "-draw", f"roundrectangle 0,0 {bw},{bh} 34,34",
+       "-draw", f"polygon 22,{bh - 30} 66,{bh - 4} 6,{bh + 24}", text, "-geometry", "+32+26", "-composite", bubble)
+    # the bubble sits level with the change, an amber line from it to the box
+    box_mid = PAGE_Y + (PAGE_H - shown_h) // 2 + (ry0 + ry1) // 2
+    top_y = max(150, min(TILE_H - 260 - bh, box_mid - bh // 2))
+    page_x = PAGE_X + (PAGE_W - shown_w) // 2
+    page_y = PAGE_Y + (PAGE_H - shown_h) // 2
+    line_y = max(top_y + 30, min(top_y + bh - 30, box_mid))
+    args = ["-size", f"{TILE_W}x{TILE_H}", f"xc:{ROOM}",
+            "-fill", LINE, "-draw", f"roundrectangle {page_x - 3},{page_y - 3} {page_x + shown_w + 2},{page_y + shown_h + 2} 24,24",
+            page, "-geometry", f"+{page_x}+{page_y}", "-composite",
+            bubble, "-geometry", f"+60+{top_y}", "-composite",
+            "-stroke", AMBER, "-strokewidth", "5", "-draw", f"line {60 + bw + 14},{line_y} {page_x - 16},{page_y + (ry0 + ry1) // 2}",
+            "-stroke", "none", "-fill", AMBER, "-draw", f"circle {page_x - 16},{page_y + (ry0 + ry1) // 2} {page_x - 7},{page_y + (ry0 + ry1) // 2}",
+            "-fill", BRASS, "-font", FONT_BOLD, "-pointsize", "34", "-kerning", "9", "-annotate", "+62+92", "DEMO"]
+    portrait = Path(portrait or PATCH_REF)
+    if portrait.is_file():
+        round_ = work / "portrait.png"
+        im(portrait, "-resize", "128x128^", "-gravity", "center", "-extent", "128x128",
+           "(", "+clone", "-alpha", "extract", "-fill", "black", "-colorize", "100", "-fill", "white",
+           "-draw", "circle 64,64 64,1", ")", "-alpha", "off", "-compose", "CopyOpacity", "-composite", round_)
+        args += ["-fill", "none", "-stroke", BRASS, "-strokewidth", "3", "-draw", f"circle 124,{TILE_H - 124} 124,{TILE_H - 191}",
+                 "-stroke", "none", round_, "-geometry", f"+60+{TILE_H - 188}", "-composite"]
+    out.parent.mkdir(parents=True, exist_ok=True)
+    im(*args, "-quality", "92", out)
+    return {"x": page_x + rx0, "y": page_y + ry0, "w": rx1 - rx0, "h": ry1 - ry0}
+
+
+def demo_ledger(row):
+    path = Path(os.environ.get("SOCIAL_LEDGER") or os.environ.get("IMG_LEDGER") or Path.home() / ".local/state/claude-tools/ledger.jsonl")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a") as f:
+            f.write(json.dumps(row) + "\n")
+    except OSError as exc:
+        print(f"social: ledger write failed ({exc})", file=sys.stderr)
+
+
+def couldnt(msg, as_json=False, **extra):
+    """The run's "I couldn't", passed on as it is: exit 4, like the check's, so a schedule reads it the same way."""
+    if as_json:
+        print(json.dumps({"made": False, "couldnt": msg, **extra}))
+    else:
+        print(f"I couldn't: {msg}")
+    sys.exit(4)
+
+
+def cmd_demo(args):
+    if workspace_slug():
+        die("a demo tile is the house feed's; make it from ~/projects, not inside a client workspace")
+    if not getattr(args, "project", None):
+        die("say which demo: --project SLUG (`demo ls` names the six)")
+    ask = " ".join(args.ask.split())
+    if not ask:
+        die("--ask is empty")
+    if len(ask) > ASK_MAX:
+        die(f"the ask is {len(ask)} characters; at most {ASK_MAX} read at feed size, so say it shorter")
+    repo, sha = demo_repo(args.project, args.repo)
+    tmp = Path(tempfile.mkdtemp(prefix="social-demo-"))
+    keep = bool(os.environ.get("SOCIAL_DEMO_KEEP"))
+    try:
+        before = tmp / "before"
+        golden_copy(repo, before)
+        said, cost = "", None
+        if args.after:
+            after = Path(args.after).expanduser().resolve()
+            if not after.is_dir():
+                die(f"--after {after}: not a folder")
+            said = "made by hand (--after)"
+        else:
+            work = tmp / "work"
+            after = work / "repos" / repo.name
+            shutil.copytree(before, after, symlinks=True)
+            ws_md = CLIENTS / args.project / "CLAUDE.md"
+            if ws_md.is_file():
+                shutil.copy2(ws_md, work / "CLAUDE.md")
+            print(f"the change run ({os.environ.get('SOCIAL_DEMO_EDITOR_MODEL') or EDITOR_MODEL_DEFAULT}, up to "
+                  f"{plural_minutes(EDITOR_TIMEOUT)}) on a copy of {args.project}'s golden files ...", file=sys.stderr)
+            said, why_not = run_editor(work, args.project, repo.name, args.page, ask)
+            cost = sum(c for _, c in COSTS) if COSTS else None
+            demo_ledger({"ts": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00"), "kind": "social-demo",
+                         "project": args.project, "model": "stand-in" if os.environ.get("SOCIAL_DEMO_EDITOR")
+                         else (os.environ.get("SOCIAL_DEMO_EDITOR_MODEL") or EDITOR_MODEL_DEFAULT),
+                         "cost_usd": round(cost or 0, 4), "billed_to": "subscription", "made": not why_not})
+            if why_not:
+                couldnt(why_not, args.json, project=args.project, ask=ask)
+        shots = tmp / "shots"
+        shots.mkdir()
+        shoot(page_file(before, args.page), shots / "before.png")
+        shoot(page_file(after, args.page), shots / "after.png")
+        box = marked_box(before, after, args.page, shots) or change_box(shots / "before.png", shots / "after.png")
+        if box is None:
+            couldnt(f"the page {args.page or '/'} looks the same after the change, so there's nothing to mark"
+                    + (f" (the run said: {said})" if said else ""), args.json, project=args.project, ask=ask)
+        if box["h"] > box["page_h"] * MOST_OF_PAGE or box["w"] * box["h"] > box["page_w"] * box["page_h"] * MOST_OF_PAGE:
+            couldnt(f"most of the page changed ({box['h']} of {box['page_h']} rows), so there's no one thing to mark"
+                    + (f" (the run said: {said})" if said else ""), args.json, project=args.project, ask=ask)
+        if box["h"] > PAGE_H * box["page_w"] / PAGE_W:
+            couldnt(f"the change runs taller than a phone screen ({box['h']} rows of a {box['page_w']}-wide page), so "
+                    "there's no one thing to mark" + (f" (the run said: {said})" if said else ""),
+                    args.json, project=args.project, ask=ask)
+        out_dir = Path(args.out).expanduser() if args.out else SOCIAL_DIR / "generated" / "demo"
+        stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        out = out_dir / f"{stamp}-{args.project}.jpg"
+        tile_box = compose_demo(ask, shots / "after.png", box, out, work=tmp)
+        side = {"kind": "demo", "project": args.project, "repo": repo.name, "page": args.page or "/", "ask": ask,
+                "golden": sha, "box": {k: box[k] for k in ("x", "y", "w", "h")}, "page_size": [box["page_w"], box["page_h"]],
+                "tile_box": tile_box, "changed": said, "cost_usd": cost,
+                "what": f"a template demo ({args.project}): a made-up business with a 'This is a demo' bar on every page, not a customer",
+                "made": dt.datetime.now().isoformat(timespec="seconds")}
+        out.with_suffix(".json").write_text(json.dumps(side, indent=1) + "\n")
+        if keep:
+            for name in ("before.png", "after.png"):
+                shutil.copy2(shots / name, out.with_name(f"{out.stem}-{name}"))
+        n = None
+        if args.queue is not None:
+            if not args.queue.strip():
+                die("--queue needs the caption (Codex's, through Flint)")
+            queue_dir().mkdir(parents=True, exist_ok=True)
+            qimg = queue_dir() / f"{stamp}-patchlamp.jpg"
+            shutil.copy2(out, qimg)
+            item = {"brand": "patchlamp", "image": str(qimg), "caption": args.queue.strip(), "pillar": "demo",
+                    "topic": ask[:80], "mood": args.mood, "art": "demo tile", "kind": "demo",
+                    "demo": {k: side[k] for k in ("project", "page", "ask", "golden")},
+                    "added": dt.datetime.now().isoformat(timespec="seconds")}
+            (queue_dir() / f"{stamp}-patchlamp.json").write_text(json.dumps(item, indent=1) + "\n")
+            n = next(i for i, d in enumerate(drafts(), 1) if d["_path"].name == f"{stamp}-patchlamp.json")
+        if args.json:
+            print(json.dumps({"made": True, "tile": str(out), "sidecar": str(out.with_suffix(".json")), "draft": n,
+                              "changed": said, "box": side["box"]}))
+        else:
+            print(f"tile {out}\n  asked: {ask}\n  changed: {said}\n  box: {side['box']} on a {box['page_w']}x{box['page_h']} page"
+                  + (f"\n  queued as draft {n}: `social check {n}` next" if n else ""))
+    finally:
+        if not keep:
+            shutil.rmtree(tmp, ignore_errors=True)
+        else:
+            print(f"(kept {tmp})", file=sys.stderr)
 
 
 def cmd_connect(args):
@@ -2086,7 +2626,18 @@ def main():
     q.add_argument("--kind", choices=KINDS, help="text, raccoon, data or pinned (what `social check` holds it to)")
     q.add_argument("--hold", action="store_true", help="a bare `social post BRAND` skips it (the pinned explainer)")
     q.set_defaults(fn=cmd_queue)
-    k = sub.add_parser("check", help="one fresh judge looks at a draft's picture: product shown? the same raccoon?")
+    dm = sub.add_parser("demo", help="a demo tile: the ask in a bubble, a template demo's page after the change, the change marked (B129)")
+    dm.add_argument("--project", default=argparse.SUPPRESS, help="the template demo (`demo ls`)")
+    dm.add_argument("--ask", required=True, help="the text, as an owner would send it")
+    dm.add_argument("--page", default="/", help="the page the change shows on (default /)")
+    dm.add_argument("--repo", help="the repo, when the demo has more than one")
+    dm.add_argument("--after", help="a folder holding the site after a change made by hand (skips the change run)")
+    dm.add_argument("--out", help="where the tile goes (default social/generated/demo/)")
+    dm.add_argument("--queue", metavar="CAPTION", help="queue the tile with this caption as a demo draft (Codex's words, through Flint)")
+    dm.add_argument("--mood", help="the mood, for the queue")
+    dm.add_argument("--json", action="store_true")
+    dm.set_defaults(fn=cmd_demo)
+    k = sub.add_parser("check", help="one fresh judge looks at a draft's picture: product shown? the same raccoon? (demo, text: what changed?)")
     k.add_argument("words", nargs="*", help="N, the draft's number in `social queue`")
     k.add_argument("--image", help="any image instead of a queued draft")
     k.add_argument("--kind", choices=KINDS)
@@ -2122,6 +2673,7 @@ def main():
     pi.add_argument("--image")
     pi.add_argument("--mood")
     pi.add_argument("--art")
+    pi.add_argument("--kind", choices=KINDS, help="the queued draft's kind, when it isn't the day's (a demo tile on a text day)")
     pi.set_defaults(fn=cmd_pick)
     rc = sub.add_parser("receipt", help="each claim beside its source, who wrote it, the verdicts (B133)")
     rc.add_argument("words", nargs="*")

@@ -15,6 +15,9 @@
 #   the ad identification, the opt-out, the postal address, and the disclosure exactly as
 #   Taylor decided it (answer 1);
 #   never a sentence that says a site exists: none does yet.
+# The AI sentence (B132, plan 53): `[?ai_intro]` beside the introduction and `[?ai_foot]` as the
+# body's last line; the sequence's variant turns on one of them, or neither for `none` (only inside
+# the AI-line test, where the first machine answer says it instead). No other words change.
 # Placeholders: {first} {business} {fault_one} {fault_two} {fact} {price_line} {phone} {address}.
 
 # Body by Codex (marketing/copy/2026-10-05-letters.md, variant A), 2026-10-05: one thought a sentence, one ask a letter;
@@ -26,7 +29,7 @@ Subject default: two things I noticed about {business}
 Hi {first},
 
 I'm Taylor Remund. I build and look after websites in American Fork, Utah.
-Patch, my AI operator, drafted this note for my approval of the batch.
+[?ai_intro] Patch, my AI operator, drafted this note for my approval of the batch.
 
 [!fact] I looked {business} up and noticed two things:
 [?fact] I looked {business} up and noticed one thing to fix and one thing working for you:
@@ -40,6 +43,7 @@ I can build you a preview of a site for {business} from your Google listing, fre
 If you want to keep it, I'll put it on your own web address for {price_line}. A few small changes by text to Patch each month are included. Bigger changes need a bigger plan.
 
 Want to see it? Just reply.
+[?ai_foot] Patch, my AI operator, drafted this note for my approval of the batch.
 
 Taylor Remund · Patchlamp
 {phone}

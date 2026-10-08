@@ -46,7 +46,9 @@ Bookings that finish the job (`db add bookings`, ROADMAP B119):
   db bookings confirm ID                 # by text: confirm it on the site, the customer emailed
   db bookings move ID "2026-10-14T15:00" # to that open time, capacity checked, the customer emailed
   db bookings cancel ID                  # the place freed, the customer emailed
-  db bookings remind ID                  # a confirmed one ahead: the reminder email (B120's morning run)
+  db bookings remind ID                  # a confirmed one ahead: the reminder email (B120's morning run sends them all)
+  db bookings ls [tuesday|tomorrow|10/14] [--name Smith] [--json]   # the owner's day: bookings + open times (B120)
+  db bookings open --on tue --from 9 --to 12 --until november        # open times in bulk; one already open is left (B120)
 Documents signed by link (`db add signatures`, ROADMAP B128) are driven by
 `sign`, not by db subcommands: `sign new|ls|show|pdf|void` (bin/sign).
 
@@ -2409,6 +2411,320 @@ def cmd_bookings_change(a):
         say(f"  the customer is NOT emailed: {res.get('why') or 'no reason given'}.")
 
 
+# ---------------------------------------------------------------- the owner's day and times in bulk (B120)
+# What the owner texts about bookings, as two verbs that read and write the site's
+# own database (no site endpoint: nobody is emailed by either):
+#   db bookings ls [DAY] [--days N] [--name TEXT] [--all] [--json]
+#       DAY: today, tomorrow, a weekday ("tuesday", "tue": the next one, today
+#       if today is one; "next tuesday" skips today), 2026-10-14, 10/14, "oct 14".
+#       No DAY: from today, 14 days. Cancelled ones only with --all. The open
+#       times with places left come too (not with --name). Dates are the site's
+#       own clock: TIMEZONE in its wrangler.toml (America/Denver if unset).
+#       The relay's morning run (relay/bookings.py) reads `ls tomorrow --json`.
+#   db bookings open --on tue[,thu] --from 9 --to 12 (--until 2026-11-30 | --weeks N)
+#                    [--every 60] [--minutes 60] [--capacity 1] [--label L] [--start DAY] [--dry-run] [--json]
+#       "open Tuesdays 9 to 12 through November": a slot every --every minutes
+#       whose end is by --to, on each matching day from --start (today) through
+#       --until, in one batch. A time already open is left as it is; a closed
+#       one at that time is reopened; past times are skipped. At most 400.
+# BOOKINGS_NOW ("YYYY-MM-DDTHH:MM", the site's clock) pins "now" for tests.
+
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError  # noqa: E402
+
+BOOKING_TZ_DEFAULT = "America/Denver"
+OPEN_MAX = 400
+LS_DAYS_DEFAULT = 14
+WEEKDAY_NAMES = {"mon": 0, "monday": 0, "tue": 1, "tues": 1, "tuesday": 1, "wed": 2, "weds": 2, "wednesday": 2,
+                 "thu": 3, "thur": 3, "thurs": 3, "thursday": 3, "fri": 4, "friday": 4, "sat": 5, "saturday": 5,
+                 "sun": 6, "sunday": 6}
+MONTH_NAMES = {m: i + 1 for i, ms in enumerate((
+    ("jan", "january"), ("feb", "february"), ("mar", "march"), ("apr", "april"), ("may",), ("jun", "june"),
+    ("jul", "july"), ("aug", "august"), ("sep", "sept", "september"), ("oct", "october"), ("nov", "november"),
+    ("dec", "december"))) for m in ms}
+
+
+def site_tz(site):
+    try:
+        name = (tomllib.loads((site.repo / "wrangler.toml").read_text()).get("vars") or {}).get("TIMEZONE")
+    except (OSError, tomllib.TOMLDecodeError):
+        name = None
+    try:
+        return ZoneInfo(name or BOOKING_TZ_DEFAULT)
+    except (ZoneInfoNotFoundError, ValueError):
+        return ZoneInfo(BOOKING_TZ_DEFAULT)
+
+
+def site_now(site):
+    pinned = os.environ.get("BOOKINGS_NOW")
+    if pinned:
+        return datetime.datetime.fromisoformat(pinned[:16]).replace(tzinfo=site_tz(site))
+    return datetime.datetime.now(site_tz(site))
+
+
+def weekday_of(word):
+    w = word.strip().lower().rstrip(".")
+    w = re.sub(r"(?<=[a-z])'?s$", "", w) if w not in WEEKDAY_NAMES else w     # "tuesdays", "tuesday's"
+    return WEEKDAY_NAMES.get(w)
+
+
+def parse_day(text, today):
+    """A day as the owner says it, on the site's clock; None when it isn't one."""
+    t = " ".join(str(text or "").strip().lower().replace(",", " ").split())
+    t = re.sub(r"^(?:my|on|this)\s+", "", t)
+    if t in ("today", "tonight", "now"):
+        return today
+    if t in ("tomorrow", "tmrw", "tmr", "tomorow"):
+        return today + datetime.timedelta(days=1)
+    if t == "yesterday":
+        return today - datetime.timedelta(days=1)
+    m = re.fullmatch(r"(next\s+)?([a-z']+)", t)
+    if m and weekday_of(m.group(2)) is not None:
+        ahead = (weekday_of(m.group(2)) - today.weekday()) % 7
+        return today + datetime.timedelta(days=ahead or (7 if m.group(1) else 0))
+    m = re.fullmatch(r"(\d{4})-(\d\d)-(\d\d)", t)
+    if m:
+        try:
+            return datetime.date(*map(int, m.groups()))
+        except ValueError:
+            return None
+    m = re.fullmatch(r"(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?", t)
+    mon_day = (int(m.group(1)), int(m.group(2)), m.group(3)) if m else None
+    m = re.fullmatch(r"(?:[a-z]+\s+)?([a-z]+)\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s+(\d{4}))?", t)
+    if not mon_day and m and m.group(1) in MONTH_NAMES:
+        mon_day = (MONTH_NAMES[m.group(1)], int(m.group(2)), m.group(3))
+    if not mon_day:
+        return None
+    month, day, year = mon_day
+    try:
+        if year:
+            return datetime.date(int(year) + (2000 if len(year) == 2 else 0), month, day)
+        d = datetime.date(today.year, month, day)
+        return d if d >= today - datetime.timedelta(days=31) else datetime.date(today.year + 1, month, day)
+    except ValueError:
+        return None
+
+
+def parse_clock(text):
+    """'9', '9am', '09:00', '1pm', '12:30pm', '13:30', 'noon' -> (hour, minute) or None. A bare 1-6 is pm."""
+    t = str(text or "").strip().lower().replace(" ", "").replace(".", "")
+    if t == "noon":
+        return 12, 0
+    m = re.fullmatch(r"(\d{1,2})(?::(\d\d))?(am|pm|a|p)?", t)
+    if not m:
+        return None
+    h, mi, ap = int(m.group(1)), int(m.group(2) or 0), m.group(3)
+    if ap:
+        if not 1 <= h <= 12:
+            return None
+        h = h % 12 + (12 if ap.startswith("p") else 0)
+    elif 1 <= h <= 6 and not m.group(2):
+        h += 12
+    return (h, mi) if h < 24 and mi < 60 else None
+
+
+def clock_text(hhmm):
+    h, m = int(hhmm[:2]), int(hhmm[3:5])
+    return f"{h % 12 or 12}:{m:02d}{'am' if h < 12 else 'pm'}"
+
+
+def day_text(d, today=None):
+    label = f"{d.strftime('%A')}, {d.strftime('%B')} {d.day}"
+    if today is not None and d == today:
+        return "Today, " + label
+    if today is not None and d == today + datetime.timedelta(days=1):
+        return "Tomorrow, " + label
+    return label
+
+
+def bookings_ls_data(site, a):
+    now = site_now(site)
+    today = now.date()
+    if a.day:
+        start = parse_day(a.day, today)
+        if start is None:
+            die(f"{a.day!r} isn't a day I can read: today, tomorrow, a weekday (tuesday), 2026-10-14, 10/14 or \"oct 14\"")
+        days = a.days or 1
+    else:
+        start, days = today, a.days or LS_DAYS_DEFAULT
+    days = max(1, min(int(days), 120))
+    end = start + datetime.timedelta(days=days)
+    lo, hi = start.isoformat(), end.isoformat()      # 'YYYY-MM-DD' < 'YYYY-MM-DDTHH:MM' < the next day
+    where = [f"b.starts_at >= {lit(lo)}", f"b.starts_at < {lit(hi)}"]
+    if not a.all:
+        where.append("b.status != 'cancelled'")
+    if a.name:
+        where.append(f"LOWER(b.name) LIKE {lit('%' + a.name.strip().lower() + '%')}")
+    sql = ("SELECT b.id, b.starts_at, b.name, b.email, b.phone, b.notes, b.status, s.minutes, s.label "
+           "FROM bookings b LEFT JOIN booking_slots s ON s.id = b.slot_id WHERE " + " AND ".join(where)
+           + " ORDER BY b.starts_at, b.id;")
+    if not a.name:
+        sql += ("\nSELECT s.id, s.starts_at, s.minutes, s.label, s.capacity - (SELECT COUNT(*) FROM bookings b "
+                "WHERE b.slot_id = s.id AND b.status IN ('requested', 'confirmed')) AS places FROM booking_slots s "
+                f"WHERE s.status = 'open' AND s.starts_at >= {lit(max(lo, now.strftime('%Y-%m-%dT%H:%M')))} "
+                f"AND s.starts_at < {lit(hi)} ORDER BY s.starts_at;")
+    res = run_sql(site, a.local, sql)
+    booked = (res[0].get("results") or []) if res else []
+    open_ = [r for r in ((res[1].get("results") or []) if len(res) > 1 else []) if (r.get("places") or 0) > 0]
+    for r in booked + open_:
+        r["day"], r["time"] = r["starts_at"][:10], clock_text(r["starts_at"][11:16]) if len(r["starts_at"]) >= 16 else ""
+    return {"tz": str(site_tz(site)), "now": now.strftime("%Y-%m-%dT%H:%M"), "from": lo, "to": hi, "days": days,
+            "name": a.name or None, "bookings": booked, "open": open_}
+
+
+def render_day_lines(data, today):
+    """The day(s) as lines for one message: each day, its bookings, then its open times."""
+    start = datetime.date.fromisoformat(data["from"])
+    single = data["days"] == 1
+    lines = []
+    for i in range(data["days"]):
+        d = start + datetime.timedelta(days=i)
+        b = [r for r in data["bookings"] if r["day"] == d.isoformat()]
+        o = [r for r in data["open"] if r["day"] == d.isoformat()]
+        if not (b or o or single):
+            continue
+        lines.append(day_text(d, today) + (": nothing booked" if not b else "") + ("" if o or b else ", no open times"))
+        for r in b:
+            reach = r.get("phone") or r.get("email") or ""
+            state = {"requested": "requested, not confirmed yet"}.get(r["status"], r["status"])
+            lines.append(f"  {r['time']}  {r['name']} · {state} · #{r['id']}" + (f" · {reach}" if reach else "")
+                         + (f" · \"{' '.join(str(r['notes']).split())[:80]}\"" if r.get("notes") else ""))
+        if o:
+            lines.append("  open: " + ", ".join(r["time"] + (f" ({r['places']} places)" if r["places"] > 1 else "")
+                                                + (f" {r['label']}" if r.get("label") else "") for r in o))
+    return lines
+
+
+def cmd_bookings_ls(a):
+    """The owner's day (or days) from the site's database: bookings and the open times."""
+    site = bookings_site(a)
+    data = bookings_ls_data(site, a)
+    if a.json:
+        emit_json(data)
+        return
+    today = datetime.date.fromisoformat(data["now"][:10])
+    if a.name:
+        if not data["bookings"]:
+            say(f"no booking with {a.name!r} in the name from {data['from']} for {data['days']} day(s)"
+                + ("" if a.all else " (cancelled ones need --all)"))
+            return
+        for r in data["bookings"]:
+            d = datetime.date.fromisoformat(r["day"])
+            say(f"#{r['id']}  {day_text(d, today)} {r['time']}  {r['name']} · {r['status']}"
+                + (f" · {r.get('phone') or r.get('email')}" if r.get("phone") or r.get("email") else ""))
+        return
+    lines = render_day_lines(data, today)
+    say("\n".join(lines) if lines else f"nothing booked and no open times from {data['from']} for {data['days']} days")
+
+
+def parse_weekdays(text):
+    t = " ".join(str(text or "").lower().replace(",", " ").replace("&", " ").replace(" and ", " ").split())
+    if t in ("daily", "every day", "everyday", "all", "every"):
+        return set(range(7))
+    if t in ("weekdays", "weekday", "mon-fri"):
+        return set(range(5))
+    if t in ("weekends", "weekend"):
+        return {5, 6}
+    days = set()
+    for w in t.split():
+        n = weekday_of(w)
+        if n is None:
+            die(f"{w!r} isn't a weekday (tue, tuesday, tuesdays; or daily, weekdays, weekends)")
+        days.add(n)
+    if not days:
+        die("--on needs the days: tue, \"tue,thu\", weekdays, daily")
+    return days
+
+
+def open_plan(site, a):
+    now = site_now(site)
+    today = now.date()
+    on = parse_weekdays(a.on)
+    t0, t1 = parse_clock(a.start_time), parse_clock(a.end_time)
+    if not (t0 and t1):
+        die(f"--from {a.start_time!r} / --to {a.end_time!r}: times like 9, 9am, 13:30, 1pm")
+    if t1 <= t0:
+        die(f"--to ({a.end_time}) is before --from ({a.start_time}); a time after noon needs pm (\"--to 5pm\")")
+    minutes = a.minutes or 60
+    every = a.every or minutes
+    if minutes <= 0 or every <= 0:
+        die("--minutes and --every are minutes, more than 0")
+    first = parse_day(a.start, today) if a.start else today
+    if first is None:
+        die(f"--start {a.start!r} isn't a day I can read")
+    if a.until:
+        last = parse_day(a.until, today)
+        if last is None:
+            m = re.fullmatch(r"(?:end of\s+)?([a-z]+)", a.until.strip().lower())    # "november": through its last day
+            if m and m.group(1) in MONTH_NAMES:
+                mo = MONTH_NAMES[m.group(1)]
+                y = today.year + (1 if mo < today.month else 0)
+                last = (datetime.date(y + (mo == 12), mo % 12 + 1, 1) - datetime.timedelta(days=1))
+        if last is None:
+            die(f"--until {a.until!r} isn't a day I can read (2026-11-30, 11/30, \"nov 30\", november)")
+    elif a.weeks:
+        last = first + datetime.timedelta(days=7 * a.weeks - 1)
+    else:
+        die("say how long: --until 2026-11-30 (or a month: --until november) or --weeks 4")
+    if last < first:
+        die(f"--until {last} is before the first day ({first})")
+    times, d = [], first
+    lo = now.strftime("%Y-%m-%dT%H:%M")
+    while d <= last:
+        if d.weekday() in on:
+            m0, m1 = t0[0] * 60 + t0[1], t1[0] * 60 + t1[1]
+            m = m0
+            while m + minutes <= m1:
+                at = f"{d.isoformat()}T{m // 60:02d}:{m % 60:02d}"
+                if at > lo:
+                    times.append(at)
+                m += every
+        d += datetime.timedelta(days=1)
+    if len(times) > OPEN_MAX:
+        die(f"that's {len(times)} times; {OPEN_MAX} at most in one go (a shorter --until, or two runs)")
+    return times, minutes, first, last
+
+
+def cmd_bookings_open(a):
+    """Open times in bulk: one wrangler call to see what's there, one to write what isn't."""
+    site = bookings_site(a)
+    times, minutes, first, last = open_plan(site, a)
+    if not times:
+        die(f"no times fall on those days between {first} and {last} (past times are skipped)")
+    have = rows_of(d1(site, a.local, command=(
+        "SELECT id, starts_at, status FROM booking_slots WHERE starts_at IN (" + ", ".join(lit(t) for t in times) + ")")))
+    open_at = {r["starts_at"] for r in have if r["status"] == "open"}
+    closed = {}
+    for r in sorted(have, key=lambda r: r["id"]):
+        if r["status"] != "open" and r["starts_at"] not in open_at:
+            closed.setdefault(r["starts_at"], r["id"])
+    new = [t for t in times if t not in open_at and t not in closed]
+    stmts = [f"UPDATE booking_slots SET status = 'open', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
+             f"WHERE id = {int(i)} AND status != 'open';" for i in closed.values()]
+    stmts += [f"INSERT INTO booking_slots (starts_at, minutes, capacity, label) SELECT {lit(t)}, {int(minutes)}, "
+              f"{int(a.capacity)}, {lit(a.label or None)} WHERE NOT EXISTS (SELECT 1 FROM booking_slots WHERE "
+              f"starts_at = {lit(t)} AND status = 'open');" for t in new]
+    result = {"times": times, "added": new, "reopened": sorted(closed), "already_open": sorted(open_at),
+              "minutes": minutes, "capacity": a.capacity, "first": first.isoformat(), "last": last.isoformat(),
+              "dry_run": bool(a.dry_run)}
+    if stmts and not a.dry_run:
+        run_sql(site, a.local, "\n".join(stmts))
+    if a.json:
+        emit_json(result)
+        return
+    days = sorted({t[:10] for t in times})
+    clocks = sorted({t[11:16] for t in times})
+    verb = "would open" if a.dry_run else "opened"
+    span = (f"on {day_text(datetime.date.fromisoformat(days[0]))}" if len(days) == 1 else
+            f"on {len(days)} days, {day_text(datetime.date.fromisoformat(days[0]))} to "
+            f"{day_text(datetime.date.fromisoformat(days[-1]))}")
+    say(f"{verb} {len(new) + len(closed)} time(s): {', '.join(clock_text(c) for c in clocks)} {span} "
+        f"({minutes} minutes, {a.capacity} place(s) each)"
+        + (f"; {len(closed)} of them reopened (they'd been closed)" if closed else "")
+        + (f"; {len(open_at)} already open, left as they were" if open_at else "") + ".")
+    if not a.dry_run:
+        say("No publish needed: the calendar reads the database as the page loads.")
+
+
 def bookings_doctor(site, local, fail):
     """db doctor's bookings lines: the files, the feed (that it exists, never the key), the two secrets."""
     if not any(p.name.endswith("_bookings.sql") for p in repo_migrations(site)):
@@ -2427,7 +2743,7 @@ def bookings_doctor(site, local, fail):
             say("  bookings: BOOKING_KEY and BOOKINGS_FEED_KEY set (customers are mailed; values not shown)")
 
 
-@subcommands("bookings", "bookings: setup (the keys), feed (the owner's calendar), upgrade, status, confirm/move/cancel/remind")
+@subcommands("bookings", "bookings: ls (the day), open (times in bulk), confirm/move/cancel/remind, setup, feed, upgrade, status")
 def bookings_parser(p, common):
     s = p.add_subparsers(dest="action", required=True)
     u = s.add_parser("setup", parents=[common], help="the booking key and the feed key as Pages secrets")
@@ -2448,6 +2764,25 @@ def bookings_parser(p, common):
     m = s.add_parser("move", parents=[common], help="move it to an open time; the customer is emailed the new one")
     m.add_argument("id"); m.add_argument("starts_at", help='the open time, "2026-10-14T15:00"')
     m.add_argument("--json", action="store_true"); m.set_defaults(fn=cmd_bookings_change, change="move")
+    ls = s.add_parser("ls", parents=[common], help="the owner's day: bookings and open times (today, tomorrow, tuesday, 10/14)")
+    ls.add_argument("day", nargs="?", help="today, tomorrow, tuesday, next tuesday, 2026-10-14, 10/14; none: 14 days from today")
+    ls.add_argument("--days", type=int, help="how many days from DAY (default 1; 14 with no DAY)")
+    ls.add_argument("--name", help="only bookings with this in the name (\"Smith\"), to find the id")
+    ls.add_argument("--all", action="store_true", help="cancelled ones too")
+    ls.add_argument("--json", action="store_true"); ls.set_defaults(fn=cmd_bookings_ls)
+    o = s.add_parser("open", parents=[common], help="open times in bulk: --on tue --from 9 --to 12 --until november")
+    o.add_argument("--on", required=True, help="the days: tue, \"tue,thu\", weekdays, weekends, daily")
+    o.add_argument("--from", dest="start_time", required=True, help="the first start: 9, 9am, 13:30")
+    o.add_argument("--to", dest="end_time", required=True, help="when the last one has to end: 12, 5pm")
+    o.add_argument("--until", help="the last day: 2026-11-30, 11/30, \"nov 30\", or a month (november)")
+    o.add_argument("--weeks", type=int, help="or this many weeks from --start")
+    o.add_argument("--start", help="the first day (default today)")
+    o.add_argument("--minutes", type=int, default=60, help="how long each one is (default 60)")
+    o.add_argument("--every", type=int, help="minutes between starts (default: --minutes)")
+    o.add_argument("--capacity", type=int, default=1, help="bookings each one takes (default 1)")
+    o.add_argument("--label", help="optional: \"Spa check\"")
+    o.add_argument("--dry-run", action="store_true")
+    o.add_argument("--json", action="store_true"); o.set_defaults(fn=cmd_bookings_open)
     t = s.add_parser("status", parents=[common], help="the key, the feed, the files (no key shown)")
     t.add_argument("--json", action="store_true"); t.set_defaults(fn=cmd_bookings_status)
 

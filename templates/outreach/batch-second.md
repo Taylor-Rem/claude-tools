@@ -5,6 +5,9 @@
 # (the `[?see_url]` / `[!see_url]` lines; only one of the two is ever sent).
 # The page behind {see_url} builds the preview when it is pressed (B91), so this letter
 # never says one exists.
+# The AI sentence (B132, plan 53): `[?ai_intro]` beside the introduction and `[?ai_foot]` as the
+# body's last line; the sequence's variant turns on one of them, or neither for `none` (only inside
+# the AI-line test, where the first machine answer says it instead). No other words change.
 # Placeholders: {first} {business} {see_url} {price_line} {phone} {address} {thread_subject}.
 
 # Body by Codex (marketing/copy/2026-10-05-letters.md, variant A), 2026-10-05: one thought a sentence, one ask a letter;
@@ -16,12 +19,13 @@ Subject default: Re: {thread_subject}
 Hi {first},
 
 I'm Taylor. I build and look after websites in American Fork.
-Patch, my AI operator, drafted this note for my approval of the batch.
+[?ai_intro] Patch, my AI operator, drafted this note for my approval of the batch.
 
 I can make a free website preview for {business} from your Google listing.
 [?see_url] You can have one built here: {see_url}
 [?see_url] Want to take a look?
 [!see_url] Want me to make one and send it over? Just reply.
+[?ai_foot] Patch, my AI operator, drafted this note for my approval of the batch.
 
 Taylor Remund · Patchlamp
 {phone}

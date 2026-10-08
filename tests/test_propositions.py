@@ -3,7 +3,7 @@
     python3 -m unittest tests.test_propositions   (from claude-tools/)
 
 Offline. What's pinned:
-  - the venture's rules (ventures/patchlamp/propositions.py): the order P0, P1, P2, P3, P4, P5; P6 dealt from P5's
+  - the venture's rules (ventures/patchlamp/propositions.py): the order P0, P2, P1, P3, P4, P5; P6 dealt from P5's
     pool by sha256("E1:"+place_id), stable and about even on a fixture pool of 2,000; the tooling signals change
     nothing (VISION § Decided "Autonomous acquisition" #13); a vendor's name with a domain in it is never said;
   - the engine reads them through lib/venture.py only (a venture with no file has none; another venture's file is
@@ -73,7 +73,9 @@ class VentureRules(unittest.TestCase):
     def test_the_order(self):
         c = self.P.classify
         self.assertEqual(c(prospect(excluded="a chain", packet=[1, 2])), "P0")
-        self.assertEqual(c(prospect(packet=[1, 2], presence="dead")), "P1")
+        self.assertEqual(c(prospect(packet=[1, 2], presence="dead")), "P2")     # no site of their own: the card's
+        self.assertEqual(c(prospect(packet=[1, 2], presence="none")), "P2")     # (plan 55 § 1.1; B140)
+        self.assertEqual(c(prospect(packet=[1, 2])), "P1")
         self.assertEqual(c(prospect(presence="none")), "P2")
         self.assertEqual(c(prospect(host=host("hibu", "agency", "Hibu"))), "P3")
         self.assertEqual(c(prospect(host=host("duda", "builder", "Duda"))), "P3")

@@ -7000,7 +7000,9 @@ def batch_exclusions():
 
 def shared_site_places():
     """Place ids whose website domain is on CHAIN_SITE_LISTINGS or more listings in the census: franchises
-    (Hotworx, Kid to Kid, Deseret Book) and multi-site organisations the name filter misses."""
+    (Hotworx, Kid to Kid, Deseret Book) and multi-site organisations the name filter misses. A platform each of them
+    has a page on (Facebook, Instagram, a directory, a free builder's address) is not one organisation's site, so
+    three businesses with Facebook pages are three businesses (B140: 235 listings were held as chains that way)."""
     conn = sqlite3.connect(f"file:{CENSUS}?mode=ro", uri=True)
     try:
         rows = conn.execute("SELECT place_id, website FROM place_cache WHERE COALESCE(website, '') != ''").fetchall()
@@ -7009,7 +7011,7 @@ def shared_site_places():
     by = {}
     for pid, w in rows:
         h = host_of(w).split(":")[0]
-        if h:
+        if h and not shared_host_is_a_platform(w):
             by.setdefault(h, []).append(pid)
     return {pid for h, ids in by.items() if len(ids) >= CHAIN_SITE_LISTINGS for pid in ids}
 
@@ -7521,7 +7523,7 @@ def prospect_rows():
 
 def shared_host_is_a_platform(url):
     """True when a website shared by several listings is a platform they each have a page on (Facebook, a directory,
-    a free builder's address), not one organisation's site: `shared_site_places` counts those as a chain."""
+    a free builder's address), not one organisation's site: `shared_site_places` never counts those as a chain."""
     h = host_of(url or "").split(":")[0].removeprefix("www.").removeprefix("m.")
     return bool(h) and any(h == d or h.endswith("." + d) for d in (*PAGE_HOSTS, *DIRECTORY_HOSTS, *BUILDER_HOSTS))
 
@@ -7542,8 +7544,8 @@ def prospect_record(c, ctx, inbox_owner=None):
     excluded = held = None
     if reason and (reason.startswith("held") or reason == "in the pipeline"):
         held = reason
-    elif reason and not (reason.startswith("a chain by its website") and shared_host_is_a_platform(website)):
-        excluded = reason        # (a Facebook page shared by three listings is three businesses, not a chain)
+    elif reason:
+        excluded = reason
     if not excluded and (c.get("name") or "").lower() in ctx["chain_names"]:
         excluded = "a chain"
     c_emails, c_domains, c_phones = ctx["marks"]

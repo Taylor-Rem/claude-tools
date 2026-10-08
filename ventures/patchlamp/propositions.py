@@ -22,10 +22,10 @@ picks the sentences that letter says. Nothing here reads the network, a file or 
     P2  no independent site of their own (none, a Facebook page, a dead link, a directory): the card's (B54).
     P0  none: excluded (a chain, held, a client, suppressed, closed), or nothing true to say beside a fault.
 
-Order, when more than one is true: P0, then P1 (a fault the owner can check is the strongest specific there is,
-its letters are already approved, and it is the rule `leads batch` ran before B135, so a business it wrote to then
-is P1 now), then P2, P3, P4, P5. P1 overlaps P3-P5 in the plan's counts; here a
-business gets one.
+Order, when more than one is true: P0, then P2 (no independent site is the card's, whatever the listing's faults:
+plan 55 § 1.1; Flint, 2026-10-08, B140), then P1 (a fault the owner can check is the strongest specific there is,
+its letters are already approved, and it is the rule `leads batch` ran before B135), then P3, P4, P5. P1 overlaps
+P3-P5 in the plan's counts, never P2; here a business gets one.
 
 Why the letter facts are these: each is a stored fact with a source a stranger could check (their Google standing,
 how Google lists them, the phone on their site matching the listing, the site loading securely and fitting a phone,
@@ -86,10 +86,10 @@ def classify(p):
     """One prospect -> a proposition id. `p` is the engine's dict (bin/leads `prospect_of`)."""
     if p.get("excluded"):
         return "P0"
+    if p.get("presence") in NO_SITE:      # no site of their own: the card's, whatever the listing's faults (§ 1.1)
+        return "P2"
     if p.get("packet"):
         return "P1"
-    if p.get("presence") in NO_SITE:
-        return "P2"
     host = p.get("host") or {}
     if str(host.get("status") or "") in HOST_DOWN:
         return "P0"

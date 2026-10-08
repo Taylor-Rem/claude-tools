@@ -47,8 +47,10 @@ CLASSES = {
                                              # route plans on stored facts, the lane still checks at send time
     "kit-to-card": ("taylor", "card"),       # the kit DMs or calls a no-site business by nearness and reach; § 5.2
                                              # sends one that isn't strong with a confirmed page to the card lane
-    "p1-no-address": ("taylor", "nothing"),  # B135's classify puts a no-site business with a listing fault in P1 (an
-                                             # email proposition) before P2; with no address no rule applies
+    "kit-no-address": ("taylor", "nothing"), # the kit DMs a business on a free builder address (wixsite, godaddysites:
+                                             # presence `builder`, so not P2); its proposition is an email one and it
+                                             # has no address, so no rule applies
+    "no-phone-to-card": ("nothing", "card"), # the kit's pool needs a phone; § 5.2's card lane needs a postal address
     "bounce-to-card": ("nothing", "card"),   # rule 4: an address that bounced goes to the card lane (not built, B54)
     "p0-kit": ("taylor", "nothing"),         # the kit DMs a page-only business the venture gives no proposition (P0:
                                              # presence `unknown`, no site of its own read)
@@ -56,9 +58,10 @@ CLASSES = {
 DIFFERENCES = {
     "FX_B16": "second-look",
     "FX_C02": "kit-to-card", "FX_C05": "kit-to-card", "FX_C06": "kit-to-card", "FX_N01": "kit-to-card",
-    "FX_S04": "kit-to-card", "FX_S12": "kit-to-card",
-    "FX_C03": "p1-no-address", "FX_C04": "p1-no-address", "FX_P2A": "p1-no-address", "FX_R01": "p1-no-address",
-    "FX_S01": "p1-no-address", "FX_S02": "p1-no-address", "FX_S03": "p1-no-address", "FX_S05": "p1-no-address",
+    "FX_S04": "kit-to-card", "FX_S12": "kit-to-card", "FX_C03": "kit-to-card", "FX_P2A": "kit-to-card",
+    "FX_R01": "kit-to-card", "FX_S01": "kit-to-card", "FX_S02": "kit-to-card", "FX_S03": "kit-to-card",
+    "FX_C04": "kit-no-address", "FX_S05": "kit-no-address",
+    "FX_S07": "no-phone-to-card",
     "FX_P504": "bounce-to-card",
     "FX_S08": "p0-kit",
 }
@@ -307,6 +310,31 @@ class NoDrift(unittest.TestCase):
         self.assertEqual(self.records["FX_P503"]["outcomes"]["delivered"], pc._day(5))
         s11 = self.records["FX_S11"]
         self.assertEqual((s11["conversation"]["channel"], s11["consent"]["governed"]), ("text", False))
+
+
+class SharedSites(unittest.TestCase):
+    """`shared_site_places`: three listings on one organisation's domain are a chain; three Facebook pages (or any
+    platform or directory host) are three businesses (B140, Flint 2026-10-08)."""
+
+    def test_a_facebook_trio_is_admitted_and_a_real_shared_domain_refused(self):
+        import sqlite3
+        import test_leads_batch as tlb
+        with tempfile.TemporaryDirectory() as tmp:
+            world = pc.build_world(tmp)
+            conn = sqlite3.connect(world["db"])
+            for i in range(3):
+                conn.execute("INSERT INTO place_cache (place_id, name, website) VALUES (?, ?, ?)",
+                             (f"FX_CH{i}", f"Bigchain {i}", f"https://www.bigchain.example/store-{i}"))
+            conn.commit()
+            conn.close()
+            L = tlb.leads_module(world["env"])
+            got = L.shared_site_places()
+        self.assertEqual({p for p in got if p.startswith("FX_CH")}, {"FX_CH0", "FX_CH1", "FX_CH2"})
+        for pid in ("FX_S01", "FX_C03", "FX_R01"):          # three listings linking their own Facebook pages
+            self.assertNotIn(pid, got)
+        self.assertTrue(L.shared_host_is_a_platform("https://m.facebook.com/x"))
+        self.assertTrue(L.shared_host_is_a_platform("https://www.thumbtack.com/ut/x"))
+        self.assertFalse(L.shared_host_is_a_platform("https://bigchain.example/"))
 
 
 class TheStore(unittest.TestCase):

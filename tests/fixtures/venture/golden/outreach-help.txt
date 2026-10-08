@@ -1,7 +1,7 @@
 $ outreach --help
 --- stdout
 usage: outreach [-h]
-                {send,tick,postmaster,resume,inbox,replies,reply,build,pressed,suppress,status,ai-test,warmup,approve,probe,doctor} ...
+                {send,tick,postmaster,resume,inbox,replies,reply,build,pressed,suppress,status,assets,ai-test,warmup,approve,probe,doctor} ...
 
 outreach — the email lane: the one outbound channel the machine runs end to end
 (ROADMAP B46, plan ~/projects/plans/20-email-lane.md, GROWTH § 5.3 / § 5.5 / § 8.1).
@@ -18,6 +18,7 @@ outreach — the email lane: the one outbound channel the machine runs end to en
   outreach tick                # sends what is due now: one letter a mailbox a tick at most,
                                # irregular gaps across working hours, under each mailbox's cap
   outreach postmaster 0.08 [--domain D]   # record a Google Postmaster spam-rate reading (percent)
+  outreach postmaster fetch|check|grant   # B136: the reading by API, daily (lib/postmaster.py)
   outreach resume MAILBOX | --lane        # Taylor's word after a pause or a stop
   outreach inbox [--dry-run]   # replies since the cursor: classified, the routine ones answered,
                                # the warm ones handed to Taylor with a brief
@@ -43,6 +44,10 @@ outreach — the email lane: the one outbound channel the machine runs end to en
                                # B132, plan 53: the AI-line test. Open, each batch is dealt a third each
                                # to none / intro / foot; start and stop are Taylor's word only, as `go` is
   outreach warmup [start DATE] # the warm-up state and the ramp; `start` records the day warm-up began
+  outreach assets [--json|--check]   # B141: the capacity registry, mailbox -> domain -> tenant -> provider,
+                               # each row's state, caps, counts and the contract verdict; --check exits 1
+                               # on a broken rule (the evening check). `assets state NAME STATE --why "…"`,
+                               # `assets incident NAME "…"`, `assets set NAME --cap N --verdict V …` change one
   outreach approve             # Taylor's one command after reading templates/outreach/*.md
   outreach doctor              # keys by name, the address, the template, the caps, the provider
 
@@ -193,7 +198,7 @@ Postmaster spam rate is at or above OUTREACH_SPAM_RATE_MAX_PCT (0.1). A stop fil
 TAYLOR-TODO §7 entry and holds until `outreach resume --lane`; counting starts afresh then.
 
 positional arguments:
-  {send,tick,postmaster,resume,inbox,replies,reply,build,pressed,suppress,status,ai-test,warmup,approve,probe,doctor}
+  {send,tick,postmaster,resume,inbox,replies,reply,build,pressed,suppress,status,assets,ai-test,warmup,approve,probe,doctor}
     send                the day's approved emails
     tick                send what is due now (the timer runs it)
     postmaster          record a Postmaster spam-rate reading (percent)
@@ -209,6 +214,8 @@ positional arguments:
                         touches, offer `build` (one JSON object)
     suppress            off the list for good
     status              today's sends, the caps, the replies, the bounce rate
+    assets              B141: the capacity registry — mailbox, domain, tenant,
+                        provider
     ai-test             B132: the AI-line test — start | stop [--keep V] |
                         show (start and stop on Taylor's word only)
     warmup              the warm-up state and the ramp

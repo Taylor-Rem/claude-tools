@@ -10,6 +10,8 @@ Hosting is $20 a month since 2026-10-05 (B115; it was $10 from 2026-09-24).
 import hashlib
 
 HOSTING_PRICE = "$20"
+LIGHT_PRICE = "$50"            # the small plan a club or a price list starts on (`leads` ladder and objections)
+STARTER_PRICE = "$99"          # the plan the close quotes ("someone on the hook")
 PRICE_LINE = f"{HOSTING_PRICE} a month, no contract"
 PRICES_LINE = (f"The full range is {HOSTING_PRICE}, $50, $99, $250, $400 and $1,000 a month as the amount of work "
                "goes up; all six are on the pricing page.")

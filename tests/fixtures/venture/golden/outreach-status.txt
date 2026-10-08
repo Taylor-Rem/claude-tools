@@ -1,6 +1,7 @@
 $ outreach status
 --- stdout
 Email lane — 2026-09-28 · provider fake
+  for: Patchlamp (patchlamp), from Taylor Remund in American Fork · sending domains trypatchlamp.com · postal address PO Box 1234, American Fork, UT 84003
   sends today: 0 of 6
   replies today: 0 (0 answered by the machine, cap 10)
   classifier spend today: $0.0000 of $0.50

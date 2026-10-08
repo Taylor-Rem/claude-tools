@@ -72,19 +72,19 @@ category implies (templates/previews/categories.json, one row per category in
 client-leads/scripts/services.json), phone, city, hours, "5.0★ on Google, 88
 reviews" linking to the listing, one stock photo. Never their Google photos,
 never the text of a review, never a street address, never a price. All of them
-live in one Cloudflare Pages project at previews.patchlamp.com/<slug>/, noindex
+live in one Cloudflare Pages project at {v:previews.host}/<slug>/, noindex
 twice over (a robots meta and X-Robots-Tag from the project's _headers), with
 the footer that says what the page is and a 30-day expiry. Deterministic: no
 model call, so six previews cost $0.
 
 Segments (B44, VISION § Decided 2026-09-28: services first, restaurants one of five):
   kit, kit --remote, candidates and next read the services census (B43's
-  `businesses` table in the same wasatch.db) by default once it holds a kit's
+  `businesses` table in the same {v:paths.census|name}) by default once it holds a kit's
   worth (six service businesses with a phone and no site of their own); until
   then, and with --segment restaurant, everything below is the restaurant census
   exactly as before. diagnose looks a name up in both.
   --segment services|creatives|retail|nonprofit|restaurant|all   (LEADS_SEGMENT sets the default)
-  leads kit --segment services  # the six nearest American Fork with no site of their own (a call list, not
+  leads kit --segment services  # the six nearest {v:sender.town} with no site of their own (a call list, not
                                 # Saturday counters): presence class, the faults, the opener, the close, the ladder
   leads kit --remote --segment creatives   # six messages greeted by the business (or the first name in it)
   leads diagnose "Name, City"   # a name in the services census answers from the census, no Places call
@@ -95,7 +95,7 @@ Segments (B44, VISION § Decided 2026-09-28: services first, restaurants one of 
   left out, `unknown` is read from the website link without a fetch.
 
 The pick: marketplace-only independents from the census
-(client-leads/wasatch.db: on DoorDash/Uber/Grubhub with no ordering
+({v:paths.census}: on DoorDash/Uber/Grubhub with no ordering
 of their own), operational, with a phone, at least --min-reviews reviews,
 nearest to home first, skipping anyone kitted in the last eight weeks. Each
 candidate's Google listing is read through Place Details (Places API New) until
@@ -115,7 +115,7 @@ The tool line (B40, plan ~/projects/plans/15-web-tools.md § How we sell it,
 point 3): a counter whose listing shows no way to book online (Google's
 `reservable` is unset and the website isn't on a booking host, BOOKING_HOSTS)
 is marked "No booking link" and the page ends with the tool line, which
-points at patchlamp.com/tools. In the remote kit, a service business
+points at {v:previews.tools_url}. In the remote kit, a service business
 (SERVICE_TYPES / SERVICE_SUFFIXES; the census is food, so it is rare there)
 with no booking link gets the second message, `tool_dm_text`. Neither names
 a price or offers ordering.
@@ -123,8 +123,8 @@ a price or offers ordering.
 Config, by name, never printed:
   GOOGLE_MAPS_API_KEY   ~/.config/claude-tools/env (setenv.sh). Without it the
                         kit is census-only and says so on its first line.
-  LEADS_DB              the census (default client-leads/wasatch.db)
-  LEADS_HOME            "lat,lng" of home (default American Fork)
+  LEADS_DB              the census (default {v:paths.census})
+  LEADS_HOME            "lat,lng" of home (default {v:sender.town})
   LEADS_STATE           state dir (default ~/.local/state/claude-tools/leads)
   LEADS_MAIL_ADDRESS    the postal address a cold email must carry (CAN-SPAM);
                         not a secret, kept in the toolbelt env beside the keys.
@@ -134,7 +134,7 @@ Config, by name, never printed:
   LEADS_PREVIEWS        the previews' state: site/ (what is uploaded) and
                         meta/<slug>.json (never uploaded). Default
                         ~/.local/state/claude-tools/previews
-  LEADS_PREVIEW_PROJECT the Pages project they all live in (patchlamp-previews)
+  LEADS_PREVIEW_PROJECT the Pages project they all live in ({v:previews.project})
   LEADS_PREVIEW_HOST    the host to build links from, when it isn't the one the
                         last publish reported (tests)
   LEADS_PREVIEW_YES     =1 passes `site previews --yes`, which is what lets the
@@ -240,7 +240,7 @@ The pipeline's event shape (one JSON object a line; fields are added, never rena
 Strength (B73, plan ~/projects/plans/33-leads-by-strength.md): every candidate and lead is strong, good or weak
 from named reasons — an agency-hosted dead site (the strongest), a dead link of their own, no website, a listing
 that embarrasses them, 10–300 reviews at 4.3★+, within 10 miles, a reach with evidence, a named owner, a trade
-that quotes jobs; against: a chain, a franchise, a live builder site under $50, a rating under 4.0. The weights
+that quotes jobs; against: a chain, a franchise, a live builder site under ${cheap_builder}, a rating under 4.0. The weights
 and the thresholds are client-leads/strength.md's tables (LEADS_STRENGTH overrides the path; the defaults are
 in STRENGTH_REASONS). Candidates, the kits and `leads today` put strong first and say why on every line.
 """
@@ -267,13 +267,23 @@ import urllib.request
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+from venture import from_argv  # noqa: E402
+
+V = from_argv()                      # the business this works for (ventures/<name>/venture.toml, B146)
+# The plan prices and the letter hash: the venture's prices module (today lib/prices.py, via a symlink; shared with
+# `outreach`, so both say the same price).
+PRICES = V.prices()
+HOSTING_PRICE, LIGHT_PRICE, STARTER_PRICE = PRICES.HOSTING_PRICE, PRICES.LIGHT_PRICE, PRICES.STARTER_PRICE
+letter_sha = PRICES.letter_sha
+CHEAP_BUILDER_USD = 50               # a vendor's builder plan under this a month is a cheap one (not our price)
 ENV_FILE = Path(os.environ.get("CLAUDE_TOOLS_ENV", Path.home() / ".config/claude-tools/env"))
 PROJECTS = Path(os.environ.get("PROJECTS_DIR", Path.home() / "projects"))
-CENSUS = Path(os.environ.get("LEADS_DB", PROJECTS / "client-leads/wasatch.db"))
+CENSUS = Path(os.environ.get("LEADS_DB", PROJECTS / V.paths.census))
 STATE = Path(os.environ.get("LEADS_STATE", Path.home() / ".local/state/claude-tools/leads"))
 LEDGER = Path(os.environ.get("LEADS_LEDGER", Path.home() / ".local/state/claude-tools/ledger.jsonl"))
 TZ = ZoneInfo("America/Denver")
-HOME_DEFAULT = (40.3769, -111.7958)  # American Fork (export_tier1.py's home base)
+HOME_DEFAULT = tuple(V.sender.home)  # the sender's town (export_tier1.py's home base)
 
 DETAILS_URL = "https://places.googleapis.com/v1/places/"
 DETAILS_FIELDS = ",".join([
@@ -309,7 +319,7 @@ SERVICE_TYPES = {"service",   # Google's bare type: a trade with no more specifi
                  "florist", "laundry", "veterinary_care", "pet_care", "landscaper", "pool_cleaning", "event_planner",
                  "wedding_venue", "event_venue", "child_care_agency", "driving_school", "music_school"}
 NOT_SERVICE = {"catering_service", "meal_delivery", "food_delivery", "courier_service"}
-TOOLS_URL = "patchlamp.com/tools"
+TOOLS_URL = V.previews.tools_url
 TOOL_LINE = ("The tool line (a counter marked \"no way to book\"): \"Where do the catering orders and the party bookings "
              "live now — a notebook, a spreadsheet? Patch can put a booking page on your own site, with every booking on a "
              "private page only you open. Send him the sheet you keep and it goes in the same place. Six to look at on "
@@ -337,24 +347,25 @@ FOOD_WORDS = ("restaurant", "cafe", "coffee", "bar", "food", "meal", "pizza", "d
               "dessert", "sandwich", "steak", "sushi", "taco", "brewery", "winery")
 
 # The opener, the close and the ladder per segment (VISION § Decided 2026-09-28; every sentence maps to
-# patchlamp/CLAIMS.md: Starter $99 and "someone on the hook" (§ Pricing), the templates (§ Templates), /admin
-# (§ Web tools), Light $50 (§ Pricing). No ordering, no price that isn't on /pricing.)
+# the venture's claims file (paths.claims): Starter and "someone on the hook" (§ Pricing), the templates (§ Templates), /admin
+# (§ Web tools), Light (§ Pricing); the amounts are the prices module's. No ordering, no price that isn't on /pricing.)
 SEGMENT_OPENER = ("Open with the diagnostic, not the pitch: \"I looked your business up on Google and it's got <the thing above>. "
                   "Here's exactly what to change; it's free, whether or not we talk again.\"")
 SEGMENT_CLOSE = ("The close: \"If you'd rather not think about it again: text Patch and it's done. Your site, your hours, your "
-                 "prices, changed in a minute by a number you text. It's $99 a month and I'm on the hook for all of it.\"")
+                 f"prices, changed in a minute by a number you text. It's {STARTER_PRICE} a month and I'm on the hook for all of it.\"")
 SEGMENT_LADDER = {
     "services": ("Then the tool, if they quote jobs: \"Your site can take quote requests and bookings, and they land on a "
                  "private page only you open: who asked, what for, marked new, replied or done. There's a working one on the "
-                 "pool-care demo at patchlamp.com/templates.\""),
+                 f"pool-care demo at {V.previews.templates_url}.\""),
     "creatives": ("Then the site: \"One page of your work with a line each, who you are and how to reach you. Text a photo "
                   "and say put this one first. Quote and booking requests can land on a private page only you open.\" "
-                  "The demos are at patchlamp.com/templates."),
+                  f"The demos are at {V.previews.templates_url}."),
     "retail": ("Then the shop: \"What you sell with prices and a basket, your pickup hours, checkout through Stripe paid to "
-               "your own account, and the orders on a private page only you open.\" The demos are at patchlamp.com/templates."),
+               "your own account, and the orders on a private page only you open.\" "
+               f"The demos are at {V.previews.templates_url}."),
     "nonprofit": ("Then the calendar: \"Your mission and a calendar of what's on, a volunteer sign-up kept in a list you "
                   "open at /admin, and a donate page that links to your own giving page.\" A club that changes little can "
-                  "start on Light, $50 a month."),
+                  f"start on Light, {LIGHT_PRICE} a month."),
 }
 BUSINESS_FIX_HINTS = [
     ("no website", "A one-page site with what you do, the area you cover and a way to ask for a quote fixes the first one; Google links it the day it's up."),
@@ -1607,14 +1618,14 @@ def clean_maps(url):
 
 
 def short_address(addr):
-    """'123 E Main St, American Fork, UT 84003, USA' -> '123 E Main St, American Fork'."""
+    """'123 E Main St, Lehi, UT 84043, USA' -> '123 E Main St, Lehi'."""
     parts = [p.strip() for p in (addr or "").split(",")]
     return ", ".join(parts[:2]) if len(parts) >= 2 else (addr or "")
 
 
 def render(order, for_date, today, mode, note, skipped, census_date, loop, short, n):
     lines = []
-    head = f"Saturday kit — {for_date.strftime('%a %-d %b')}, 9–11 · {len(order)} counters from American Fork · ~{loop:.0f} mi loop"
+    head = f"Saturday kit — {for_date.strftime('%a %-d %b')}, 9–11 · {len(order)} counters from {V.sender.town} · ~{loop:.0f} mi loop"
     lines.append(head)
     if mode == "google":
         lines.append(f"(Google listings read {today.strftime('%a %-d %b')}; census {census_date})")
@@ -1646,7 +1657,7 @@ def render(order, for_date, today, mode, note, skipped, census_date, loop, short
         lines.append("")
     lines += [
         "Open with the fault, not the pitch: \"Your Google listing is where people find you and it's got <the thing above>. "
-        "Text me the fix and it's live today, free. If you want it kept right, that's $99 a month and I'm on the hook for all of it.\"",
+        f"Text me the fix and it's live today, free. If you want it kept right, that's {STARTER_PRICE} a month and I'm on the hook for all of it.\"",
         "The line to test: \"Text Patch and it's done. Your Google listing, your menu, your hours, changed in a minute by a number you text. It's AI, with someone on the hook.\"",
         "Ordering is not on offer (VISION § Decided, 2026-09-24): if they ask about their own ordering page, say not yet, plainly, and sell the listing.",
     ]
@@ -1740,7 +1751,7 @@ def segment_copy(segments):
 
 def render_segment(order, segment, for_date, today, mode, note, skipped, census_date, widened, n):
     lines = [f"{SEGMENT_TITLE[segment]} kit — {for_date.strftime('%a %-d %b')} · {len(order)} {SEGMENT_NOUN[segment]} "
-             f"nearest American Fork{'' if segment == 'all' else ' with no site of their own'} · call, or drop by"]
+             f"nearest {V.sender.town}{'' if segment == 'all' else ' with no site of their own'} · call, or drop by"]
     if mode == "google":
         lines.append(f"(Google listings read {today.strftime('%a %-d %b')}; census {census_date})")
     elif mode == "fixture":
@@ -1782,7 +1793,7 @@ def render_segment(order, segment, for_date, today, mode, note, skipped, census_
 # ---- the remote lane (B25) -------------------------------------------------------
 
 GROUPS_LOG = Path(os.environ.get("LEADS_GROUPS_LOG", PROJECTS / "social/leads-from-groups.md"))
-SIGNOFF = "Taylor"
+SIGNOFF = V.sender.first_name
 IG_SKIP = {"p", "reel", "reels", "explore", "stories", "tv", "accounts", "popular"}
 FB_SKIP = {"groups", "events", "pages", "search", "watch", "marketplace", "hashtag", "people", "share", "sharer",
            "profile.php"}   # facebook.com/share/<id> is somebody's share link, not a page to message
@@ -1791,7 +1802,7 @@ TEXT_SEARCH_COST_USD = 0.032
 
 
 def mail_address():
-    return os.environ.get("LEADS_MAIL_ADDRESS") or _env_file(ENV_FILE).get("LEADS_MAIL_ADDRESS")
+    return os.environ.get(V.sender.postal_address_env) or _env_file(ENV_FILE).get(V.sender.postal_address_env)
 
 
 def reach(c):
@@ -1849,7 +1860,7 @@ def tool_dm_text(c, fs):
     tool (a booking page on their own site, the list private to them). No price, like the first."""
     name = clean_name(c["name"])
     fault = f" While I was there: {to_them(fs[0])}." if fs else ""
-    return (f"Hi {name} team — I'm Taylor, a small-business owner in American Fork; I build websites and web tools for "
+    return (f"Hi {name} team — I'm {V.sender.first_name}, a small-business owner in {V.sender.town}; I build websites and web tools for "
             f"local businesses. I looked you up: there's no way to book you online from Google or your website.{fault} "
             f"Where do the bookings live now — a notebook, a spreadsheet? I can put a booking page on your own site, with "
             f"every booking on a private page only you open. There are working ones at {TOOLS_URL} if you want a look.")
@@ -1866,13 +1877,14 @@ def email_draft(c, fs):
     name = clean_name(c["name"])
     if c.get("variant") == "tool":
         subject = f"{name}: booking online"
-        return subject, tool_dm_text(c, fs).replace(f"Hi {name} team — I'm Taylor,", f"Hi {name} team,\n\nI'm Taylor Remund —", 1)
+        return subject, tool_dm_text(c, fs).replace(f"Hi {name} team — I'm {V.sender.first_name},",
+                                                     f"Hi {name} team,\n\nI'm {V.sender.from_name} —", 1)
     return register_email(c, fs)
 
 
 def email_footer():
     addr = mail_address()
-    return ("— Taylor Remund · Patchlamp (Plateful LLC) · founder@patchlamp.com · "
+    return (f"— {V.sender.from_name} · {V.name} ({V.legal_name}) · {V.sender.reply_email} · "
             + (addr if addr else "[POSTAL ADDRESS — required by CAN-SPAM; not set, so don't send yet: TAYLOR-TODO §1]")
             + "\nIf you'd rather not hear from me, reply \"no thanks\" and I won't write again.")
 
@@ -2031,7 +2043,7 @@ def _render_remote(picks, today, mode, note, census_date, emails):
         if p.get("maps"):
             lines.append(f"   {p['maps']}")
         lines.append("")
-    lines += ["Email footer (every cold email, from founder@):", email_footer(), "",
+    lines += [f"Email footer (every cold email, from {V.sender.reply_email.split('@')[0]}@):", email_footer(), "",
               "One fault, a question last; the link and the price are message two, when they answer (`leads today` "
               "prints it). After sending, text \"sent 1 3 4\" (or \"sent all\")."]
     return "\n".join(lines) + "\n"
@@ -2136,17 +2148,15 @@ def segment_email(c, fs):
 
 
 # ---- the register (Taylor, 2026-09-29) --------------------------------------------------------
-# "Hi, I'm Taylor. A small business owner in American Fork. Looked you up on Google. 92 reviews at 4.9, but the website link on your
+# "Hi, I'm <first name>. A small business owner in <town>. Looked you up on Google. 92 reviews at 4.9, but the website link on your
 #  listing goes to a Hibu page that doesn't load anymore. So I went ahead and built you one. Want to see it?"
 # One fault, stated once; a thing already built; a question last. The AI line, the price and the link are message
 # two (`then_text`), after they answer. VISION § Decided 2026-09-29; memory "outreach message register".
 
-DM_HELLO = "Hi, I'm Taylor. A small business owner in American Fork."
+DM_HELLO = f"Hi, I'm {V.sender.first_name}. A small business owner in {V.sender.town}."
 REVIEWS_MIN, RATING_MIN = 10, 4.5
-# Hosting on patchlamp.com/pricing (patchlamp/CLAIMS.md, Prices::TIERS); small plans first, 2026-10-02. The number
-# and the letter hash live in lib/prices.py, shared with `outreach`, so both say the same price.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
-from prices import HOSTING_PRICE, letter_sha  # noqa: E402
+# Hosting on the product's /pricing (the venture's claims file, Prices::TIERS); small plans first, 2026-10-02. The number
+# and the letter hash are PRICES's (the venture's prices module, read at the top).
 
 
 def pick_reviews(c):
@@ -2250,7 +2260,7 @@ def register_email(c, fs):
     message two in place of the question."""
     hi, biz = greeting(c), plain_name(c["name"])
     url = c.get("preview_url")
-    body = register_dm(c, fs).replace(DM_HELLO, f"Hi {hi},\n\nI'm Taylor Remund, a small business owner in American Fork.", 1)
+    body = register_dm(c, fs).replace(DM_HELLO, f"Hi {hi},\n\nI'm {V.sender.from_name}, a small business owner in {V.sender.town}.", 1)
     if url:
         body = body.replace(" Want to see it?", " Here it is: " + then_text(url), 1)
     return (f"A website for {biz}" if url else f"{biz} on Google"), body
@@ -2370,7 +2380,7 @@ def render_segment_remote(picks, segment, today, mode, note, census_date, emails
         if p.get("maps"):
             lines.append(f"   {p['maps']}")
         lines.append("")
-    lines += ["Email footer (every cold email, from founder@):", email_footer(), "",
+    lines += [f"Email footer (every cold email, from {V.sender.reply_email.split('@')[0]}@):", email_footer(), "",
               "One fault, a question last; the link and the price are message two, when they answer (`leads today` prints it). "
               "When they answer, the close and the ladder are on `leads kit --segment " + segment + "`. "
               "After sending, text \"sent 1 3 4\" (or \"sent all\")."]
@@ -2556,8 +2566,8 @@ def cmd_diagnose(args):
 # which is why a takedown takes a minute rather than an hour.
 
 PREVIEWS = Path(os.environ.get("LEADS_PREVIEWS", Path.home() / ".local/state/claude-tools/previews"))
-PREVIEW_PROJECT = os.environ.get("LEADS_PREVIEW_PROJECT", "patchlamp-previews")
-PREVIEW_DOMAIN = os.environ.get("LEADS_PREVIEW_DOMAIN", "previews.patchlamp.com")
+PREVIEW_PROJECT = os.environ.get("LEADS_PREVIEW_PROJECT", V.previews.project)
+PREVIEW_DOMAIN = os.environ.get("LEADS_PREVIEW_DOMAIN", V.previews.host)
 PREVIEW_DAYS = 30
 TOOLBELT = Path(__file__).resolve().parent.parent
 PREVIEW_TABLE = TOOLBELT / "templates" / "previews" / "categories.json"
@@ -2570,12 +2580,12 @@ SITE_BIN = PREVIEW_BIN / "site"
 CLIENT_BIN = PREVIEW_BIN / "client"
 # `img` for the photos; LEADS_IMG_BIN points at a stand-in so the tests never reach Pexels or Gemini.
 IMG_BIN = Path(os.environ.get("LEADS_IMG_BIN", TOOLBELT / "bin" / "img"))
-# The footer sentence, word for word. patchlamp/CLAIMS.md § Previews carries it;
+# The footer sentence, word for word. The claims file's § Previews carries it;
 # `tests/test_leads_preview.py` pins it. Change one and change all three. "Claim it" links to the
 # preview's own claim/ page, a noindex redirect to CLAIM_START filled with the business (plan 28).
-PREVIEW_FOOTER = ("A preview Patchlamp made for {name}. Not their official site. "
-                  "Claim it, or ask us to take it down: founder@patchlamp.com")
-CLAIM_START = os.environ.get("LEADS_CLAIM_START", "https://patchlamp.com/start")
+PREVIEW_FOOTER = V.fill("A preview {v:name} made for {name}. Not their official site. "
+                        "Claim it, or ask us to take it down: {v:sender.reply_email}")
+CLAIM_START = os.environ.get("LEADS_CLAIM_START", V.previews.claim_start)
 # Every stock or generated picture used by any preview, one JSON line each ({id, slug, role, term,
 # date}): the next preview skips an id already on another one (plan 28 § Contracts, gate 6).
 PREVIEW_IMAGES = PREVIEWS / "images.jsonl"
@@ -3094,7 +3104,7 @@ def _facts_beside(base):
 
 
 def claim_link(content, base):
-    """patchlamp.com/start filled with the business, the one the footer's "Claim it" opens (B66
+    """The product's sign-up (CLAIM_START) filled with the business, the one the footer's "Claim it" opens (B66
     reads business, city, category and preview from it)."""
     facts = _facts_beside(base)
     q = [("business", content["name"])]
@@ -3196,7 +3206,7 @@ def render_content(content, base, out, today=None, days=PREVIEW_DAYS, look=None)
                 "photos": has_photos, "admin": bool(json.loads((tdir / "template.json").read_text()).get("db")),
                 # the footer badge a claimed site carries (B60): the segment page this
                 # kind of site belongs to, from its template.json
-                "badge": json.loads((tdir / "template.json").read_text()).get("badge", "https://patchlamp.com/?from=badge"),
+                "badge": json.loads((tdir / "template.json").read_text()).get("badge", V.previews.badge),
                 "expires_long": expires.strftime("%-d %B %Y"), "built_long": today.strftime("%-d %B %Y"),
                 "description": f"{name} — {_text(hero['heading'])}"}
     frame = (lib / "_page.html").read_text()
@@ -3501,10 +3511,10 @@ def preview_root_files():
     (site / "js").mkdir(parents=True, exist_ok=True)
     base = SITE_TEMPLATES / "business"
     (site / "css" / "style.css").write_text(fill_preview((base / "css" / "style.css").read_text(),
-                                                         {"NAME": "Patchlamp previews"}))
+                                                         {"NAME": f"{V.name} previews"}))
     (site / "css" / "preview.css").write_text((PREVIEW_OVERLAY / "css" / "preview.css").read_text())
     (site / "js" / "main.js").write_text(fill_preview((base / "js" / "main.js").read_text(),
-                                                      {"NAME": "Patchlamp previews"}))
+                                                      {"NAME": f"{V.name} previews"}))
     (site / "index.html").write_text((PREVIEW_OVERLAY / "root.html").read_text())
     (site / "404.html").write_text((PREVIEW_OVERLAY / "404.html").read_text())
     (site / "robots.txt").write_text((PREVIEW_OVERLAY / "robots.txt").read_text())
@@ -3575,7 +3585,7 @@ def preview_rows_for(args):
             hits = census_lookup(nm.strip(), city.strip() or None)
             if not hits:
                 die(f"{raw!r} isn't in the census — `leads candidates --segment {segment}` lists the pool, "
-                    f'or name the city: "Name, American Fork"')
+                    f'or name the city: "Name, {V.sender.town}"')
             c = by_id.get(hits[0][1]["place_id"]) or hits[0][1]
             if len(hits) > 1 and not city.strip():
                 print("leads: also matched " + ", ".join(f"{h[1]['name']} ({h[1]['locality'] or '?'})"
@@ -4087,7 +4097,7 @@ def preview_claim(args):
               f"forms); the preview's page is clients/{slug}/incoming/preview-index.html")
     for git_args in (["add", "-A"],
                      ["-c", "user.name=Patch (claude-tools leads)", "-c", "user.email=noreply@anthropic.com",
-                      "commit", "-q", "-m", f"The site {m['name']} claimed, from their Patchlamp preview"],
+                      "commit", "-q", "-m", f"The site {m['name']} claimed, from their {V.name} preview"],
                      ["push", "-q"]):
         g = subprocess.run(["git", "-C", str(dest), *git_args], capture_output=True, text=True)
         if g.returncode != 0:
@@ -4096,7 +4106,7 @@ def preview_claim(args):
     print((r.stdout + r.stderr).strip()[-600:])
     published = r.returncode == 0
     m["claimed"], m["claimed_on"] = slug, now_date().isoformat()     # the week counts claims by date (B52)
-    # B58: the preview's address now 301s to the site it became (its free address once patchlamp.site
+    # B58: the preview's address now 301s to the site it became (its free address once the venture's zone
     # is live, its pages.dev host until then): the folder comes off the host, the rule goes on.
     try:
         moved = (json.loads((ws / ".client.json").read_text()).get("live_url") or "").rstrip("/")
@@ -5079,7 +5089,7 @@ TOUCH_SHORT = {3: "the other channel", 10: "the preview expiry", 30: "a fresh re
 # that fits the segment, then the one that usually follows it.
 OBJECTIONS = {
     "nephew": ('"My nephew does my website."',
-               "Keep him. This is for the 4pm \"we're closed Monday\" that he's not answering. $99 and it's "
+               f"Keep him. This is for the 4pm \"we're closed Monday\" that he's not answering. {STARTER_PRICE} and it's "
                "done in a minute; he can still do the big stuff."),
     "referrals": ('"All my work is referrals, I don\'t need a website."',
                   "Your referrals still Google you before they call. Right now they hit a dead link / a Facebook "
@@ -5091,8 +5101,8 @@ OBJECTIONS = {
            "It changes only your site, inside a folder that holds only your things, and every change is saved so "
            "\"undo that\" works. It never posts for you or answers a customer unless you tell it to, and it says "
            "it's AI if anyone asks."),
-    "price": ('"$99 is a lot."',
-              "It's a website, hosting, the changes and someone to call, on one bill. The $50 plan is the same "
+    "price": (f'"{STARTER_PRICE} is a lot."',
+              f"It's a website, hosting, the changes and someone to call, on one bill. The {LIGHT_PRICE} plan is the same "
               f"thing for a menu or a price list that changes now and then; the {HOSTING_PRICE} plan keeps a site up with a few small changes a month by text. "
               "Start where you're comfortable; moving up is a text."),
     "think": ('"Let me think about it."',
@@ -5405,8 +5415,8 @@ def first_letter_approved():
 def email_gate(picks):
     """(None, how many letters) when `outreach send --go` would send today, else (the first reason it wouldn't, 0).
     The settings in the order `outreach send` refuses on them, then today's picks — no provider call, no spend."""
-    if not env_value("LEADS_MAIL_ADDRESS"):
-        return "no postal address for the footer yet (LEADS_MAIL_ADDRESS, TAYLOR-TODO §1)", 0
+    if not env_value(V.sender.postal_address_env):
+        return f"no postal address for the footer yet ({V.sender.postal_address_env}, TAYLOR-TODO §1)", 0
     if not first_letter_approved():
         return "the first letter isn't approved yet (`outreach approve`)", 0
     if not (env_value("INSTANTLY_API_KEY") or (env_value("OUTREACH_PROVIDER") or "").lower() == "fake"):
@@ -5434,9 +5444,9 @@ def call_opener(p):
     looked = f"Looked you up on Google — {said}" if said else "Looked you up on Google"
     if p.get("preview_url"):
         did = built.removeprefix("So ").rstrip(".")          # "I went ahead and built you one"
-        return (f"Say: \"Hi, is this {biz}? This is Taylor, a small business owner in American Fork. {looked}, so {did}. "
+        return (f"Say: \"Hi, is this {biz}? This is {V.sender.first_name}, a small business owner in {V.sender.town}. {looked}, so {did}. "
                 f"Could I text you the link? Nothing to sign, and I'll take it down the moment you say so.\"")
-    return (f"Say: \"Hi, is this {biz}? This is Taylor, a small business owner in American Fork. {looked}. {offer} — could I text you "
+    return (f"Say: \"Hi, is this {biz}? This is {V.sender.first_name}, a small business owner in {V.sender.town}. {looked}. {offer} — could I text you "
             f"what it'd look like?\"")
 
 
@@ -5654,7 +5664,7 @@ def cmd_brief(args):
 
 
 # ---- the owner's overview (B102, plan ~/projects/plans/42-owner-overview-contract.md) --------------------
-# The relay pushes these two objects to patchlamp.com/account/overview. They leave the laptop, so they hold
+# The relay pushes these two objects to the product's /account/overview. They leave the laptop, so they hold
 # counts only: no lead's name, phone, email, place id or note. Each prints one JSON object on stdout and
 # nothing else, so the relay can parse it whole; a failure is {"ok": false, "why": …} with a non-zero exit.
 
@@ -5739,7 +5749,7 @@ STRENGTH_REASONS = {
     "ladder": (1, "quotes jobs (the form)"),
     "chain": (-10, "a chain"),
     "franchise": (-4, "a franchise"),
-    "cheap_builder": (-3, "a live builder site under $50"),
+    "cheap_builder": (-3, f"a live builder site under ${CHEAP_BUILDER_USD}"),
     "low_rating": (-2, "rated under 4.0"),
 }
 STRENGTH_AT = {"strong": 6, "good": 4}
@@ -5915,8 +5925,8 @@ def strength_reasons(row, details=None, who=None):
         if brand:
             add("franchise", f"a franchise ({brand.title()})")
     if hi and hi["kind"] == "builder" and not dead and (
-            (hi.get("evidence") or {}).get("url_host") or (hi.get("from") is not None and hi["from"] < 50)):
-        add("cheap_builder", f"a live {hi['says']} site under $50")
+            (hi.get("evidence") or {}).get("url_host") or (hi.get("from") is not None and hi["from"] < CHEAP_BUILDER_USD)):
+        add("cheap_builder", f"a live {hi['says']} site under ${CHEAP_BUILDER_USD}")
     if row.get("rating") is not None and rating < 4.0:
         add("low_rating", f"rated {rating:g}")
     order = list(STRENGTH_REASONS)
@@ -6172,7 +6182,7 @@ GENERIC_LINK_TEXT = {"learn more", "read more", "more", "see more", "view more",
                      "details", "view details", "shop now", "buy now", "order now", "get started", "find out more",
                      "discover more", "explore", "view", "continue", "next", "previous", "back", "link", "go"}
 LINK_TEXT_RE = re.compile(r"^[A-Za-z][A-Za-z0-9 &'’-]{1,29}$")    # a link's words safe to quote back to them
-CHECK_UA = ("Mozilla/5.0 (compatible; PatchlampBot/1.0; +https://patchlamp.com; founder@patchlamp.com) "
+CHECK_UA = (f"Mozilla/5.0 (compatible; {V.name}Bot/1.0; +{V.site}; {V.sender.reply_email}) "
             "reading published business contact details")       # the pass's own honest user agent (emails.py)
 
 
@@ -6321,7 +6331,7 @@ def copyright_now(url, today):
             return row.get("year"), row.get("why") or ""
         try:
             req = urllib.request.Request(url, headers={
-                "User-Agent": "claude-tools/leads (Patchlamp; one page read to confirm a fact before it is said)"})
+                "User-Agent": f"claude-tools/leads ({V.name}; one page read to confirm a fact before it is said)"})
             with urllib.request.urlopen(req, timeout=12) as r:
                 html = r.read(3_000_000).decode("utf-8", "replace")
         except Exception as exc:          # noqa: BLE001 — any failure is "unsure", and unsure is never said
@@ -6763,11 +6773,11 @@ def client_marks():
                     a = a.lower()
                     emails.add(a)
                     dom = a.split("@", 1)[1]
-                    if dom not in FREE_MAIL and dom != "patchlamp.com":
+                    if dom not in FREE_MAIL and dom != V.site_host:
                         domains.add(dom)
                 for u in re.findall(r"https?://([A-Za-z0-9.-]+\.[A-Za-z]{2,})", text):
                     u = u.lower().removeprefix("www.")
-                    if not u.endswith(("patchlamp.com", "pages.dev", "github.com", "google.com", "stripe.com")):
+                    if not u.endswith((V.site_host, "pages.dev", "github.com", "google.com", "stripe.com")):
                         domains.add(u)
                 for a, b, cc in re.findall(r"\(?(\d{3})\)?[\s.\-]?(\d{3})[\s.\-](\d{4})", text):
                     phones.add(a + b + cc)
@@ -7414,7 +7424,7 @@ def cmd_doctor(args):
         print("GOOGLE_MAPS_API_KEY: not set — census-only kits until `setenv.sh GOOGLE_MAPS_API_KEY` (TAYLOR-TODO §1)")
         ok = False
     lat, lng = home()
-    print(f"home: {lat},{lng}{' (LEADS_HOME)' if os.environ.get('LEADS_HOME') else ' (American Fork)'}")
+    print(f"home: {lat},{lng}{' (LEADS_HOME)' if os.environ.get('LEADS_HOME') else f' ({V.sender.town})'}")
     kits = kits_log()
     print(f"state: {STATE}  kits sent: {len(kits)}" + (f", last for {kits[-1]['for']}" if kits else ""))
     cached = len(list((STATE / "details").glob("*.json"))) if (STATE / "details").exists() else 0
@@ -7511,14 +7521,14 @@ def preview_doctor():
         print(f"  domain: {row['domain']} (the link in a message)")
     else:
         print(f"  domain: {PREVIEW_DOMAIN} not attached yet — links use the pages.dev host "
-              f"(TAYLOR-TODO §1 \"previews.patchlamp.com\")")
+              f"(TAYLOR-TODO §1 \"{V.previews.host}\")")
     print(f"  photos: img stock (Pexels, free) by default, {len({r.get('id') for r in image_registry()})} in use "
           f"across previews ({PREVIEW_IMAGES.name}); `--hero gen` costs one image and logs its own ledger row")
     return ok
 
 
 def main():
-    ap = argparse.ArgumentParser(prog="leads", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(prog="leads", description=V.fill(__doc__).replace("{cheap_builder}", str(CHEAP_BUILDER_USD)), formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd")
 
     k = sub.add_parser("kit", help="Saturday's counters, one page")

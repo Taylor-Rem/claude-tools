@@ -89,7 +89,7 @@ volume-shaped is an environment number, never a sentence in a prompt:
 
 Config, by name, never printed:
   INSTANTLY_API_KEY       ~/.config/claude-tools/env. Never Resend (its terms forbid
-                          cold mail) and never patchlamp.com's domain — a burned
+                          cold mail) and never {v:site_host}'s domain — a burned
                           domain would take the product's mail with it.
   ANTHROPIC_KEY_OUTREACH  the classifier's key, falling back to ANTHROPIC_KEY_RELAY.
   OUTREACH_FROM           the outreach mailbox (Instantly's `eaccount`).
@@ -98,9 +98,9 @@ Config, by name, never printed:
   LEADS_MAIL_ADDRESS      the postal address every commercial email must carry.
                           Required: without it nothing sends, as in `leads`.
   LEADS_BOOKING_URL       the booking link (Cal.com).
-  PATCHLAMP_VOICE_NUMBER  the phone line; without it the phone line is dropped.
-  PATCHLAMP_DEMO_NUMBER   the demo number people text themselves (default
-                          435-901-7141).
+  {v:sender.phone_env}  the phone line; without it the phone line is dropped.
+  {v:sender.demo_number_env}   the demo number people text themselves (default
+                          {v:sender.demo_number}).
   OUTREACH_STATE          state dir (default ~/.local/state/claude-tools/outreach)
   OUTREACH_TEMPLATES      the letters (default ../templates/outreach beside this file)
   INSTANTLY_API_BASE / ANTHROPIC_API_BASE    tests only: stand-ins for the real hosts.
@@ -153,10 +153,10 @@ OUTREACH_MIN_GAP_MINUTES, weekdays inside OUTREACH_SEND_HOURS only. Follow-ups g
 before new first letters and count toward the same cap.
 
   OUTREACH_MAILBOXES           the sending addresses, comma-separated
-                               (e.g. taylor@trypatchlamp.com,t.remund@trypatchlamp.com,...)
+                               (e.g. taylor@{v:outreach.domains.0},t.remund@{v:outreach.domains.0},...)
   OUTREACH_APP_PASSWORD_<ADDR> one Google app password per mailbox, the address upper-cased
                                with every other character an underscore:
-                               OUTREACH_APP_PASSWORD_TAYLOR_TRYPATCHLAMP_COM
+                               OUTREACH_APP_PASSWORD_TAYLOR_{v:outreach.domains.0|envname}
   OUTREACH_MAILBOX_PER_DAY     each mailbox's daily cap. A number, or a ramp by days since
                                the warm-up start: "14:5,21:20,28:28" = nothing before day 14,
                                5 a day from day 14, 20 from day 21, 28 from day 28. Default 0:
@@ -165,9 +165,9 @@ before new first letters and count toward the same cap.
                                kept in the state dir; the env wins)
   OUTREACH_SEND_HOURS          the sending window, Taylor's clock (default 8-17), weekdays only
   OUTREACH_MIN_GAP_MINUTES     the least time between two letters from one mailbox (default 6)
-  OUTREACH_FROM_NAME           the From name (default "Taylor Remund")
+  OUTREACH_FROM_NAME           the From name (default "{v:sender.from_name}")
   OUTREACH_LINK_BASE           the second touch's link base, on the sending domain only
-                               (e.g. https://see.trypatchlamp.com); unset = ask for a reply
+                               (e.g. https://see.{v:outreach.domains.0}); unset = ask for a reply
   OUTREACH_SMTP_HOST / OUTREACH_IMAP_HOST   default smtp.gmail.com:465 / imap.gmail.com:993
                                (tests point them at loopback servers)
   OUTREACH_VERIFY              none | millionverifier. Every first send is checked first.
@@ -217,6 +217,9 @@ TZ = ZoneInfo("America/Denver")
 
 sys.path.insert(0, str(TOOLS / "lib"))
 import outreach_mail as mail  # noqa: E402  the SMTP/IMAP wire under the `google` provider
+from venture import from_argv  # noqa: E402
+
+V = from_argv()                      # the business this works for (ventures/<name>/venture.toml, B146)
 
 LETTERS = ("first", "second", "third")
 BATCH_LETTERS = ("batch-first", "batch-second", "batch-third")
@@ -258,13 +261,15 @@ OFFER_SENTENCE = ("I can build you a preview of a site for {business} from your 
                   "nothing to sign.")   # the ask ("Want to see it? Just reply.") closes the letter since 2026-10-05
 
 # The only price sentences that may leave this tool: Hosting, exactly as /pricing and
-# patchlamp/CLAIMS.md state it (small plans first: Taylor 2026-10-01, the first quote settled
+# the venture's claims file state it (small plans first: Taylor 2026-10-01, the first quote settled
 # 2026-10-02 — a lead whose site is broken or missing meets the small plan; the letters carry
 # the one clause that keeps the small plan from surprising anyone later). They live in
-# lib/prices.py, shared with `leads`; change them there, only with a CLAIMS.md row in hand.
-from prices import PRICE_LINE, PRICES_LINE, letter_sha  # noqa: E402
+# the venture's prices module (today lib/prices.py, via a symlink), shared with `leads`; change them there, only
+# with a CLAIMS.md row in hand.
+PRICES = V.prices()
+PRICE_LINE, PRICES_LINE, letter_sha = PRICES.PRICE_LINE, PRICES.PRICES_LINE, PRICES.letter_sha
 
-DEMO_NUMBER_DEFAULT = "435-901-7141"
+DEMO_NUMBER_DEFAULT = V.sender.demo_number
 
 # The classifier. Haiku, no thinking, a couple of hundred tokens out.
 AI_MODEL = "claude-haiku-4-5"
@@ -274,7 +279,7 @@ ANTHROPIC_VERSION = "2023-06-01"
 
 # Instantly's timezone enum has no America/Denver; America/Boise is the same clock.
 TZ_INSTANTLY = "America/Boise"
-CAMPAIGN_DEFAULT = "Patchlamp — the email lane"
+CAMPAIGN_DEFAULT = V.outreach.campaign
 
 DEFAULT_PER_DAY = 0                # send nothing until Taylor sets it
 DEFAULT_MAX_REPLIES = 10
@@ -602,10 +607,10 @@ def sample_values(expiry=None):
         "price_line": PRICE_LINE, "prices_line": PRICES_LINE,
         # B71: the longest {paying} a letter can carry, so the sentence-count rule is checked at its worst
         "paying": "Your site's address is set up with Hibu, whose plans are reported to start at $449 a month.",
-        "phone": toolbelt("PATCHLAMP_VOICE_NUMBER") or "801-555-0100",
+        "phone": toolbelt(V.sender.phone_env) or V.sender.sample_phone,
         "booking": toolbelt("LEADS_BOOKING_URL") or "https://cal.com/taylor/15min",
-        "address": toolbelt("LEADS_MAIL_ADDRESS") or "PO Box 000, American Fork, UT 84003",
-        "demo": toolbelt("PATCHLAMP_DEMO_NUMBER", DEMO_NUMBER_DEFAULT),
+        "address": toolbelt(V.sender.postal_address_env) or V.sender.sample_address,
+        "demo": toolbelt(V.sender.demo_number_env, DEMO_NUMBER_DEFAULT),
         "expiry": expiry or (today() + dt.timedelta(days=int(env_num("OUTREACH_PREVIEW_DAYS",
                                                                     DEFAULT_PREVIEW_DAYS, int)))).strftime("%-d %B"),
         # the batch letters (B90): two fault sentences exactly as `leads batch` gives them
@@ -619,7 +624,7 @@ def sample_values(expiry=None):
 
 def sample_link_base():
     """The second touch is checked both ways: with a link on the sending domain and without."""
-    return "https://see.trypatchlamp.example/k3Xq9"
+    return V.outreach.link_example
 
 
 def sentences(text):
@@ -631,7 +636,7 @@ def letter_body(body):
     that starts with the sender's name), joined. Several short paragraphs count as one letter."""
     paras = [p.strip() for p in body.split("\n\n") if p.strip()]
     start = 1 if paras and paras[0].lower().startswith("hi ") else 0
-    end = next((i for i, p in enumerate(paras) if p.startswith("Taylor Remund")), len(paras))
+    end = next((i for i, p in enumerate(paras) if p.startswith(V.sender.from_name)), len(paras))
     return "\n\n".join(paras[start:end]) if end > start else body
 
 
@@ -711,8 +716,8 @@ def check_batch_template(name, none_ok=None):
                 bad.append("the first letter doesn't ask for a reply (\"Just reply.\")")
             if PRICE_LINE not in body:
                 bad.append("no price sentence ({price_line})")
-            if "american fork" not in low or "taylor remund" not in low:
-                bad.append("it doesn't say who Taylor is and where")
+            if V.sender.town.lower() not in low or V.sender.from_name.lower() not in low:
+                bad.append(f"it doesn't say who {V.sender.first_name} is and where")
         else:
             if len(found) > 1:
                 bad.append(f"{len(found)} links{where}; one at most")
@@ -1221,7 +1226,7 @@ def working_now(t=None):
 
 
 def link_base():
-    """OUTREACH_LINK_BASE, only when its host is on a sending domain: patchlamp.com sends the
+    """OUTREACH_LINK_BASE, only when its host is on a sending domain: the product's own site sends the
     sign-in links and the clients' mail, and a link from the cold lane would tie its
     standing to the cold lane's (plan 37 § 3). Anything else is treated as unset."""
     raw = (toolbelt("OUTREACH_LINK_BASE") or "").strip().rstrip("/")
@@ -1229,7 +1234,7 @@ def link_base():
         return ""
     host = (urllib.parse.urlsplit(raw).hostname or "").lower()
     domains = {mail.domain_of(b) for b in mailboxes()} - {""}
-    if not host or raw.split(":", 1)[0] != "https" or "patchlamp.com" == host or host.endswith(".patchlamp.com"):
+    if not host or raw.split(":", 1)[0] != "https" or V.site_host == host or host.endswith("." + V.site_host):
         return ""
     if not any(host == d or host.endswith("." + d) for d in domains):
         return ""
@@ -1248,7 +1253,7 @@ class Google(Provider):
         self.boxes = boxes
         self.smtp = smtp or toolbelt("OUTREACH_SMTP_HOST", "smtp.gmail.com:465")
         self.imap = imap or toolbelt("OUTREACH_IMAP_HOST", "imap.gmail.com:993")
-        self.from_name = from_name or toolbelt("OUTREACH_FROM_NAME", "Taylor Remund")
+        self.from_name = from_name or toolbelt("OUTREACH_FROM_NAME", V.sender.from_name)
 
     def _password(self, mb):
         pw = toolbelt(password_name(mb))
@@ -2084,8 +2089,8 @@ def ai_classify(reply):
     base = (toolbelt("ANTHROPIC_API_BASE") or "https://api.anthropic.com").rstrip("/")
     body = quoted_off(reply.get("text") or "")[:4000]
     system = (
-        "You read one reply to a cold email. Taylor Remund builds and looks after websites for local "
-        "businesses from American Fork, Utah; his letter named two things about the business's Google "
+        f"You read one reply to a cold email. {V.sender.from_name} builds and looks after websites for local "
+        f"businesses from {V.sender.town}, {V.sender.state_name}; his letter named two things about the business's Google "
         "listing or website and offered to build a free preview of a site. Your answer decides what "
         "happens next, so here is what each class sets in motion:\n"
         "- \"yes\": they simply accept the free preview and ask nothing else. A preview is built and its "
@@ -2236,10 +2241,10 @@ def values_for(pick, touch):
         # B71: one sentence in the vendor's own public price, from `leads` (client-leads/vendor_prices.md);
         # empty when the vendor is unknown, free or unpriced, and then the sentence is gone whole
         "paying": pick.get("paying") or "",
-        "phone": toolbelt("PATCHLAMP_VOICE_NUMBER") or "",
+        "phone": toolbelt(V.sender.phone_env) or "",
         "booking": toolbelt("LEADS_BOOKING_URL") or "",
-        "address": toolbelt("LEADS_MAIL_ADDRESS") or "",
-        "demo": toolbelt("PATCHLAMP_DEMO_NUMBER", DEMO_NUMBER_DEFAULT),
+        "address": toolbelt(V.sender.postal_address_env) or "",
+        "demo": toolbelt(V.sender.demo_number_env, DEMO_NUMBER_DEFAULT),
         "expiry": expiry,
     }
 
@@ -2319,9 +2324,9 @@ def cmd_send(args):
         die("--touch is 0, 3 or 10 (the day-0 note and the two follow-ups, GROWTH § 5.5)")
     tname = TOUCH_TEMPLATE[touch]
 
-    addr = toolbelt("LEADS_MAIL_ADDRESS")
+    addr = toolbelt(V.sender.postal_address_env)
     if not addr:
-        die("LEADS_MAIL_ADDRESS isn't set, so no email may go out: US law wants a real postal address on "
+        die(f"{V.sender.postal_address_env} isn't set, so no email may go out: US law wants a real postal address on "
             "every commercial email (TAYLOR-TODO §1). Nothing sent.")
     bad = approval_problems([tname])
     if bad:
@@ -2668,8 +2673,8 @@ def batch_values(seq, touch):
         "fault_two": seq["faults"][1] if second_kind != "fact" else "",
         "fact": seq["faults"][1] if second_kind == "fact" else "",
         "price_line": PRICE_LINE, "prices_line": PRICES_LINE,
-        "phone": toolbelt("PATCHLAMP_VOICE_NUMBER") or "",
-        "address": toolbelt("LEADS_MAIL_ADDRESS") or "",
+        "phone": toolbelt(V.sender.phone_env) or "",
+        "address": toolbelt(V.sender.postal_address_env) or "",
         "see_url": see_url(seq) if touch > 0 else "",
         "thread_subject": re.sub(r"^(?:re:\s*)+", "", first_subject, flags=re.I),
         "preview_url": seq.get("preview_url") or "",
@@ -2691,8 +2696,8 @@ def batch_problems(none_ok=True):
     """What must hold before any batch letter leaves. `none_ok=False` when a new `none` sequence is
     about to be dealt outside the AI-line test (it never is: deal_variants only deals it inside)."""
     bad = []
-    if not toolbelt("LEADS_MAIL_ADDRESS"):
-        bad.append("LEADS_MAIL_ADDRESS isn't set (US law wants a postal address on every commercial email)")
+    if not toolbelt(V.sender.postal_address_env):
+        bad.append(f"{V.sender.postal_address_env} isn't set (US law wants a postal address on every commercial email)")
     bad += approval_problems(BATCH_LETTERS)
     for n in BATCH_LETTERS:
         bad += [f"{n}: {b}" for b in check_template(n, none_ok=none_ok)]
@@ -3030,8 +3035,8 @@ def answer_yes(provider, r, row, name, pid, email, first, first200, room):
             seq = s
     link = see_url(seq)
     if not link:
-        # The answer's link lives on the sending domain, never previews.patchlamp.com: a link
-        # from the cold lane would tie patchlamp.com's standing to it (plan 37 § 3). Until
+        # The answer's link lives on the sending domain, never the preview host: a link
+        # from the cold lane would tie the product site's standing to it (plan 37 § 3). Until
         # OUTREACH_LINK_BASE is set (the see page, B91), Taylor sends this one himself.
         return hand_over(f"there's no link on the sending domain yet (OUTREACH_LINK_BASE); the preview is "
                          f"built at {url} for you to send")
@@ -3447,11 +3452,11 @@ def cmd_replies(args):
 def signature():
     """Taylor's sign-off on his own answers: name, phone if set, and the postal address, which the
     law wants on commercial mail; a reply in a sales thread is commercial mail."""
-    lines = [toolbelt("OUTREACH_FROM_NAME", "Taylor Remund")]
-    phone = toolbelt("PATCHLAMP_VOICE_NUMBER")
+    lines = [toolbelt("OUTREACH_FROM_NAME", V.sender.from_name)]
+    phone = toolbelt(V.sender.phone_env)
     if phone:
         lines.append(phone)
-    lines.append(toolbelt("LEADS_MAIL_ADDRESS"))
+    lines.append(toolbelt(V.sender.postal_address_env))
     return "\n".join(lines)
 
 
@@ -3485,8 +3490,8 @@ def cmd_reply(args):
     text = (args.text or "").strip()
     if not needle or not text:
         die('usage: outreach reply NAME "your words"')
-    if not toolbelt("LEADS_MAIL_ADDRESS"):
-        die("LEADS_MAIL_ADDRESS isn't set, and a reply in a sales thread must carry the postal address; "
+    if not toolbelt(V.sender.postal_address_env):
+        die(f"{V.sender.postal_address_env} isn't set, and a reply in a sales thread must carry the postal address; "
             "nothing sent (see `outreach doctor`)")
     threads = reply_threads()
     pool = threads if args.any else [t for t in threads if is_open(t["last"])]
@@ -3705,6 +3710,10 @@ def cmd_status(args):
     stamp = today().isoformat()
     day = [r for r in cold_sends() if r.get("date") == stamp]
     say(f"Email lane — {stamp} · provider {provider.name}")
+    addr = toolbelt(V.sender.postal_address_env)
+    say(f"  for: {V.name} ({V.venture_name}), from {toolbelt('OUTREACH_FROM_NAME', V.sender.from_name)} in "
+        f"{V.sender.town} · sending domains {', '.join(V.outreach.domains)} · postal address "
+        + (addr if addr else f"not set ({V.sender.postal_address_env})"))
     say(f"  sends today: {len(day)} of {per_day}"
         + ("  (0 means the lane is off until OUTREACH_PER_DAY is set)" if per_day <= 0 else ""))
     by_touch = {}
@@ -3846,7 +3855,7 @@ def cmd_resume(args):
         say("The lane is back on; the stop rules count from now.")
         return
     if not args.mailbox:
-        die("say which: outreach resume taylor@trypatchlamp.com | --lane")
+        die(f"say which: outreach resume taylor@{V.outreach.domains[0]} | --lane")
     d = paused_boxes()
     mb = args.mailbox.strip().lower()
     if mb not in d:
@@ -3888,7 +3897,7 @@ def cmd_approve(args):
             problems += [f"{n}: {b}" for b in bad]
             say("  PROBLEMS: " + "; ".join(bad))
         if money:
-            say("  money in this text (check each against patchlamp.com/pricing): " + ", ".join(m.strip() for m in money))
+            say(f"  money in this text (check each against {V.site_host}/pricing): " + ", ".join(m.strip() for m in money))
         say("")
     if problems:
         die("not approved — fix these first: " + "; ".join(problems))
@@ -3956,7 +3965,7 @@ def cmd_probe(args):
     if not boxes:
         die("OUTREACH_MAILBOXES isn't set (see `outreach doctor`)")
     smtp = toolbelt("OUTREACH_SMTP_HOST", "smtp.gmail.com:465")
-    from_name = toolbelt("OUTREACH_FROM_NAME", "Taylor Remund")
+    from_name = toolbelt("OUTREACH_FROM_NAME", V.sender.from_name)
     when = dt.datetime.now().strftime("%a %-d %b %H:%M")
     ok = 0
     for i, mb in enumerate(boxes, 1):
@@ -3966,7 +3975,7 @@ def cmd_probe(args):
         mid = mail.make_message_id(mail.domain_of(mb))
         msg = mail.build_message(mb, from_name, to, f"outreach probe {i} of {len(boxes)} — {mb}",
                                  f"A test from {mb} through the outreach tool's own sender, {when}.\n"
-                                 f"Nothing to do with it; if it reached you, this mailbox can send.\n\nTaylor Remund\n",
+                                 f"Nothing to do with it; if it reached you, this mailbox can send.\n\n{V.sender.from_name}\n",
                                  mid)
         if DRY:
             say(f"  [dry-run] {mb} -> {to}"); ok += 1; continue
@@ -3989,8 +3998,8 @@ def cmd_doctor(args):
     google = provider_wanted(args.provider) == "google"
     for k, need in (("INSTANTLY_API_KEY", not google), ("ANTHROPIC_KEY_OUTREACH", False),
                     ("ANTHROPIC_KEY_RELAY", False), ("OUTREACH_FROM", not google),
-                    ("LEADS_MAIL_ADDRESS", True), ("LEADS_BOOKING_URL", True),
-                    ("PATCHLAMP_VOICE_NUMBER", False)):
+                    (V.sender.postal_address_env, True), ("LEADS_BOOKING_URL", True),
+                    (V.sender.phone_env, False)):
         set_ = bool(os.environ.get(k) or keys.get(k))
         say(f"  {k}: {'set' if set_ else 'MISSING'}{'' if set_ or not need else '  (needed)'}")
         if need and not set_:
@@ -3998,7 +4007,7 @@ def cmd_doctor(args):
     if not (toolbelt("ANTHROPIC_KEY_OUTREACH") or toolbelt("ANTHROPIC_KEY_RELAY")):
         say("  no classifier key, so every reply would go to Taylor unread by the machine")
         ok = False
-    say(f"  PATCHLAMP_DEMO_NUMBER: {toolbelt('PATCHLAMP_DEMO_NUMBER', DEMO_NUMBER_DEFAULT)}")
+    say(f"  {V.sender.demo_number_env}: {toolbelt(V.sender.demo_number_env, DEMO_NUMBER_DEFAULT)}")
 
     say("\nCaps (environment, not prose)")
     per_day = int(env_num("OUTREACH_PER_DAY", DEFAULT_PER_DAY, int))
@@ -4063,7 +4072,7 @@ def cmd_doctor(args):
                 ok = False
         _, _, _, dline = deliverability(provider)
         say(f"  deliverability: {dline}")
-    say("  never Resend (its terms forbid cold mail) and never patchlamp.com's domain")
+    say(f"  never Resend (its terms forbid cold mail) and never {V.site_host}'s domain")
 
     if not doctor_batch():
         ok = False
@@ -4159,7 +4168,7 @@ def doctor_batch():
 
 def main():
     global DRY
-    ap = argparse.ArgumentParser(prog="outreach", description=__doc__,
+    ap = argparse.ArgumentParser(prog="outreach", description=V.fill(__doc__),
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--dry-run", action="store_true", help="print everything, send nothing, write nothing")

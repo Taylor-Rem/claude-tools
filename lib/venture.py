@@ -23,6 +23,7 @@ Not a framework (plan 55 § 5.12): one file, one reader, no plugins. tests/test_
 needles from these values and fails when one appears in an engine file.
 """
 
+import importlib.util
 import os
 import re
 import sys
@@ -33,11 +34,11 @@ TOOLS = Path(__file__).resolve().parent.parent
 
 # dotted field -> type. `list[str]` and `list[float]` are checked element by element.
 FIELDS = {
-    "name": str, "slug": str, "legal_name": str, "brand_line": str, "mascot": str, "site": str, "site_host": str,
+    "name": str, "slug": str, "prices_module": str, "legal_name": str, "brand_line": str, "mascot": str, "site": str, "site_host": str,
     "sender.first_name": str, "sender.from_name": str, "sender.reply_email": str, "sender.town": str,
     "sender.state": str, "sender.state_name": str, "sender.home": "list[float]",
     "sender.postal_address_env": str, "sender.phone_env": str, "sender.demo_number_env": str,
-    "sender.sample_address": str, "sender.sample_phone": str,
+    "sender.sample_address": str, "sender.sample_phone": str, "sender.demo_number": str,
     "outreach.domains": "list[str]", "outreach.link_example": str, "outreach.campaign": str,
     "previews.host": str, "previews.project": str, "previews.claim_start": str, "previews.badge": str,
     "previews.tools_url": str, "previews.templates_url": str,
@@ -76,24 +77,55 @@ class Venture(Section):
         self.venture_name, self.path = name, path
 
     def get(self, dotted):
+        """`sender.town`, or `outreach.domains.0` for an item of a list."""
         obj = self
         for part in dotted.split("."):
-            obj = getattr(obj, part)
+            obj = obj[int(part)] if part.isdigit() else getattr(obj, part)
         return obj
 
+    FILTERS = {"upper": str.upper, "lower": str.lower, "name": lambda x: x.rsplit("/", 1)[-1],   # a path's file name
+               # an address as an env name's tail, the way outreach names a mailbox's password
+               "envname": lambda x: re.sub(r"[^A-Za-z0-9]", "_", x).upper()}
+
     def fill(self, text):
-        """`{v:sender.town}` in a text -> the venture's value. Only `{v:…}` is touched, so a string that
-        goes through str.format() afterwards keeps its own braces."""
-        return re.sub(r"\{v:([a-z_.]+)\}", lambda m: str(self.get(m.group(1))), text)
+        """`{v:sender.town}` in a text -> the venture's value; `{v:outreach.domains.0|envname}` passes it
+        through one of FILTERS. Only `{v:…}` is touched, so a string that goes through str.format()
+        afterwards keeps its own braces."""
+        def one(m):
+            value = str(self.get(m.group(1)))
+            return self.FILTERS[m.group(2)](value) if m.group(2) else value
+        return re.sub(r"\{v:([a-z0-9_.]+)(?:\|([a-z]+))?\}", one, text)
+
+    def prices(self):
+        """The venture's prices module (`prices_module`, a .py beside venture.toml; today's is a symlink to
+        lib/prices.py): HOSTING_PRICE, LIGHT_PRICE, STARTER_PRICE, PRICE_LINE, PRICES_LINE and letter_sha()."""
+        if getattr(self, "_prices", None) is None:
+            path = self.path.parent / self.prices_module
+            spec = importlib.util.spec_from_file_location(f"venture_prices_{self.venture_name.replace('-', '_')}", path)
+            if spec is None or not path.exists():
+                raise VentureError(f"{self.path}: prices_module {self.prices_module!r} isn't a file beside it")
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            self._prices = mod
+        return self._prices
+
+    def price_needles(self):
+        """Every dollar amount the prices module says ("$7", "$1,500"), for tests/test_portable.py."""
+        mod = self.prices()
+        out = set()
+        for k, v in vars(mod).items():
+            if isinstance(v, str) and not k.startswith("_"):
+                out |= set(re.findall(r"\$\d[\d,]*\d|\$\d", v))
+        return sorted(out)
 
     def needles(self):
         """The literals that say which business this is, for tests/test_portable.py: the name and slug, the
-        legal name, every host and domain, the reply address, the from-name, the town, the census file's
-        name. Lower case; the test matches them case-insensitively."""
+        legal name, every host and domain, the reply address, the from-name, the town, the demo line's
+        number, the census file's name. Lower case; the test matches them case-insensitively."""
         hosts = [self.site_host, self.previews.host, self.addresses.zone, *self.outreach.domains,
                  self.sender.reply_email]
         out = [self.name, self.slug, self.legal_name, *hosts, self.sender.from_name, self.sender.town,
-               Path(self.paths.census).name]
+               self.sender.demo_number, Path(self.paths.census).name]
         return sorted({x.lower() for x in out if x})
 
 

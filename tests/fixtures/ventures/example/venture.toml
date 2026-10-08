@@ -1,0 +1,68 @@
+# A second venture for tests/test_venture.py and tests/test_portable.py (ROADMAP B146): a made-up
+# business, so the engine tools can be shown speaking for someone other than Patchlamp's owner without
+# anything real being named. Every value is fictional; the domains are under .example (RFC 2606).
+
+name = "Brightwell"
+slug = "brightwell"
+legal_name = "Brightwell Works LLC"
+brand_line = "keeps a small shop's price list and opening hours right by email"
+mascot = "Wren"
+site = "https://brightwell.example"
+prices_module = "prices.py"
+site_host = "brightwell.example"
+
+[sender]
+first_name = "Jordan"
+from_name = "Jordan Avery"
+reply_email = "hello@brightwell.example"
+town = "Springfield"
+state = "OR"
+state_name = "Oregon"
+home = [40.39, -111.85]
+postal_address_env = "BRIGHTWELL_MAIL_ADDRESS"
+phone_env = "BRIGHTWELL_PHONE"
+demo_number_env = "BRIGHTWELL_DEMO_NUMBER"
+demo_number = "541-555-0142"
+sample_address = "PO Box 9, Springfield, OR 97477"
+sample_phone = "541-555-0100"
+
+[outreach]
+domains = ["trybrightwell.example"]
+link_example = "https://see.trybrightwell.example/k3Xq9"
+campaign = "Brightwell — letters"
+
+[previews]
+host = "previews.brightwell.example"
+project = "brightwell-previews"
+claim_start = "https://brightwell.example/start"
+badge = "https://brightwell.example/?from=badge"
+tools_url = "brightwell.example/tools"
+templates_url = "brightwell.example/examples"
+
+[addresses]
+zone = "brightwell-sites.example"
+
+[paths]
+census = "brightwell-census/oregon.db"
+claims = "brightwell/CLAIMS.md"
+brand = "brightwell/BRAND.md"
+prices = "brightwell/prices.json"
+repo = "brightwell"
+portrait = "brightwell/brand/wren.jpg"
+topics = "topics/brightwell.md"
+
+[env]
+site_url = "BRIGHTWELL_URL"
+relay_secret = "BRIGHTWELL_RELAY_SECRET"
+repo = "BRIGHTWELL_REPO"
+
+[money]
+stripe_key = "STRIPE_KEY_BRIGHTWELL"
+legal_stripe_key = "STRIPE_KEY_BRIGHTWELL_WORKS"
+
+[cloud]
+app = "brightwell"
+
+[social]
+brand = "brightwell"
+handle = "@brightwell"

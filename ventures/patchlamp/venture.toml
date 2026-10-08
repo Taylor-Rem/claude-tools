@@ -16,6 +16,7 @@ legal_name = "Plateful LLC"          # the entity on the email footer and the 10
 brand_line = "keeps a small business's website and Google listing right by text: the owner texts a change and it is done"
 mascot = "Patch"                     # the voice of the feed and the bot a client texts
 site = "https://patchlamp.com"       # the product's own site (front, social and the relay endpoints talk to it)
+prices_module = "prices.py"         # the plan prices (a symlink to lib/prices.py, where outreach and leads have always read them)
 site_host = "patchlamp.com"
 
 [sender]                             # who a cold letter or a DM is from
@@ -29,6 +30,7 @@ home = [40.3769, -111.7958]          # lat, lng of the town: the kit's "nearest"
 postal_address_env = "LEADS_MAIL_ADDRESS"     # CAN-SPAM's postal address, by env name
 phone_env = "PATCHLAMP_VOICE_NUMBER"          # the phone line a letter may carry, by env name
 demo_number_env = "PATCHLAMP_DEMO_NUMBER"     # the demo line people text, by env name
+demo_number = "435-901-7141"                  # ... and its number when that env name is unset
 sample_address = "PO Box 000, American Fork, UT 84003"   # stands in for the address in `outreach approve --dry-run`
 sample_phone = "801-555-0100"
 

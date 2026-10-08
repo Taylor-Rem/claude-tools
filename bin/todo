@@ -46,7 +46,8 @@ Config, by name only (values never printed):
   CLAUDE_HEADLESS_OAUTH_TOKEN  in the same file: the unattended runs' login
                 (`claude setup-token`). Passed to the run as CLAUDE_CODE_OAUTH_TOKEN.
   TODO_HEADLESS_LOGIN=dedicated  refuse to fall back to the interactive login
-  TODO_REQUEST_MODEL (fable) / TODO_FLINT_MODEL (fable) / TODO_BUILD_PERMISSION_MODE (auto)
+  TODO_REQUEST_MODEL (fable) / TODO_FLINT_MODEL (fable) / TODO_BUILD_PERMISSION_MODE (auto) /
+  TODO_BUILDER_MODEL (claude-opus-5-5: what `model: opus` resolves to inside a /build run)
   TODO_FILE     the markdown file (default ~/projects/TAYLOR-TODO.md)
   TODO_OWNER    GitHub owner for both repos (default: gh's logged-in user)
   TODO_DATA_REPO / TODO_SITE_REPO   default taylor-todo (private) / todo (public)
@@ -105,6 +106,9 @@ INBOX_SINCE = "2026-09-24"   # files dated before this were answered by hand
 INBOX_TIMEOUT = int(os.environ.get("TODO_INBOX_TIMEOUT", 15 * 60))
 INBOX_MODELS = {"fable": "claude-fable-5-1", "opus": "claude-opus-5-5", "sonnet": "claude-sonnet-5"}
 INBOX_MODEL = os.environ.get("TODO_FLINT_MODEL", "fable")
+# The builders a /build run spawns are `model: opus` Agent calls; a build run pins that alias so every
+# builder is Opus 5.5 whatever the CLI's default drifts to (Taylor, 2026-10-07: "make sure it's opus 5.5").
+BUILDER_MODEL = os.environ.get("TODO_BUILDER_MODEL", INBOX_MODELS["opus"])
 INBOX_MAX_CHARS = 12000
 FLINT_PROMPT = """You are Flint - Taylor's planner and verifier (CLAUDE.md "Who's who"), answering mail from Cowork, the Claude session on Taylor's MacBook, without Taylor carrying the ping. This is a headless run started by `todo sync`; nobody is watching, so finish the job and leave the record true.
 
@@ -262,6 +266,8 @@ def headless_env(variant, extra=None):
     env["ENABLE_CLAUDEAI_MCP_SERVERS"] = "false"
     if variant == "request":
         env["SHOT_SANDBOX"] = "1"          # shot's paths stay inside ~/projects, no private addresses
+    if variant == "build":
+        env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = BUILDER_MODEL   # the builders' model (see BUILDER_MODEL)
     env.update(extra or {})
     return env, label
 
@@ -319,7 +325,8 @@ def describe_launch(prompt, variant, model_id):
     settings, mcp = stamp_headless(variant)
     env, label = headless_env(variant)
     shown = {k: ("<" + HEADLESS_TOKEN + ">" if k == "CLAUDE_CODE_OAUTH_TOKEN" else env[k])
-             for k in ("CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN", "ENABLE_CLAUDEAI_MCP_SERVERS", "SHOT_SANDBOX")
+             for k in ("CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN", "ENABLE_CLAUDEAI_MCP_SERVERS", "SHOT_SANDBOX",
+                       "ANTHROPIC_DEFAULT_OPUS_MODEL")
              if k in env}
     cmd = headless_cmd(f"<prompt, {len(prompt)} chars>", variant, model_id, settings, mcp)
     cmd[cmd.index("--append-system-prompt") + 1] = "<the boundary sentence>"

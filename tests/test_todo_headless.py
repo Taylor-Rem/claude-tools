@@ -240,6 +240,11 @@ class Headless(unittest.TestCase):
         self.assertIn("/build — the nightly build window", r.stdout)
         self.assertIn("variant: build (auto)", r.stdout)
         self.assertIn("--strict-mcp-config", r.stdout)
+        # 2026-10-07: six hours, no fixed builder count, every builder Opus 5.5 (the alias pinned for the run)
+        self.assertIn("a six-hour cap, hard", r.stdout)
+        self.assertIn("no fixed ceiling on the count", r.stdout)
+        self.assertNotIn("At most two builders", r.stdout)
+        self.assertIn("ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-5-5", r.stdout)
         self.assertNotIn("/continue", r.stdout)
         self.assertEqual(list((self.proj / "requests").iterdir()), [])
 

@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # build-night — the nightly build window (GROWTH.md § 19.5; VISION § Decided
 # 2026-09-28 "Selling first" #18). Files a /build request and runs it as a
-# headless Flint (Fable) with a three-hour cap, only when ROADMAP.md has a
+# headless Flint (Fable) with a six-hour cap (Taylor, 2026-10-07: "No builder limit.
+# 6 hour build limit … make sure it's opus 5.5 as the builders"; three hours and
+# two builders before that), only when ROADMAP.md has a
 # queued Lane 2 row and no other request is running. build-night.timer fires
 # it at 21:30; `build-night --dry-run` prints what it would file and how
 # `todo` would launch it (the stamped /build boundary, B83) and starts nothing.
@@ -13,8 +15,8 @@ dry=0; [ "${1:-}" = "--dry-run" ] && dry=1
 if ! grep -qE '^\| B[0-9]+ \|.*\| queued' "$P/ROADMAP.md"; then echo "build-night: nothing queued in ROADMAP.md"; exit 0; fi
 if ls "$P"/requests/*.running >/dev/null 2>&1; then echo "build-night: a request is already running"; exit 0; fi
 name="build-night-$(date +%m%d-%H%M)"
-until=$(date -d '+170 minutes' +%H:%M)
-text="/build — the nightly build window (GROWTH.md § 19.5): you have until $until, a three-hour cap, hard. Take only queued Lane 2 rows that have a plan file (plans/NN-*.md in the repo, or ~/projects/plans); for a queued row without one, write the plan from ~/projects/plans/TEMPLATE.md and leave the row queued. At most two builders at once; take no new row after two hours; before the cap, record every row's state in ROADMAP.md (a row still building is left as 'building (date, wick) — left: <branch and what remains>') and one HISTORY.md session-log line, so the morning message can report it. Never a row marked gated, never live Stripe keys, prices or the client template's permissions."
+until=$(date -d '+350 minutes' +%H:%M)
+text="/build — the nightly build window (GROWTH.md § 19.5): you have until $until, a six-hour cap, hard. Take only queued Lane 2 rows that have a plan file (plans/NN-*.md in the repo, or ~/projects/plans); for a queued row without one, write the plan from ~/projects/plans/TEMPLATE.md and leave the row queued. Run as many builders at once as the skill's § 3 analysis allows (disjoint write scopes, what you can review the same hour) — there is no fixed ceiling on the count (Taylor, 2026-10-07); every builder is Opus 5.5 (model: opus on the Agent call; this run pins that alias to claude-opus-5-5), never Sonnet or Fable; take no new row after five hours; before the cap, record every row's state in ROADMAP.md (a row still building is left as 'building (date, wick) — left: <branch and what remains>') and one HISTORY.md session-log line, so the morning message can report it. Never a row marked gated, never live Stripe keys, prices or the client template's permissions. Your builders are sub-agents of this run and die the moment it ends (2026-10-06: the supervisor stopped after four minutes saying it would review when notified, and both builders were killed): never end your turn while a builder is working — wait on each one, review it, record it, and stop only when every slot is empty or the cap is here."
 if [ "$dry" = 1 ]; then
   echo "would file requests/$name.md:"; echo "$text"; echo
   echo "and launch it as:"
@@ -22,5 +24,5 @@ if [ "$dry" = 1 ]; then
   exit 0
 fi
 printf '%s\n' "$text" > "$P/requests/$name.md"
-echo "build-night: filed $name, running with a 3-hour cap"
-TODO_REQUEST_TIMEOUT=10800 exec todo request --run "$name"
+echo "build-night: filed $name, running with a 6-hour cap"
+TODO_REQUEST_TIMEOUT=21600 exec todo request --run "$name"

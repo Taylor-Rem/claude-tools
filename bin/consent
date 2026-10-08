@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""consent — the consent machine by hand (ROADMAP B139; lib/consent.py; docs/consent.md).
+
+The relay runs the machine on every text from a number it knows; this is the
+door for people and for the tools that start it.
+
+  consent programs                          the registered programs
+  consent program add VENTURE PROGRAM --name .. --business .. --subject .. --max N --days D
+                      --terms URL [--contact ..] [--kind keyword|start|form] [--tz ..] [--holidays utah,2026-12-24]
+  consent invite VENTURE PROGRAM --card ID --version V (--cta TEXT | --cta-file F) --keyword K
+                      --our-number N [--recipient ..] [--promise ..] [--number N] [--json]
+                                            INVITED: a card was mailed (B54's `leads mail` calls this)
+  consent cards                             every card recorded, with its CTA hash
+  consent check NUMBER [--kind reply|scoped] may a text go to NUMBER now? one line, and the reason
+  consent show NUMBER                       the number's states and its whole log (for people only)
+  consent opt-in NUMBER VENTURE PROGRAM --source form|start --evidence "the words they agreed to"
+  consent doctor
+
+The store is $CONSENT_DB (default ~/.local/state/claude-tools/consent.db).
+No keys, no network, no sending: the relay sends, this only records and decides.
+"""
+
+import argparse
+import json
+import os
+import sqlite3
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+import consent as C  # noqa: E402
+
+
+def die(msg, code=1):
+    print(f"consent: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def cmd_programs(m, a):
+    rows = m.programs()
+    if not rows:
+        print("no programs yet: `consent program add …`")
+    for p in rows:
+        print(f"{p['venture']}/{p['program']} ({p['kind']}): {p['name']} for {p['business']}; "
+              f"up to {p['max_messages']} about {p['subject']} in {p['time_box_days']} days; "
+              f"{p['tz']}; holidays {p['holidays']}; terms {p['terms_url']}")
+
+
+def cmd_program_add(m, a):
+    hol = [h.strip() for h in (a.holidays or "").split(",") if h.strip()]
+    m.register_program(a.venture, a.program, name=a.name, business=a.business, subject=a.subject,
+                       max_messages=a.max, time_box_days=a.days, terms_url=a.terms, contact=a.contact or "",
+                       kind=a.kind, tz=a.tz, holidays=hol)
+    print(f"registered {a.venture}/{a.program}")
+
+
+def cmd_invite(m, a):
+    cta = Path(a.cta_file).read_text() if a.cta_file else a.cta
+    if not cta:
+        die("give the card's call to action: --cta TEXT or --cta-file F")
+    got = m.invite(a.venture, a.program, card_id=a.card, version=a.version, cta_text=cta.strip(),
+                   keyword=a.keyword, our_number=a.our_number, recipient=a.recipient or "",
+                   promise=a.promise or "", number=a.number or "")
+    print(json.dumps(got) if a.json else f"INVITED: card {got['card_id']}, keyword {got['keyword']}, "
+          f"CTA sha256 {got['cta_hash'][:16]}…")
+
+
+def cmd_cards(m, a):
+    for r in m.cards():
+        print(f"{r['at'][:10]}  {r['card_id']} v{r['card_version']}  {r['venture']}/{r['program']}  "
+              f"{r['keyword']} -> {r['our_number']}  {r['recipient']}  {r['cta_hash'][:12]}")
+
+
+def cmd_check(m, a):
+    v = m.may_send(a.number, kind=a.kind)
+    if not v.governed:
+        print("You may text this number: the consent machine doesn't govern it (not a keyword-program number).")
+        return
+    print(v.line + ("" if v.ok else f" ({v.reason})"))
+    sys.exit(0 if v.ok else 3)
+
+
+def cmd_show(m, a):
+    st = m.state(a.number)
+    if not st:
+        print(f"{C.normalize(a.number)}: not known to the machine")
+        return
+    print(f"{C.normalize(a.number)}: " + ", ".join(f"{k} {v}" for k, v in st.items()))
+    for r in m.history(a.number):
+        what = r["inbound_text"] or r["outbound_text"] or r["reason"]
+        print(f"  {r['at']}  {r['venture']}/{r['program']}  {r['event']:<12} "
+              f"{r['from_state'] or '-'} -> {r['to_state'] or '-'}  {what[:70]!r}"
+              + (f"  card {r['card_id']}" if r["card_id"] else ""))
+
+
+def cmd_opt_in(m, a):
+    m.opt_in(a.number, a.venture, a.program, source=a.source, evidence=a.evidence)
+    print(f"{C.normalize(a.number)}: CONFIRMED in {a.venture}/{a.program} ({a.source})")
+
+
+def cmd_doctor(m, a):
+    ok = True
+    print(f"store: {m.path} ({'present' if m.path.exists() else 'missing'})")
+    try:
+        with sqlite3.connect(m.path) as db:
+            n = db.execute("SELECT COUNT(*) FROM consents").fetchone()[0]
+        print(f"  {n} log rows, {len(m.programs())} programs, {len(m.cards())} cards")
+    except sqlite3.Error as exc:
+        ok = False
+        print(f"  ! can't read it: {exc}")
+    try:
+        from zoneinfo import ZoneInfo
+        ZoneInfo(os.environ.get("CONSENT_TZ") or C.DEFAULT_TZ)
+        print(f"timezone data: ok ({os.environ.get('CONSENT_TZ') or C.DEFAULT_TZ})")
+    except Exception as exc:  # noqa: BLE001
+        ok = False
+        print(f"  ! timezone data: {exc}")
+    for p in m.programs():
+        for need in ("name", "business", "subject", "terms_url"):
+            if not p[need]:
+                ok = False
+                print(f"  ! {p['venture']}/{p['program']} has no {need}")
+    relay = Path.home() / "projects/sms-relay/relay/consent.py"
+    print(f"relay gate: {'present' if relay.exists() else 'not in this checkout of the relay'} ({relay})")
+    print("ok" if ok else "problems above")
+    sys.exit(0 if ok else 1)
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="consent", description=__doc__.split("\n\n")[0])
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("programs")
+    pa = sub.add_parser("program")
+    psub = pa.add_subparsers(dest="pcmd", required=True)
+    add = psub.add_parser("add")
+    add.add_argument("venture")
+    add.add_argument("program")
+    for f in ("--name", "--business", "--subject", "--terms"):
+        add.add_argument(f, required=True)
+    add.add_argument("--max", type=int, required=True)
+    add.add_argument("--days", type=int, required=True)
+    add.add_argument("--contact")
+    add.add_argument("--kind", default="keyword", choices=["keyword", "start", "form"])
+    add.add_argument("--tz")
+    add.add_argument("--holidays", help="a calendar name (utah) and/or ISO dates, comma separated")
+    inv = sub.add_parser("invite")
+    inv.add_argument("venture")
+    inv.add_argument("program")
+    inv.add_argument("--card", required=True)
+    inv.add_argument("--version", required=True)
+    inv.add_argument("--cta")
+    inv.add_argument("--cta-file")
+    inv.add_argument("--keyword", required=True)
+    inv.add_argument("--our-number", required=True)
+    inv.add_argument("--recipient")
+    inv.add_argument("--promise")
+    inv.add_argument("--number")
+    inv.add_argument("--json", action="store_true")
+    sub.add_parser("cards")
+    ck = sub.add_parser("check")
+    ck.add_argument("number")
+    ck.add_argument("--kind", choices=["reply", "scoped"])
+    sh = sub.add_parser("show")
+    sh.add_argument("number")
+    oi = sub.add_parser("opt-in")
+    oi.add_argument("number")
+    oi.add_argument("venture")
+    oi.add_argument("program")
+    oi.add_argument("--source", required=True, choices=["form", "start"])
+    oi.add_argument("--evidence", required=True)
+    sub.add_parser("doctor")
+    a = ap.parse_args()
+    m = C.Machine()
+    fn = {"programs": cmd_programs, "invite": cmd_invite, "cards": cmd_cards, "check": cmd_check,
+          "show": cmd_show, "opt-in": cmd_opt_in, "doctor": cmd_doctor}.get(a.cmd)
+    if a.cmd == "program":
+        fn = cmd_program_add
+    try:
+        fn(m, a)
+    except C.ConsentError as exc:
+        die(str(exc), 2)
+
+
+if __name__ == "__main__":
+    main()

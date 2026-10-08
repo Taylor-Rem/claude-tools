@@ -181,6 +181,7 @@
   // ---- markdown ----------------------------------------------------------
   const ITEM = /^- \[( |x|X)\] (.*)$/;
   const SECTION = /^## (.*)$/;
+  const HIDDEN = /^\s*<!--[\s\S]*?-->\s*$/;
 
   function parse(text) {
     const lines = text.split('\n');
@@ -195,7 +196,9 @@
         const body = [im[2]];
         let j = i + 1;
         while (j < lines.length && (lines[j].startsWith('  ') || (!lines[j].trim() && j + 1 < lines.length && lines[j + 1].startsWith('  ')))) {
-          body.push(lines[j]); j++;
+          // a hidden metadata line (`<!-- todo: repeat_key=…; … -->`, B138) belongs to the entry but is never shown
+          if (!HIDDEN.test(lines[j])) body.push(lines[j]);
+          j++;
         }
         const joined = body.map((b) => b.trim()).join(' ');
         const bm = joined.match(/\*\*(.+?)\*\*/);

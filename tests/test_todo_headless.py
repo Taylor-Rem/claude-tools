@@ -153,6 +153,8 @@ class Headless(unittest.TestCase):
         reply = (self.proj / "requests" / "q-1.reply.md").read_text()
         self.assertIn("boundary: templates/headless/settings.request.json; login: interactive", reply)
         self.assertIn("fake answer", reply)
+        self.assertIn("_Yours now: 0 on the list", reply)   # B138: the reply leads with the queue, one line
+        self.assertLess(reply.index("Yours now"), reply.index("fake answer"))
         self.assertFalse((self.proj / "requests" / "q-1.running").exists())
 
     def test_build_request_with_the_token_uses_the_dedicated_dir(self):

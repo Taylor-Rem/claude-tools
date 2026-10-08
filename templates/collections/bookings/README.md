@@ -66,7 +66,13 @@ Everyday texts, no publish needed (the calendar reads the database live):
   tell the customer.
 - a reminder to one customer: `db bookings remind 12` (a confirmed
   booking still ahead; not to someone marked "asked not to be contacted"
-  in the customer book). Nothing sends reminders on a schedule yet.
+  in the customer book). The relay's morning run (6am, `relay/bookings.py`,
+  ROADMAP B120) sends one to every confirmed booking for the next day
+  through this same verb and texts the owner the count.
+- the day: `db bookings ls tuesday` (`tomorrow`, `10/14`, `--name Smith`
+  to find an id, `--json`); times in bulk: `db bookings open --on tue
+  --from 9 --to 12 --until november` (an open time is left, a closed one
+  reopened).
 - their calendar address again: `db bookings feed`; a leaked one: `db
   bookings feed --new`, then `site publish <name>` (the old one stops).
 
@@ -81,13 +87,14 @@ else's address; three "requested" copies an hour to one address is the
 most it sends. These are mails about a booking the customer made, so a
 customer marked "asked not to be contacted" in the book still gets them.
 Anything sent to a customer that they didn't just ask for (a reminder or
-a review ask, when those come) checks that mark first.
+a review ask) checks that mark first.
 
 Rules the Function keeps: a booking needs a time, a name and an email or
 phone; five bookings per visitor per ten minutes; the honeypot; only an
 open slot in the future with a place left can be booked or moved to
 (`requested` and `confirmed` hold a place, `cancelled` and `done` don't).
-It doesn't take payment or send reminders on its own (one at a time by
-`db bookings remind`), and the calendar feed is one way: the owner's own
+It doesn't take payment or send reminders on its own: `db bookings
+remind` sends one, and the relay's morning run sends the next day's
+(B120), and the calendar feed is one way: the owner's own
 appointments don't close times on the site — say so if asked (PLAYBOOK.md
 § Data).

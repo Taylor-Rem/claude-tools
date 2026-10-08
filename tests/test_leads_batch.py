@@ -409,6 +409,7 @@ class BatchTest(unittest.TestCase):
         self.assertEqual(out["url"], f"https://previews.patchlamp.com/{out['slug']}/")
         self.assertTrue(out["published"])
         self.assertIn("alpine-plumbing", out["slug"])
+        self.assertIn(f"preview={out['slug']}", out["claim_url"])     # B137: the "Claim it" link, for arm B
         again = json.loads(self.run_leads("preview", "--place", "FX_B01", "--json", "--hero", "none").stdout)
         self.assertEqual(again["url"], out["url"])                   # a link already sent keeps working
         r = self.run_leads("preview", "--place", "NOPE", "--json", "--hero", "none")

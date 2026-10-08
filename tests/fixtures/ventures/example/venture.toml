@@ -26,6 +26,7 @@ demo_number_env = "BRIGHTWELL_DEMO_NUMBER"
 demo_number = "541-555-0142"
 sample_address = "PO Box 9, Springfield, OR 97477"
 sample_phone = "541-555-0100"
+call_windows = "weekdays 9–10am, 1–2pm or 5–6pm (Pacific)"
 
 [outreach]
 domains = ["trybrightwell.example"]

@@ -38,7 +38,7 @@ FIELDS = {
     "sender.first_name": str, "sender.from_name": str, "sender.reply_email": str, "sender.town": str,
     "sender.state": str, "sender.state_name": str, "sender.home": "list[float]",
     "sender.postal_address_env": str, "sender.phone_env": str, "sender.demo_number_env": str,
-    "sender.sample_address": str, "sender.sample_phone": str, "sender.demo_number": str,
+    "sender.sample_address": str, "sender.sample_phone": str, "sender.demo_number": str, "sender.call_windows": str,
     "outreach.domains": "list[str]", "outreach.link_example": str, "outreach.campaign": str,
     "previews.host": str, "previews.project": str, "previews.claim_start": str, "previews.badge": str,
     "previews.tools_url": str, "previews.templates_url": str,

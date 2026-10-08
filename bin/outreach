@@ -34,6 +34,8 @@
                                # B132: per group, one business once: delivered → preview clicks →
                                # replies → positive replies → customers, each per hundred delivered,
                                # and "too few to decide" below the floor (100 a group, 20 positive)
+  outreach status --by arm      # B137: the close test (E3), Taylor's call vs Patch's link: interested,
+                               # Patch answered, claimed, paid, each per hundred interested
   outreach ai-test start | stop [--keep intro|foot|none] | show
                                # B132, plan 53: the AI-line test. Open, each batch is dealt a third each
                                # to none / intro / foot; start and stop are Taylor's word only, as `go` is
@@ -230,7 +232,7 @@ V = from_argv()                      # the business this works for (ventures/<na
 
 LETTERS = ("first", "second", "third")
 BATCH_LETTERS = ("batch-first", "batch-second", "batch-third")
-ANSWERS = ("answer-price", "answer-how", "answer-yes")
+ANSWERS = ("answer-price", "answer-how", "answer-yes", "answer-interested")
 ALL_TEMPLATES = LETTERS + BATCH_LETTERS + ANSWERS
 TOUCH_TEMPLATE = {0: "first", 3: "second", 10: "third"}
 # Three touches, never a fourth: four or more "more than triples" complaints (plan 37 § 3).
@@ -626,6 +628,9 @@ def sample_values(expiry=None):
         "fact": "",          # the fault-then-fact shape is checked too: see check_batch_template
         "see_url": "",
         "thread_subject": "two things I noticed about Highland Pool & Spa",
+        # answer-interested (B137): the claim link, the call windows, the booking link under its own name
+        "start_url": sample_link_base() + "-claim",   # a claim see-link (B137): on the sending domain too
+        "windows": call_windows(), "booking_url": toolbelt("LEADS_BOOKING_URL") or "https://cal.com/taylor/15min",
     }
 
 
@@ -744,6 +749,8 @@ def check_template(name, none_ok=None):
     """The rules a letter has to keep, run against a rendered sample. Returns [problem, ...]."""
     if name in BATCH_LETTERS:
         return check_batch_template(name, none_ok=none_ok)
+    if name == CLOSE_TEMPLATE:
+        return check_interested_template()
     t = load_template(name)
     subject, body = t.render(sample_values(), fault=sample_values()["fault"])
     bad = []
@@ -908,6 +915,7 @@ class Fake(Provider):
     provider that exists until Taylor's mailbox does."""
 
     name = "fake"
+    from_name = None                    # B137: a reply's From name, when one is set (Patch's, in the close test)
 
     def __init__(self, eaccount="outreach@example.invalid", root=None):
         self.eaccount = eaccount
@@ -952,7 +960,8 @@ class Fake(Provider):
 
     def reply_to(self, reply, subject, body):
         row = {"ts": now_iso(), "id": f"fake-reply-{int(time.time()*1000)}", "to": reply.get("from"),
-               "from": self.eaccount, "subject": subject, "text": body, "in_reply_to": reply.get("id")}
+               "from": self.eaccount, "subject": subject, "text": body, "in_reply_to": reply.get("id"),
+               "from_name": self.from_name}
         if not DRY:
             append_jsonl(self._p("sent-replies.jsonl"), row)
         return {"id": row["id"]}
@@ -1501,8 +1510,10 @@ def run_tool(args, why):
     return r.returncode == 0, (r.stdout or "").strip()
 
 
-def leads_log(name, outcome, note, place_id=None, email=None, via="email", next_when=None, tags=None):
+def leads_log(name, outcome, note, place_id=None, email=None, via="email", next_when=None, tags=None, arm=None):
     cmd = [tool_path("leads"), "log", name, outcome, note, "--via", via]
+    if arm:                                     # B137: the close test's arm on the pipeline line
+        cmd += ["--arm", arm, "--experiment", CLOSE_EXPERIMENT]
     for k, v in (tags or {}).items():          # B132: kept under `outbound` on the pipeline event
         cmd += ["--tag", f"{k}={str(v).lower() if isinstance(v, bool) else v}"]
     if via == "email":
@@ -1522,12 +1533,12 @@ def pressed_already(pid):
                              for r in read_jsonl(replies_file()))
 
 
-def log_interested(name, note, place_id=None, email=None, next_when=None):
+def log_interested(name, note, place_id=None, email=None, next_when=None, arm=None):
     """One `interested` line a business: a press (B91) or a reply, whichever comes first, logs it."""
     if pressed_already(place_id):
         say("  already in the pipeline as interested (they pressed the link); no second line")
         return True
-    return leads_log(name, "interested", note, place_id=place_id, email=email, next_when=next_when)
+    return leads_log(name, "interested", note, place_id=place_id, email=email, next_when=next_when, arm=arm)
 
 
 def leads_sent(indices, via="email"):
@@ -3075,6 +3086,317 @@ def answer_yes(provider, r, row, name, pid, email, first, first200, room):
     return True
 
 
+# ---- the close arm (B137, plan 55 § 5.4 / § 5.6: experiment E3) ------------------------
+# Taylor, 2026-10-07: "I do not want us to inherit the assumption that every interested small-business owner
+# must speak to me before buying. Test it." An *interested* reply (call me and a named time are classed
+# interested) to a batch letter is dealt, by a stable hash of the business's place id, arm A (Taylor's brief,
+# as before) or arm B (Patch answers once, as Patch, with the site link, the claim link and Taylor's three
+# call windows as an option, then stops). Whatever the arm, the lead's next message goes to Taylor with the
+# brief, never to the machine. Read on paid per 100 interested (`outreach status --by arm`); nothing here
+# decides the policy, that is Taylor's word once a cell passes CLOSE_DECIDE_AT interested.
+#
+# The test runs only when everything arm B needs is in place: OUTREACH_LINK_BASE (the site link lives on the
+# sending domain), answer-interested.md approved, LEADS_BOOKING_URL and the postal address. Otherwise no arm
+# is dealt and every interested reply goes to Taylor exactly as before. The arm rides on the reply row, the
+# thread (sequences.json) and the pipeline line (`leads log --arm X --experiment E3`), so B142's registry can
+# count it; a business dealt B that Patch couldn't answer (the day's cap, no preview) stays in arm B with
+# `close_by: taylor` and the reason, so the arms are compared as dealt.
+
+CLOSE_EXPERIMENT = "E3"
+CLOSE_TEMPLATE = "answer-interested"
+CLOSE_ARMS = ("A", "B")
+CLOSE_DECIDE_AT = 50                 # plan 55 § 5.6: "decided when a cell passes 50 interested"
+CLOSE_SAFE_CLASSES = ("no", "angry", "bounce", "out of office", "probe")   # handled as always, arm or not
+
+
+def close_test_state():
+    """(open, why not). Open only when arm B could actually be served."""
+    missing = []
+    if not link_base():
+        missing.append("OUTREACH_LINK_BASE isn't set on a sending domain")
+    if not toolbelt("LEADS_BOOKING_URL"):
+        missing.append("LEADS_BOOKING_URL isn't set")
+    if not toolbelt(V.sender.postal_address_env):
+        missing.append(f"{V.sender.postal_address_env} isn't set")
+    if not claim_links_live():
+        missing.append("the see host has no claim links yet, so the claim link would have to be on the product's "
+                       "own domain (OUTREACH_CLAIM_LINKS=1 once it serves them)")
+    if not (TEMPLATES / f"{CLOSE_TEMPLATE}.md").exists():
+        missing.append(f"there is no {CLOSE_TEMPLATE}.md")
+    else:
+        missing += approval_problems([CLOSE_TEMPLATE])
+    return (not missing), "; ".join(missing)
+
+
+def close_arm_for(place_id):
+    """A or B for a business, by a stable hash of its place id: the same business always gets the same arm,
+    and the experiment's name salts it so the deal is independent of the AI-line test's."""
+    h = hashlib.sha256(f"{CLOSE_EXPERIMENT}:{place_id}".encode()).hexdigest()
+    return CLOSE_ARMS[int(h[:8], 16) % len(CLOSE_ARMS)]
+
+
+def patch_from_name():
+    return f"{V.mascot}, {V.sender.first_name}'s AI operator"
+
+
+def call_windows():
+    return toolbelt("OUTREACH_CALL_WINDOWS") or V.sender.call_windows
+
+
+def claim_links_live():
+    """The claim link goes out on the sending domain too (plan 37 § 3: the product's domain is in no cold-lane
+    message), as a see-link of kind `claim` whose target is the preview's claim URL. The see host serves that
+    kind only once its own row ships; until then OUTREACH_CLAIM_LINKS is unset and arm B stays off."""
+    return toolbelt("OUTREACH_CLAIM_LINKS") == "1"
+
+
+def claim_see_url(seq, target):
+    """The thread's claim see-link: its token, minted once and kept on the sequence beside the target the see
+    host redirects to (the press-token sync carries both). "" when claim links aren't live."""
+    base = link_base()
+    if not (base and claim_links_live() and seq is not None):
+        return ""
+    if not seq.get("claim_token"):
+        seq["claim_token"] = secrets.token_urlsafe(9)
+    seq["claim_target"] = target
+    return f"{base}/{seq['claim_token']}"
+
+
+def claim_start():
+    return toolbelt("LEADS_CLAIM_START") or V.previews.claim_start
+
+
+def preview_info(place_id):
+    """`leads preview --place ID --json` -> (the object, None) or (None, why not). Its `claim_url` is the link
+    the preview's own "Claim it" opens (the venture's claim_start filled with the business)."""
+    ok, out = run_tool([tool_path("leads"), "preview", "--place", place_id, "--json"], f"leads preview {place_id}")
+    if DRY:
+        return None, "a dry run builds nothing"
+    if not ok:
+        return None, "`leads preview --place` failed"
+    try:
+        data = json.loads(out)
+    except json.JSONDecodeError:
+        return None, "`leads preview --place --json` didn't print JSON"
+    if not isinstance(data, dict) or data.get("ok") is False or not data.get("url"):
+        return None, "`leads preview` couldn't build one"
+    return data, None
+
+
+def same_business(r, pid, email):
+    return bool((pid and r.get("place_id") == pid)
+                or (email and str(r.get("email") or "").lower() == str(email).lower()))
+
+
+def close_prior(pid, email):
+    """The reply row that put this business in the close test, or None."""
+    return next((r for r in read_jsonl(replies_file()) if r.get("experiment_id") == CLOSE_EXPERIMENT
+                 and r.get("arm") in CLOSE_ARMS and same_business(r, pid, email)), None)
+
+
+def close_mark_thread(email, our_message_id, arm):
+    if DRY:
+        return
+    with state_lock():
+        seqs = seqs_load()
+        s = seq_for(email, our_message_id, seqs)
+        if s is not None and not s.get("arm"):
+            s.update(arm=arm, experiment_id=CLOSE_EXPERIMENT)
+            seqs_save(seqs)
+
+
+def close_followup(row, cls, name, pid, email, first200):
+    """A business already in the close test wrote again: Taylor's, whichever arm, never the machine's. A no,
+    an angry reply, a bounce or an auto-reply is still handled as always. -> True when it took the reply."""
+    if cls in CLOSE_SAFE_CLASSES:
+        return False
+    prior = close_prior(pid, email)
+    if not prior:
+        return False
+    arm = prior["arm"]
+    row.update(arm=arm, experiment_id=CLOSE_EXPERIMENT, close_by="taylor", close_followup=True)
+    first = ("Patch answered their first" if prior.get("close_by") == "patch" else "you had their first")
+    notify(f"{name} wrote again (close test {CLOSE_EXPERIMENT}, arm {arm}; {first}): {first200} — "
+           f"`leads brief {name}` before you answer{offer_build(row, pid)}")
+    leads_log(name, "interested", f"wrote again: {first200[:120]}", place_id=pid, email=email,
+              next_when="tomorrow", arm=arm)
+    say(f"  close test {CLOSE_EXPERIMENT} (arm {arm}): a second message, so it is Taylor's; no machine reply")
+    return True
+
+
+def interested_problems(body, vals):
+    """What arm B's letter must keep, on a rendered letter: the three links once each, Patch's signature and
+    never Taylor's, the closing lines, the windows, no "free week" (the trial isn't live)."""
+    bad = []
+    low = body.lower()
+    for k in ("preview_url", "start_url", "booking_url"):
+        n = body.count(vals[k]) if vals.get(k) else 0
+        if n != 1:
+            bad.append(f"{{{k}}} is in the letter {n} times, not once")
+    for k in ("preview_url", "start_url"):    # on the sending domain, never the product's (plan 37 § 3)
+        host = (urllib.parse.urlsplit(vals.get(k) or "").hostname or "").lower()
+        if host and any(host == h or host.endswith("." + h) for h in (V.site_host, V.previews.host)):
+            bad.append(f"{{{k}}} is on {host}, the product's domain; it goes out as a see-link")
+    found = links(body)
+    if len(found) != 3:
+        bad.append(f"the letter has {len(found)} links, not three (the site, the claim, the booking): {found}")
+    sig = patch_from_name()
+    if not any(p.strip().startswith(sig) for p in body.split("\n\n")):
+        bad.append(f"no signature block starting \"{sig}\"")
+    if f"i'm {V.mascot.lower()}" not in low:
+        bad.append(f"it doesn't open by saying it is {V.mascot}")
+    if any(l.strip().startswith(V.sender.from_name) for l in body.splitlines()):
+        bad.append(f"a line starts with {V.sender.from_name}: Patch's reply is never signed as him")
+    if vals.get("windows") and vals["windows"] not in body:
+        bad.append("the call windows aren't in it")
+    if vals.get("price_line") and vals["price_line"] not in body:
+        bad.append("no price sentence ({price_line})")
+    if re.search(r"\bfree\b[^.]{0,24}\bweek\b|\bfree trial\b|\bweek free\b", low):
+        bad.append("it offers a free week or a free trial, and the trial isn't live")
+    if "no thanks" not in low:
+        bad.append("no opt-out line (\"reply 'no thanks'…\")")
+    if "advertisement" not in low:
+        bad.append("no ad identification (CAN-SPAM)")
+    if vals.get("address") and vals["address"] not in body:
+        bad.append("no postal address")
+    return bad
+
+
+def check_interested_template():
+    t = load_template(CLOSE_TEMPLATE)
+    vals = sample_values()
+    subject, body = t.render(vals)
+    bad = interested_problems(body, vals)
+    if not subject.strip():
+        bad.append("empty subject")
+    if re.search(r"\$\s?\d", t.raw.replace("{price_line}", "")):
+        bad.append("it names money that isn't {price_line}")
+    return bad
+
+
+def close_arm_b(provider, r, row, name, pid, email, first, first200, room):
+    """An interested reply in the close test: deal the arm; on B, Patch answers once. -> True only when Patch
+    answered (the caller counts it against the day's machine replies); False leaves it to Taylor as before,
+    with the arm (if any) on the row."""
+    if not pid or seq_for(email, r.get("our_message_id")) is None:
+        return False                    # not a batch letter's business: outside the test, as before
+    ok, why = close_test_state()
+    if not ok:
+        say(f"  close test {CLOSE_EXPERIMENT} is off ({why}); Taylor's, as before")
+        return False
+    arm = close_arm_for(pid)
+    row.update(arm=arm, experiment_id=CLOSE_EXPERIMENT, close_by="taylor")
+    close_mark_thread(email, r.get("our_message_id"), arm)
+    if arm == "A":
+        say(f"  close test {CLOSE_EXPERIMENT}: arm A, Taylor's call")
+        return False
+
+    def fallback(reason):
+        row["close_why"] = reason
+        say(f"  close test {CLOSE_EXPERIMENT}: arm B, but Patch couldn't answer ({reason}); Taylor's")
+        return False
+
+    if answered_thread_today(r.get("thread_id")):
+        return fallback("this thread already had a machine reply today")
+    if room <= 0:
+        return fallback("the day's machine-reply cap is spent")
+    if not hasattr(provider, "from_name"):
+        return fallback(f"the {provider.name} provider can't send under {V.mascot}'s name")
+    info, why = preview_info(pid)
+    if not info:
+        return fallback(why)
+    with state_lock():
+        seqs = seqs_load()
+        seq = seq_for(email, r.get("our_message_id"), seqs)
+        start = claim_see_url(seq, info.get("claim_url") or claim_start())
+        if not DRY and seq is not None:
+            seq["preview_url"] = info["url"]
+            seqs_save(seqs)
+    link = see_url(seq or {})
+    if not link or not start:
+        return fallback("no see-link for this thread")
+    theirs = re.sub(r"^(?:re:\s*)+", "", (r.get("subject") or "").strip(), flags=re.I)
+    vals = values_for({"name": name, "first": first, "faults": []}, 0)
+    vals.update(preview_url=link, start_url=start, windows=call_windows(),
+                booking_url=toolbelt("LEADS_BOOKING_URL") or "", thread_subject=theirs or name)
+    subject, letter = load_template(CLOSE_TEMPLATE).render(vals)
+    bad = interested_problems(letter, vals)
+    if bad:
+        return fallback("the rendered letter broke its rules: " + "; ".join(bad))
+    if theirs:
+        subject = f"Re: {theirs}"
+    say(f"  close test {CLOSE_EXPERIMENT}: arm B, Patch answers: \"{subject}\" ({link})")
+    if DRY:
+        say("".join(f"   | {l}\n" for l in letter.splitlines()))
+    had = provider.from_name                 # the From name is Patch's for this one reply, never Taylor's
+    provider.from_name = patch_from_name()
+    try:
+        provider.reply_to(r, subject, letter)
+    except (Unreachable, ProviderError) as exc:
+        return fallback(f"the reply didn't go: {exc}")
+    finally:
+        provider.from_name = had
+    row.update(answered=True, answer_template=CLOSE_TEMPLATE, close_by="patch", preview_url=info["url"],
+               see_url=link, start_url=vals["start_url"])
+    notify(f"{name} replied interested: {first200} — close test {CLOSE_EXPERIMENT}, arm B: Patch answered once "
+           f"with the preview ({info['url']}), the claim link and your call windows, and stops. If they book or "
+           "write again it comes to you; the test needs you not to reach out first.")
+    log_interested(name, f"replied; Patch answered (close test arm B): {first200[:100]}", place_id=pid,
+                   email=email, next_when="tomorrow", arm="B")
+    return True
+
+
+def arm_numbers():
+    """{arm: {interested, patch, claimed, paid}}, one business once (its first row in the test). Claimed is a
+    `trial` or `won` line in the pipeline, or a claimed preview; paid is a `won` line."""
+    firsts = {}
+    for r in read_jsonl(replies_file()):
+        if r.get("experiment_id") == CLOSE_EXPERIMENT and r.get("arm") in CLOSE_ARMS:
+            key = r.get("place_id") or str(r.get("email") or "").lower()
+            firsts.setdefault(key, {"arm": r["arm"], "place_id": r.get("place_id"), "patch": False})
+            firsts[key]["patch"] |= r.get("close_by") == "patch"
+    events = read_jsonl(pipeline_file())
+    won = {e.get("place_id") for e in events if e.get("outcome") == "won" and e.get("place_id")}
+    claimed = {e.get("place_id") for e in events if e.get("outcome") in ("trial", "won") and e.get("place_id")}
+    meta = Path(toolbelt("LEADS_PREVIEWS") or Path.home() / ".local/state/claude-tools/previews") / "meta"
+    for p in (sorted(meta.glob("*.json")) if meta.is_dir() else []):
+        try:
+            m = json.loads(p.read_text())
+        except (OSError, ValueError):
+            continue
+        if m.get("claimed") and m.get("place_id"):
+            claimed.add(m["place_id"])
+    out = {a: {"interested": 0, "patch": 0, "claimed": 0, "paid": 0} for a in CLOSE_ARMS}
+    for b in firsts.values():
+        g = out[b["arm"]]
+        g["interested"] += 1
+        g["patch"] += b["patch"]
+        g["claimed"] += bool(b["place_id"] and b["place_id"] in claimed)
+        g["paid"] += bool(b["place_id"] and b["place_id"] in won)
+    return out
+
+
+def arm_report():
+    """`outreach status --by arm`: the close test, per arm, per hundred interested. It reports; the policy is
+    Taylor's word."""
+    ok, why = close_test_state()
+    say(f"Close test {CLOSE_EXPERIMENT} (Taylor's call vs Patch's link): " + ("open" if ok else f"off — {why}"))
+    say("By arm — interested replies to batch letters, dealt by place; one business counts once; "
+        "(per 100 interested). Primary endpoint: paid per 100 interested.")
+    groups = arm_numbers()
+    label = {"A": "A Taylor", "B": "B Patch"}
+    say(f"  {'arm':<9}  {'interested':>10}  {'Patch answered':>14}  {'claimed':>12}  {'paid':>12}")
+    for a in CLOSE_ARMS:
+        n = groups[a]
+        d = n["interested"]
+        say(f"  {label[a]:<9}  {d:>10}  {per_hundred(n['patch'], d):>14}  {per_hundred(n['claimed'], d):>12}  "
+            f"{per_hundred(n['paid'], d):>12}")
+    biggest = max(groups[a]["interested"] for a in CLOSE_ARMS)
+    if biggest <= CLOSE_DECIDE_AT:
+        say(f"Too few to decide: the larger arm has {biggest} interested; the plan reads it once a cell passes "
+            f"{CLOSE_DECIDE_AT}. The counts are what there is; the test runs until Taylor says.")
+
+
 # ---- the build word (B92, plan 37 § 4) -----------------------------------------------
 # The message to Taylor about an interested reply (or a yes) ends with BUILD_LINE, and the reply row
 # remembers it offered. His "build" reaches this tool through Patch, which runs `outreach build` on
@@ -3261,6 +3583,8 @@ def cmd_inbox(args):
                    + (f" — {mb} is paused; `outreach resume {mb}` when you're ready." if paused_now else ""))
             leads_log(name, "lost", "replied angry to the email", place_id=pid, email=email, next_when="none")
             say(f"  suppressed; {'mailbox ' + mb + ' paused; ' if paused_now else ''}Taylor told; no reply sent")
+        elif close_followup(row, cls, name, pid, email, first200):
+            pass                                # B137: a business in the close test wrote again: Taylor's
         elif cls == "yes" and answer_yes(provider, r, row, name, pid, email, first, first200, room):
             room -= 1
         elif cls == "no":
@@ -3310,6 +3634,8 @@ def cmd_inbox(args):
                 leads_log(name, "talked", f"asked: {first200[:120]}", place_id=pid, email=email)
         elif cls == "yes":
             pass                                # answer_yes handed it to Taylor and said why
+        elif cls == "interested" and close_arm_b(provider, r, row, name, pid, email, first, first200, room):
+            room -= 1                           # B137: arm B, Patch answered once
         else:
             # interested, a named time, a question we won't answer, unsure, anything unclear: Taylor's.
             when = got.get("when")
@@ -3322,7 +3648,7 @@ def cmd_inbox(args):
             notify(f"{name} replied: {first200}{because}{quiet} — leads brief pending; {tail}"
                    + (offer_build(row, pid) if cls == "interested" else "."))
             log_interested(name, f"replied to the email: {first200[:120]}",
-                      place_id=pid, email=email, next_when="tomorrow")
+                      place_id=pid, email=email, next_when="tomorrow", arm=row.get("arm"))
             say(f"  handed to Taylor: {tail}")
             say("  no machine reply — interested, a time, or unclear is never answered by the machine")
 
@@ -3715,6 +4041,8 @@ def cut_report(by):
 
 
 def cmd_status(args):
+    if getattr(args, "by", None) == "arm":
+        return arm_report()                     # B137
     if getattr(args, "by", None):
         return cut_report(args.by)
     provider = pick_provider(args.provider)
@@ -4685,7 +5013,7 @@ def main():
     s.set_defaults(fn=cmd_suppress)
 
     s = sub.add_parser("status", parents=[common], help="today's sends, the caps, the replies, the bounce rate")
-    s.add_argument("--by", choices=tuple(BY_CUTS), help="B132: delivered → clicks → replies → positive → customers "
+    s.add_argument("--by", choices=(*BY_CUTS, "arm"), help="B132: delivered → clicks → replies → positive → customers "
                                                          "per group, each per hundred delivered")
     s.set_defaults(fn=cmd_status)
 

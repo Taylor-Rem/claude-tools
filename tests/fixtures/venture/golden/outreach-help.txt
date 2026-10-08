@@ -38,6 +38,8 @@ outreach — the email lane: the one outbound channel the machine runs end to en
                                # B132: per group, one business once: delivered → preview clicks →
                                # replies → positive replies → customers, each per hundred delivered,
                                # and "too few to decide" below the floor (100 a group, 20 positive)
+  outreach status --by arm      # B137: the close test (E3), Taylor's call vs Patch's link: interested,
+                               # Patch answered, claimed, paid, each per hundred interested
   outreach ai-test start | stop [--keep intro|foot|none] | show
                                # B132, plan 53: the AI-line test. Open, each batch is dealt a third each
                                # to none / intro / foot; start and stop are Taylor's word only, as `go` is

@@ -134,11 +134,13 @@ class SocialDemoTest(DemoBase):
         self.assertIn("I couldn't", prompt)
         self.assertIn("Saturday hours are 8 to 3 now", prompt)
         self.assertIn("repos/fernway/", prompt)
+        self.assertIn("never read as a real customer", prompt)
         self.assertNotIn("MUST", prompt)
         # one ledger line for the run
         [row] = [json.loads(x) for x in (self.dir / "ledger.jsonl").read_text().splitlines()]
         self.assertEqual(row["kind"], "social-demo")
-        self.assertEqual(row["cost_usd"], 0.01)
+        self.assertEqual(row["cost_usd"], 0)            # notional: books counts cost_usd as money spent
+        self.assertEqual(row["plan_usd_list"], 0.01)
         self.assertFalse(list((self.social / "queue").glob("*.json")) if (self.social / "queue").exists() else [])
 
     def test_the_run_saw_the_workspace_notes(self):
@@ -281,6 +283,7 @@ class ChangeQuestion(unittest.TestCase):
         self.check("demo", change_answer())
         prompt = self.prompt_file.read_text()
         self.assertIn("Can you see what changed on the page?", prompt)
+        self.assertIn("drawn phone", prompt)
         self.assertNotIn("portrait", prompt)
         self.assertNotIn("Does the picture show what Patchlamp sells", prompt)
         self.assertIn('"unsure" is a good answer', prompt)
@@ -311,11 +314,14 @@ class ChangeQuestion(unittest.TestCase):
         self.assertIn("Can you see what changed on the page?", prompt)
         self.assertIn("same character as the portrait", prompt)
         self.assertNotIn("Does the picture show what Patchlamp sells", prompt)
+        self.assertNotIn("drawn phone", prompt)        # the reason doesn't describe the text post's own picture as a fault
         self.assertEqual(sorted(self.seen.read_text().split()), ["draft.jpg", "portrait.jpg"])
 
-    def test_a_text_post_fails_on_no_change_or_a_different_raccoon(self):
+    def test_no_change_on_a_text_post_is_unsure_and_a_different_raccoon_fails(self):
+        # a text post's picture is still a generated raccoon with a drawn phone, so "no" posts with the doubt shown
         r = self.check("text", change_answer(change="no", raccoon="same"), image=PORTRAIT)
-        self.assertEqual(r.returncode, 1)
+        self.assertEqual(r.returncode, 3, r.stdout)
+        self.assertTrue(r.stdout.startswith("unsure: the judge can't see what changed on the page"), r.stdout)
         r = self.check("text", change_answer(raccoon="different"), image=PORTRAIT)
         self.assertEqual(r.returncode, 1)
         self.assertIn("different raccoon", r.stdout)

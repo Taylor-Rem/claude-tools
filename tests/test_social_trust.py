@@ -431,6 +431,26 @@ class TrustTest(unittest.TestCase):
         self.assertEqual(row["how"], "splice")
         led = [json.loads(x) for x in (self.root / "ledger.jsonl").read_text().splitlines()]
         self.assertEqual((led[-1]["kind"], led[-1]["verdict"], led[-1]["won"]), ("social-words", "pass", "splice"))
+        # notional subscription cost: plan_usd_list, never cost_usd (books counts cost_usd as money spent)
+        self.assertEqual(led[-1]["cost_usd"], 0)
+        self.assertIn("plan_usd_list", led[-1])
+
+    def test_pick_kind_demo_copies_the_tiles_demo_fields_and_posted_says_which_demo(self):
+        self.run_social("packet", "--date", DATE)
+        self.run_social("draft", "--date", DATE, "--no-codex", SOCIAL_WRITER_OPUS=self.stand_in(self.opus_answer()))
+        self.run_social("facts", "--date", DATE,
+                        SOCIAL_FACTS_JUDGE=self.stand_in(judge_says("supported", "supported", "supported", "no claim")))
+        img = self.root / "tile.jpg"
+        img.write_bytes(b"\xff\xd8not really")
+        (self.root / "tile.json").write_text(json.dumps({"kind": "demo", "project": "demo-service", "page": "/",
+                                                         "ask": "Saturday hours are 8 to 3", "golden": "abc123",
+                                                         "box": {"x": 1}}))
+        r = self.run_social("pick", "--date", DATE, "--image", str(img), "--kind", "demo")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        q = json.loads(next((self.social / "queue").glob("*.json")).read_text())
+        self.assertEqual(q["kind"], "demo")
+        self.assertEqual(q["demo"], {"project": "demo-service", "page": "/", "ask": "Saturday hours are 8 to 3",
+                                     "golden": "abc123"})
 
     def test_a_writer_that_declines_is_passed_on_and_no_draft_means_none(self):
         self.run_social("packet", "--date", DATE)

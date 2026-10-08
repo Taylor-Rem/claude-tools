@@ -222,6 +222,8 @@ def log_posted(brand, caption, results, draft=None):
            "topic": (draft or {}).get("topic") or caption.split("\n")[0][:80], "status": "posted",
            "kind": (draft or {}).get("kind"), "check": (draft or {}).get("check"),
            "path": (draft or {}).get("image"), "caption": caption, "links": {k: v.get("url") for k, v in results.items() if v.get("ok")}}
+    if (draft or {}).get("demo"):        # B129: which template demo went out, so the next isn't the same one
+        row["demo"] = draft["demo"]
     SOCIAL_DIR.mkdir(parents=True, exist_ok=True)
     with (SOCIAL_DIR / "posted.jsonl").open("a") as f:
         f.write(json.dumps(row) + "\n")
@@ -461,7 +463,8 @@ EXIT = {"pass": 0, "fail": 1, "unsure": 3, "couldnt": 4}
 PRODUCT = ("yes", "no", "unsure")
 RACCOON = ("same", "different", "absent", "unsure")
 CHANGE = ("yes", "no", "unsure")
-CHANGE_KINDS = ("demo", "text")   # B129: these are asked "can you see what changed on the page?" in place of "is a product in frame"
+CHANGE_KINDS = ("demo", "text")   # B129: these are asked "can you see what changed on the page?" in place of "is a product in frame";
+                                  # "no" fails a demo tile and is "unsure" on a text post (its picture is still generated)
 
 JUDGE_PROMPT = """You are looking at one picture for Patchlamp's social feed before it is posted, as a second pair of eyes. You have not seen the prompt that made it, and that is the point.
 
@@ -489,7 +492,7 @@ CHANGE_PROMPT = """You are looking at one picture for Patchlamp's social feed be
 
 In this directory: `draft{ext}` is the picture{portrait_file}. Read {files}.
 
-Patchlamp keeps a small business's website and Google listing right by text: the owner texts a change and it is done. A picture for this feed is meant to show that happening: a text asking for something, and a web page where the thing asked for has changed. Why it matters: the feed used to show a raccoon holding a drawn phone, and a drawn phone is still a picture of the idea; a stranger scrolling should be able to see a text cause a change on a page. Answer from what you see; there is no answer we are hoping for.
+Patchlamp keeps a small business's website and Google listing right by text: the owner texts a change and it is done. A picture for this feed is meant to show that happening: a text asking for something, and a web page where the thing asked for has changed. Why it matters: {why_matters} Answer from what you see; there is no answer we are hoping for.
 
 1. Can you see what changed on the page? Say what was asked, as you read it in the picture, and what changed on the page, in your own words. Answer "yes" if you can point to the change, "no" if there is no page to see or nothing on it you can tell was changed, or "unsure".
 {raccoon_q}
@@ -506,12 +509,21 @@ CHANGE_RACCOON_Q = """
 """
 
 
+# why the question matters, by kind: the demo tile's reason names what it replaced; a text post's picture is still that
+# kind of picture, so its reason stays neutral and doesn't lean the judge to "no"
+WHY_DEMO = ("the feed used to show a raccoon holding a drawn phone, and a drawn phone is still a picture of the idea; "
+            "a stranger scrolling should be able to see a text cause a change on a page.")
+WHY_TEXT = "a stranger scrolling should be able to tell from the picture what a text to Patchlamp does."
+
+
 def judge_prompt(kind, ext):
     """The judge's question for KIND. A demo tile's portrait is pasted in by code, so it isn't asked about."""
     if kind == "demo":
-        return CHANGE_PROMPT.format(ext=ext, portrait_file="", files="it", nfiles="file", raccoon_q="", raccoon_key="")
+        return CHANGE_PROMPT.format(ext=ext, portrait_file="", files="it", nfiles="file", raccoon_q="", raccoon_key="",
+                                    why_matters=WHY_DEMO)
     if kind == "text":
-        return CHANGE_PROMPT.format(ext=ext, portrait_file=", and `portrait.jpg` is Patch, the raccoon who is the brand's one character",
+        return CHANGE_PROMPT.format(ext=ext, why_matters=WHY_TEXT,
+                                    portrait_file=", and `portrait.jpg` is Patch, the raccoon who is the brand's one character",
                                     files="both files", nfiles="two files", raccoon_q=CHANGE_RACCOON_Q,
                                     raccoon_key=' "raccoon": one of "same" / "different" / "absent" / "unsure",')
     return JUDGE_PROMPT.format(ext=ext)
@@ -625,7 +637,7 @@ def verdict(kind, ans, why_not=""):
     if kind == "raccoon" and raccoon == "absent":
         return "fail", "the raccoon post has no raccoon in it: " + said
     if product == "unsure" or raccoon == "unsure":
-        return "unsure", "unsure: " + said
+        return "unsure", said
     return "pass", said
 
 
@@ -640,10 +652,11 @@ def change_verdict(kind, ans):
             + (f"; raccoon {raccoon}" if raccoon else "") + f". {ans.get('why') or ''}").strip()
     if raccoon == "different":
         return "fail", "a different raccoon from the portrait: " + said
-    if change == "no":
-        return "fail", "the judge can't see what changed on the page: " + said
+    if change == "no":     # a text post's picture is still a generated raccoon with a drawn phone: the doubt is shown, it posts
+        return ("fail", "the judge can't see what changed on the page: " + said) if kind == "demo" else \
+            ("unsure", "the judge can't see what changed on the page: " + said)
     if change == "unsure" or raccoon == "unsure":
-        return "unsure", "unsure: " + said
+        return "unsure", said
     return "pass", said
 
 
@@ -1935,7 +1948,7 @@ def ledger_line(day, win):
     event = {"ts": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00"), "kind": "social-words",
              "day": day["date"], "models": sorted({w for w, _ in costs}) + (["codex"] if any(
                  d["writer"] == "codex" and d.get("status") in ("ok", "declined") for d in day.get("drafts") or []) else []),
-             "cost_usd": round(sum(c for _, c in costs), 4), "billed_to": "subscription",
+             "cost_usd": 0, "plan_usd_list": round(sum(c for _, c in costs), 4), "billed_to": "subscription",
              "verdict": (win or {}).get("facts", {}).get("verdict") if win else "none", "won": (win or {}).get("writer")}
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1963,6 +1976,14 @@ def queue_winner(day, win, args):
             "topic": (day.get("topic") or "")[:80] or None, "mood": args.mood, "art": args.art,
             "kind": getattr(args, "kind", None) or (day["kind"] if day["kind"] in KINDS else None), "day": day["date"], "writer": win["writer"],
             "facts": win["facts"]["verdict"], "added": dt.datetime.now().isoformat(timespec="seconds")}
+    side = src.with_suffix(".json")          # a demo tile's sidecar: which demo, so "not the same demo twice running" holds
+    if side.is_file():
+        try:
+            meta = json.loads(side.read_text())
+        except ValueError:
+            meta = {}
+        if meta.get("kind") == "demo":
+            item["demo"] = {k: meta.get(k) for k in ("project", "page", "ask", "golden")}
     (queue_dir() / f"{stamp}-patchlamp.json").write_text(json.dumps(item, indent=1) + "\n")
     q = drafts()
     return next(i for i, d in enumerate(q, 1) if d["_path"].name == f"{stamp}-patchlamp.json")
@@ -2085,7 +2106,7 @@ EDITOR_PROMPT = """You are Patch, working on a copy of the {slug} demo site for 
 
 The site's files are in `repos/{repo}/` in this directory. `CLAUDE.md` here is the demo workspace's own notes: read it for how the site is put together and what a demo keeps (the "This is a demo" bar stays). Make the change by editing files under `repos/{repo}/` with Edit or Write. This is a throwaway copy: there is no shell, nothing to commit and nothing to publish, and the live demo is not touched, because strangers are texting it.
 
-Change only what the text asks for and leave everything else as it is, because the picture marks whatever changed and anything extra would read as part of the ask. Write it the way the site already talks, and keep exactly what the owner meant: the picture puts their text beside your words, so a line that says something slightly different reads as a mistake. Make it visible on the page `{page}` as a phone shows it, since that page is what the picture shows. Don't name a real business or person.
+Change only what the text asks for and leave everything else as it is, because the picture marks whatever changed and anything extra would read as part of the ask. Write it the way the site already talks, and keep exactly what the owner meant: the picture puts their text beside your words, so a line that says something slightly different reads as a mistake. Make it visible on the page `{page}` as a phone shows it, since that page is what the picture shows. Don't name a real business or person, because the demo is a made-up business and the tile must never read as a real customer.
 
 Your budget is about ten minutes. If you can't make the change, or it wouldn't show on that page, "I couldn't, because ..." is a fine answer: it is passed on as you write it, and no one asks you again the same way.
 
@@ -2532,7 +2553,8 @@ def cmd_demo(args):
             demo_ledger({"ts": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00"), "kind": "social-demo",
                          "project": args.project, "model": "stand-in" if os.environ.get("SOCIAL_DEMO_EDITOR")
                          else (os.environ.get("SOCIAL_DEMO_EDITOR_MODEL") or EDITOR_MODEL_DEFAULT),
-                         "cost_usd": round(cost or 0, 4), "billed_to": "subscription", "made": not why_not})
+                         "cost_usd": 0, "plan_usd_list": round(cost or 0, 4), "billed_to": "subscription",
+                         "made": not why_not})
             if why_not:
                 couldnt(why_not, args.json, project=args.project, ask=ask)
         shots = tmp / "shots"
@@ -2556,7 +2578,7 @@ def cmd_demo(args):
         tile_box = compose_demo(ask, shots / "after.png", box, out, work=tmp)
         side = {"kind": "demo", "project": args.project, "repo": repo.name, "page": args.page or "/", "ask": ask,
                 "golden": sha, "box": {k: box[k] for k in ("x", "y", "w", "h")}, "page_size": [box["page_w"], box["page_h"]],
-                "tile_box": tile_box, "changed": said, "cost_usd": cost,
+                "tile_box": tile_box, "changed": said, "plan_usd_list": cost,
                 "what": f"a template demo ({args.project}): a made-up business with a 'This is a demo' bar on every page, not a customer",
                 "made": dt.datetime.now().isoformat(timespec="seconds")}
         out.with_suffix(".json").write_text(json.dumps(side, indent=1) + "\n")

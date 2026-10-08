@@ -1,0 +1,506 @@
+{
+ "FX_B01": {
+  "arm": null,
+  "batch": "P1",
+  "kit": false,
+  "lane": "email",
+  "prep": false,
+  "screen": "plan",
+  "stage": null
+ },
+ "FX_B02": {
+  "arm": null,
+  "batch": "P1",
+  "kit": false,
+  "lane": "email",
+  "prep": false,
+  "screen": "plan",
+  "stage": null
+ },
+ "FX_B03": {
+  "arm": null,
+  "batch": "P6",
+  "kit": false,
+  "lane": "email",
+  "prep": false,
+  "screen": "plan",
+  "stage": null
+ },
+ "FX_B04": {
+  "arm": null,
+  "batch": null,
+  "kit": false,
+  "lane": "nothing",
+  "prep": false,
+  "screen": null,
+  "stage": null
+ },
+ "FX_B05": {
+  "arm": null,
+  "batch": null,
+  "kit": false,
+  "lane": "nothing",
+  "prep": false,
+  "screen": null,
+  "stage": null
+ },
+ "FX_B06": {
+  "arm": null,
+  "batch": "P1",
+  "kit": false,
+  "lane": "email",
+  "prep": false,
+  "screen": "plan",
+  "stage": null
+ },
+ "FX_B07": {
+  "arm": null,
+  "batch": "P1",
+  "kit": false,
+  "lane": "email",
+  "prep": false,
+  "screen": "plan",
+  "stage": null
+ },
+ "FX_B08": {
+  "arm": null,
+  "batch": "P1",
+  "kit": false,
+  "lane": "email",
+  "prep": false,
+  "screen": "plan",
+  "stage": null
+ },
+ "FX_B09": {
+  "arm": null,
+  "batch": null,
+  "kit": false,
+  "lane": "nothing",
+  "prep": false,
+  "screen": null,
+  "stage": "contacted"
+ },
+ "FX_B10": {
+  "arm": null,
+  "batch": null,
+  "kit": false,
+  "lane": "nothing",
+  "prep": false,
+  "screen": null,
+  "stage": null
+ },
+ "FX_B11": {
+  "arm": null,
+  "batch": null,
+  "kit": false,
+  "lane": "nothing",
+  "prep": false,
+  "screen": null,
+  "stage": null
+ },
+ "FX_B12": {
+  "arm": null,
+  "batch": null,
+  "kit": false,
+  "lane": "nothing",
+  "prep": false,
+  "screen": null,
+  "stage": null
+ },
+ "FX_B13": {
+  "arm": null,
+  "batch": "P1",
+  "kit": false,
+  "lane": "email",
+  "prep": false,
+  "screen": "plan",
+  "stage": null
+ },
+ "FX_B14": {
+  "arm": null,
+  "batch": "P1",
+  "kit": false,
+  "lane": "email",
+  "prep": false,
+  "screen": "plan",
+  "stage": null
+ },
+ "FX_B15": {
+  "arm": null,
+  "batch": null,
+  "kit": false,
+  "lane": "nothing",
+  "prep": false,
+  "screen": null,
+  "stage": null
+ },
+ "FX_B16": {
+  "arm": null,
+  "batch": null,
+  "kit": false,
+  "lane": "nothing",
+  "prep": false,
+  "screen": null,
+  "stage": null
+ },
+ "FX_C01": {
+  "arm": null,
+  "batch": null,
+  "kit": true,
+  "lane": "taylor",
+  "prep": true,
+  "screen": null,
+  "stage": null
+ },
+ "FX_C02": {
+  "arm": null,
+  "batch": null,
+  "kit": true,
+  "lane": "taylor",
+  "prep": false,
+  "screen": null,
+  "stage": null
+ },
+ "FX_C03": {
+  "arm": null,
+  "batch": null,
+  "kit": true,
+  "lane": "taylor",
+  "prep": true,
+  "screen": null,
+  "stage": null
+ },
+ "FX_C04": {
+  "arm": null,
+  "batch": null,
+  "kit": true,
+  "lane": "taylor",
+  "prep": false,
+  "screen": null,
+  "stage": null
+ },
+ "FX_C05": {
+  "arm": null,
+  "batch": null,
+  "kit": true,
+  "lane": "taylor",
+  "prep": false,
+  "screen": null,
+  "stage": null
+ },
+ "FX_C06": {
+  "arm": null,
+  "batch": null,
+  "kit": true,
+  "lane": "taylor",
+  "prep": false,
+  "screen": null,
+  "stage": null
+ },
+ "FX_C07": {
+  "arm": null,
+  "batch": null,
+  "kit": false,
+  "lane": "nothing",
+  "prep": false,
+  "screen": null,
+  "stage": "lost"
+ },
+ "FX_N01": {
+  "arm": null,
+  "batch": null,
+  "kit": true,
+  "lane": "taylor",
+  "prep": false,
+  "screen": null,
+  "stage": null
+ },
+ "FX_N02": {
+  "arm": null,
+  "batch": null,
+  "kit": false,
+  "lane": "nothing",
+  "prep": false,
+  "screen": null,
+  "stage": null
+ },
+ "FX_P2A": {
+  "arm": null,
+  "batch": null,
+  "kit": true,
+  "lane": "taylor",
+  "prep": false,
+  "screen": null,
+  "stage": null
+ },
+ "FX_P3A": {
+  "arm": null,
+  "batch": "P3",
+  "kit": false,
+  "lane": "email",
+  "prep": false,
+  "screen": "plan",
+  "stage": null
+ },
+ "FX_P4A": {
+  "arm": null,
+  "batch": "P4",
+  "kit": false,
+  "lane": "email",
+  "prep": false,
+  "screen": "plan",
+  "stage": null
+ },
+ "FX_P4B": {
+  "arm": null,
+  "batch": "P4",
+  "kit": false,
+  "lane": "email",
+  "prep": false,
+  "screen": "plan",
+  "stage": null
+ },
+ "FX_P4C": {
+  "arm": null,
+  "batch": "P4",
+  "kit": false,
+  "lane": "email",
+  "prep": false,
+  "screen": "plan",
+  "stage": null
+ },
+ "FX_P500": {
+  "arm": null,
+  "batch": "P6",
+  "kit": false,
+  "lane": "email",
+  "prep": false,
+  "screen": "plan",
+  "stage": null
+ },
+ "FX_P501": {
+  "arm": "A",
+  "batch": null,
+  "kit": false,
+  "lane": "conversation",
+  "prep": false,
+  "screen": null,
+  "stage": "interested"
+ },
+ "FX_P502": {
+  "arm": null,
+  "batch": null,
+  "kit": false,
+  "lane": "nothing",
+  "prep": false,
+  "screen": null,
+  "stage": null
+ },
+ "FX_P503": {
+  "arm": null,
+  "batch": "P6",
+  "kit": false,
+  "lane": "nothing",
+  "prep": false,
+  "screen": "already written to",
+  "stage": null
+ },
+ "FX_P504": {
+  "arm": null,
+  "batch": null,
+  "kit": false,
+  "lane": "nothing",
+  "prep": false,
+  "screen": null,
+  "stage": null
+ },
+ "FX_P505": {
+  "arm": null,
+  "batch": null,
+  "kit": false,
+  "lane": "nothing",
+  "prep": false,
+  "screen": null,
+  "stage": null
+ },
+ "FX_P506": {
+  "arm": null,
+  "batch": "P5",
+  "kit": false,
+  "lane": "email",
+  "prep": false,
+  "screen": "plan",
+  "stage": null
+ },
+ "FX_P507": {
+  "arm": null,
+  "batch": "P6",
+  "kit": false,
+  "lane": "email",
+  "prep": false,
+  "screen": "plan",
+  "stage": null
+ },
+ "FX_P508": {
+  "arm": null,
+  "batch": "P5",
+  "kit": false,
+  "lane": "email",
+  "prep": false,
+  "screen": "plan",
+  "stage": null
+ },
+ "FX_P509": {
+  "arm": null,
+  "batch": "P5",
+  "kit": false,
+  "lane": "email",
+  "prep": false,
+  "screen": "plan",
+  "stage": null
+ },
+ "FX_P510": {
+  "arm": null,
+  "batch": "P6",
+  "kit": false,
+  "lane": "email",
+  "prep": false,
+  "screen": "plan",
+  "stage": null
+ },
+ "FX_P511": {
+  "arm": null,
+  "batch": "P5",
+  "kit": false,
+  "lane": "email",
+  "prep": false,
+  "screen": "plan",
+  "stage": null
+ },
+ "FX_R01": {
+  "arm": null,
+  "batch": null,
+  "kit": true,
+  "lane": "taylor",
+  "prep": false,
+  "screen": null,
+  "stage": null
+ },
+ "FX_R02": {
+  "arm": null,
+  "batch": null,
+  "kit": false,
+  "lane": "nothing",
+  "prep": false,
+  "screen": null,
+  "stage": null
+ },
+ "FX_S01": {
+  "arm": null,
+  "batch": null,
+  "kit": true,
+  "lane": "taylor",
+  "prep": true,
+  "screen": null,
+  "stage": null
+ },
+ "FX_S02": {
+  "arm": null,
+  "batch": null,
+  "kit": true,
+  "lane": "taylor",
+  "prep": false,
+  "screen": null,
+  "stage": null
+ },
+ "FX_S03": {
+  "arm": null,
+  "batch": null,
+  "kit": true,
+  "lane": "taylor",
+  "prep": false,
+  "screen": null,
+  "stage": null
+ },
+ "FX_S04": {
+  "arm": null,
+  "batch": null,
+  "kit": true,
+  "lane": "taylor",
+  "prep": false,
+  "screen": null,
+  "stage": null
+ },
+ "FX_S05": {
+  "arm": null,
+  "batch": null,
+  "kit": true,
+  "lane": "taylor",
+  "prep": false,
+  "screen": null,
+  "stage": null
+ },
+ "FX_S06": {
+  "arm": null,
+  "batch": null,
+  "kit": false,
+  "lane": "nothing",
+  "prep": false,
+  "screen": null,
+  "stage": "won"
+ },
+ "FX_S07": {
+  "arm": null,
+  "batch": null,
+  "kit": false,
+  "lane": "nothing",
+  "prep": false,
+  "screen": null,
+  "stage": null
+ },
+ "FX_S08": {
+  "arm": null,
+  "batch": null,
+  "kit": true,
+  "lane": "taylor",
+  "prep": true,
+  "screen": null,
+  "stage": null
+ },
+ "FX_S09": {
+  "arm": null,
+  "batch": null,
+  "kit": false,
+  "lane": "nothing",
+  "prep": false,
+  "screen": null,
+  "stage": null
+ },
+ "FX_S10": {
+  "arm": null,
+  "batch": null,
+  "kit": false,
+  "lane": "nothing",
+  "prep": false,
+  "screen": null,
+  "stage": null
+ },
+ "FX_S11": {
+  "arm": "A",
+  "batch": null,
+  "kit": false,
+  "lane": "conversation",
+  "prep": false,
+  "screen": null,
+  "stage": "interested"
+ },
+ "FX_S12": {
+  "arm": null,
+  "batch": null,
+  "kit": true,
+  "lane": "taylor",
+  "prep": false,
+  "screen": null,
+  "stage": null
+ }
+}

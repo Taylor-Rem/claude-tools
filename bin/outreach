@@ -226,6 +226,7 @@ sys.path.insert(0, str(TOOLS / "lib"))
 import outreach_mail as mail  # noqa: E402  the SMTP/IMAP wire under the `google` provider
 import postmaster as pmapi  # noqa: E402  B136: Google Postmaster Tools by API
 import assets  # noqa: E402  the capacity registry (B141)
+import prospects  # noqa: E402  the prospect record (B140): each send, reply and suppression noted on it
 from venture import from_argv  # noqa: E402
 
 V = from_argv()                      # the business this works for (ventures/<name>/venture.toml, B146)
@@ -894,6 +895,7 @@ def suppress_add(value, reason, provider=None):
     kind = suppress_kind(value)
     if not DRY:
         append_jsonl(suppress_file(), {"ts": now_iso(), "value": value, "kind": kind, "reason": reason})
+        prospects.note("suppress", {"value": value, "kind": kind, "reason": reason})
     if kind == "email" and provider is not None:
         try:
             provider.suppress(value)
@@ -2522,6 +2524,7 @@ def cmd_send(args):
                "message_id": (res or {}).get("message_id")}
         if not DRY:
             append_jsonl(sends_file(), row)
+            prospects.note("send", row)
         ledger_append({"ts": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()), "kind": "outreach_email",
                        "tool": "outreach", "calls": 1, "cost_usd": 0, "project": "global",
                        "billed_to": f"{provider.name}:INSTANTLY_API_KEY" if provider.name == "instantly" else "fake",
@@ -2979,6 +2982,7 @@ def send_touch(provider, seq, mb):
     row.update(outbound_of(seq, tpl.sha), ai_test=seq.get("ai_test"))
     if not DRY:
         append_jsonl(sends_file(), row)
+        prospects.note("send", row)
     ledger_append({"ts": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()), "kind": "outreach_email",
                    "tool": "outreach", "calls": 1, "cost_usd": 0, "project": "global",
                    "billed_to": f"{provider.name}:{mb}",
@@ -3771,6 +3775,7 @@ def cmd_inbox(args):
 
         if not DRY:
             append_jsonl(replies_file(), row)
+            prospects.note("reply", row)
     cursor_write(new_cur)
     if not replies:
         say("Nothing new. The cursor is where it was.")

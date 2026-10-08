@@ -1,7 +1,7 @@
 $ leads --help
 --- stdout
 usage: leads [-h]
-             {kit,diagnose,candidates,log,next,sent,channel,replies,due,recheck,today,brief,cadence,strength,show,week,pipeline,preview,batch,doctor} ...
+             {kit,diagnose,candidates,log,next,sent,channel,replies,due,recheck,today,brief,cadence,strength,show,week,pipeline,preview,batch,prospects,doctor} ...
 
 leads — the restaurant pipeline by text. ROADMAP B18 (the Saturday kit),
 B25 (the remote lane), B7 (the pipeline: log, follow-ups, the week).
@@ -68,6 +68,10 @@ B25 (the remote lane), B7 (the pipeline: log, follow-ups, the week).
   leads preview --place PLACE_ID --json   # one business's preview as one JSON object with its url (B90)
   leads preview --from-press HASH --json  # a press on a letter's link: build or reuse, the brief on a first press (B91)
   leads preview --press-tokens --json     # the links the see page may answer for, active or removed (B91)
+  leads prospects route "Name"  # B140: the plan lib/policy.py gives one business (its lane, rule and decision);
+                               # `show` its record, `ls` every plan by lane, `rebuild` the table from the census,
+                               # the pipeline and the email lane's rows (private-docs/leads/prospects.db, PROSPECTS_DB;
+                               # the rules in words: private-docs/leads/policy.md)
   leads doctor
 
 Preview sites (B45, plan ~/projects/plans/19-preview-sites.md): the segment's
@@ -249,7 +253,7 @@ and the thresholds are client-leads/strength.md's tables (LEADS_STRENGTH overrid
 in STRENGTH_REASONS). Candidates, the kits and `leads today` put strong first and say why on every line.
 
 positional arguments:
-  {kit,diagnose,candidates,log,next,sent,channel,replies,due,recheck,today,brief,cadence,strength,show,week,pipeline,preview,batch,doctor}
+  {kit,diagnose,candidates,log,next,sent,channel,replies,due,recheck,today,brief,cadence,strength,show,week,pipeline,preview,batch,prospects,doctor}
     kit                 Saturday's counters, one page
     diagnose            three lines on a business's Google listing, for a
                         group thread
@@ -284,6 +288,8 @@ positional arguments:
     batch               the email lane's batch (B90): fifty or fewer in one
                         trade, each with its address and two true specifics (a
                         fault first); --stats sizes the lane
+    prospects           B140: one record a business and the plan lib/policy.py
+                        routes it to: rebuild | show NAME | route NAME | ls
 
 options:
   -h, --help            show this help message and exit

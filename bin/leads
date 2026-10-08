@@ -64,6 +64,10 @@ B25 (the remote lane), B7 (the pipeline: log, follow-ups, the week).
   leads preview --place PLACE_ID --json   # one business's preview as one JSON object with its url (B90)
   leads preview --from-press HASH --json  # a press on a letter's link: build or reuse, the brief on a first press (B91)
   leads preview --press-tokens --json     # the links the see page may answer for, active or removed (B91)
+  leads prospects route "Name"  # B140: the plan lib/policy.py gives one business (its lane, rule and decision);
+                               # `show` its record, `ls` every plan by lane, `rebuild` the table from the census,
+                               # the pipeline and the email lane's rows (private-docs/leads/prospects.db, PROSPECTS_DB;
+                               # the rules in words: private-docs/leads/policy.md)
   leads doctor
 
 Preview sites (B45, plan ~/projects/plans/19-preview-sites.md): the segment's
@@ -4483,6 +4487,7 @@ def cmd_log(args):
     PIPELINE.parent.mkdir(parents=True, exist_ok=True)
     with open(PIPELINE, "a") as f:
         f.write(json.dumps({k: v for k, v in event.items() if v is not None or k == "next"}) + "\n")
+    _prospects_lib()[0].note("event", event)           # B140: the prospect record, if the table has it
     when = f"follow up {nxt.strftime('%a %-d %b')}" if nxt else "no follow-up"
     print(f"Logged: {name}{' (' + city + ')' if city else ''} — {outcome}{' by ' + channel if channel else ''} → {stage}; {when}."
           + ("" if row or pid else " (not in the census; logged by name)"))
@@ -4581,6 +4586,7 @@ def cmd_sent(args):
         PIPELINE.parent.mkdir(parents=True, exist_ok=True)
         with open(PIPELINE, "a") as f:
             f.write(json.dumps({k: v for k, v in event.items() if v is not None}) + "\n")
+        _prospects_lib()[0].note("event", event)       # B140
         done.append((i, event["name"], channel))
     if done:
         chans = {c for _, _, c in done}
@@ -6100,6 +6106,7 @@ def cmd_strength(args):
         PIPELINE.parent.mkdir(parents=True, exist_ok=True)
         with open(PIPELINE, "a") as f:
             f.write(json.dumps({k: v for k, v in event.items() if v is not None or k == "strength"}) + "\n")
+        _prospects_lib()[0].note("event", event)       # B140 ("auto" takes effect at the next rebuild)
         global _OVERRIDES
         _OVERRIDES = None
     level, reasons = strength(row, lead=lead)
@@ -7449,6 +7456,346 @@ def print_proposition_stats(props, only=None):
         print(f"  {eid} ({e.get('name') or e.get('varied')}): {arms} emailable, dealt by {e.get('deal')}")
 
 
+# ---- one prospect record and the policy (B140, plan 55 § 5.1-5.2; lib/prospects.py, lib/policy.py) ----------
+# The census, the pipeline and the email lane's rows joined into one record a business, kept in the prospects table
+# (private-docs/leads/prospects.db, PROSPECTS_DB). `leads prospects rebuild` makes it from the three stores (and a
+# missing table is made on the first read), `show` prints one record, `route` the plan lib/policy.py gives it, `ls`
+# the plans counted by lane. Nothing here sends, holds or logs anything: the record and the plan are read-only views
+# until the lanes switch to route() (B144's live half, B145).
+
+def _prospects_lib():
+    import policy as _policy
+    import prospects as _prospects
+    return _prospects, _policy
+
+
+_OUTREACH_MOD = None
+
+
+def outreach_mod():
+    """bin/outreach loaded as a module, for B137's deal and the registry (read-only; its dry-run flag set, so a
+    registry read works on a copy). None when it can't load."""
+    global _OUTREACH_MOD
+    if _OUTREACH_MOD is None:
+        try:
+            from importlib.machinery import SourceFileLoader
+            import importlib.util
+            spec = importlib.util.spec_from_loader("outreach_for_leads", SourceFileLoader("outreach_for_leads",
+                                                                                         str(OUTREACH_BIN)))
+            m = importlib.util.module_from_spec(spec)
+            argv = list(sys.argv)
+            try:
+                spec.loader.exec_module(m)
+            finally:
+                sys.argv[:] = argv
+            m.DRY = True
+            _OUTREACH_MOD = m
+        except (Exception, SystemExit):  # noqa: BLE001 - a stand-in `outreach` (tests) or a broken one: no deal, no registry
+            _OUTREACH_MOD = False
+    return _OUTREACH_MOD or None
+
+
+def prospect_context(today):
+    """What every record reads once: the holds and exclusions a batch reads, the clients, the follow-ups ahead, the
+    call-only addresses, the logs, B137's test state, and the first listing to claim each inbox."""
+    why, names, _ = batch_exclusions()
+    o = outreach_mod()
+    close_open, close_why = (o.close_test_state() if o else (False, "outreach isn't loadable here"))
+    return {"today": today, "why": why, "chain_names": names, "marks": client_marks(),
+            "skip": pipeline_skip(), "close": (close_open, close_why), "outreach": o,
+            "logs": _prospects_lib()[0].logs()}
+
+
+def prospect_rows():
+    """Every business in the census as batch_rows reads it (an address or not), restaurants too."""
+    rows = batch_rows(list(BUSINESS_SEGMENTS) + ["restaurant"], everyone=True)
+    if rows or email_tables():
+        return rows
+    out = []                       # a census from before B89: the businesses alone, no address, no site facts
+    for pid in sorted({c["place_id"] for c in business_candidates(list(BUSINESS_SEGMENTS), min_reviews=0)}):
+        for r in _census_by_id(pid):
+            out.append(dict(r, mail=None, facts=None, pages=[], checks=None,
+                            town=(r.get("locality") or (r.get("city") or "").replace(", Utah", "")).strip()))
+    return out
+
+
+def shared_host_is_a_platform(url):
+    """True when a website shared by several listings is a platform they each have a page on (Facebook, a directory,
+    a free builder's address), not one organisation's site: `shared_site_places` counts those as a chain."""
+    h = host_of(url or "").split(":")[0].removeprefix("www.").removeprefix("m.")
+    return bool(h) and any(h == d or h.endswith("." + d) for d in (*PAGE_HOSTS, *DIRECTORY_HOSTS, *BUILDER_HOSTS))
+
+
+def _route(channel, value, verdict, evidence="", why=None, checked=None):
+    return {"channel": channel, "value": value, "verdict": verdict, "evidence": evidence or "", "why": why,
+            "checked": checked}
+
+
+def prospect_record(c, ctx, inbox_owner=None):
+    """One business's record (lib/prospects.py `record()`), from the census row and the context, with the logs
+    folded in. The proposition is the venture's (`propose`, B135) on stored facts only: a batch reads the page again
+    before a letter says a fact (`confirm_specifics`), and that second look stays the lane's."""
+    P, _ = _prospects_lib()
+    today, pid = ctx["today"], c["place_id"]
+    name, website = clean_name(c.get("name") or ""), c.get("website") or ""
+    reason = ctx["why"].get(pid)
+    excluded = held = None
+    if reason and (reason.startswith("held") or reason == "in the pipeline"):
+        held = reason
+    elif reason and not (reason.startswith("a chain by its website") and shared_host_is_a_platform(website)):
+        excluded = reason        # (a Facebook page shared by three listings is three businesses, not a chain)
+    if not excluded and (c.get("name") or "").lower() in ctx["chain_names"]:
+        excluded = "a chain"
+    c_emails, c_domains, c_phones = ctx["marks"]
+    addr = ((c.get("mail") or {}).get("address") or "").lower()
+    if not excluded and ((addr and (addr in c_emails or addr.split("@")[-1] in c_domains))
+                         or host_of(website) in c_domains
+                         or (re.sub(r"\D", "", c.get("phone") or "")[-10:] or "-") in c_phones):
+        excluded = "a client"
+    if not excluded and c.get("business_status") not in (None, "OPERATIONAL"):
+        excluded = f"closed on Google ({c['business_status']})"
+    if not held and pid in ctx["skip"]:
+        held = "the pipeline holds it (a follow-up ahead, or its strength's pool day not reached)"
+    details = cached_details(pid)
+    c["all_faults"] = facts_packet(c, details, today)
+    c["packet"] = specifics(c, today, c["all_faults"])
+    prop = propose(c, today, excluded=excluded) if PROPS else None
+    spec = (PROPS.PROPOSITIONS.get(prop) or {}) if PROPS else {}
+    if spec.get("packet") == "faults":
+        pfacts = [{k: f[k] for k in ("key", "kind", "sentence", "evidence")} for f in c["packet"]]
+        pwhy = None if pfacts else "no two true specifics with a fault first"
+    else:
+        pfacts = [dict(s) for s in c.get("specifics") or []]
+        pwhy = None if pfacts or not spec.get("letters") else "too few true facts to fill its letter"
+    facts = [{"key": f["key"], "sentence": f["sentence"], "evidence": f["evidence"],
+              "footing": "places" if f["key"] == "google_standing" else "site"}
+             for f in (c.get("prospect") or {}).get("facts") or []]
+    facts += [{"key": f["key"], "sentence": f["sentence"], "evidence": f["evidence"], "footing": "site"}
+              for f in c["all_faults"] if f.get("kind") == "fault"]
+    routes = []
+    mail = c.get("mail")
+    if mail:
+        dup = inbox_owner and inbox_owner.get(addr) not in (None, pid)
+        routes.append(_route("email", mail["address"], "duplicate" if dup else "high",
+                             mail.get("evidence_url") or "", f"the same inbox as {inbox_owner[addr]}, written to once"
+                             if dup else mail.get("why"), mail.get("found")))
+    else:
+        held_mail = next((u for u in BATCH_UNCONFIRMED if u["place_id"] == pid), None)
+        if held_mail:
+            routes.append(_route("email", held_mail["address"], "low", "", str(held_mail.get("why") or "")))
+    rc = business_reach(c) if is_business(c) else reach(c)
+    link = c.get("presence_link") or c.get("presence_url") or website
+    own = bool(re.match(r"^(?:https?://)?(?:www\.|m\.|web\.)?(?:instagram|facebook)\.com/", link or ""))
+    ev = ((reach_table() or {}).get(pid) or {}).get("evidence")
+    for ch in ("instagram", "facebook"):
+        if rc.get(ch):
+            routes.append(_route(ch, rc[ch], "high" if (own or ev) else "unsure",
+                                 link if own else (str(ev) if ev else ""),
+                                 None if (own or ev) else "no evidence on file that it is theirs"))
+    if c.get("phone"):
+        routes.append(_route("phone", c["phone"], "high", clean_maps(c.get("google_maps_uri")), "the listing's"))
+    street = c.get("address") or ""
+    if street:
+        routes.append(_route("postal", street, "high" if re.match(r"^\d", street.strip()) else "low",
+                             clean_maps(c.get("google_maps_uri")),
+                             "the listing's address" if re.match(r"^\d", street.strip()) else "no street number"))
+    if (c.get("facts") or {}).get("contact_form") == 1:
+        routes.append(_route("form", (c.get("facts") or {}).get("url") or website, "high",
+                             (c.get("facts") or {}).get("url") or website, "a form on their own site"))
+    level, reasons = strength(c)
+    o = ctx.get("outreach")
+    close_open, close_why = ctx["close"]
+    rec = P.record(
+        venture=V.venture_name, key=f"place:{pid}", place_id=pid, name=name, city=c.get("town") or c.get("city"),
+        segment=c.get("segment"), category=c.get("category"),
+        identity={"phone": c.get("phone"), "website": website or None, "address": c.get("address"),
+                  "maps_url": clean_maps(c.get("google_maps_uri"))},
+        routes=routes, facts=facts,
+        proposition={"id": prop, "lane": spec.get("lane"), "label": spec.get("label"), "facts": pfacts,
+                     "experiment": c.get("proposition_experiment"), "arm": c.get("proposition_arm"),
+                     "letters": list(spec.get("letters") or ()), "why": pwhy or excluded},
+        strength={"level": level, "reasons": [r["key"] for r in reasons], "says": [r["says"] for r in reasons]},
+        state={"suppressed": None, "held": held, "excluded": excluded},
+        close={"experiment": getattr(o, "CLOSE_EXPERIMENT", None) if o else None,
+               "arm": o.close_arm_for(pid) if o else None, "open": False, "why": close_why or None},
+        footing={"identity": "places", "routes.email": "the business's own site (emails.evidence_url)",
+                 "routes.postal": "places", "routes.phone": "places", "facts": "each fact's evidence",
+                 "proposition": f"{V.path.parent.name}/propositions.py over the stored facts",
+                 "strength": "leads strength (client-leads/strength.md)"})
+    rec = P.fold_logs(rec, ctx["logs"])
+    # B137: the close test deals an arm only to a batch letter's thread, and only while it can be served
+    rec["close"]["open"] = bool(close_open and any(t.get("source") == "outreach" for t in rec["touches"]))
+    if rec["conversation"].get("open") and rec["conversation"].get("channel") == "text" and c.get("phone"):
+        rec["consent"] = consent_verdict(c["phone"])
+    return rec
+
+
+def consent_verdict(phone):
+    """B139: the consent machine's word on answering this number, never its state. {ok, governed, line, reason}."""
+    try:
+        import consent as _consent
+        v = _consent.machine().may_send(phone, kind="reply")
+        return {"ok": bool(v.ok), "governed": bool(v.governed), "line": v.line, "reason": v.reason or None}
+    except Exception as exc:          # noqa: BLE001 - no machine, no permission: say so, never guess yes
+        return {"ok": False, "governed": True, "line": "You may not text this number.",
+                "reason": f"the consent machine couldn't be read ({type(exc).__name__})"}
+
+
+def prospect_records(today=None):
+    """Every record: each business in the census, then each pipeline lead the census doesn't hold."""
+    P, _ = _prospects_lib()
+    today = today or now_date()
+    ctx = prospect_context(today)
+    rows = prospect_rows()
+    owner = {}
+    for c in sorted((r for r in rows if r.get("mail")),           # the listing a batch would write to (batch_pool's order)
+                    key=lambda r: (r["mail"]["kind"] != "own-domain", -(r.get("reviews") or 0), r["name"] or "")):
+        owner.setdefault(c["mail"]["address"].lower(), c["place_id"])
+    out, seen = [], set()
+    for c in rows:
+        if c["place_id"] in seen:
+            continue
+        seen.add(c["place_id"])
+        out.append(prospect_record(c, ctx, owner))
+    for key, events in ctx["logs"]["events"].items():
+        pid = next((e.get("place_id") for e in events if e.get("place_id")), None)
+        if (pid and pid in seen) or all(e.get("kind") == "strength" for e in events):
+            continue
+        rec = P.record(venture=V.venture_name, key=key, place_id=pid, name=events[-1].get("name"),
+                       city=events[-1].get("city"), state={"excluded": None},
+                       footing={"state": "the pipeline (logged by hand; not in the census)"})
+        out.append(P.fold_logs(rec, ctx["logs"]))
+    return out
+
+
+def prospect_capacity():
+    """The registry as outreach enters it (on a copy), its usage today and the default cap, for route(); None when
+    outreach can't be read."""
+    _, pol = _prospects_lib()
+    o = outreach_mod()
+    if not o:
+        return None
+    try:
+        import assets as _assets
+        return pol.capacity_view(_assets.snapshot(o.registry(), V.tenant), o.registry_usage(), o.cap_on())
+    except Exception:                 # noqa: BLE001 - the plan says "the registry wasn't read" instead
+        return None
+
+
+def prospect_sources():
+    """{path: [size, mtime_ns]} of every file a record is read from: when one changed since the table was built, the
+    next read rebuilds it (about six seconds on the whole census), so a hold or a suppression no hook carried (a kit's
+    hold, a domain suppressed, a backfilled channel) is never stale for long."""
+    P, _ = _prospects_lib()
+    o = P.outreach_state()
+    out = {}
+    for f in (CENSUS, PIPELINE, o / "sends.jsonl", o / "replies.jsonl", o / "suppress.jsonl", o / "sequences.json",
+              STATE / "remote.jsonl", STATE / "kits.jsonl", STATE / "batches.jsonl", STRENGTH_DOC):
+        try:
+            stt = Path(f).stat()
+            out[str(f)] = [stt.st_size, stt.st_mtime_ns]
+        except OSError:
+            out[str(f)] = None
+    return out
+
+
+def prospect_store(rebuild=False):
+    P, _ = _prospects_lib()
+    st = P.Store(venture=V.venture_name)
+    stamp = prospect_sources()
+    if rebuild or not st.exists() or ((st.built() or {}).get("sources") or {}).get("stamp") != stamp:
+        recs = prospect_records()
+        st.rebuild(recs, sources={"census": str(CENSUS), "pipeline": str(PIPELINE), "stamp": stamp})
+    return st
+
+
+def find_prospect(st, raw):
+    raw = raw.strip()
+    rec = st.get(raw) or st.by_place(raw) or st.get(f"place:{raw}")
+    if rec:
+        return rec
+    want = " ".join(norm(raw.split(",")[0]))
+    hits = [r for r in st.all() if " ".join(norm(r.get("name") or "")) == want]
+    if not hits:
+        hits = [r for r in st.all() if want and want in " ".join(norm(r.get("name") or ""))]
+    if not hits:
+        die(f"no prospect named \"{raw}\" (`leads prospects ls` counts them; a place id works too)")
+    return hits[0]
+
+
+def cmd_prospects(args):
+    _, pol = _prospects_lib()
+    what = args.what
+    st = prospect_store(rebuild=(what == "rebuild"))
+    if what == "rebuild":
+        b = st.built() or {}
+        print(json.dumps(b) if args.json else f"Rebuilt {b.get('records', 0)} prospect records in {st.path} "
+              f"(from {CENSUS.name}, {PIPELINE.name} and the email lane's rows).")
+        return
+    cap = prospect_capacity() if what in ("route", "ls") else None
+    if what in ("show", "route"):
+        if not args.name:
+            die(f"`leads prospects {what} NAME` (a name, \"Name, City\" or a place id)")
+        rec = find_prospect(st, " ".join(args.name))
+        if what == "show":
+            print(json.dumps(rec, indent=1, ensure_ascii=False) if args.json else prospect_text(rec))
+            return
+        plan = pol.route(rec, cap)
+        print(json.dumps(plan, indent=1, ensure_ascii=False) if args.json else plan_text(rec, plan))
+        return
+    if what == "ls":
+        by = {}
+        for rec in st.all():
+            plan = pol.route(rec, cap)
+            k = (plan["lane"], plan["rule"])
+            by.setdefault(k, []).append(rec.get("name"))
+        if args.json:
+            print(json.dumps([{"lane": k[0], "rule": k[1], "n": len(v)} for k, v in sorted(
+                by.items(), key=lambda kv: (kv[0][0], kv[0][1] or 0))], indent=1))
+            return
+        print(f"{st.count()} prospects ({V.venture_name}), by the lane lib/policy.py routes them to:")
+        for (lane, rule), names in sorted(by.items(), key=lambda kv: -len(kv[1])):
+            print(f"  {lane:<13} rule {rule or '-':<2} {len(names):>5}  e.g. {', '.join(n for n in names[:3] if n)}")
+        return
+    die("leads prospects rebuild | show NAME | route NAME | ls")
+
+
+def prospect_text(rec):
+    pr, s, st = rec["proposition"], rec["strength"], rec["state"]
+    lines = [f"{rec['name']}{' (' + rec['city'] + ')' if rec.get('city') else ''} · {rec['key']}",
+             f"  proposition {pr.get('id') or '-'} ({pr.get('label') or '-'})"
+             + (f", {pr['experiment']} arm {pr['arm']}" if pr.get("experiment") else "")
+             + (f"; {pr['why']}" if pr.get("why") else ""),
+             f"  strength {s.get('level') or '-'}: {', '.join(s.get('says') or [])[:200]}",
+             f"  state: stage {st.get('stage') or '-'}" + "".join(f"; {k} {st[k]}" for k in ("suppressed", "held", "excluded")
+                                                                 if st.get(k))]
+    for r in rec["routes"]:
+        lines.append(f"  route {r['channel']}: {r['value']} ({r['verdict']}{', ' + r['why'] if r.get('why') else ''})")
+    for f in rec["facts"]:
+        lines.append(f"  fact {f['key']}: {f['sentence']}  [{f['evidence']}]")
+    for t in rec["touches"]:
+        lines.append(f"  touch {t.get('date')} {t.get('channel')} by {t.get('actor')}"
+                     + (f" {t['template']}" if t.get("template") else ""))
+    if rec["conversation"].get("open"):
+        lines.append(f"  conversation open: {rec['conversation'].get('class')} by {rec['conversation'].get('channel')}")
+    lines.append("  funnel: " + ", ".join(f"{k} {v}" for k, v in rec["outcomes"].items() if v) if any(
+        rec["outcomes"].values()) else "  funnel: nothing yet")
+    return "\n".join(lines)
+
+
+def plan_text(rec, plan):
+    head = (f"{rec['name']}: {plan['lane']}" + (f" ({plan['status']})" if plan["status"] != "none" else "")
+            + (f" — rule {plan['rule']} ({', '.join(plan['decision'])})" if plan.get("rule") else ""))
+    out = [head, f"  {plan['reason']}"]
+    if plan.get("asset"):
+        out.append(f"  asset: {plan['asset_kind']} {plan['asset']}")
+    for t in plan.get("sequence") or []:
+        out.append(f"  touch day {t.get('n')}: {t.get('channel')} by {t.get('actor', 'machine')}"
+                   + (f" ({t['template']})" if t.get("template") else ""))
+    out += [f"  ({n})" for n in plan.get("notes") or []]
+    return "\n".join(out)
+
+
 def latest(folder):
     """The newest page in a kits folder (restaurant pages are <date>.md, the others <date>-<segment>.md)."""
     pages = list(folder.glob("*.md")) if folder.exists() else []
@@ -7980,6 +8327,13 @@ def main():
     bt.add_argument("--no-save", action="store_true", help="print only: no file, and no 56-day hold")
     bt.add_argument("--fixture", help="dir of <place_id>.json Place Details (tests)")
     bt.set_defaults(fn=cmd_batch)
+
+    pr = sub.add_parser("prospects", help="B140: one record a business and the plan lib/policy.py routes it to: "
+                                          "rebuild | show NAME | route NAME | ls")
+    pr.add_argument("what", choices=("rebuild", "show", "route", "ls"))
+    pr.add_argument("name", nargs="*", help='"Name", "Name, City" or a place id (show, route)')
+    pr.add_argument("--json", action="store_true")
+    pr.set_defaults(fn=cmd_prospects)
 
     d = sub.add_parser("doctor")
     d.set_defaults(fn=cmd_doctor)

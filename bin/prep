@@ -105,6 +105,7 @@ TOOLBELT = Path(__file__).resolve().parent.parent
 BIN = TOOLBELT / "bin"
 sys.path.insert(0, str(TOOLBELT / "lib"))
 from venture import from_argv  # noqa: E402
+import prospects  # noqa: E402  the prospect record (B140)
 
 V = from_argv()                      # the business this works for (ventures/<name>/venture.toml, B146)
 SELF = Path(__file__).resolve()
@@ -3368,6 +3369,9 @@ def finish(run_dir, publish=True):
             f.write(json.dumps({"ts": now().isoformat(timespec="seconds"), "for": today().isoformat(),
                                 "place_ids": [r[0] for r in rows], "names": [r[1] for r in rows], "mode": "prep",
                                 "run": run_id}) + "\n")
+        for pid, _name in rows:              # B140: the prospect record holds it too, with the preview it got
+            prospects.note("hold", {"place_id": pid, "why": f"prep {run_id} built its preview (56 days)",
+                                    "asset": {"kind": "preview", "run": run_id, "date": today().isoformat()}})
     rj = get_run(run_dir)
     usage = rj.get("usage") or {}
     ledger_append({"ts": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), "kind": "prep",

@@ -94,6 +94,9 @@ def _install():
         "PATCHLAMP_URL": "https://patchlamp.offline.invalid",
         "CLAUDE_TOOLS_OFFLINE_PID": str(os.getpid()),
         "CLAUDE_TOOLS_OFFLINE_PROXY": proxy,
+        # B140: the prospects table's hooks (leads log, outreach's rows) write to a throwaway table, never the
+        # real one under private-docs/ (a test's own env may still point PROSPECTS_DB elsewhere)
+        "PROSPECTS_DB": str(tmp / "prospects.db"),
     })
     for k in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
         os.environ[k] = os.environ[k.lower()] = proxy

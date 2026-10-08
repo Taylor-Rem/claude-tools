@@ -1,0 +1,519 @@
+#!/usr/bin/env python3
+"""checks — the live checks by machine (ROADMAP B149, plan ~/projects/plans/57-live-checks-by-machine.md).
+
+Some acceptances were filed for Taylor to do by hand only because a run's boundary refused the one
+outward step: post a form, read the mail that comes back, look at a feed. This runs the ones a
+headless browser and an inbox we hold can do, keeps what it saw, and says plainly which ones it can't.
+
+  checks list                       every check: by machine, or whose it stays and why
+  checks run NAME [NAME …] | --all  run them; each leaves health/checks/<date>/NAME.html + NAME.png
+                                    and prints one line: "checked by machine <date>: …" or "not checked …"
+  checks doctor                     shot, the seed inbox's login, the relay checkout, the demo workspace
+  --date YYYY-MM-DD                 the folder under health/checks (default today)
+  --json                            one JSON object per check instead of the lines
+
+The checks (each the steps of one TAYLOR-TODO § 1b entry):
+  b119-feed      the bookings calendar feed answers with the seeded booking; a wrong key is refused
+  b121-quote     the demo-service quote form, posted twice from a headless browser with the seed inbox
+                 as the lead's address: LEAD-REPLY on → an email lands in the seed inbox with no price in
+                 it; LEAD-REPLY off → no email, the owner told only. The switch goes back as it was and
+                 demo-service is reset to golden after.
+  b104-skip      a census-only kit naming places whose reach row holds an unconfirmed address, then
+                 `outreach send --kit … --dry-run`: the "unconfirmed … call-only" skip line
+  b124-receipt   not by machine: a photo texted to Patch as the owner needs a real phone
+  b101-b102      not by machine: the owner's sign-in passes his authenticator (B84) and the laptop code (B86)
+  b37-workbench  not by machine: steps 5 and 7 need a real phone, step 8 the owner's signed-in page
+
+Rules the code keeps, and why:
+  - Nothing reaches a stranger. The only address a check writes on a form is our own seed inbox
+    (INFRA_SEED_INBOXES, the first one), never an outreach mailbox, whose reader would classify the reply
+    as a lead and notify Taylor. B121's owner text goes to Taylor, which is what the check is about.
+  - Nothing is spent and nothing is sent: the B104 kit is --census-only --no-save (no Places calls, no
+    hold), the send is --dry-run.
+  - Secrets stay out of the record: the feed's key is replaced by <key> in every file this writes, and the
+    seed inbox's password is read by name and never printed.
+  - "I couldn't, here's why" is an outcome: a check that can't run returns status "skipped" with the reason,
+    and the run goes on to the next one.
+
+Budget: a full `--all` run takes about eight minutes, most of it waiting for the relay's minute tick
+and the mail (CHECK_MAIL_WAIT seconds, default 240, for each half of b121).
+
+Env (by name, from ~/.config/claude-tools/env; never printed): INFRA_SEED_INBOXES,
+INFRA_SEED_PASSWORD_<ADDR>, INFRA_SEED_IMAP_<ADDR> (default imap.gmail.com:993). PROJECTS (default
+~/projects), CHECKS_RELAY (default $PROJECTS/sms-relay), CHECK_MAIL_WAIT.
+"""
+
+import argparse
+import email
+import email.header
+import email.utils
+import html
+import imaplib
+import json
+import os
+import re
+import secrets
+import sqlite3
+import ssl
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+PROJECTS = Path(os.environ.get("PROJECTS", Path.home() / "projects"))
+RELAY = Path(os.environ.get("CHECKS_RELAY", PROJECTS / "sms-relay"))
+ENV_FILE = Path(os.environ.get("CLAUDE_TOOLS_ENV", Path.home() / ".config/claude-tools/env"))
+DEMO = "demo-service"
+WORKSPACE = PROJECTS / "clients" / DEMO
+MAIL_WAIT = int(os.environ.get("CHECK_MAIL_WAIT", "240"))
+DOLLAR = re.compile(r"\$\s?\d")
+
+
+# ---- env, small helpers ------------------------------------------------------------------------
+
+def read_env():
+    keys = {}
+    try:
+        for line in ENV_FILE.read_text().splitlines():
+            line = line.strip()
+            if line.startswith("export "):
+                line = line[7:]
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                keys[k.strip()] = v.strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return keys
+
+
+def get(name, default=None):
+    v = os.environ.get(name) or read_env().get(name)
+    return v if v else default
+
+
+def envname(x):
+    return re.sub(r"[^A-Za-z0-9]", "_", x).upper()
+
+
+def seed_inbox():
+    seeds = [s.strip().lower() for s in re.split(r"[,\s]+", get("INFRA_SEED_INBOXES", "")) if s.strip()]
+    return seeds[0] if seeds else None
+
+
+def redact(text):
+    """The feed's key (40 hex) and anything shaped like it, out of everything we keep."""
+    return re.sub(r"(key=)[0-9a-fA-F]{16,}", r"\1<key>", text or "")
+
+
+def run(cmd, cwd=None, timeout=600):
+    p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+    return p.returncode, p.stdout, p.stderr
+
+
+class Skip(Exception):
+    """A check that can't run here; its message is the one-line reason."""
+
+
+# ---- the record: one HTML page and its screenshot per check -------------------------------------
+
+def folder(day):
+    d = PROJECTS / "health" / "checks" / day
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def write_record(day, name, title, sections, shot_url=None, shot_args=()):
+    """Writes NAME.html (what the check saw) and NAME.png. With shot_url the PNG is of that live page
+    (taken by the caller's args); otherwise of the HTML record itself. Returns the PNG's path relative to
+    ~/projects, or None when the screenshot failed (the record still stands)."""
+    d = folder(day)
+    page = d / f"{name}.html"
+    body = "".join(f"<h2>{html.escape(h)}</h2><pre>{html.escape(redact(t))}</pre>" for h, t in sections)
+    page.write_text("<!doctype html><meta charset=utf-8><title>%s</title>"
+                    "<style>body{font:14px/1.45 system-ui,sans-serif;margin:24px;max-width:1100px;background:#fff;color:#111}"
+                    "pre{white-space:pre-wrap;background:#f4f4f2;padding:10px;border-radius:6px}h1{font-size:20px}"
+                    "h2{font-size:15px;margin-top:18px}</style><h1>%s</h1><p>%s</p>%s"
+                    % (html.escape(title), html.escape(title), html.escape(datetime.now().astimezone().isoformat(timespec="seconds")), body))
+    png = d / f"{name}.png"
+    target = shot_url or str(page)
+    code, out, err = run(["shot", target, "--out", str(png), "--full", *shot_args], timeout=180)
+    if code != 0 or not png.exists():
+        return None
+    return str(png.relative_to(PROJECTS))
+
+
+def result(name, status, saw, png=None):
+    return {"check": name, "status": status, "saw": saw, "screenshot": png}
+
+
+def line(r, day):
+    if r["status"] in ("checked", "failed"):
+        verdict = "" if r["status"] == "checked" else "FAILED: "
+        tail = f" — screenshot {r['screenshot']}" if r.get("screenshot") else " — no screenshot (shot failed)"
+        return f"_(checked by machine {day}: {verdict}{r['saw']}{tail})_"
+    return f"_(not checked by machine {day}: {r['saw']})_"
+
+
+# ---- b119: the bookings feed ---------------------------------------------------------------------
+
+def parse_ics(text):
+    """VEVENTs as dicts of their simple properties (unfolded), enough to say what a calendar would show."""
+    unfolded = re.sub(r"\r?\n[ \t]", "", text or "")
+    events, cur = [], None
+    for raw in unfolded.splitlines():
+        if raw == "BEGIN:VEVENT":
+            cur = {}
+        elif raw == "END:VEVENT" and cur is not None:
+            events.append(cur)
+            cur = None
+        elif cur is not None and ":" in raw:
+            k, v = raw.split(":", 1)
+            cur[k.split(";", 1)[0]] = v
+    return events
+
+
+def ics_local(stamp):
+    """20261009T150000Z -> 'Fri 9 Oct 09:00' in the laptop's zone (Utah)."""
+    try:
+        t = datetime.strptime(stamp, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc).astimezone()
+    except (TypeError, ValueError):
+        return stamp
+    return t.strftime("%a %-d %b %H:%M")
+
+
+def fetch(url, timeout=30):
+    req = urllib.request.Request(url, headers={"user-agent": "patchlamp-checks/1"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, r.headers.get("content-type", ""), r.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        return e.code, e.headers.get("content-type", ""), e.read().decode("utf-8", "replace")[:500]
+
+
+def check_b119(day):
+    if not WORKSPACE.exists():
+        raise Skip(f"no workspace at {WORKSPACE}")
+    code, out, err = run(["db", "bookings", "feed", "--json"], cwd=WORKSPACE)
+    if code != 0:
+        raise Skip(f"`db bookings feed` failed: {(err or out).strip()[:160]}")
+    url = json.loads(out)["url"]
+    status, ctype, text = fetch(url)
+    events = parse_ics(text) if status == 200 else []
+    bad_status, _, _ = fetch(re.sub(r"key=[^&]+", "key=" + secrets.token_hex(20), url))
+    seen = [f"{e.get('SUMMARY', '?')} at {ics_local(e.get('DTSTART'))} ({e.get('STATUS', '?')})" for e in events]
+    ok = status == 200 and "text/calendar" in ctype and events and bad_status in (401, 403, 404)
+    png = write_record(day, "b119-feed", "B119 bookings feed (demo-service)", [
+        ("feed", f"GET {redact(url)}\n-> {status} {ctype}, {len(events)} event(s)"),
+        ("events", "\n".join(seen) or "(none)"),
+        ("wrong key", f"-> {bad_status} (refused is right)"),
+        ("raw (first 2,000 chars)", text[:2000]),
+        ("not done by machine", "Subscribing in Google Calendar (Google's own fetch) needs Taylor's Google account."),
+    ])
+    saw = (f"feed {status} {ctype.split(';')[0]}, {len(events)} event(s): {'; '.join(seen) or 'none'}; "
+           f"a wrong key gets {bad_status}. Google Calendar's own subscription is Taylor's (his Google account)")
+    return result("b119-feed", "checked" if ok else "failed", saw, png)
+
+
+# ---- b121: the quote form, LEAD-REPLY on and off -------------------------------------------------
+
+def imap_since(addr, since_utc):
+    """Messages in the seed inbox (INBOX and spam) that arrived after since_utc, newest last:
+    [{folder, from, subject, date, body}]. Read-only (select readonly, BODY.PEEK)."""
+    pw = get(f"INFRA_SEED_PASSWORD_{envname(addr)}")
+    if not pw:
+        raise Skip(f"INFRA_SEED_PASSWORD_{envname(addr)} isn't set, so the seed inbox can't be read")
+    host, _, port = get(f"INFRA_SEED_IMAP_{envname(addr)}", "imap.gmail.com:993").partition(":")
+    conn = imaplib.IMAP4_SSL(host, int(port or 993), ssl_context=ssl.create_default_context(), timeout=30)
+    out = []
+    try:
+        conn.login(addr, pw)
+        for fold in ("INBOX", "[Gmail]/Spam", "Junk", "Spam"):
+            try:
+                typ, _ = conn.select(f'"{fold}"', readonly=True)
+            except imaplib.IMAP4.error:
+                continue
+            if typ != "OK":
+                continue
+            day = (since_utc - timedelta(days=1)).strftime("%d-%b-%Y")
+            typ, data = conn.uid("SEARCH", None, "SINCE", day)
+            for uid in (data[0] or b"").split()[-40:]:
+                typ, parts = conn.uid("FETCH", uid.decode(), "(BODY.PEEK[])")
+                raw = next((p[1] for p in parts or [] if isinstance(p, tuple) and len(p) == 2), None)
+                if not raw:
+                    continue
+                m = email.message_from_bytes(raw)
+                when = email.utils.parsedate_to_datetime(m.get("Date")) if m.get("Date") else None
+                if when is None or when.tzinfo is None or when < since_utc:
+                    continue
+                body = text_of(m)
+                out.append({"folder": fold, "from": decode(m.get("From")), "subject": decode(m.get("Subject")),
+                            "date": when.astimezone().isoformat(timespec="seconds"), "body": body})
+    finally:
+        try:
+            conn.logout()
+        except (OSError, imaplib.IMAP4.error):
+            pass
+    return out
+
+
+def decode(v):
+    if not v:
+        return ""
+    return "".join(p.decode(c or "utf-8", "replace") if isinstance(p, bytes) else p for p, c in email.header.decode_header(str(v)))
+
+
+def text_of(m):
+    for part in m.walk() if m.is_multipart() else [m]:
+        if part.get_content_type() == "text/plain":
+            return (part.get_payload(decode=True) or b"").decode(part.get_content_charset() or "utf-8", "replace")
+    for part in m.walk() if m.is_multipart() else [m]:
+        if part.get_content_type() == "text/html":
+            raw = (part.get_payload(decode=True) or b"").decode(part.get_content_charset() or "utf-8", "replace")
+            return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", raw))
+    return ""
+
+
+def leadreply_state():
+    try:
+        return json.loads((RELAY / "state" / "leadreply.json").read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def leadreply(switch):
+    code, out, err = run(["./relay.py", "leadreply", switch, DEMO], cwd=RELAY, timeout=60)
+    if code != 0:
+        raise Skip(f"`./relay.py leadreply {switch} {DEMO}` refused: {(err or out).strip()[:160]}")
+
+
+def site_url():
+    try:
+        rows = json.loads((Path.home() / ".config/claude-tools/sites.json").read_text())
+        rows = rows.get("sites", rows) if isinstance(rows, dict) else rows
+        for r in (rows.values() if isinstance(rows, dict) else rows):
+            if isinstance(r, dict) and r.get("project") == DEMO and r.get("url"):
+                return r["url"].rstrip("/") + "/"
+    except (OSError, ValueError):
+        pass
+    return f"https://{DEMO}.pages.dev/"
+
+
+def post_form(day, name, addr, question, token):
+    """Fill and send the quote form in a headless browser, screenshot the page it comes back to."""
+    png = folder(day) / f"{name}.png"
+    # Filled by --js rather than shot's --type: --type splits "SEL=text" on the first "=", and these
+    # selectors need one. The values go in as JSON strings, so nothing in them can break the script.
+    fill = ("(()=>{const f=document.getElementById('form');"
+            f"f.elements['name'].value={json.dumps('B149 machine check ' + token)};"
+            f"f.elements['email'].value={json.dumps(addr)};"
+            f"f.elements['message'].value={json.dumps(question)};"
+            "f.requestSubmit();})()")
+    args = ["shot", site_url() + "#quote", "--out", str(png), "--selector", "#quote", "--wait", "6000", "--js", fill]
+    code, out, err = run(args, timeout=180)
+    return (str(png.relative_to(PROJECTS)) if code == 0 and png.exists() else None), (out + err).strip()[-300:]
+
+
+def wait_lead(since, last_id_before):
+    """The relay's next tick on the form lead: wait until leadreply.json's `last` for the demo moves on."""
+    deadline = time.time() + MAIL_WAIT
+    while time.time() < deadline:
+        last = leadreply_state().get("last", {}).get(DEMO) or {}
+        if last.get("id") != last_id_before and (last.get("at") or "") >= since.isoformat()[:19]:
+            return last
+        time.sleep(10)
+    return None
+
+
+def check_b121(day):
+    addr = seed_inbox()
+    if not addr:
+        raise Skip("no seed inbox (INFRA_SEED_INBOXES), so no inbox of ours to be the lead")
+    if not (RELAY / "relay.py").exists():
+        raise Skip(f"no relay checkout at {RELAY}")
+    imap_since(addr, datetime.now(timezone.utc))          # the login works before anything is posted
+    was_on = bool(leadreply_state().get("projects", {}).get(DEMO, {}).get("on"))
+    notes, halves = [], []
+    try:
+        for half, switch in (("on", "on"), ("off", "off")):
+            leadreply(switch)
+            token = secrets.token_hex(3)
+            last_before = (leadreply_state().get("last", {}).get(DEMO) or {}).get("id")
+            since = datetime.now(timezone.utc)
+            png, shot_out = post_form(day, f"b121-quote-{half}", addr,
+                                      f"What does a weekly visit cost? (machine check {token})", token)
+            last = wait_lead(since, last_before)
+            if half == "on" and last:
+                time.sleep(20)                                # the mail is sent before the state is written; let it land
+            mails = [m for m in imap_since(addr, since - timedelta(minutes=1))
+                     if "juniper" in (m["from"] + m["subject"]).lower() or token in m["body"]]
+            halves.append({"half": half, "png": png, "last": last, "mails": mails, "shot": shot_out})
+    finally:
+        try:
+            leadreply("on" if was_on else "off")
+        except Skip as e:
+            notes.append(f"couldn't put the switch back: {e}")
+        code, out, err = run(["demo", "reset", "--project", DEMO], timeout=900)
+        notes.append("demo reset: " + ((out + err).strip().splitlines() or ["(no output)"])[-1][:200])
+
+    on, off = halves[0], halves[1] if len(halves) > 1 else {"last": None, "mails": [], "png": None}
+    on_mail = on["mails"][-1] if on["mails"] else None
+    on_ok = bool(on["last"] and on["last"].get("outcome") in ("sent", "answered") and on_mail and not DOLLAR.search(on_mail["body"]))
+    off_ok = bool(off["last"] and off["last"].get("outcome") == "off" and not off["mails"])
+    sections = []
+    for h in halves:
+        sections.append((f"LEAD-REPLY {h['half']}: the relay", json.dumps(h["last"], indent=1) if h["last"] else
+                         f"no tick on the lead within {MAIL_WAIT}s"))
+        sections.append((f"LEAD-REPLY {h['half']}: the seed inbox", "\n\n".join(
+            f"[{m['folder']}] {m['date']}\nFrom: {m['from']}\nSubject: {m['subject']}\n\n{m['body'][:1500]}" for m in h["mails"])
+            or "nothing arrived"))
+    sections.append(("after", "\n".join(notes)))
+    record = write_record(day, "b121-quote", "B121 quote form (demo-service), LEAD-REPLY on and off", sections)
+    first = (on_mail["body"].strip().split("\n")[0][:140] if on_mail else "")
+    saw = (f"ON: {'an email from ' + on_mail['from'] + ' (' + on_mail['folder'] + '), no price in it, opening ' + repr(first) if on_mail else 'no email reached the seed inbox'}"
+           f"; relay outcome {(on['last'] or {}).get('outcome', 'none')}. "
+           f"OFF: {'no email' if not off['mails'] else str(len(off['mails'])) + ' email(s), which is wrong'}, relay outcome "
+           f"{(off['last'] or {}).get('outcome', 'none')}{' (the owner texted only)' if off['last'] else ''}. The owner's texts went to Taylor's phone, "
+           f"so whether they read right is his to see. Switch back {'on' if was_on else 'off'}; {notes[-1]}")
+    png = on["png"] or record
+    r = result("b121-quote", "checked" if on_ok and off_ok else "failed", saw, png)
+    r["record"] = f"health/checks/{day}/b121-quote.html"
+    return r
+
+
+# ---- b104: the unconfirmed skip line --------------------------------------------------------------
+
+def unconfirmed_places(limit=3):
+    """Census places (services) whose reach row holds an unconfirmed email: the ones the line is for."""
+    census = Path(os.environ.get("LEADS_DB") or PROJECTS / "client-leads" / "wasatch.db")
+    db = sqlite3.connect(f"file:{census}?mode=ro", uri=True, timeout=5)
+    try:
+        rows = db.execute("SELECT r.place_id FROM reach r JOIN businesses b USING(place_id) "
+                          "WHERE b.segment='services' AND r.unconfirmed LIKE '%email%' ORDER BY r.place_id LIMIT ?",
+                          (limit,)).fetchall()
+    finally:
+        db.close()
+    return [r[0] for r in rows]
+
+
+def skip_lines(text):
+    return [l.strip() for l in (text or "").splitlines() if "unconfirmed" in l and "call-only" in l]
+
+
+def check_b104(day):
+    places = unconfirmed_places()
+    if not places:
+        raise Skip("no census place holds an unconfirmed email today, so there is nothing for the line to show")
+    kit = folder(day) / "b104-kit.json"
+    code, out, err = run(["leads", "kit", "--remote", "--segment", "services", "--census-only", "--no-save", "--json",
+                          "--place", *places], timeout=600)
+    if code != 0:
+        raise Skip(f"`leads kit` failed: {(err or out).strip()[:160]}")
+    kit.write_text(out)
+    code, sent, err = run(["outreach", "send", "--kit", str(kit), "--dry-run"], timeout=600)
+    found = skip_lines(sent + err)
+    png = write_record(day, "b104-skip", "B104 the unconfirmed, call-only skip line", [
+        ("command", f"leads kit --remote --segment services --census-only --no-save --json --place {' '.join(places)}\n"
+                    f"outreach send --kit {kit.name} --dry-run   (exit {code})"),
+        ("output", (sent + err).strip()),
+    ])
+    saw = (f"the dry run printed {len(found)} skip line(s): " + " | ".join(found)) if found else "no skip line printed"
+    return result("b104-skip", "checked" if found else "failed", saw, png)
+
+
+# ---- the ones that stay Taylor's -------------------------------------------------------------------
+
+NOT_BY_MACHINE = {
+    "b124-receipt": "needs a real phone: the check is a receipt photo texted to Patch as the owner; /admin/ledger's "
+                    "sign-in link goes to founder@patchlamp.com, an inbox no key here reads",
+    "b101-b102": "needs Taylor's sign-in: the owner's link lands in the founder@ Zoho box (no key here reads it), then "
+                 "B84 asks his authenticator and an owner chat row needs B86's laptop code, both on his phone by "
+                 "design; no test account exists on demo-service",
+    "b37-workbench": "needs a real phone: step 5 is a text to the demo line and step 7 a reply on his phone; step 8 "
+                     "is the owner's signed-in page at phone width, behind the same sign-in as B101/B102",
+}
+
+CHECKS = {"b119-feed": check_b119, "b121-quote": check_b121, "b104-skip": check_b104}
+ORDER = ["b119-feed", "b121-quote", "b104-skip", "b124-receipt", "b101-b102", "b37-workbench"]
+
+
+def run_one(name, day):
+    if name in NOT_BY_MACHINE:
+        return result(name, "skipped", NOT_BY_MACHINE[name])
+    try:
+        return CHECKS[name](day)
+    except Skip as e:
+        return result(name, "skipped", str(e))
+    except Exception as e:                       # one check's crash is that check's outcome, not the run's
+        return result(name, "skipped", f"the check crashed: {type(e).__name__}: {str(e)[:160]}")
+
+
+def cmd_list(_a):
+    for n in ORDER:
+        print(f"  {n:15} {'by machine' if n in CHECKS else 'Taylor’s — ' + NOT_BY_MACHINE[n][:90]}")
+    return 0
+
+
+def cmd_run(a):
+    names = ORDER if a.all else a.names
+    unknown = [n for n in names if n not in ORDER]
+    if unknown or not names:
+        print(f"checks: name one of {', '.join(ORDER)} or --all", file=sys.stderr)
+        return 2
+    day = a.date or date.today().isoformat()
+    bad = 0
+    for n in names:
+        r = run_one(n, day)
+        bad += r["status"] == "failed"
+        print(json.dumps(r) if a.json else f"{n}: {line(r, day)}", flush=True)
+    return 1 if bad else 0
+
+
+def cmd_doctor(_a):
+    ok = True
+
+    def say(good, text):
+        nonlocal ok
+        ok &= good
+        print(f"  {'ok ' if good else 'FIX'} {text}")
+    code, out, err = run(["shot", "doctor"], timeout=120)
+    say(code == 0, "shot doctor" + ("" if code == 0 else f": {(err or out).strip()[:120]}"))
+    addr = seed_inbox()
+    if not addr:
+        say(False, "INFRA_SEED_INBOXES isn't set (B121's lead address)")
+    else:
+        try:
+            imap_since(addr, datetime.now(timezone.utc))
+            say(True, f"seed inbox {addr} logs in over IMAP")
+        except Skip as e:
+            say(False, str(e))
+        except (OSError, imaplib.IMAP4.error) as e:
+            say(False, f"seed inbox {addr}: {type(e).__name__}: {str(e)[:120]}")
+    say((RELAY / "relay.py").exists(), f"relay checkout at {RELAY}")
+    say(WORKSPACE.exists(), f"workspace {WORKSPACE}")
+    return 0 if ok else 1
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(prog="checks", description=__doc__.split("\n")[0])
+    sub = p.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("list").set_defaults(fn=cmd_list)
+    r = sub.add_parser("run")
+    r.add_argument("names", nargs="*")
+    r.add_argument("--all", action="store_true")
+    r.add_argument("--date")
+    r.add_argument("--json", action="store_true")
+    r.set_defaults(fn=cmd_run)
+    sub.add_parser("doctor").set_defaults(fn=cmd_doctor)
+    if argv is None and len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help", "help"):
+        print(__doc__)
+        return 0
+    a = p.parse_args(argv)
+    return a.fn(a)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

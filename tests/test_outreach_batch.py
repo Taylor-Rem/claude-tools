@@ -617,7 +617,7 @@ class Sending(Base):
     def test_cap_zero_sends_nothing(self):
         self.run_it("send", "--batch", str(self.write_batch(self.picks(3))), "--go")
         r = self.run_it("tick", OUTREACH_NOW=f"{MONDAY}T10:00:00", OUTREACH_MAILBOX_PER_DAY="0")
-        self.assertIn("cap today is 0", r.stdout)
+        self.assertIn("OUTREACH_MAILBOX_PER_DAY is 0: the outreach pause holds every mailbox", r.stdout)   # B150
         self.assertEqual([], Mail.sent)
 
     def test_a_ramp_counts_from_the_warm_up_start(self):

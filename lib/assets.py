@@ -703,14 +703,9 @@ def breaches(snap, usage, default_cap):
         c = cap["mailboxes"][mb["name"]]
         u = usage.get(mb["name"], {})
         v = verdict(mb)
-        # B150: the lane chooses first letters by rule 1, so a cap on a mailbox whose contract forbids cold mail
-        # sends nothing new; it matters while that mailbox still has threads, which finish from it (bin/outreach's
-        # Workspace entry). Then the cap is mail going out under a contract that forbids it, and that's a breach.
-        if (v not in ("PERMITTED", "ACCEPTED_RISK") and c["cap"] > 0 and mb["state"] != "retired"
-                and int(u.get("open_threads", 0))):
-            out.append(f"mailbox {mb['name']} has a cold-mail cap of {c['cap']} today under contract {v} and "
-                       f"{u['open_threads']} open thread(s): their follow-ups would go through it (set its cap to 0 "
-                       "to hold them, or let them finish and retire it)")
+        if v not in ("PERMITTED", "ACCEPTED_RISK") and c["cap"] > 0 and mb["state"] != "retired":
+            out.append(f"mailbox {mb['name']} has a cold-mail cap of {c['cap']} today under contract {v}: the "
+                       "lane would send through it (set its cap to 0, or retire it)")
         if int(u.get("first_today", 0)) and not c["first_ok"]:
             out.append(f"mailbox {mb['name']} sent {u['first_today']} first letter(s) today though {c['first_why']}")
         if int(u.get("follow_today", 0)) and not c["follow_ok"]:

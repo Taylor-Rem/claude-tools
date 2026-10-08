@@ -243,9 +243,7 @@ class RulesTest(Base):
         lane(self.reg, provider="ws", verdict="PROHIBITED", boxes=("a@one.example",))
         self.assertEqual(assets.breaches(self.snap(), {}, 0), [])
         bad = assets.breaches(self.snap(), {"a@one.example": {"today": 1, "first_today": 1}}, 5)
-        self.assertFalse(any("cold-mail cap of 5" in b for b in bad))         # B150: no thread, the cap sends nothing
-        bad = assets.breaches(self.snap(), {"a@one.example": {"today": 1, "first_today": 1, "open_threads": 2}}, 5)
-        self.assertTrue(any("cold-mail cap of 5 today under contract PROHIBITED and 2 open" in b for b in bad))
+        self.assertTrue(any("cold-mail cap of 5" in b for b in bad))
         self.assertTrue(any("sent 1 first letter(s) today though contract PROHIBITED" in b for b in bad))
 
 
@@ -329,15 +327,12 @@ class OutreachAssetsTest(unittest.TestCase):
 
     def test_check_fails_when_workspace_could_send(self):
         self.run_it("assets", "--check")
-        # B150: first letters go by the registry's rule 1, so a cap on a PROHIBITED mailbox with no thread of its
-        # own sends nothing; with a thread it began, its follow-ups would go through it, and that's the breach
+        # B150: the env's cap never lands on a PROHIBITED row (the lane gives it 0), so a lane-wide 5 is quiet;
+        # a cap set on the row itself is the breach
         self.run_it("assets", "--check", OUTREACH_MAILBOX_PER_DAY="5")
-        state = self.tmp / "state"
-        state.mkdir(exist_ok=True)
-        (state / "sequences.json").write_text(json.dumps([{"id": "s1", "email": "x@q.example", "status": "active",
-                                                           "mailbox": "a@send.example", "touches": []}]))
+        self.run_it("assets", "set", "a@send.example", "--cap", "5")
         r = self.run_it("assets", "--check", expect=1, OUTREACH_MAILBOX_PER_DAY="5")
-        self.assertIn("cold-mail cap of 5 today under contract PROHIBITED and 1 open thread(s)", r.stdout)
+        self.assertIn("cold-mail cap of 5 today under contract PROHIBITED", r.stdout)
         st = self.run_it("status", OUTREACH_MAILBOX_PER_DAY="5").stdout
         self.assertIn("Registry (B141)", st)
         self.assertIn("google-workspace PROHIBITED", st)

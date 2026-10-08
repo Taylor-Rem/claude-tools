@@ -1329,18 +1329,57 @@ def lane(day=None, reg=None):
     "follow_ok", "follow_why", "provider", "entry"}}, "order": [name], "contract_limit": {provider: n},
     "first_today": {provider: n}, "first_capacity": n, "reg": reg}.
 
-    `entry` marks the Workspace lane's own mailboxes (OUTREACH_MAILBOXES). A thread one of them began keeps
-    finishing from it as before B150 (Flint's word, 2026-10-08: the thread's own mailbox, whatever its contract,
-    so a stranger's thread never has two senders), under OUTREACH_MAILBOX_PER_DAY; the registry's rule 2 would
-    hold a PROHIBITED mailbox's follow-ups, and `outreach assets --check` still flags a cap on one. No new thread
-    begins there: a first letter is the registry's rule 1 only."""
+    `entry` marks the Workspace lane's own mailboxes (OUTREACH_MAILBOXES); their caps count from
+    OUTREACH_WARMUP_START. The registry's rules apply to them as to any row: PROHIBITED never sends, follow-ups
+    included (plan 55 § 5.3, VISION § Decided 2026-10-07 #2), so a mailbox whose contract isn't PERMITTED or
+    ACCEPTED_RISK gets no share of the env's cap (a lane-wide OUTREACH_MAILBOX_PER_DAY never lands on it).
+
+    `hold`: OUTREACH_MAILBOX_PER_DAY set to 0 (or unset) is the outreach pause's one switch (VISION § Decided #14),
+    so it holds the whole lane and a row's own `cap_day` can't lift it; with the env cap above 0 a row's
+    `cap_day` applies (to lower it, or to give a Factory mailbox its own)."""
     day = day or today()
     reg = reg or registry()
     snap = assets.snapshot(reg, V.tenant)
     entry = entry_mailboxes(snap)
     kind, steps = parse_cap(toolbelt("OUTREACH_MAILBOX_PER_DAY", "0"))
+    default_cap = lane_default_cap(reg, snap, day)
+    usage = registry_usage(day)
+    cap = assets.capacity(snap, usage, default_cap)
+    paused = paused_boxes()
+    boxes = {}
+    for mb in snap["mailboxes"]:
+        c = cap["mailboxes"][mb["name"]]
+        fok, fwhy = c["follow_ok"], c["follow_why"]
+        boxes[mb["name"]] = {"row": mb, "cap": c["cap"], "used": c["today"], "first_ok": c["first_ok"],
+                             "first_why": c["first_why"], "follow_ok": fok, "follow_why": fwhy,
+                             "provider": (mb.get("provider") or {}).get("name"), "entry": mb["name"] in entry}
+    order = ([b for b in mailboxes() if b in boxes] + sorted(b for b in boxes if b in entry and b not in mailboxes())
+             + sorted(b for b in boxes if b not in entry))
+    hold = None
+    if kind == "flat" and steps <= 0:
+        hold = ("OUTREACH_MAILBOX_PER_DAY is 0: the outreach pause holds every mailbox, a registry cap included "
+                "(VISION § Decided #14; it lifts on Taylor's word)")
+    caps = {lvl: {r["name"]: r.get("cap_day") for r in snap["rows"] if r["kind"] == k}
+            for lvl, k in (("domains", "domain"), ("providers", "provider"))}
+    return {"boxes": boxes, "order": order, "contract_limit": cap["contract_limit"], "hold": hold,
+            "level_today": {lvl: {n: v["today"] for n, v in cap[lvl].items()} for lvl in ("domains", "providers")},
+            "level_cap": caps,
+            "first_today": {p: v["first_today"] for p, v in cap["providers"].items()},
+            "first_capacity": cap["first_capacity"], "reg": reg}
+
+
+def lane_default_cap(reg, snap, day=None):
+    """Each mailbox's cap from the env when its row sets none (a callable for lib/assets.py's mailbox_cap): 0 under
+    a contract that forbids cold mail; OUTREACH_WARMUP_START's ramp for the Workspace entry; for a Factory mailbox
+    the ramp from its own first day in `warming` (a flat number is the same for all). `lane()`, `outreach assets`
+    and the evening check all use it, so they agree on what each mailbox may send."""
+    day = day or today()
+    entry = set(entry_mailboxes(snap))
+    kind, steps = parse_cap(toolbelt("OUTREACH_MAILBOX_PER_DAY", "0"))
 
     def default_cap(mb):
+        if assets.verdict(mb) not in ("PERMITTED", "ACCEPTED_RISK"):
+            return 0                       # a contract that forbids cold mail gets no cap from the env
         if mb["name"] in entry:
             return cap_on(day)
         if kind == "flat":
@@ -1350,23 +1389,29 @@ def lane(day=None, reg=None):
             return ramp_cap(steps, (day - dt.date.fromisoformat(start)).days)
         except ValueError:
             return 0
-    usage = registry_usage(day)
-    cap = assets.capacity(snap, usage, default_cap)
-    paused = paused_boxes()
-    boxes = {}
-    for mb in snap["mailboxes"]:
-        c = cap["mailboxes"][mb["name"]]
-        fok, fwhy = c["follow_ok"], c["follow_why"]
-        if not fok and mb["name"] in entry and mb["name"] not in paused and mb["state"] not in ("paused", "retired"):
-            fok, fwhy = True, "the Workspace entry: a thread it began finishes from it"
-        boxes[mb["name"]] = {"row": mb, "cap": c["cap"], "used": c["today"], "first_ok": c["first_ok"],
-                             "first_why": c["first_why"], "follow_ok": fok, "follow_why": fwhy,
-                             "provider": (mb.get("provider") or {}).get("name"), "entry": mb["name"] in entry}
-    order = ([b for b in mailboxes() if b in boxes] + sorted(b for b in boxes if b in entry and b not in mailboxes())
-             + sorted(b for b in boxes if b not in entry))
-    return {"boxes": boxes, "order": order, "contract_limit": cap["contract_limit"],
-            "first_today": {p: v["first_today"] for p, v in cap["providers"].items()},
-            "first_capacity": cap["first_capacity"], "reg": reg}
+    return default_cap
+
+
+def level_room(ln, mb):
+    """The domain's and the contract's own `cap_day` (rule 3; NULL: only the mailboxes' caps bound them).
+    -> (ok, why-not)."""
+    row = ln["boxes"][mb]["row"]
+    for lvl, key in (("domains", "domain"), ("providers", "provider")):
+        p = row["parents"].get(key)
+        if not p:
+            continue
+        c = ln["level_cap"][lvl].get(p["name"])
+        if c is not None and ln["level_today"][lvl].get(p["name"], 0) >= int(c):
+            return False, f"{key} {p['name']} is at its cap ({c} today)"
+    return True, ""
+
+
+def level_count(ln, mb):
+    row = ln["boxes"][mb]["row"]
+    for lvl, key in (("domains", "domain"), ("providers", "provider")):
+        p = row["parents"].get(key)
+        if p:
+            ln["level_today"][lvl][p["name"]] = ln["level_today"][lvl].get(p["name"], 0) + 1
 
 
 def entry_mailboxes(snap):
@@ -1478,9 +1523,11 @@ class Google(Provider):
         """For the six-a-day kit lane, a first letter: the mailbox with the most room under today's cap among
         those the registry lets carry one (B150: active, PERMITTED, no contract past half)."""
         ln = lane()
+        if ln["hold"]:
+            raise ProviderError(ln["hold"])
         paused = paused_boxes()
         room = [(ln["boxes"][mb]["cap"] - sends_on(mb), mb) for mb in ln["order"]
-                if mb not in paused and first_room(ln, mb)[0]]
+                if mb not in paused and first_room(ln, mb)[0] and level_room(ln, mb)[0]]
         room = [x for x in room if x[0] > 0]
         if not room:
             raise ProviderError("no mailbox may take a first letter today: each is at its cap "
@@ -3205,7 +3252,21 @@ def run_tick(provider):
     if not ln["boxes"]:
         say("No mailboxes: the registry has none and OUTREACH_MAILBOXES is empty; nothing sends.")
         return 1
-    if not any(ln["boxes"][b]["cap"] > 0 for b in boxes):
+    if ln["hold"]:
+        say(ln["hold"] + "; nothing sends.")
+        seqs_save(seqs)
+        return 0
+    able = [b for b in boxes if ln["boxes"][b]["first_ok"] or ln["boxes"][b]["follow_ok"]]
+    if not able:
+        why = sorted({ln["boxes"][b]["first_why"] for b in ln["boxes"] if ln["boxes"][b]["first_why"]
+                      and ln["boxes"][b]["row"]["state"] != "retired"})
+        warming = sum(1 for b in ln["boxes"].values() if b["row"]["state"] in ("warming", "provisioning"))
+        say("No mailbox may carry a letter today"
+            + (f" ({warming} still warming)" if warming else "") + ": "
+            + "; ".join(why[:4]) + ". `outreach assets` has each one. Nothing sends.")
+        seqs_save(seqs)
+        return 0
+    if not any(ln["boxes"][b]["cap"] > 0 for b in able):
         rd = ramp_day(day)
         say(f"Each mailbox's cap today is 0 (OUTREACH_MAILBOX_PER_DAY"
             + (f", ramp day {rd}" if rd is not None else ", no warm-up start recorded")
@@ -3221,7 +3282,7 @@ def run_tick(provider):
         b = ln["boxes"][mb]
         cap = b["cap"]
         used = sends_on(mb, day)
-        if used >= cap:
+        if used >= cap or not level_room(ln, mb)[0]:
             continue
         st = ticks.get(mb) or {}
         if st.get("date") != day.isoformat():
@@ -3263,6 +3324,7 @@ def run_tick(provider):
         if send_touch(provider, chosen, mb):
             sent += 1
             used += 1
+            level_count(ln, mb)
             if first:
                 ln["first_today"][b["provider"]] = ln["first_today"].get(b["provider"], 0) + 1
         others = sum(1 for x in boxes if first_room(ln, x)[0] or ln["boxes"][x]["follow_ok"]) or 1
@@ -4522,6 +4584,8 @@ def batch_status():
         how = ""
         if b:
             how = (" · first letters: yes" if first_room(ln, mb)[0] else f" · first letters: no — {b['first_why'] or first_room(ln, mb)[1]}")
+            if not b["follow_ok"]:
+                how += f" · follow-ups: no — {b['follow_why']}"
             how += "" if b["entry"] else " · the Factory's"
         say(f"  {mb}: {sends_on(mb)} of {c} today" + (f" — PAUSED ({paused[mb].get('why')})" if mb in paused else "")
             + how)
@@ -4662,7 +4726,7 @@ def _fmt_reading(rd):
 def assets_view(reg, as_json=False):
     snap = assets.snapshot(reg, V.tenant)
     usage = registry_usage()
-    default_cap = cap_on()
+    default_cap = lane_default_cap(reg, snap)            # B150: the lane's own caps, so the check and the lane agree
     cap = assets.capacity(snap, usage, default_cap)
     bad = assets.breaches(snap, usage, default_cap)
     warn = assets.warnings(snap, today())
@@ -4679,13 +4743,13 @@ def assets_view(reg, as_json=False):
                 row.update(usage=usage.get(r["name"], {}), **{k: cap["mailboxes"][r["name"]][k] for k in
                                                               ("cap", "first_ok", "first_why", "follow_ok", "follow_why")})
             rows.append(row)
-        print(json.dumps({"tenant": V.tenant, "date": today().isoformat(), "default_cap": default_cap,
+        print(json.dumps({"tenant": V.tenant, "date": today().isoformat(), "default_cap": cap_on(),
                           "first_capacity": cap["first_capacity"], "contract_limit": cap["contract_limit"],
                           "domains": cap["domains"], "providers": cap["providers"], "rows": rows,
                           "breaches": bad, "warnings": warn}, indent=1))
         return bad
     say(f"Capacity registry — tenant {V.tenant} · {today().isoformat()} · a mailbox's cap defaults to "
-        f"{default_cap} today (OUTREACH_MAILBOX_PER_DAY)")
+        f"{cap_on()} today (OUTREACH_MAILBOX_PER_DAY)")
     kids = {}
     for r in snap["rows"]:
         kids.setdefault(r["parent_id"], []).append(r)
@@ -4749,8 +4813,8 @@ def assets_status_lines():
         reg = registry()
         snap = assets.snapshot(reg, V.tenant)
         usage = registry_usage()
-        cap = assets.capacity(snap, usage, cap_on())
-        bad = assets.breaches(snap, usage, cap_on())
+        cap = assets.capacity(snap, usage, lane_default_cap(reg, snap))
+        bad = assets.breaches(snap, usage, lane_default_cap(reg, snap))
     except Exception as exc:          # a view: never let it take `status` down with it
         say(f"\nRegistry (B141): couldn't read it ({exc})")
         return

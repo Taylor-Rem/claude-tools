@@ -24,7 +24,7 @@ human one is human. Read it before a live run, and correct it the day something 
 | 10 | seed inboxes (once, not per domain) | **Taylor** | filed by `certify` or `seeds` when `INFRA_SEED_INBOXES` is empty | new Google and Microsoft accounts need a person (phone verification) |
 | 11 | seed sends, seven days | machine | `infra seeds send --all`, then `infra seeds read --all`, once a weekday | a schedule line Flint adds after the first commit (not built in this row) |
 | 12 | CERTIFY | machine | `infra certify D`, or the daily `infra tick` for every domain past its date: every check below, then `active` | — |
-| 13 | the lane | machine | nothing: `outreach` reads the registry (B150), so an `active` mailbox under a PERMITTED contract takes first letters from the next working day, under `OUTREACH_MAILBOX_PER_DAY` (its ramp counted from the mailbox's own day in `warming`) or its own registry cap | no env edit; `infra drain D` takes it out the same way |
+| 13 | the lane | machine | nothing: `outreach` reads the registry (B150), so an `active` mailbox under a PERMITTED contract takes first letters from the next send window, under `OUTREACH_MAILBOX_PER_DAY` (its ramp counted from the mailbox's own day in `warming`) or its own registry cap | no env edit; `infra drain D` takes it out the same way |
 
 ## What `certify` checks (all of them, or the domain stays `warming`)
 

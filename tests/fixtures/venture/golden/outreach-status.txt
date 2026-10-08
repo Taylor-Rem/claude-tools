@@ -13,7 +13,7 @@ Email lane — 2026-09-28 · provider fake
 Batch lane (B90)
   warm-up start: not recorded (unset)
   OUTREACH_MAILBOX_PER_DAY: 0 -> cap today 0 a mailbox  (0: nothing sends)
-  taylor@patchlampmail.example: 0 of 0 today · first letters: no — contract PROHIBITED for cold mail
+  taylor@patchlampmail.example: 0 of 0 today · first letters: no — contract PROHIBITED for cold mail · follow-ups: no — contract PROHIBITED: it sends no cold mail, follow-ups included
   the Factory this week: 0 mailbox(es) joined the lane, 0 left; 0 active, 0 warming
   sequences: none
   AI-line test: not started; every letter carries the AI sentence beside the introduction (intro) · `outreach status --by variant`

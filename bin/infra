@@ -608,14 +608,18 @@ def clean_days(reg=None):
     """Days since the Factory's first committed unit with nothing wrong after it (None: no unit yet).
 
     Read from the registry's own events, the record of what happened, so no flag or setting can stand in for
-    it (B150): the first `warming` a Factory COMMIT wrote starts the count; an incident on a Factory row, a drain
-    on reputation, or a rollback after that restarts it. A VERIFY that failed before its COMMIT is not counted:
+    it (B150): the first `warming` a Factory COMMIT wrote starts the count; an incident on a Factory row (its
+    domains and mailboxes, and the tenant and provider above them), a drain on reputation, or a rollback after that restarts it. A VERIFY that failed before its COMMIT is not counted:
     DNS still propagating is the usual cause, and the re-run that commits is the compensation. history.jsonl's
     rollbacks and incidents count as well, and its commits stand in when the registry has none."""
     reg = reg or registry()
     doms = set(factory_domains(reg))
-    rows = {r["id"] for r in reg.rows(V.tenant)
+    snap = assets.snapshot(reg, V.tenant)
+    rows = {r["id"] for r in snap["rows"]
             if (r["kind"] == "domain" and r["name"] in doms) or (r["kind"] == "mailbox" and r["name"].split("@")[-1] in doms)}
+    for r in snap["rows"]:              # a vendor-level suspension restarts the count too: the tenant and provider rows
+        if r["kind"] == "domain" and r["name"] in doms:
+            rows |= {p["id"] for p in r["parents"].values()}
     evs = [e for e in reg.events(tenant=V.tenant, limit=1_000_000) if e["asset_id"] in rows]
     hist = read_jsonl(STATE / "history.jsonl")
     starts = [str(e["ts"])[:10] for e in evs if e["kind"] == "state" and e["to_state"] == "warming"
@@ -635,7 +639,16 @@ def clean_days(reg=None):
     return (today() - dt.date.fromisoformat(start)).days
 
 
-def purchase_authorised(go):
+FAKE_CLOCK_REFUSAL = ("INFRA_NOW is set (the test clock), so no real purchase is authorised: the clock decides the "
+                      "sixty clean days and the daily and weekly caps, and money is never spent on a made-up date. "
+                      "Unset it; the fake provider is the only one that buys under it")
+
+
+def purchase_authorised(go, provider=None):
+    """(ok, how). Taylor's go, or sixty clean days with INFRA_AUTO_PURCHASE=1. Never with the test clock set on a
+    real provider (B150): INFRA_NOW moves the clean days and the caps, so it can't be what lets money go."""
+    if os.environ.get("INFRA_NOW") and (provider or get("INFRA_PROVIDER", "infraforge")) != "fake":
+        return False, FAKE_CLOCK_REFUSAL
     if go:
         return True, "Taylor's go"
     days = clean_days()
@@ -761,7 +774,7 @@ def cmd_provision(args):
         h, why = halted()
         say("")
         say("Nothing was bought or changed." + (f" (The factory is halted: {why}.)" if h else ""))
-        auth, how = purchase_authorised(False)
+        auth, how = purchase_authorised(False, pname)
         if auth:
             say(f"Authorised by {how}: re-run with --go to apply.")
         else:
@@ -771,7 +784,9 @@ def cmd_provision(args):
     if args.dry_run:
         say("\nDRY RUN: the calls, none made")
     elif op.new or not j.get("applied"):
-        auth, how = purchase_authorised(args.go)
+        auth, how = purchase_authorised(args.go, pname)
+        if not auth and how == FAKE_CLOCK_REFUSAL:
+            raise Stop(how, EXIT_REFUSED)
         if not auth:
             raise Stop("a purchase waits on Taylor's go until sixty clean days with INFRA_AUTO_PURCHASE=1 (money: "
                        "the schedule earns the right to spend by sixty days of units that ran clean)", EXIT_REFUSED)
@@ -1095,7 +1110,7 @@ def cmd_certify(args):
         say(f"\nEvery check passes; without --dry-run {domain} and its mailboxes go `active`.")
         return
     h = certify_commit(reg, j, checks)
-    say(f"\n{domain} and its mailboxes are `active`; the lane sends from them from the next working day "
+    say(f"\n{domain} and its mailboxes are `active`; the lane sends from them from the next send window "
         "(B150: the registry's rotation, under OUTREACH_MAILBOX_PER_DAY's ramp from their own warm-up, or a cap set "
         "with `outreach assets set`).")
     say(f"HISTORY: {h['ts'][:10]} — infra certify {domain}: active.")
@@ -1432,7 +1447,12 @@ def cmd_tick(args):
         if due > t:
             say(f"  certify {j['domain']}: due {due.isoformat()}")
             continue
-        checks = certify_checks(reg, j)
+        try:
+            checks = certify_checks(reg, j)
+        except (Exception, SystemExit) as exc:     # Rule 8: say what couldn't be checked, and carry on
+            prop["problems"].append(f"certify {j['domain']}: couldn't run the checks ({type(exc).__name__}: {exc})")
+            say(f"  certify {j['domain']}: couldn't run the checks ({exc})")
+            continue
         bad = [f"{n}: {why}" for n, ok, why in checks if not ok]
         if bad:
             prop["certify_failed"][j["domain"]] = bad
@@ -1441,75 +1461,90 @@ def cmd_tick(args):
         if args.dry_run:
             say(f"  certify {j['domain']}: every check passes (dry run: not moved)")
             continue
-        certify_commit(reg, j, checks)
+        try:
+            certify_commit(reg, j, checks)
+        except (Exception, SystemExit) as exc:
+            prop["problems"].append(f"certify {j['domain']}: the checks passed but the commit failed "
+                                    f"({type(exc).__name__}: {exc})")
+            continue
         prop["certified"].append(j["domain"])
-        say(f"  certify {j['domain']}: every check passes; active, in the lane from the next working day")
+        say(f"  certify {j['domain']}: every check passes; active, in the lane from the next send window")
     if prop["certified"]:
-        prop["lines"].append(f"Factory: {', '.join(prop['certified'])} certified today; the lane sends from it the "
-                             "next working day.")
+        prop["lines"].append(f"Factory: {', '.join(prop['certified'])} certified today; the lane sends from it from "
+                             "the next send window.")
     # 2. the plan, on weekdays
-    if t.weekday() < 5 or args.force:
-        pool, src = pool_size(args, default_cmd=DEFAULT_POOL_CMD)
-        n, lines = plan_report(reg, pool, src)
-        for line in lines[1:]:
-            say(line)
-        prop.update(pool=pool, pool_source=src, units_wanted=n["units_wanted"], uncovered=n["uncovered"],
-                    clean_days=clean_days(reg))
-        if pool is None:
-            prop["problems"].append(f"no pool: {src}")
-        if n["units_wanted"]:
-            pname = get("INFRA_PROVIDER", "infraforge")
-            adapter = providers.get(pname, get, say=say)
-            want = min(2 * n["units_wanted"], n["units_left_this_week"])
-            names, checked, notes = pick_names(adapter, reg, max(want, 1))
-            prop["problems"] += notes
-            prop.update(names=names, names_checked=checked, provider=pname)
-            prop["commands"] = [f"infra provision --domain {d} --mailboxes 2 --provider {pname} --go" for d in names]
-            auth, how = purchase_authorised(False)
-            h, hwhy = halted()
-            days = prop["clean_days"]
-            if auth and not h and checked and want > 0:
-                prop["auto"] = how
-                for d in names[:want]:
-                    if args.dry_run:
-                        say(f"  would buy {d} ({how}); dry run")
-                        continue
-                    ns = argparse.Namespace(domain=d, mailboxes=2, provider=pname, prewarmed=False, go=False, auto=True,
-                                            dry_run=False, retry_purchase=False)
-                    try:
-                        cmd_provision(ns)
-                        prop["bought"].append(d)
-                    except Stop as exc:
-                        prop["problems"].append(f"{d}: {exc}")
-                        say(f"  {d}: {exc}")
-                        if exc.code in (EXIT_REFUSED, EXIT_HALTED, EXIT_UNCERTAIN):
-                            break        # a cap, the halt or an unknown purchase: no second name today
-                prop["lines"].append(f"Factory: bought {', '.join(prop['bought']) or 'nothing'} on its own ({how})"
-                                     + (f"; {'; '.join(prop['problems'][-2:])}" if prop["problems"] else "") + ".")
-            else:
-                if want <= 0:
-                    why = "this week's INFRA_UNITS_PER_WEEK is spent"
-                elif h:
-                    why = f"the factory is halted ({hwhy})"
-                elif auth and not checked:
-                    why = "the names couldn't be checked with the vendor"
+    try:
+        if t.weekday() < 5 or args.force:
+            pool, src = pool_size(args, default_cmd=DEFAULT_POOL_CMD)
+            n, lines = plan_report(reg, pool, src)
+            for line in lines[1:]:
+                say(line)
+            prop.update(pool=pool, pool_source=src, units_wanted=n["units_wanted"], uncovered=n["uncovered"],
+                        clean_days=clean_days(reg))
+            if pool is None:
+                prop["problems"].append(f"no pool: {src}")
+            if n["units_wanted"]:
+                pname = get("INFRA_PROVIDER", "infraforge")
+                adapter = providers.get(pname, get, say=say)
+                want = min(2 * n["units_wanted"], n["units_left_this_week"])
+                names, checked, notes = pick_names(adapter, reg, max(want, 1))
+                prop["problems"] += notes
+                prop.update(names=names, names_checked=checked, provider=pname)
+                prop["commands"] = [f"infra provision --domain {d} --mailboxes 2 --provider {pname} --go" for d in names]
+                auth, how = purchase_authorised(False, pname)
+                h, hwhy = halted()
+                days = prop["clean_days"]
+                if auth and not h and checked and want > 0:
+                    prop["auto"] = how
+                    for d in names[:want]:
+                        if args.dry_run:
+                            say(f"  would buy {d} ({how}); dry run")
+                            continue
+                        ns = argparse.Namespace(domain=d, mailboxes=2, provider=pname, prewarmed=False, go=False, auto=True,
+                                                dry_run=False, retry_purchase=False)
+                        try:
+                            cmd_provision(ns)
+                            prop["bought"].append(d)
+                        except Stop as exc:
+                            prop["problems"].append(f"{d}: {exc}")
+                            say(f"  {d}: {exc}")
+                            if exc.code in (EXIT_REFUSED, EXIT_HALTED, EXIT_UNCERTAIN):
+                                break        # a cap, the halt or an unknown purchase: no second name today
+                        except (Exception, SystemExit) as exc:   # die(), a provider or registry error: said, not raised
+                            prop["problems"].append(f"{d}: {type(exc).__name__}: {exc}")
+                            say(f"  {d}: couldn't ({type(exc).__name__}: {exc})")
+                            break
+                    prop["lines"].append(f"Factory: bought {', '.join(prop['bought']) or 'nothing'} on its own ({how})"
+                                         + (f"; {'; '.join(prop['problems'][-2:])}" if prop["problems"] else "") + ".")
                 else:
-                    why = (f"a purchase waits on Taylor's go until sixty clean days "
-                           f"({'no unit yet' if days is None else f'{days} of 60'}"
-                           + (", and INFRA_AUTO_PURCHASE isn't 1" if get("INFRA_AUTO_PURCHASE") != "1" else "") + ")")
-                prop["auto"] = None
-                prop["waits"] = why
-                cost = adapter.prices()
-                first = prop["commands"][0] if prop["commands"] else "infra provision --domain <a name> --mailboxes 2 --go"
-                prop["lines"].append(
-                    f"Factory: the pool ({pool}) outruns thirty days' capacity by {n['uncovered']:g} → "
-                    f"{n['units_wanted']} unit(s) of 2 domains × 2 mailboxes, about ${cost['domain_usd_year']:.0f} a "
-                    f"domain and ${2 * cost['mailbox_usd_month']:.0f} a month for its two mailboxes. {why[0].upper() + why[1:]}. "
-                    f"Taylor's go buys one: {first}"
-                    + ("" if checked else " (name not checked with the vendor)") + ".")
-        say(f"  clean days: {prop['clean_days'] if prop['clean_days'] is not None else 'no unit committed yet'} of {CLEAN_DAYS}")
-    else:
-        say("  plan: weekends only certify")
+                    if how == FAKE_CLOCK_REFUSAL:
+                        why = how
+                    elif want <= 0:
+                        why = "this week's INFRA_UNITS_PER_WEEK is spent"
+                    elif h:
+                        why = f"the factory is halted ({hwhy})"
+                    elif auth and not checked:
+                        why = "the names couldn't be checked with the vendor"
+                    else:
+                        why = (f"a purchase waits on Taylor's go until sixty clean days "
+                               f"({'no unit yet' if days is None else f'{days} of 60'}"
+                               + (", and INFRA_AUTO_PURCHASE isn't 1" if get("INFRA_AUTO_PURCHASE") != "1" else "") + ")")
+                    prop["auto"] = None
+                    prop["waits"] = why
+                    cost = adapter.prices()
+                    first = prop["commands"][0] if prop["commands"] else "infra provision --domain <a name> --mailboxes 2 --go"
+                    prop["lines"].append(
+                        f"Factory: the pool ({pool}) outruns thirty days' capacity by {n['uncovered']:g} → "
+                        f"{n['units_wanted']} unit(s) of 2 domains × 2 mailboxes, about ${cost['domain_usd_year']:.0f} a "
+                        f"domain and ${2 * cost['mailbox_usd_month']:.0f} a month for its two mailboxes. {why[0].upper() + why[1:]}. "
+                        f"Taylor's go buys one: {first}"
+                        + ("" if checked else " (name not checked with the vendor)") + ".")
+            say(f"  clean days: {prop['clean_days'] if prop['clean_days'] is not None else 'no unit committed yet'} of {CLEAN_DAYS}")
+        else:
+            say("  plan: weekends only certify")
+    except (Exception, SystemExit) as exc:      # Rule 8: the tick says what it couldn't and why, and files the rest
+        prop["problems"].append(f"the plan: {type(exc).__name__}: {exc}")
+        say(f"  the plan couldn't run ({type(exc).__name__}: {exc})")
     prop["line"] = " ".join(prop["lines"])
     for p in prop["problems"]:
         say(f"  couldn't: {p}")

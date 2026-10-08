@@ -1,6 +1,6 @@
 """B150: the Factory feeds the engine. A mailbox `infra certify` makes `active` joins the lane the next working
 day with no env change, and one `infra drain` takes out sends no first letter; the Workspace entry
-(OUTREACH_MAILBOXES, a PROHIBITED contract) begins no thread but finishes the ones it began.
+(OUTREACH_MAILBOXES, a PROHIBITED contract) sends nothing, follow-ups included.
 
     python3 -m unittest tests.test_factory_lane   (from claude-tools/)
 
@@ -81,7 +81,8 @@ class FactoryLane(tb.Base):
         self.tick_day("2026-10-16", end="12:00")
         self.assertEqual([], self.outbox())
         r = self.run_it("tick", OUTREACH_NOW="2026-10-16T12:30:00")
-        self.assertIn("0 sent", r.stdout)
+        self.assertIn("No mailbox may carry a letter today (2 still warming)", r.stdout)
+        self.assertIn("contract PROHIBITED for cold mail", r.stdout)
         # certified on Sunday the 18th; Monday the lane sends from it, with no env change
         self.certify_on(dt.date(2026, 10, 18))
         boxes = self.factory_boxes()
@@ -114,28 +115,39 @@ class FactoryLane(tb.Base):
         r = self.run_it("assets", "--check", OUTREACH_NOW=f"{tb.MONDAY}T17:30:00", OUTREACH_MAILBOX_PER_DAY="3")
         self.assertIn("rules: none breached", r.stdout)
 
-    def test_cap_zero_holds_the_factory_too(self):
+    def test_cap_zero_holds_the_factory_too_and_a_row_cap_cannot_lift_it(self):
+        """OUTREACH_MAILBOX_PER_DAY=0 is the outreach pause's one switch (VISION § Decided #14)."""
         self.certify_on(dt.date(2026, 10, 18))
         self.run_it("send", "--batch", str(self.write_batch(self.picks(3))), "--go")
+        self.run_it("assets", "set", sorted(self.factory_boxes())[0], "--cap", "2")   # the registry's own cap
+        r = self.run_it("tick", OUTREACH_NOW=f"{tb.MONDAY}T10:00:00", OUTREACH_MAILBOX_PER_DAY="0")
+        self.assertIn("OUTREACH_MAILBOX_PER_DAY is 0: the outreach pause holds every mailbox", r.stdout)
         self.tick_day(tb.MONDAY, OUTREACH_MAILBOX_PER_DAY="0")
         self.assertEqual([], self.outbox())
-        self.run_it("assets", "set", sorted(self.factory_boxes())[0], "--cap", "2")   # the registry's own cap
-        self.tick_day("2026-10-20", OUTREACH_MAILBOX_PER_DAY="0")
-        self.assertEqual(1, len(self.outbox()))           # its cap is 2; half of the contract's 2 is 1
+        # above 0, the row's cap applies: it lowers that mailbox to 2 while the other takes the env's 4
+        self.tick_day("2026-10-20", OUTREACH_MAILBOX_PER_DAY="4")
+        self.assertEqual(3, len(self.outbox()))           # half of 2 + 4 is 3
 
-    def test_the_workspace_entry_finishes_the_threads_it_began(self):
-        # a thread begun from the entry before B150's rule held (its provider then PERMITTED), then the verdict
+    def test_a_domains_own_cap_holds(self):
+        self.certify_on(dt.date(2026, 10, 18))
+        self.run_it("send", "--batch", str(self.write_batch(self.picks(9))), "--go")
+        self.run_it("assets", "set", f"domain:{D}", "--cap", "2")
+        self.tick_day(tb.MONDAY)
+        self.assertEqual(2, len(self.outbox()))
+
+    def test_a_prohibited_mailbox_holds_its_own_threads(self):
+        """PROHIBITED never sends, follow-ups included (plan 55 § 5.3, VISION § Decided #2): a thread the entry
+        began while its contract allowed it waits, and status says why."""
         self.env["OUTREACH_MAILBOX_PROVIDER"] = "fake"
         self.run_it("send", "--batch", str(self.write_batch(self.picks(3))), "--go")
         self.tick_day(tb.MONDAY, OUTREACH_MAILBOX_PER_DAY="4")
         self.assertEqual(3, len(self.outbox()))
         self.run_it("assets", "set", "fake", "--verdict", "PROHIBITED", "--clause", "test")
-        self.run_it("send", "--batch", str(self.write_batch(self.picks()[10:13], "b-two")), "--go",
-                    OUTREACH_NOW="2026-10-22T07:00:00")
         self.tick_day("2026-10-22", OUTREACH_MAILBOX_PER_DAY="4")
-        later = self.outbox()[3:]
-        self.assertEqual(3, len(later), "the threads didn't finish, or a new one began")
-        self.assertTrue(all(m["in_reply_to"] for m in later))
+        self.assertEqual(3, len(self.outbox()), "a follow-up went through a PROHIBITED mailbox")
+        st = self.run_it("status", OUTREACH_NOW="2026-10-22T12:00:00", OUTREACH_MAILBOX_PER_DAY="4").stdout
+        self.assertIn("follow-ups: no — contract PROHIBITED: it sends no cold mail, follow-ups included", st)
+        self.assertEqual(3, sum(1 for x in self.seqs() if x.get("status") == "active"))
 
 
 class FactoryRamp(unittest.TestCase):

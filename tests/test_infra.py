@@ -434,6 +434,34 @@ class TickTest(Base):
         self.assertNotIn("units_wanted", self.proposal())
 
 
+    def test_a_failure_inside_the_tick_is_said_and_the_proposal_still_written(self):
+        r = self.run_infra("tick", INFRA_POOL_CMD=self.pool(2000), INFRA_UNITS_PER_WEEK="lots")
+        self.assertIn("the plan couldn't run (SystemExit", r.stdout)
+        self.assertTrue(any("the plan: SystemExit" in x for x in self.proposal()["problems"]))
+
+    def test_an_incident_on_the_provider_restarts_the_clean_days(self):
+        self.provision()
+        reg = assets.Registry(self.tmp / "assets.db")
+        pid = reg.find("patchlamp", "provider:fake")["id"]
+        reg.incident(pid, "the vendor suspended the account", now=dt.datetime(2026, 11, 2, tzinfo=dt.timezone.utc))
+        self.run_infra("tick", INFRA_POOL_CMD=self.pool(2000), INFRA_NOW="2026-12-08T15:00:00+00:00",
+                       INFRA_AUTO_PURCHASE="1")
+        self.assertEqual(self.proposal()["clean_days"], 36)
+        self.assertEqual(self.proposal()["bought"], [])
+
+
+class FakeClockTest(Base):
+    """B150: INFRA_NOW (the test clock) never lets money go on a real provider, Taylor's go included."""
+
+    def test_the_test_clock_refuses_a_real_purchase(self):
+        self.run_infra("contract", "infraforge", "--verdict", "PERMITTED", "--clause", "test", "--word", "a test")
+        r = self.run_infra("provision", "--domain", "real-one.example", "--provider", "infraforge", "--go", ok=2,
+                           INFRA_PROVIDER="infraforge", INFRA_PROVIDER_API_KEY="k-test",
+                           INFRA_PROVIDER_API_BASE="http://127.0.0.1:9")
+        self.assertIn("INFRA_NOW is set (the test clock), so no real purchase is authorised", r.stderr)
+        self.assertFalse([l for l in self.ledger() if l.get("phase") == "intent"])
+
+
 class TickCertifyTest(CertifyTest):
     def test_the_tick_certifies_a_domain_past_its_date(self):
         self.ready()

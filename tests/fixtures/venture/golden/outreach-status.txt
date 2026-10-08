@@ -8,7 +8,7 @@ Email lane — 2026-09-28 · provider fake
   deliverability: 0 sent, 0 bounced (0.0%, cap 2.0%), 0 spam complaint(s) per the provider
   Postmaster trypatchlamp.com: no reading for yesterday (2026-09-27); not set up (POSTMASTER_CLIENT_ID, POSTMASTER_CLIENT_SECRET, POSTMASTER_REFRESH_TOKEN unset)
   suppressed: 0
-  templates: first: not in APPROVED; second: not in APPROVED; third: not in APPROVED; batch-first: not in APPROVED; batch-second: not in APPROVED; batch-third: not in APPROVED; answer-price: not in APPROVED; answer-how: not in APPROVED; answer-yes: not in APPROVED; answer-interested: not in APPROVED
+  templates: first: not in APPROVED; second: not in APPROVED; third: not in APPROVED; batch-first: not in APPROVED; batch-second: not in APPROVED; batch-third: not in APPROVED; p3-first: not in APPROVED; p3-second: not in APPROVED; p3-third: not in APPROVED; p4-first: not in APPROVED; p4-second: not in APPROVED; p4-third: not in APPROVED; p5-first: not in APPROVED; p5-second: not in APPROVED; p5-third: not in APPROVED; p6-first: not in APPROVED; p6-second: not in APPROVED; p6-third: not in APPROVED; answer-price: not in APPROVED; answer-how: not in APPROVED; answer-yes: not in APPROVED; answer-interested: not in APPROVED
 
 Batch lane (B90)
   warm-up start: not recorded (unset)

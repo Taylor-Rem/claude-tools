@@ -6231,9 +6231,10 @@ def best_email(rows, high=True):
 BATCH_UNCONFIRMED = []      # B104: the rows batch_rows left out because their address isn't `high`; call-only
 
 
-def batch_rows(segments):
+def batch_rows(segments, everyone=False):
     """Every business in these segments with a usable address: the census row joined to its best address, its site
-    facts and the pages the crawl read. Operational only; chains are dropped later with the other exclusions."""
+    facts and the pages the crawl read. Operational only; chains are dropped later with the other exclusions.
+    `everyone` (B135's --stats) keeps the ones with no usable address too, with `mail` None."""
     if not email_tables():
         return []
     conn = sqlite3.connect(f"file:{CENSUS}?mode=ro", uri=True)
@@ -6288,7 +6289,8 @@ def batch_rows(segments):
                                           "town": (d.get("locality") or (d.get("city") or "").replace(", Utah", "")).strip(),
                                           "why": held.get("place") or held.get("confidence")
                                           or "no place judgement yet (emails.py migrate)"})
-            continue
+            if not everyone:
+                continue
         d["mail"], d["facts"], d["pages"] = e, facts.get(d["place_id"]), pages.get(d["place_id"]) or []
         d["checks"] = checks.get(d["place_id"])
         d["town"] = (d.get("locality") or (d.get("city") or "").replace(", Utah", "")).strip()
@@ -6760,6 +6762,139 @@ def specifics(c, today, faults_):
     return []
 
 
+# ---- propositions (B135, plan ~/projects/plans/55-autonomous-acquisition.md § 1.1, § 5.12) ------------------------
+# Why we would write to a business is the venture's (ventures/<name>/propositions.py, read through V.propositions());
+# this half hands it the stored facts of one business and reads back the proposition, the experiment arm and the
+# sentences its letter says. The facts below are census facts with a source a stranger could check; the venture
+# chooses among them and never writes one. A venture with no propositions file runs on the one rule above.
+
+PROPS = V.propositions()
+# Google's primary types too broad to say back to an owner ("Google lists you as a service").
+LISTED_AS_SKIP = {"service", "store", "health", "establishment", "point_of_interest", "food", "finance",
+                  "education", "general_contractor", "non_profit_organization", "manufacturer", "corporate_office",
+                  "home_goods_store", "association_or_organization", "place_of_worship", "educational_institution"}
+
+
+def more_facts(c, today):
+    """True stored facts beside their Google standing, each {key, kind: fact, sentence, evidence}: how Google lists
+    them, the phone on their site matching the listing, the site on a secure address with a phone layout, and a
+    current copyright line (read again from the page before a letter says it). Only from reads under
+    FACT_MAX_AGE_DAYS old, and the site's only from their own home page."""
+    out = []
+    try:
+        read = dt.date.fromisoformat((c.get("refreshed_at") or "")[:10])
+    except ValueError:
+        read = None
+    t = (c.get("primary_type") or "").strip().lower()
+    if t and t not in LISTED_AS_SKIP and read and (today - read).days <= FACT_MAX_AGE_DAYS:
+        words = t.replace("_", " ")
+        out.append({"key": "listed_as", "kind": "fact",
+                    "sentence": f"Google lists you as {'an' if words[0] in 'aeiou' else 'a'} {words}",
+                    "evidence": clean_maps(c.get("google_maps_uri")) + f" (census read {read.isoformat()}: "
+                                                                       f"primary type {t})"})
+    f = c.get("facts") or {}
+    try:
+        seen = dt.date.fromisoformat(str(f.get("checked") or "")[:10])
+    except ValueError:
+        seen = None
+    if not f or not seen or (today - seen).days > FACT_MAX_AGE_DAYS \
+            or not own_home_page(c.get("website") or f.get("url"), f.get("final_url")):
+        return out
+    home = strip_tracking(f.get("final_url") or f.get("url") or "")
+    on = f"site read {seen.isoformat()}"
+    if f.get("phone_matches") == 1:
+        out.append({"key": "phone_matches", "kind": "fact",
+                    "sentence": "the phone number on your site matches your Google listing",
+                    "evidence": f"{home} ({on}: the site's phone is the listing's)"})
+    if f.get("https") == 1 and f.get("viewport") == 1:
+        out.append({"key": "secure_mobile", "kind": "fact",
+                    "sentence": "your site loads on a secure address and is set up for phones",
+                    "evidence": f"{home} ({on}: https, a viewport tag)"})
+    yr = f.get("copyright_year")
+    if yr and int(yr) >= today.year - 1:
+        out.append({"key": "site_current", "kind": "fact", "year": int(yr), "recheck_url": home,
+                    "sentence": f"the copyright line on your site says © {int(yr)}",
+                    "evidence": f"{home} ({on}: © {int(yr)})"})
+    return out
+
+
+_SIGNALS = None
+
+
+def signals_of(place_id):
+    """The tooling signals client-leads/scripts/signals.py stored for one business ([{signal, value, evidence}]), or
+    []. Handed to the venture for the record and used for nothing (VISION § Decided "Autonomous acquisition" #13)."""
+    global _SIGNALS
+    if _SIGNALS is None:
+        _SIGNALS = {}
+        if CENSUS.exists():
+            conn = sqlite3.connect(f"file:{CENSUS}?mode=ro", uri=True)
+            conn.row_factory = sqlite3.Row
+            try:
+                if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='signals'").fetchone():
+                    for r in conn.execute("SELECT place_id, signal, value, evidence FROM signals"):
+                        _SIGNALS.setdefault(r["place_id"], []).append(
+                            {"signal": r["signal"], "value": r["value"], "evidence": r["evidence"]})
+            finally:
+                conn.close()
+    return _SIGNALS.get(place_id, [])
+
+
+def prospect_of(c, today, packet, excluded=None):
+    """One business's stored facts, as the venture's `classify` and `letter` read them:
+    place_id; excluded (why it's never written to, or None); presence (businesses.presence_class); own_home (the
+    crawl read their own home page); host {vendor, kind, status, says (the vendor's name as vendor_prices.md says
+    it), url, why, checked} or None; packet (the faulted rule's two specifics, [] when it doesn't hold); faults
+    (every site fault found, said or waiting); facts (true things in their favour, each with its source); signals
+    (the tooling the census saw, passed and never read)."""
+    pid = c.get("place_id")
+    h = (hosts_table() or {}).get(pid)
+    host = None
+    if h:
+        host = {"vendor": h.get("vendor"), "kind": h.get("kind"), "status": h.get("status"), "url": h.get("url"),
+                "why": (h.get("evidence") or {}).get("why"), "checked": h.get("checked"),
+                "says": (vendor_prices().get(h.get("vendor") or "") or {}).get("says") or ""}
+    f = c.get("facts") or {}
+    found = [i["key"] for i in check_fault_items(c, today) + site_fault_items(c, today)]
+    return {"place_id": pid, "excluded": excluded, "presence": c.get("presence_class"),
+            "own_home": bool(f) and own_home_page(c.get("website") or f.get("url"), f.get("final_url")),
+            "host": host, "packet": packet or [], "faults": sorted(set(found)),
+            "facts": fact_items(c, today) + more_facts(c, today), "signals": signals_of(pid)}
+
+
+def faulted_id():
+    """The venture's proposition whose letters carry the faults packet (the rule as it was), or None."""
+    return next((k for k, v in PROPS.PROPOSITIONS.items() if v.get("packet") == "faults"), None) if PROPS else None
+
+
+def propose(c, today, excluded=None):
+    """Set c's proposition, experiment and the sentences its letter says; returns the proposition id (None with no
+    propositions file). Reads c["packet"] as batch_pool computed it."""
+    if not PROPS:
+        return None
+    p = prospect_of(c, today, c.get("packet"), excluded)
+    prop = PROPS.classify(p)
+    prop, exp, arm = PROPS.deal(c.get("place_id"), prop)
+    spec = PROPS.PROPOSITIONS.get(prop) or {}
+    c["proposition"], c["proposition_experiment"], c["proposition_arm"] = prop, exp, arm
+    c["prospect"] = p
+    c["specifics"] = PROPS.letter(prop, p) if spec.get("packet") == "slots" else []
+    return prop
+
+
+def confirm_specifics(c, today):
+    """Read again what a slot letter says and could have changed (a current copyright line); drop a fact the page no
+    longer bears out and ask the venture again. True when the letter can still be filled."""
+    for f in list(c["prospect"]["facts"]):
+        if f.get("key") == "site_current" and any(s.get("key") == "site_current" for s in c["specifics"]):
+            y, why = copyright_now(f.get("recheck_url"), today)
+            if not y or y != f.get("year"):
+                c["prospect"]["facts"].remove(f)
+                c.setdefault("dropped", []).append(f"site_current ({why})")
+    c["specifics"] = PROPS.letter(c["proposition"], c["prospect"])
+    return bool(c["specifics"])
+
+
 def client_marks():
     """What identifies a paying client (or a gift one): every address, domain and ten-digit phone in each
     clients/<slug>/NOTES.md and CLAUDE.md. The workspaces carry no place id, so these are the match."""
@@ -6872,9 +7007,11 @@ def shared_site_places():
     return {pid for h, ids in by.items() if len(ids) >= CHAIN_SITE_LISTINGS for pid in ids}
 
 
-def batch_pool(segments, today, live=False, places=None, want=None):
+def batch_pool(segments, today, live=False, places=None, want=None, proposition=None):
     """(eligible picks with their packets, skipped counts, live reads made). `want(c)` narrows the rows a live read
-    may be spent on (the chosen trade and city)."""
+    may be spent on (the chosen trade and city). `proposition` (B135) keeps only the businesses the venture puts
+    there, each with the sentences its letter says; None, or the faulted one, is the rule as it was."""
+    slots = bool(proposition and PROPS and (PROPS.PROPOSITIONS.get(proposition) or {}).get("packet") == "slots")
     rows = batch_rows(segments)
     why, chain_names_, mail_seen = batch_exclusions()
     supp, src = suppressed()
@@ -6913,7 +7050,7 @@ def batch_pool(segments, today, live=False, places=None, want=None):
         details = places.get(c["place_id"]) if places and places.fixture else cache_only.get(c["place_id"])
         c["all_faults"] = facts_packet(c, details, today)
         c["packet"] = specifics(c, today, c["all_faults"])
-        if len(c["all_faults"]) == 1 and not c["packet"] and live and places and not places.fixture \
+        if not slots and len(c["all_faults"]) == 1 and not c["packet"] and live and places and not places.fixture \
                 and details is None and (want is None or want(c)):
             details = places.get(c["place_id"])
             if details and details.get("businessStatus") not in (None, "OPERATIONAL"):
@@ -6921,12 +7058,24 @@ def batch_pool(segments, today, live=False, places=None, want=None):
                 continue
             c["all_faults"] = facts_packet(c, details, today)
             c["packet"] = specifics(c, today, c["all_faults"])
+        if slots:
+            got = propose(c, today)
+            if got != proposition:
+                skip(f"{got}, not {proposition}")
+                continue
+            if not c["specifics"]:
+                skip("too few true facts to fill its letter")
+                continue
+            out.append(c)
+            continue
         if not c["all_faults"]:
             skip("no fault to name")
             continue
         if not c["packet"]:
             skip("one fault and nothing else true to say")
             continue
+        if PROPS:
+            c["proposition"], c["proposition_experiment"], c["proposition_arm"] = faulted_id(), None, None
         out.append(c)
     return out, skipped
 
@@ -6972,8 +7121,8 @@ def town_match(c, city):
 
 
 def pick_json(c):
-    two = c["packet"][:2]
-    return {"place_id": c["place_id"], "name": clean_name(c["name"]), "category": c.get("category") or "",
+    two = (c.get("packet") or [])[:2]
+    out = {"place_id": c["place_id"], "name": clean_name(c["name"]), "category": c.get("category") or "",
             "segment": c.get("segment") or "", "city": c.get("town") or "", "phone": c.get("phone") or "",
             "site_url": strip_tracking((c.get("facts") or {}).get("url") or c.get("website") or ""),
             "maps_url": clean_maps(c.get("google_maps_uri")), "rating": c.get("rating"), "reviews": c.get("reviews"),
@@ -6983,14 +7132,33 @@ def pick_json(c):
             "email_evidence": c["mail"].get("evidence_url") or "", "email_why": c["mail"].get("why") or "",
             "faults": [{"key": f["key"], "kind": f["kind"], "sentence": f["sentence"], "evidence": f["evidence"]}
                        for f in two]}
+    if PROPS:
+        # B135: which proposition and experiment arm this business was dealt, and for a slot letter the sentences
+        # it says, each with its source (`specifics`), and the letter set that carries them
+        prop = c.get("proposition") or faulted_id()
+        out.update(proposition=prop, proposition_experiment=c.get("proposition_experiment"),
+                   proposition_arm=c.get("proposition_arm"))
+        if (PROPS.PROPOSITIONS.get(prop) or {}).get("packet") == "slots":
+            out["faults"] = []
+            out["specifics"] = [{k: s[k] for k in ("slot", "key", "sentence", "evidence")} for s in c["specifics"]]
+            out["letters"] = list(PROPS.PROPOSITIONS[prop]["letters"])
+    return out
 
 
 def batch_page(b, notes):
+    prop = b.get("proposition")
+    slot = bool(prop and PROPS and (PROPS.PROPOSITIONS.get(prop) or {}).get("packet") == "slots")
+    what = (f"{prop} ({PROPS.PROPOSITIONS[prop]['label']}), each with the true facts its letter says" if slot
+            else "two true specifics each (a fault first)")
     lines = [f"Batch {b['batch_id']} · {b['category']} · {b['city']} · {len(b['picks'])} "
-             f"business{'es' if len(b['picks']) != 1 else ''}, two true specifics each (a fault first)"]
+             f"business{'es' if len(b['picks']) != 1 else ''}, {what}"]
     lines += [f"({n})" for n in notes if n]
     lines.append("")
     for i, p in enumerate(b["picks"], 1):
+        if slot:
+            lines.append(f"{i}. {p['name']} — " + "; ".join(f"{s['slot']}: {s['sentence']}" for s in p["specifics"])
+                         + (f" [{p['proposition_experiment']}: {p['proposition_arm']}]" if p.get("proposition_experiment") else ""))
+            continue
         lines.append(f"{i}. {p['name']} — {p['faults'][0]['sentence']}; {p['faults'][1]['sentence']}")
     lines.append("")
     lines.append("Addresses, evidence and the JSON: `leads batch --last --json`. "
@@ -7012,8 +7180,20 @@ def cmd_batch(args):
         return
     if not email_tables():
         die("no address pass yet — the census has no `emails`/`site_facts` tables (B89, client-leads/scripts/emails.py)")
+    prop = (getattr(args, "proposition", None) or "").upper() or None
+    if prop:
+        if not PROPS:
+            die(f"--proposition: the venture {V.venture_name!r} has no propositions file "
+                f"({V.path.parent / 'propositions.py'}), so its batches run on the one rule; leave the flag off")
+        lanes = [k for k, v in PROPS.PROPOSITIONS.items() if v.get("lane") == "email"]
+        if prop not in PROPS.PROPOSITIONS:
+            die(f"--proposition is one of {', '.join(PROPS.PROPOSITIONS)}")
+        if prop not in lanes and not args.stats:
+            die(f"{prop} ({PROPS.PROPOSITIONS[prop]['label']}) isn't an email proposition; the ones with letters are "
+                f"{', '.join(lanes)}")
     if args.stats:
         return batch_stats(args, today)
+    slot = bool(prop and PROPS.PROPOSITIONS[prop].get("packet") == "slots")
     seg = (args.segment or "services").lower()
     if seg not in SEGMENTS:
         die(f"--segment is one of {', '.join(SEGMENTS)}")
@@ -7040,7 +7220,7 @@ def cmd_batch(args):
     def want(c):
         return town_match(c, city) and (not category or (c.get("category") or "").lower() == category.lower())
     picks, skipped = batch_pool([seg], today, live=bool(places), places=places,
-                                want=want if (city or category) else None)
+                                want=want if (city or category) else None, proposition=prop)
     if places and places.calls and not places.fixture:
         ledger_append({"ts": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()), "kind": "places_details",
                        "tool": "leads", "calls": places.calls, "cost_usd": round(places.calls * DETAILS_COST_USD, 3),
@@ -7051,7 +7231,8 @@ def cmd_batch(args):
     picks = [c for c in picks if want(c)]
     if not picks:
         die(f"no {seg} business{' in ' + args.city if args.city else ''}"
-            f"{' (' + args.category + ')' if args.category else ''} with an address and two true specifics is left "
+            f"{' (' + args.category + ')' if args.category else ''} "
+            f"{'in ' + prop + ' with an address and the facts its letter needs' if slot else 'with an address and two true specifics'} is left "
             f"({', '.join(f'{v} {k}' for k, v in sorted(skipped.items(), key=lambda kv: -kv[1])) or 'none with an address'})")
     groups = {}
     # One trade across the corridor (Flint 2026-10-01: the research is about the batch size and the specifics, not
@@ -7065,7 +7246,7 @@ def cmd_batch(args):
     for c in group:                     # the stored facts, read again from the page before a letter says them
         if len(chosen) >= n:
             break
-        if confirm_packet(c, today):
+        if (confirm_specifics(c, today) if slot else confirm_packet(c, today)):
             chosen.append(c)
         else:
             second_look += 1
@@ -7073,11 +7254,13 @@ def cmd_batch(args):
         die(f"no {seg} {cat} is left once the pages are read again ({second_look} of them no longer bear the fault "
             f"out; also {', '.join(f'{v} {k}' for k, v in sorted(skipped.items(), key=lambda kv: -kv[1])) or 'nothing else'}"
             f"); try another --category")
-    prefix = f"{today.isoformat()}-{seg}-{slugify(town)}-{slugify(cat)}"
+    prefix = f"{today.isoformat()}-{seg}-{prop.lower() + '-' if slot else ''}{slugify(town)}-{slugify(cat)}"
     seq = 1 + sum(1 for b in batches_log() if str(b.get("batch_id") or "").startswith(prefix + "-"))
     bid = f"{prefix}-{seq}"
     b = {"batch_id": bid, "date": today.isoformat(), "segment": seg, "category": cat, "city": town,
          "picks": [pick_json(c) for c in chosen]}
+    if slot:
+        b["proposition"] = prop
     mode = "fixture listings (a test)" if args.fixture else (
         f"{places.calls} listing{'s' if places.calls != 1 else ''} read live" if places else
         "stored site facts, listings read in the last week, the census's Google standing; no live reads")
@@ -7107,7 +7290,8 @@ def cmd_batch(args):
                                 "batch_id": bid, "segment": seg, "category": cat, "city": town,
                                 "place_ids": [p["place_id"] for p in b["picks"]],
                                 "names": [p["name"] for p in b["picks"]],
-                                "emails": [p["email"] for p in b["picks"]], "mode": "batch"}) + "\n")
+                                "emails": [p["email"] for p in b["picks"]], "mode": "batch",
+                                "proposition": prop or faulted_id()}) + "\n")
     if args.json:
         print(json.dumps(b, indent=1, ensure_ascii=False))
         return
@@ -7175,6 +7359,9 @@ def batch_stats(args, today):
         t = (c["segment"], c.get("category") or "?")
         by_trade[t] = by_trade.get(t, 0) + 1
     trades = sorted(by_trade.items(), key=lambda kv: -kv[1])
+    prop = (getattr(args, "proposition", None) or "").upper() or None
+    props = (proposition_stats(segs, today, why, chain_names_, supp, (c_emails, c_domains, c_phones))
+             if PROPS else None)
     if args.json:
         print(json.dumps({"date": today.isoformat(), "with_address": total, "with_a_fault": faulted,
                           "qualify": qual, "two_faults": two, "suppression": supp_src if supp is not None else None,
@@ -7184,8 +7371,11 @@ def batch_stats(args, today):
                           "site_checks": checked_rows, "faults_on": list(CHECK_FAULTS_PROVEN),
                           "waiting": {k: {"true_of": keys.get(k, 0), "would_add": waiting.get(k, 0)}
                                       for k in CHECK_FAULTS_WAITING},
-                          "trades": [{"segment": t[0], "category": t[1], "n": n} for t, n in trades]}, indent=1))
+                          "trades": [{"segment": t[0], "category": t[1], "n": n} for t, n in trades],
+                          **({"by_proposition": props} if props is not None else {})}, indent=1))
         return
+    if props is not None:
+        print_proposition_stats(props, only=prop)
     print(f"Email lane, {today}: {total} businesses with a usable address (MX ok, not tied by the page title alone), "
           f"{faulted} with at least one fault before the exclusions. {qual} qualify (two true specifics, at least one a fault, after the exclusions); {two} of them with two "
           f"faults. Stored site facts, listings cached this week and the census's Google standing (read within "
@@ -7206,6 +7396,57 @@ def batch_stats(args, today):
           f"{', '.join(CHECK_FAULTS_PROVEN)} (stored within {SITE_CHECK_MAX_DAYS} days, asked again at batch time). "
           "Waiting on thirty spot checks, never said: " + ", ".join(
               f"{k} true of {keys.get(k, 0)}, would add {waiting.get(k, 0)}" for k in CHECK_FAULTS_WAITING) + ".")
+
+
+def proposition_stats(segs, today, why, chain_names_, supp, marks):
+    """B135: every business in these segments by the venture's proposition (P6 as E1 deals it from P5's pool):
+    {id: {businesses, emailable, ready}}. Emailable is a usable address and not excluded (the same exclusions as a
+    batch); ready is emailable with the sentences its letter needs (the faults packet, or the venture's facts)."""
+    c_emails, c_domains, c_phones = marks
+    cache_only = Places(None, None)
+    out = {k: {"businesses": 0, "emailable": 0, "ready": 0} for k in PROPS.PROPOSITIONS}
+    seen_mail = set()
+    for c in batch_rows(segs, everyone=True):
+        reason = why.get(c["place_id"]) or ("a chain" if (c.get("name") or "").lower() in chain_names_ else None)
+        if c["mail"]:
+            addr = c["mail"]["address"].lower()
+            if not reason and addr in seen_mail:
+                reason = "the same address as another listing"
+            if not reason and supp and is_suppressed(c, supp):
+                reason = "suppressed"
+            if not reason and (addr in c_emails or addr.split("@")[-1] in c_domains
+                               or host_of(c.get("website") or "") in c_domains):
+                reason = "a client"
+            seen_mail.add(addr)
+        if not reason and re.sub(r"\D", "", c.get("phone") or "")[-10:] in c_phones:
+            reason = "a client"
+        c["packet"] = specifics(c, today, facts_packet(c, cache_only.get(c["place_id"]), today))
+        prop = propose(c, today, excluded=reason)
+        g = out.setdefault(prop, {"businesses": 0, "emailable": 0, "ready": 0})
+        g["businesses"] += 1
+        if c["mail"] and not reason:
+            g["emailable"] += 1
+            spec = PROPS.PROPOSITIONS.get(prop) or {}
+            g["ready"] += bool(c["packet"] if spec.get("packet") == "faults" else c["specifics"])
+    return out
+
+
+def print_proposition_stats(props, only=None):
+    email = [k for k, v in PROPS.PROPOSITIONS.items() if v.get("lane") == "email"]
+    total = sum(props[k]["emailable"] for k in email if k in props)
+    ready = sum(props[k]["ready"] for k in email if k in props)
+    print(f"By proposition (B135, {V.path.parent / 'propositions.py'}): {total} emailable in the email lanes, "
+          f"{ready} with every sentence their letter needs from stored facts")
+    print(f"  {'':<4} {'proposition':<44} {'businesses':>10} {'emailable':>9} {'ready':>6}  lane")
+    for k, v in PROPS.PROPOSITIONS.items():
+        if only and k != only:
+            continue
+        n = props.get(k) or {"businesses": 0, "emailable": 0, "ready": 0}
+        print(f"  {k:<4} {v['label'][:44]:<44} {n['businesses']:>10} {n['emailable']:>9} {n['ready']:>6}  "
+              f"{v.get('lane') or '-'}")
+    for eid, e in (PROPS.EXPERIMENTS or {}).items():
+        arms = " vs ".join(f"{a} {props.get(a, {}).get('emailable', 0)}" for a in e["arms"])
+        print(f"  {eid} ({e.get('name') or e.get('varied')}): {arms} emailable, dealt by {e.get('deal')}")
 
 
 def latest(folder):
@@ -7732,6 +7973,10 @@ def main():
     bt.add_argument("--last", action="store_true", help="reprint the last batch (with --json, its JSON)")
     bt.add_argument("--stats", action="store_true", help="how many with an address have two faults or more, by "
                                                          "segment, city and trade, and each fault key's count")
+    bt.add_argument("--proposition", metavar="P",
+                    help="B135: the businesses the venture's propositions put in P (ventures/<name>/propositions.py: "
+                         "today's are P1 faulted, the default; P3 agency-hosted; P4 self-built; P5 own site, no "
+                         "fault; P6 dealt from P5's pool, experiment E1), each with the true facts its letter says")
     bt.add_argument("--no-save", action="store_true", help="print only: no file, and no 56-day hold")
     bt.add_argument("--fixture", help="dir of <place_id>.json Place Details (tests)")
     bt.set_defaults(fn=cmd_batch)

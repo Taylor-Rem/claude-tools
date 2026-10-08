@@ -233,7 +233,14 @@ V = from_argv()                      # the business this works for (ventures/<na
 LETTERS = ("first", "second", "third")
 BATCH_LETTERS = ("batch-first", "batch-second", "batch-third")
 ANSWERS = ("answer-price", "answer-how", "answer-yes", "answer-interested")
-ALL_TEMPLATES = LETTERS + BATCH_LETTERS + ANSWERS
+# B135: the venture's propositions (ventures/<name>/propositions.py, plan 55 § 5.12). Each one with its own letter
+# set says the true facts `leads batch --proposition P` computed (its `specifics`, by slot) where the faulted rule's
+# letters say two faults; a venture with no propositions file has only the batch letters above.
+PROPS = V.propositions()
+PROP_SPECS = {k: v for k, v in (PROPS.PROPOSITIONS.items() if PROPS else ()) if v.get("packet") == "slots"
+              and v.get("letters")}
+PROP_LETTERS = tuple(n for v in PROP_SPECS.values() for n in v["letters"])
+ALL_TEMPLATES = LETTERS + BATCH_LETTERS + PROP_LETTERS + ANSWERS
 TOUCH_TEMPLATE = {0: "first", 3: "second", 10: "third"}
 # Three touches, never a fourth: four or more "more than triples" complaints (plan 37 § 3).
 BATCH_TOUCHES = ((0, "batch-first"), (3, "batch-second"), (10, "batch-third"))
@@ -260,7 +267,10 @@ AI_NONE_REFUSAL = ("a letter with no AI sentence goes out only inside the AI-lin
                    "AI is said, never hidden; the test is the one exception Taylor allowed, and the reply to a "
                    "yes says it)")
 # What every batch send row and the lead's pipeline event carry, so replies can be cut by any of them.
-OUTBOUND_FIELDS = ("variant", "fault_key", "segment", "letter_sha", "prebuilt")
+# B135 adds the proposition and the experiment that dealt it (E1) with its arm, under their own names: a reply row's
+# `experiment_id` / `arm` are the close test's (E3, B137), which comes after E1 in the same funnel.
+OUTBOUND_FIELDS = ("variant", "fault_key", "segment", "letter_sha", "prebuilt",
+                   "proposition", "proposition_experiment", "proposition_arm")
 # The floor below which `status --by` says "too few to decide" (plan 53 § Open: a guess, kept honest).
 TEST_FLOOR_DELIVERED = 100
 TEST_FLOOR_POSITIVE = 20
@@ -321,7 +331,8 @@ YES_RE = re.compile(r"^\s*(?:yes|yeah|yep|yup|sure|ok(?:ay)?|please do|go ahead|
                     r"|let'?s see it)(?:[\s,.!]+(?:please|thanks?|thank you|i'?d like (?:that|to see it)|sure"
                     r"|go ahead|send it|please do|sounds good|let'?s see it|yes))*[\s.!]*$", re.I)
 # A letter that says a site exists. Refused in code for a pick with no preview URL.
-BUILT_RE = re.compile(r"\b(?:I(?:'ve| have)? (?:built|made|put together)|I made you|already built|is (?:ready|live) at"
+# "The part I built is changing a site by text" (B135's P5 letter) is about the service, not a site: not a claim.
+BUILT_RE = re.compile(r"\b(?<!part )(?:I(?:'ve| have)? (?:built|made|put together)|I made you|already built|is (?:ready|live) at"
                       r"|here it is)\b", re.I)
 BOUNCE_FROM = ("mailer-daemon", "postmaster@", "no-reply@", "noreply@")
 BOUNCE_SUBJECTS = ("undeliverable", "delivery status notification", "mail delivery failed",
@@ -627,6 +638,10 @@ def sample_values(expiry=None):
         "fault_two": "your website has no layout for a phone, so it shows the desktop page shrunk",
         "fact": "",          # the fault-then-fact shape is checked too: see check_batch_template
         "see_url": "",
+        # B135: a slot letter's sentences as `leads batch --proposition P` gives them (the longest of each kind)
+        "host_vendor": "Jake's Web Design & Marketing", "builder": "Square Online",
+        "fact_one": "you have more than 80 Google reviews, averaging 4.9 stars",
+        "fact_two": "the phone number on your site matches your Google listing",
         "thread_subject": "two things I noticed about Highland Pool & Spa",
         # answer-interested (B137): the claim link, the call windows, the booking link under its own name
         "start_url": sample_link_base() + "-claim",   # a claim see-link (B137): on the sending domain too
@@ -674,6 +689,21 @@ def ai_placement_problems(body, variant, where=""):
     return []
 
 
+def is_batch_letter(name):
+    """A cold letter of the batch lane: the faulted rule's three, or a proposition's (B135)."""
+    return name in BATCH_LETTERS or name in PROP_LETTERS
+
+
+def letter_role(name):
+    """first | second | third: which touch a batch letter is."""
+    return name.rsplit("-", 1)[-1]
+
+
+def letter_slots(name):
+    """The placeholders a proposition's letter says from stored facts ((), for the faulted rule's letters)."""
+    return next((tuple(v.get("slots") or ()) for v in PROP_SPECS.values() if name in v["letters"]), ())
+
+
 def check_batch_template(name, none_ok=None):
     """The batch letters' rules (plan 37 § 3), checked on a rendered sample, both with and
     without a link base for the follow-ups, and (B132) once for each placement of the AI
@@ -686,10 +716,21 @@ def check_batch_template(name, none_ok=None):
     none_ok = ai_none_allowed() if none_ok is None else none_ok
     bad = []
     variants = [("no link base", sample_values())]
+    first = letter_role(name) == "first"
+    slots = letter_slots(name)
     if name == "batch-first":
         v = sample_values()
         v["fault_two"], v["fact"] = "", "more than 60 Google reviews, averaging 4.8"
         variants = [("two faults", sample_values()), ("a fault and a fact", v)]
+    elif slots:
+        # B135: a proposition's letter, with its slots filled as `leads batch` fills them ({fact} is one fact)
+        v = sample_values()
+        v["fact"] = v["fact_one"]
+        if first:
+            variants = [("its facts", v)]
+        else:
+            w = dict(v, see_url=sample_link_base())
+            variants = [("no link base", v), ("with a link base", w)]
     else:
         v = sample_values()
         v["see_url"] = sample_link_base()
@@ -713,16 +754,23 @@ def check_batch_template(name, none_ok=None):
             bad.append("empty subject")
         if BUILT_RE.search(body):
             bad.append(f"it says a site was built, and a batch pick has none yet{where}")
+        left = re.findall(r"\{([a-z_]+)\}", subject + body)
+        if left:
+            bad.append(f"a placeholder nothing fills: {', '.join(sorted(set(left)))}{where}")
         found = links(body)
-        if name == "batch-first":
+        if first:
             if found:
                 bad.append(f"the first letter carries a link ({found}); it asks for a reply only")
-            for f in ("fault_one", "fault_two", "fact"):
-                if vals[f] and vals[f] not in body:
+            for f in (slots if slots else ("fault_one", "fault_two", "fact")):
+                if vals[f] and vals[f] not in subject + body:
                     bad.append(f"{{{f}}} isn't in the letter verbatim{where}")
-            if vals["fact"] and "two things" in body:
+            if slots and not all(("{" + f + "}") in t.body + " ".join(x for _, x in t.subjects) for f in slots):
+                bad.append(f"it doesn't say every fact its proposition gives it ({', '.join(slots)})")
+            if not slots and vals["fact"] and "two things" in body:
                 bad.append(f"the letter calls a fact a thing to fix{where}")
-            if fill(OFFER_SENTENCE, vals) not in body:
+            # The faulted rule's offer sentence is fixed here; a proposition's letter says what its preview is for a
+            # business that already has a site, so its offer is the approved text itself (the hash in APPROVED).
+            if name == "batch-first" and fill(OFFER_SENTENCE, vals) not in body:
                 bad.append("the offer sentence isn't there exactly: " + OFFER_SENTENCE)
             if "just reply" not in low:
                 bad.append("the first letter doesn't ask for a reply (\"Just reply.\")")
@@ -747,7 +795,7 @@ def check_batch_template(name, none_ok=None):
 
 def check_template(name, none_ok=None):
     """The rules a letter has to keep, run against a rendered sample. Returns [problem, ...]."""
-    if name in BATCH_LETTERS:
+    if is_batch_letter(name):
         return check_batch_template(name, none_ok=none_ok)
     if name == CLOSE_TEMPLATE:
         return check_interested_template()
@@ -2012,7 +2060,9 @@ def first_send_gate(seq):
 
     The first month after the warm-up start is when a bounce costs the most, so in it
     accept-all and unknown addresses wait; with no verifier, only addresses the batch
-    marked MX-ok on the business's own domain go (plan 37 § 3)."""
+    marked MX-ok on the business's own domain go (plan 37 § 3), so a free-mail address waits
+    out the month unless the verifier (OUTREACH_VERIFY + its key) calls it ok: the gate opens
+    to verified free-mail on a verifier key (B135 counts on that for the propositions' pool)."""
     start, _ = warmup_start()
     first_month_ends = (start + dt.timedelta(days=NEW_SENDER_DAYS)) if start else None
     young = first_month_ends is None or today() < first_month_ends
@@ -2522,6 +2572,7 @@ def screen_batch(batch):
             continue
         name, email = p.get("name") or "?", str(p.get("email") or "").strip()
         faults = details_of(p)
+        spec = prop_spec(p)
         why = None
         if email and p.get("email_confidence") != "high":
             why = (f"unconfirmed address {email} ({p.get('email_place') or p.get('email_confidence') or 'no place judgement on it: a batch made before B104'}), "
@@ -2530,12 +2581,16 @@ def screen_batch(batch):
             why = "no address"
         elif is_suppressed(email, p.get("place_id"), supp):
             why = "suppressed"
+        elif spec is not None:                  # B135: a proposition's letter, filled from its specifics
+            why = specifics_problem(p, spec)
         elif len(faults) != 2:
             why = f"{len(faults)} sentence(s), not two"
         elif any(f["kind"] == "bad" for f in faults):
             why = "an entry's kind is neither fault nor fact (plan 37 § Contract)"
         elif faults[0]["kind"] != "fault":
             why = "no fault worth naming, only facts"
+        if why:
+            pass
         elif email.lower() in in_seq or str(p.get("place_id") or "") in in_seq:
             why = "already in a sequence"
         elif email.lower() in written:
@@ -2548,6 +2603,32 @@ def screen_batch(batch):
         seen.add(email.lower())
         plan.append((i, p, faults))
     return plan, skipped
+
+
+def prop_spec(p):
+    """The venture's proposition a pick carries, when its letters are a slot set (B135); None for the faulted rule's
+    picks (they carry `faults`), and for a pick from before B135."""
+    prop = p.get("proposition")
+    if not prop or prop not in (PROPS.PROPOSITIONS if PROPS else {}):
+        return None
+    return PROP_SPECS.get(prop)
+
+
+def specifics_problem(p, spec):
+    """Why a proposition pick can't be written to, or None: every slot its letters say is filled once, each with a
+    sentence and the stored fact it came from (`leads batch --proposition`), and nothing else."""
+    got = [x for x in p.get("specifics") or [] if isinstance(x, dict)]
+    by = {x.get("slot"): x for x in got}
+    missing = [sl for sl in spec["slots"] if not str((by.get(sl) or {}).get("sentence") or "").strip()]
+    if missing:
+        return f"no {', '.join(missing)} for its {p['proposition']} letter"
+    if any(not str((by.get(sl) or {}).get("evidence") or "").strip() for sl in spec["slots"]):
+        return "a fact with no source (each one comes from a stored fact, plan 55 § 1.1)"
+    if len(got) != len(spec["slots"]) or set(by) != set(spec["slots"]):
+        return f"its facts aren't the {p['proposition']} letter's ({', '.join(spec['slots'])})"
+    if any(links(str(x.get("sentence") or "")) for x in got):
+        return "a fact carries a link, and a first letter never does"
+    return None
 
 
 def new_sequence(batch, p, faults, variant=None, test=None):
@@ -2565,10 +2646,16 @@ def new_sequence(batch, p, faults, variant=None, test=None):
             "fault_key": (faults[0].get("key") if faults else "") or "",
             "segment": p.get("segment") or batch.get("segment") or "",
             "prebuilt": bool(str(p.get("preview_url") or "").strip()),
+            # B135: the venture's proposition, the experiment that dealt it (E1) and its arm, and a slot letter's
+            # sentences by slot; its touches are that proposition's letters
+            "proposition": p.get("proposition"), "proposition_experiment": p.get("proposition_experiment"),
+            "proposition_arm": p.get("proposition_arm"),
+            "slots": {x["slot"]: x["sentence"] for x in p.get("specifics") or []} if prop_spec(p) else {},
             "token": secrets.token_urlsafe(9), "mailbox": None, "status": "active", "why": "",
             "queued": today().isoformat(), "queued_ts": now_iso(),
             "touches": [{"touch": d, "template": t, "sent_ts": None, "message_id": None, "subject": None}
-                        for d, t in BATCH_TOUCHES]}
+                        for d, t in zip((d for d, _ in BATCH_TOUCHES),
+                                        (prop_spec(p) or {}).get("letters") or (t for _, t in BATCH_TOUCHES))]}
 
 
 # ---- the AI-line test (B132) ---------------------------------------------------------
@@ -2685,11 +2772,12 @@ def batch_values(seq, touch):
     second_kind = ((seq.get("kinds") or ["fault", "fault"]) + ["fault", "fault"])[1]
     first_subject = ((seq.get("touches") or [{}])[0].get("subject")
                      or f"two things I noticed about {name}")
+    faults = (seq.get("faults") or []) + ["", ""]
     return {
         "first": greeting_name(seq.get("first"), name), "business": name,
-        "fault_one": seq["faults"][0],
-        "fault_two": seq["faults"][1] if second_kind != "fact" else "",
-        "fact": seq["faults"][1] if second_kind == "fact" else "",
+        "fault_one": faults[0],
+        "fault_two": faults[1] if second_kind != "fact" else "",
+        "fact": faults[1] if second_kind == "fact" else "",
         "price_line": PRICE_LINE, "prices_line": PRICES_LINE,
         "phone": toolbelt(V.sender.phone_env) or "",
         "address": toolbelt(V.sender.postal_address_env) or "",
@@ -2697,6 +2785,7 @@ def batch_values(seq, touch):
         "thread_subject": re.sub(r"^(?:re:\s*)+", "", first_subject, flags=re.I),
         "preview_url": seq.get("preview_url") or "",
         **ai_values(seq.get("variant") or AI_DEFAULT),
+        **(seq.get("slots") or {}),                 # B135: a proposition letter's facts, by slot
     }
 
 
@@ -2710,14 +2799,15 @@ def claims_a_site(letter, preview_url):
     return bool(BUILT_RE.search(letter)) and not str(preview_url or "").strip()
 
 
-def batch_problems(none_ok=True):
+def batch_problems(none_ok=True, letters=BATCH_LETTERS):
     """What must hold before any batch letter leaves. `none_ok=False` when a new `none` sequence is
-    about to be dealt outside the AI-line test (it never is: deal_variants only deals it inside)."""
+    about to be dealt outside the AI-line test (it never is: deal_variants only deals it inside).
+    `letters` is the sets this batch's sequences use (B135: a proposition's own, approved on its own)."""
     bad = []
     if not toolbelt(V.sender.postal_address_env):
         bad.append(f"{V.sender.postal_address_env} isn't set (US law wants a postal address on every commercial email)")
-    bad += approval_problems(BATCH_LETTERS)
-    for n in BATCH_LETTERS:
+    bad += approval_problems(letters)
+    for n in letters:
         bad += [f"{n}: {b}" for b in check_template(n, none_ok=none_ok)]
     return bad
 
@@ -2736,8 +2826,11 @@ def cmd_send_batch(args, provider_name):
         skipped += [(i, p.get("name") or "?", "held back by Taylor") for i, p, _f in plan if i not in kept]
         plan = [x for x in plan if x[0] in kept]
     dealt = deal_variants(plan)
+    fixed = fixed_variants(plan)               # B135
+    dealt.update(fixed)
     test = ai_test()
-    problems = batch_problems(none_ok=("none" not in dealt.values()) or ai_none_allowed())
+    letters = batch_letters_of(plan)
+    problems = batch_problems(none_ok=("none" not in dealt.values()) or ai_none_allowed(), letters=letters)
     if test["open"] and plan:
         counts = {v: sum(1 for x in dealt.values() if x == v) for v in AI_VARIANTS}
         ai_line = "AI-line test open: " + ", ".join(f"{counts[v]} {v}" for v in AI_VARIANTS)
@@ -2752,9 +2845,9 @@ def cmd_send_batch(args, provider_name):
         f"{' · DRY RUN' if DRY else ''}")
     say(ai_line)
     if DRY:
-        tpl = load_template("batch-first")
         for i, p, faults in plan:
             seq = new_sequence(batch, p, faults, dealt[i])
+            tpl = load_template(seq["touches"][0]["template"])
             subject, letter = tpl.render(batch_values(seq, 0))
             say(f"\n{i}. {p.get('name')} <{p.get('email')}> — \"{subject}\" [AI sentence: {dealt[i]}]")
             say("".join(f"   | {l}\n" for l in letter.splitlines()), )
@@ -2770,9 +2863,13 @@ def cmd_send_batch(args, provider_name):
         say(f"\nWaiting on `go` for this batch — {len(plan)} businesses, each with the two facts its letter "
             "will carry:")
         for i, p, faults in plan:
-            say(f"  {i}. {p.get('name')} <{p.get('email')}>")
+            say(f"  {i}. {p.get('name')} <{p.get('email')}>"
+                + (f"  [{p['proposition']}" + (f", {p['proposition_experiment']} arm {p['proposition_arm']}"
+                                               if p.get("proposition_experiment") else "") + "]" if prop_spec(p) else ""))
             for f in faults:
                 say(f"       - {f['sentence']}" + ("  (a fact in their favour)" if f["kind"] == "fact" else ""))
+            for x in (p.get("specifics") or []) if prop_spec(p) else []:
+                say(f"       - {x['slot']}: {x['sentence']}  ({x['evidence']})")
         for i, name, why in skipped:
             say(f"  {i}. {name} — skipped: {why}")
         if problems:
@@ -2790,7 +2887,8 @@ def cmd_send_batch(args, provider_name):
             sys.exit(1)
         seqs = seqs_load()
         for i, p, faults in plan:
-            seqs.append(new_sequence(batch, p, faults, dealt[i], test["started"] if test["open"] else None))
+            seqs.append(new_sequence(batch, p, faults, dealt[i],
+                                     test["started"] if test["open"] and i not in fixed else None))
         seqs_save(seqs)
         append_jsonl(state_dir("batches.jsonl"), {"ts": now_iso(), "batch_id": batch["batch_id"], "queued": len(plan),
                                                   "skipped": len(skipped), "approved": "go",
@@ -2801,6 +2899,22 @@ def cmd_send_batch(args, provider_name):
         for i, name, why in skipped:
             say(f"  {i}. {name} — skipped: {why}")
         run_tick(provider)
+
+
+def fixed_variants(plan):
+    """B135: a pick whose proposition sits outside the AI-line test (E2 runs on the chore lanes only; plan 55 § 5.6)
+    carries the AI sentence where it always has, so E1's two arms differ in their frame alone."""
+    return {i: AI_DEFAULT for i, p, _ in plan if prop_spec(p) and not prop_spec(p).get("ai_test")}
+
+
+def batch_letters_of(plan):
+    """The letter sets a batch's sequences will use: the faulted rule's, a proposition's, or both."""
+    out = []
+    for _, p, _ in plan:
+        for n in (prop_spec(p) or {}).get("letters") or BATCH_LETTERS:
+            if n not in out:
+                out.append(n)
+    return tuple(out) or BATCH_LETTERS
 
 
 def next_gap(t, remaining, rng, end):
@@ -2865,14 +2979,17 @@ def send_touch(provider, seq, mb):
     say(f"  {now().strftime('%H:%M')} {mb} -> {seq.get('name')} <{seq['email']}> day {touch}: \"{subject}\"")
     leads_log(seq.get("name") or seq["email"], "messaged", f"email day {touch}: {subject}",
               place_id=seq.get("place_id"), email=seq["email"],
-              tags={k: row[k] for k in OUTBOUND_FIELDS})
+              tags={k: row[k] for k in OUTBOUND_FIELDS if row.get(k) is not None})
     return True
 
 
 def outbound_of(seq, sha):
-    """The five fields every batch send row carries (B132), so a reply can be cut by any of them."""
+    """The fields every batch send row carries (B132; B135's proposition and experiment arm), so a reply can be cut
+    by any of them."""
     return {"variant": seq.get("variant") or AI_DEFAULT, "fault_key": seq.get("fault_key") or "",
-            "segment": seq.get("segment") or "", "letter_sha": sha, "prebuilt": bool(seq.get("prebuilt"))}
+            "segment": seq.get("segment") or "", "letter_sha": sha, "prebuilt": bool(seq.get("prebuilt")),
+            "proposition": seq.get("proposition"), "proposition_experiment": seq.get("proposition_experiment"),
+            "proposition_arm": seq.get("proposition_arm")}
 
 
 def cmd_tick(args):
@@ -3940,7 +4057,7 @@ def cmd_suppress(args):
 
 
 BY_CUTS = {"variant": "variant", "fault": "fault_key", "segment": "segment", "letter": "letter_sha",
-           "prebuilt": "prebuilt"}
+           "prebuilt": "prebuilt", "proposition": "proposition"}
 
 
 def pipeline_file():
@@ -4033,9 +4150,60 @@ def cut_report(by):
         "clearly; the test goes on until Taylor says stop.")
 
 
+def proposition_report():
+    """`outreach status --by proposition` (B135): sent, replies, positive and paid per proposition, each per hundred
+    sent, a row for every proposition the venture has; then each experiment's arms side by side (E1: P5 against P6),
+    a cell under the experiment's floor of delivered letters saying "too few to decide". It reports; nothing here
+    stops or changes a test (that is Taylor's word)."""
+    if not PROPS:
+        say(f"The venture {V.venture_name!r} has no propositions file, so every letter is the batch lane's one rule; "
+            "`outreach status --by fault` cuts it.")
+        return
+    groups = cut_numbers("proposition")
+    sent = {}
+    seen = set()
+    for r in cold_sends():
+        if not r.get("batch_id") or int(r.get("touch") or 0) != 0:
+            continue
+        key = r.get("place_id") or str(r.get("email") or "").lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        g = cut_label("proposition", r)
+        sent[g] = sent.get(g, 0) + 1
+    say(f"By proposition — every business the batch lane wrote to, one business once; (per 100 sent). The "
+        f"propositions are the venture's ({V.path.parent / 'propositions.py'}).")
+    order = list(PROPS.PROPOSITIONS) + sorted(g for g in set(groups) | set(sent) if g not in PROPS.PROPOSITIONS)
+    empty = {"delivered": 0, "clicks": 0, "replies": 0, "positive": 0, "customers": 0}
+    say(f"  {'':<16} {'sent':>5}  {'delivered':>9}  {'replies':>12}  {'positive':>12}  {'paid':>12}  lane")
+    for g in order:
+        n, m = groups.get(g, empty), sent.get(g, 0)
+        spec = PROPS.PROPOSITIONS.get(g) or {}
+        label = g if not spec else f"{g} {spec['label']}"
+        say(f"  {label[:16]:<16} {m:>5}  {n['delivered']:>9}  {per_hundred(n['replies'], m):>12}  "
+            f"{per_hundred(n['positive'], m):>12}  {per_hundred(n['customers'], m):>12}  "
+            f"{spec.get('lane') or ('-' if spec else 'not a proposition')}")
+    for eid, e in (PROPS.EXPERIMENTS or {}).items():
+        floor = int(e.get("floor_delivered") or TEST_FLOOR_DELIVERED)
+        say(f"{eid} ({e.get('name') or e.get('varied')}): {' against '.join(e['arms'])}, dealt by {e.get('deal')}; "
+            f"read on {e.get('primary_endpoint') or 'the positive reply'}; a cell under {floor} delivered is too few "
+            "to decide")
+        cells = []
+        for a in e["arms"]:
+            n, m = groups.get(a, empty), sent.get(a, 0)
+            if n["delivered"] < floor:
+                cells.append(f"{a}: too few to decide ({n['delivered']} delivered of {floor})")
+            else:
+                cells.append(f"{a}: {m} sent, {n['delivered']} delivered, replies {per_hundred(n['replies'], m)}, "
+                             f"positive {per_hundred(n['positive'], m)}, paid {per_hundred(n['customers'], m)}")
+        say("  " + "  |  ".join(cells))
+
+
 def cmd_status(args):
     if getattr(args, "by", None) == "arm":
         return arm_report()                     # B137
+    if getattr(args, "by", None) == "proposition":
+        return proposition_report()             # B135
     if getattr(args, "by", None):
         return cut_report(args.by)
     provider = pick_provider(args.provider)
@@ -4623,11 +4791,13 @@ def cmd_approve(args):
     for n in names:
         t = load_template(n)
         vals = sample_values()
-        if n in ("batch-second", "batch-third"):
+        if is_batch_letter(n) and letter_role(n) in ("second", "third"):
             vals["see_url"] = sample_link_base()     # shown with the link; checked both ways
+        if letter_slots(n):
+            vals["fact"] = vals["fact_one"]          # B135: a proposition's {fact} is one fact
         # B132: a batch letter goes out three ways during the AI-line test and the answer to a yes two ways;
         # each is the text Taylor is approving, so each is shown
-        if n in BATCH_LETTERS:
+        if is_batch_letter(n):
             shown = [(f" — AI sentence {v}" + (" (only inside the AI-line test)" if v == "none" else ""),
                       {**vals, **ai_values(v)}) for v in ("intro", "foot", "none")]
         elif n == "answer-yes":
@@ -4640,7 +4810,7 @@ def cmd_approve(args):
             say(f"Subject: {subject}")
             say(body)
         bad = check_template(n, none_ok=True)
-        if n in BATCH_LETTERS and ai_kept_none():
+        if is_batch_letter(n) and ai_kept_none():
             say(f"  NOTE: {AI_NONE_KEPT}.")
         money = money_in(n)
         if bad:
@@ -4780,7 +4950,7 @@ def cmd_doctor(args):
             continue
         t = load_template(n)
         bad = check_template(n, none_ok=True)     # the `none` rule is about sending: see the AI-line test line
-        if n in BATCH_LETTERS and ai_kept_none():
+        if is_batch_letter(n) and ai_kept_none():
             say(f"  {n}: `none` goes out outside any test — {AI_NONE_KEPT}")
         state = "approved" if appr.get(n) == t.sha else ("STALE — the text changed" if n in appr else "NOT APPROVED")
         say(f"  {n}: {state}; sha {t.sha[:12]}…; {'rules ok' if not bad else 'PROBLEMS: ' + '; '.join(bad)}")
@@ -4995,7 +5165,8 @@ def main():
 
     s = sub.add_parser("status", parents=[common], help="today's sends, the caps, the replies, the bounce rate")
     s.add_argument("--by", choices=(*BY_CUTS, "arm"), help="B132: delivered → clicks → replies → positive → customers "
-                                                         "per group, each per hundred delivered")
+                                                         "per group, each per hundred delivered; B135: "
+                                                         "`proposition` per hundred sent, E1's arms side by side")
     s.set_defaults(fn=cmd_status)
 
     s = sub.add_parser("assets", parents=[common], help="B141: the capacity registry — mailbox, domain, tenant, provider")

@@ -102,7 +102,8 @@ IN_LEHI_PLUMBERS = {"FX_B01", "FX_B02", "FX_B06", "FX_B07", "FX_B08"}
 CONTRACT_TOP = {"batch_id", "date", "segment", "category", "city", "picks"}
 CONTRACT_PICK = {"place_id", "name", "category", "segment", "city", "phone", "site_url", "maps_url", "rating",
                  "reviews", "email", "email_kind", "email_evidence", "email_why", "faults",
-                 "email_confidence", "email_place"}           # B104: added, never renamed; only `high` is picked
+                 "email_confidence", "email_place",           # B104: added, never renamed; only `high` is picked
+                 "proposition", "proposition_experiment", "proposition_arm"}   # B135: added (the faulted rule's is P1, no arm)
 CONTRACT_FAULT = {"key", "kind", "sentence", "evidence"}
 
 FAKE_OUTREACH = '''#!/usr/bin/env python3

@@ -109,6 +109,36 @@ class Venture(Section):
             self._prices = mod
         return self._prices
 
+    def propositions(self):
+        """The venture's propositions module (ROADMAP B135, plan 55 § 5.12): `propositions.py` beside venture.toml,
+        or None when the venture has none (its batches then run on the engine's one rule, as before B135). It is
+        the venture's answer to "why would we write to this business, and what true thing do we say": the engine
+        hands it the stored facts of one prospect and reads back an id, a letter set and the sentences, so a second
+        venture ships its own rules without an engine change. The interface it keeps:
+
+            PROPOSITIONS  {id: {"label", "lane": "email"|"card"|None, "letters": (first, second, third) | None,
+                                "packet": "faults" | "slots", "slots": (placeholder, ...), "ai_test": bool}}
+            EXPERIMENTS   {id: {"population", "varied", "arms", "deal", "primary_endpoint", "floor_delivered", ...}}
+            classify(prospect) -> id         prospect: the engine's stored facts of one business (bin/leads
+                                              `prospect_of` says each key)
+            deal(place_id, id) -> (id, experiment_id | None, arm | None)
+            letter(id, prospect) -> [{"slot", "key", "sentence", "evidence"}]   ([] when its letter can't be
+                                              filled from true stored facts: the business isn't written to)"""
+        if getattr(self, "_props", False) is False:
+            path = self.path.parent / "propositions.py"
+            if not path.exists():
+                self._props = None
+            else:
+                spec = importlib.util.spec_from_file_location(
+                    f"venture_props_{self.venture_name.replace('-', '_')}", path)
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                for need in ("PROPOSITIONS", "EXPERIMENTS", "classify", "deal", "letter"):
+                    if not hasattr(mod, need):
+                        raise VentureError(f"{path} has no {need} (lib/venture.py `propositions` says the interface)")
+                self._props = mod
+        return self._props
+
     def price_needles(self):
         """Every dollar amount the prices module says ("$7", "$1,500"), for tests/test_portable.py."""
         mod = self.prices()

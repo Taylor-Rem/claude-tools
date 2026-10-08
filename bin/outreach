@@ -166,7 +166,11 @@ time left in the window divided by the letters left, never under
 OUTREACH_MIN_GAP_MINUTES, weekdays inside OUTREACH_SEND_HOURS only. Follow-ups go
 before new first letters and count toward the same cap.
 
-  OUTREACH_MAILBOXES           the sending addresses, comma-separated
+  OUTREACH_MAILBOXES           the Workspace entry's addresses, comma-separated. Since B150 the lane's
+                               mailboxes are the registry's (`outreach assets`): a first letter goes only
+                               through an `active` one under a PERMITTED contract, half per contract at most,
+                               and a follow-up from its thread's own mailbox; a Factory mailbox joins on
+                               `infra certify` and leaves on `infra drain`, with no env edit
                                (e.g. taylor@{v:outreach.domains.0},t.remund@{v:outreach.domains.0},...)
   OUTREACH_APP_PASSWORD_<ADDR> one Google app password per mailbox, the address upper-cased
                                with every other character an underscore:
@@ -1333,7 +1337,7 @@ def lane(day=None, reg=None):
     day = day or today()
     reg = reg or registry()
     snap = assets.snapshot(reg, V.tenant)
-    entry = mailboxes()
+    entry = entry_mailboxes(snap)
     kind, steps = parse_cap(toolbelt("OUTREACH_MAILBOX_PER_DAY", "0"))
 
     def default_cap(mb):
@@ -1358,10 +1362,20 @@ def lane(day=None, reg=None):
         boxes[mb["name"]] = {"row": mb, "cap": c["cap"], "used": c["today"], "first_ok": c["first_ok"],
                              "first_why": c["first_why"], "follow_ok": fok, "follow_why": fwhy,
                              "provider": (mb.get("provider") or {}).get("name"), "entry": mb["name"] in entry}
-    order = [b for b in entry if b in boxes] + sorted(b for b in boxes if b not in entry)
+    order = ([b for b in mailboxes() if b in boxes] + sorted(b for b in boxes if b in entry and b not in mailboxes())
+             + sorted(b for b in boxes if b not in entry))
     return {"boxes": boxes, "order": order, "contract_limit": cap["contract_limit"],
             "first_today": {p: v["first_today"] for p, v in cap["providers"].items()},
             "first_capacity": cap["first_capacity"], "reg": reg}
+
+
+def entry_mailboxes(snap):
+    """The Workspace lane's own mailboxes: OUTREACH_MAILBOXES, and every registry mailbox under the provider that
+    entry sends through (registry_provider_key(); one dropped from the env list is still the entry's). Everything
+    else in the registry is the Factory's."""
+    key = registry_provider_key()
+    return list(dict.fromkeys(mailboxes() + [m["name"] for m in snap["mailboxes"]
+                                             if (m.get("provider") or {}).get("name") == key]))
 
 
 def first_room(ln, mb):
@@ -1382,7 +1396,9 @@ def factory_week_line(reg=None):
     Factory's mailboxes are the registry's rows that are not the Workspace entry."""
     try:
         reg = reg or assets.Registry(registry_path())
-        rows = [r for r in reg.rows(V.tenant) if r["kind"] == "mailbox" and r["name"] not in mailboxes()]
+        snap = assets.snapshot(reg, V.tenant)
+        entry = set(entry_mailboxes(snap))
+        rows = [r for r in snap["mailboxes"] if r["name"] not in entry]
         since = (today() - dt.timedelta(days=7)).isoformat()
         mv = assets.week_moves(reg, V.tenant, since, names={r["name"] for r in rows})
     except Exception as exc:

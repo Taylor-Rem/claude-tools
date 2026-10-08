@@ -170,7 +170,11 @@ time left in the window divided by the letters left, never under
 OUTREACH_MIN_GAP_MINUTES, weekdays inside OUTREACH_SEND_HOURS only. Follow-ups go
 before new first letters and count toward the same cap.
 
-  OUTREACH_MAILBOXES           the sending addresses, comma-separated
+  OUTREACH_MAILBOXES           the Workspace entry's addresses, comma-separated. Since B150 the lane's
+                               mailboxes are the registry's (`outreach assets`): a first letter goes only
+                               through an `active` one under a PERMITTED contract, half per contract at most,
+                               and a follow-up from its thread's own mailbox; a Factory mailbox joins on
+                               `infra certify` and leaves on `infra drain`, with no env edit
                                (e.g. taylor@trypatchlamp.com,t.remund@trypatchlamp.com,...)
   OUTREACH_APP_PASSWORD_<ADDR> one Google app password per mailbox, the address upper-cased
                                with every other character an underscore:

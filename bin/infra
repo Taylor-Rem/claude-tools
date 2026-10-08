@@ -1282,8 +1282,10 @@ def cmd_resume(args):
 SALESFORGE_IDS = ("INFRA_SALESFORGE_WORKSPACE", "INFRA_WARMFORGE_WORKSPACE")
 
 
-def warmup_pending(domain=None):
-    """[(op journal, address, step status)] for every Factory mailbox whose warm-up isn't done by the machine."""
+def warmup_pending(domain=None, by_hand=None):
+    """[(op journal, address, step status)] for every Factory mailbox whose warm-up isn't done. A step whose filed
+    click is ticked in TAYLOR-TODO was done (by hand, or by an export someone ran) and is never called again: a
+    second export could enrol the mailbox twice. Those go into `by_hand` when a list is passed."""
     out = []
     for j in all_ops():
         if j.get("kind") != "provision" or j.get("prewarmed") or j.get("phase") == "rolled_back":
@@ -1292,14 +1294,25 @@ def warmup_pending(domain=None):
             continue
         for addr in j.get("assets", {}):
             st = (j.get("steps") or {}).get(f"warmup:{addr}") or {}
-            if st.get("status") != "done":
-                out.append((j, addr, st.get("status") or "not started"))
+            if st.get("status") == "done":
+                continue
+            if st.get("status") == "human" and todo_state(f"warmup:{addr}") == "done":
+                if by_hand is not None:
+                    by_hand.append((j, addr))
+                continue
+            out.append((j, addr, st.get("status") or "not started"))
     return out
 
 
 def cmd_warmup(args):
-    pend = warmup_pending(args.domain.lower() if args.domain else None)
+    by_hand = []
+    pend = warmup_pending(args.domain.lower() if args.domain else None, by_hand)
     have = [k for k in SALESFORGE_IDS if get(k)]
+    for j, addr in by_hand:
+        say(f"  {addr}: done (its click is ticked in TAYLOR-TODO), not called again")
+        if args.go:                         # the journal catches up with what happened; nothing external
+            op = Op(j["id"], None)
+            op.mark(f"warmup:{addr}", "done", verified_by="ticked in TAYLOR-TODO")
     say(f"warm-up: {len(pend)} Factory mailbox(es) wait on it" + ("" if pend else "; nothing to do"))
     for j, addr, st in pend:
         say(f"  {addr} ({j['domain']}): {st}")

@@ -475,6 +475,16 @@ class WarmupTest(Base):
         self.assertFalse([k for k in j["human"] if k.startswith("warmup:")])
         self.assertIn("nothing to do", self.run_infra("warmup", "--go", INFRA_FAKE_WARMUP="export", **self.IDS).stdout)
 
+    def test_a_click_ticked_in_todo_is_never_exported_again(self):
+        self.provision(INFRA_FAKE_WARMUP="export")
+        (self.tmp / "TODO.md").write_text(self.todo().replace("- [ ] **Connect", "- [x] **Connect"))
+        r = self.run_infra("warmup", "--go", INFRA_FAKE_WARMUP="export", **self.IDS)
+        self.assertIn("not called again", r.stdout)
+        self.assertIn("nothing to do", r.stdout)
+        self.assertEqual(self.fake().get("exports"), None)
+        j = json.loads((self.tmp / "infra" / "ops" / f"provision-{D}.json").read_text())
+        self.assertEqual({j["steps"][k]["status"] for k in j["steps"] if k.startswith("warmup:")}, {"done"})
+
     def test_with_the_ids_provision_warms_by_api(self):
         self.provision(INFRA_FAKE_WARMUP="export", **self.IDS)
         self.assertNotIn("infra_step=warmup:", self.todo())

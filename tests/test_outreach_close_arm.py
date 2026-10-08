@@ -62,7 +62,7 @@ class CloseArm(ReplyWorld):
     def on(self, **over):
         """The test's switches: the link base, the booking link, the preview and its claim link."""
         return dict(dict(OUTREACH_LINK_BASE=LINK_BASE, LEADS_BOOKING_URL=BOOKING, STUB_PREVIEW_URL=PREVIEW,
-                         STUB_CLAIM_URL=CLAIM), **over)
+                         STUB_CLAIM_URL=CLAIM, OUTREACH_CLAIM_LINKS="1"), **over)
 
     def interested(self, i, text="Interested. Can you call me this week?", msgid=None):
         box, msg = self.letter_to(i)
@@ -137,10 +137,14 @@ class CloseArm(ReplyWorld):
         self.assertNotIn("Taylor Remund", am["From"])
         self.assertTrue(am["Subject"].startswith("Re: "))
         body = am.get_content()
-        token = seqs[self.p[self.b]["email"]]["token"]
-        see = f"{LINK_BASE}/{token}"
-        for link in (see, CLAIM, BOOKING):
+        seq_b = seqs[self.p[self.b]["email"]]
+        see = f"{LINK_BASE}/{seq_b['token']}"
+        claim = f"{LINK_BASE}/{seq_b['claim_token']}"           # a see-link of kind claim, its target kept beside it
+        self.assertEqual(CLAIM, seq_b["claim_target"])
+        self.assertNotEqual(seq_b["token"], seq_b["claim_token"])
+        for link in (see, claim, BOOKING):
             self.assertEqual(1, body.count(link), link)
+        self.assertNotIn(CLAIM, body, "the product's claim URL went out from the cold lane")
         self.assertNotIn(PREVIEW, body, "the preview host went out from the cold lane; the see-link stands for it")
         self.assertIn(SIGNATURE + " ·", body)
         self.assertIn("weekdays 6:45–7:45am, 12:15–12:45pm or 6:15–7pm (Mountain)", body)
@@ -174,11 +178,30 @@ class CloseArm(ReplyWorld):
         first = self.rows()[self.p[self.b]["email"]]["arm"]
         self.assertEqual(arm_of(self.p[self.b]["place_id"]), first)
 
-    def test_without_a_claim_link_from_leads_the_venture_claim_start_stands_in(self):
+    def test_without_a_claim_link_from_leads_the_venture_claim_start_is_the_target(self):
         self.interested(self.b)
         self.inbox(**self.on(STUB_CLAIM_URL="__unset__", LEADS_CLAIM_START="https://start.example/start"))
         body = parsed(self.answers()[0]["raw"]).get_content()
-        self.assertEqual(1, body.count("https://start.example/start"))
+        self.assertNotIn("start.example", body)
+        seq = {s["email"]: s for s in self.seqs()}[self.p[self.b]["email"]]
+        self.assertEqual("https://start.example/start", seq["claim_target"])
+
+    def test_until_the_see_host_serves_claim_links_arm_b_stays_off_and_taylor_gets_it(self):
+        self.interested(self.a)
+        self.interested(self.b)
+        r = self.inbox(**self.on(OUTREACH_CLAIM_LINKS="__unset__"))
+        self.assertIn("close test E3 is off", r.stdout)
+        self.assertIn("the see host has no claim links yet", r.stdout)
+        self.assertEqual([], self.answers(), "Patch answered with the claim link on the product's domain")
+        self.assertEqual(2, len(self.calls("notify")))
+        self.assertEqual([], [c for c in self.calls("leads") if c["argv"][:1] == ["preview"]])
+        for row in self.rows().values():
+            self.assertNotIn("arm", row)
+        for argv in self.logs():
+            self.assertNotIn("--arm", argv)
+        out = self.run_it("status", "--by", "arm", **self.on(OUTREACH_CLAIM_LINKS="__unset__")).stdout
+        self.assertIn("off — ", out)
+        self.assertIn("OUTREACH_CLAIM_LINKS=1 once it serves them", out)
 
     # -- then it stops ----------------------------------------------------------------------
     def test_a_second_message_goes_to_taylor_in_either_arm_and_is_never_machine_answered(self):
@@ -256,7 +279,9 @@ class Template(Base):
                           (good.replace("Book one here: {booking_url}", "Book one here: {booking_url} {booking_url}"),
                            "{booking_url} is in the letter 2 times"),
                           (good.replace("No call needed", "Try it free for a week. No call needed"), "free week"),
-                          (good.replace("it's {price_line}", "it's $20 a month"), "money that isn't {price_line}")):
+                          (good.replace("it's {price_line}", "it's $20 a month"), "money that isn't {price_line}"),
+                          (good.replace("claim it at {start_url}", "claim it at https://patchlamp.com/start"),
+                           "{start_url} is in the letter 0 times")):
             tpl.write_text(bad)
             r = self.run_it("approve", "--template", "answer-interested", expect=1)
             self.assertIn(says, r.stdout + r.stderr)

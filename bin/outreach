@@ -622,7 +622,7 @@ def sample_values(expiry=None):
         "see_url": "",
         "thread_subject": "two things I noticed about Highland Pool & Spa",
         # answer-interested (B137): the claim link, the call windows, the booking link under its own name
-        "start_url": claim_start() + "?business=Highland+Pool+%26+Spa&preview=highland-pool-spa",
+        "start_url": sample_link_base() + "-claim",   # a claim see-link (B137): on the sending domain too
         "windows": call_windows(), "booking_url": toolbelt("LEADS_BOOKING_URL") or "https://cal.com/taylor/15min",
     }
 
@@ -3104,6 +3104,9 @@ def close_test_state():
         missing.append("LEADS_BOOKING_URL isn't set")
     if not toolbelt(V.sender.postal_address_env):
         missing.append(f"{V.sender.postal_address_env} isn't set")
+    if not claim_links_live():
+        missing.append("the see host has no claim links yet, so the claim link would have to be on the product's "
+                       "own domain (OUTREACH_CLAIM_LINKS=1 once it serves them)")
     if not (TEMPLATES / f"{CLOSE_TEMPLATE}.md").exists():
         missing.append(f"there is no {CLOSE_TEMPLATE}.md")
     else:
@@ -3124,6 +3127,25 @@ def patch_from_name():
 
 def call_windows():
     return toolbelt("OUTREACH_CALL_WINDOWS") or V.sender.call_windows
+
+
+def claim_links_live():
+    """The claim link goes out on the sending domain too (plan 37 § 3: the product's domain is in no cold-lane
+    message), as a see-link of kind `claim` whose target is the preview's claim URL. The see host serves that
+    kind only once its own row ships; until then OUTREACH_CLAIM_LINKS is unset and arm B stays off."""
+    return toolbelt("OUTREACH_CLAIM_LINKS") == "1"
+
+
+def claim_see_url(seq, target):
+    """The thread's claim see-link: its token, minted once and kept on the sequence beside the target the see
+    host redirects to (the press-token sync carries both). "" when claim links aren't live."""
+    base = link_base()
+    if not (base and claim_links_live() and seq is not None):
+        return ""
+    if not seq.get("claim_token"):
+        seq["claim_token"] = secrets.token_urlsafe(9)
+    seq["claim_target"] = target
+    return f"{base}/{seq['claim_token']}"
 
 
 def claim_start():
@@ -3197,6 +3219,10 @@ def interested_problems(body, vals):
         n = body.count(vals[k]) if vals.get(k) else 0
         if n != 1:
             bad.append(f"{{{k}}} is in the letter {n} times, not once")
+    for k in ("preview_url", "start_url"):    # on the sending domain, never the product's (plan 37 § 3)
+        host = (urllib.parse.urlsplit(vals.get(k) or "").hostname or "").lower()
+        if host and any(host == h or host.endswith("." + h) for h in (V.site_host, V.previews.host)):
+            bad.append(f"{{{k}}} is on {host}, the product's domain; it goes out as a see-link")
     found = links(body)
     if len(found) != 3:
         bad.append(f"the letter has {len(found)} links, not three (the site, the claim, the booking): {found}")
@@ -3268,15 +3294,16 @@ def close_arm_b(provider, r, row, name, pid, email, first, first200, room):
     with state_lock():
         seqs = seqs_load()
         seq = seq_for(email, r.get("our_message_id"), seqs)
+        start = claim_see_url(seq, info.get("claim_url") or claim_start())
         if not DRY and seq is not None:
             seq["preview_url"] = info["url"]
             seqs_save(seqs)
     link = see_url(seq or {})
-    if not link:
+    if not link or not start:
         return fallback("no see-link for this thread")
     theirs = re.sub(r"^(?:re:\s*)+", "", (r.get("subject") or "").strip(), flags=re.I)
     vals = values_for({"name": name, "first": first, "faults": []}, 0)
-    vals.update(preview_url=link, start_url=info.get("claim_url") or claim_start(), windows=call_windows(),
+    vals.update(preview_url=link, start_url=start, windows=call_windows(),
                 booking_url=toolbelt("LEADS_BOOKING_URL") or "", thread_subject=theirs or name)
     subject, letter = load_template(CLOSE_TEMPLATE).render(vals)
     bad = interested_problems(letter, vals)

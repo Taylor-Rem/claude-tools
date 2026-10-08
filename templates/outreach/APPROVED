@@ -1,13 +1,26 @@
 # templates/outreach/APPROVED — the exact text Taylor approved. `outreach send` refuses
 # while a hash here is missing or stale, so editing a letter un-approves it.
-# Written by `outreach approve` on 2026-10-06.
+# Written by `outreach approve` on 2026-10-08.
 
 first          1df2c1918349b8067bb4efd5557f2a0c5affad1bbf97af85bfb7beb7d3a84fcc
 second         d7691854bde606cc87879b7d4d37b2b69eb5a39e6885eb89257d72c87c03c837
 third          d8103c50fb799c9b8b4665b3f46c7c7e1f96158a1eefe3a5a206e414c3f1abd8
-batch-first    0226f9cef417b34a79f08c1143b0efdfeb054e55f486b17abafe598542b41e1f
-batch-second   d6662ad3649854b07d80221d946945ce4853cdba10a3ae4266f042a2218db8a1
-batch-third    dd9911a0512085486a10d31b1f06ddbba8f9f5bb843162bca03da904a59d93e8
+batch-first    e60aa481f861d9ddf1a381805bd81c86d884b760ceab90e469eaeb8e16d6979b
+batch-second   63035041ac324821e9ddeb048b88649084f3957a19ae96c8afb25b2d6f687cab
+batch-third    2eb33bc2a92eeadecd60d9c90a059772e13ddcefeda4dad686d31e9ba9f8f3a6
+p3-first       3017d92fbca27bb9c7d54899708e90e0d5117ea3ba6aa06a483e72ff4e0d3c98
+p3-second      c1ed70412797411b32a06a76fcea364f833bd38aa44eedf2edc94759ccffa1b2
+p3-third       634c7207108f4eb147189a32c226f420dc4cbb37843d495812954da4ab393c1e
+p4-first       4c686e07872ce2673722c8e1f9dc9758be56fb444b67fd197655f222dbf24aad
+p4-second      07baaa8ff8522e0bbf11c849fa5a65ca32ed5285b341b4b0209cac2245aa8e57
+p4-third       11a7d537b21c6bd13977b9a1af86e9795e68014a047619fca3017b0aeabb8d66
+p5-first       c3da8920de1640110f07e7d16f42546d6f64d441942acab3ffad4fa55ab760dd
+p5-second      1816aeab5f01f9eb0f97d041efb62901fce13e3b70ea090ce254120fbf81d3b6
+p5-third       e6f8aadc78d2881f0e2bb82c2b3c9293e8fc65aff38462d9cea6dfbdb750d8f3
+p6-first       97af6e21a5bd8b1a0340a897b0a767c26fd5b48222d4e6903f8e349cecb0cfba
+p6-second      04ff5f7f964608f891135bfcfefcd31093cbf01deb6a68b4e5dbe53c16749feb
+p6-third       e64343c05c5df917163607791c9b624e1f1e4bd8ef3c3656422c4e82c0629003
 answer-price   8ced7a2757b94ad35e545d7879ac181088e1d77059f8172bdab023a1ea87f13c
 answer-how     4c283b7e473a12130b705dd7839627c318192ffb295dbc3c9398a9b8b6ec04f3
-answer-yes     eaca8d608ccbab9bfac8ad5998753b691e44a164ad78c88e57c51b96949714db
+answer-yes     955b534e4bd2ae298dc150f841166e7eee45fdad608bbf184b70008a37c56ce0
+answer-interested eb511aca6957c645b4a9e74af8710278fa56c622873f0278eb8a331be901e8a1

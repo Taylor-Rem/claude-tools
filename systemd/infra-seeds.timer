@@ -1,0 +1,10 @@
+[Unit]
+Description=The Factory: seed probes once a weekday, mid-morning (seven days of them are part of certification)
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 09:40:00
+RandomizedDelaySec=10m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

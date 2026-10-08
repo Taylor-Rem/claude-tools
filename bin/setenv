@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# setenv — the toolbelt's key file, from anywhere on PATH (2026-10-08, Taylor: "can we make that
+# setenv command easier to run?"). A wrapper over ~/.config/claude-tools/setenv.sh, which does the
+# writing (values never echoed, the file stays mode 600).
+#
+#   setenv KEY                 # prompts for the value with echo off (secrets go this way)
+#   setenv KEY VALUE           # sets a plain value in one line: a mailbox list, a URL, an address
+#   setenv --list              # which keys are set (never the values)
+#
+# A value on the command line lands in shell history and in a session transcript, so the second
+# form refuses a name that looks like a secret (KEY, TOKEN, SECRET, PASSWORD, PASS, AUTH):
+# those take the prompt. `! setenv OUTREACH_MAILBOXES taylor@example.com` from a Claude session is
+# the intended use; `! setenv INFRA_PROVIDER_API_KEY` then type it.
+set -euo pipefail
+SETENV="${CLAUDE_TOOLS_SETENV:-$HOME/.config/claude-tools/setenv.sh}"
+[[ -x "$SETENV" ]] || { echo "setenv: $SETENV is missing; run ~/projects/claude-tools/install.sh" >&2; exit 1; }
+
+usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; }
+
+case "${1:-}" in
+  ""|-h|--help) usage; exit 0 ;;
+  --list) exec "$SETENV" --list ;;
+esac
+
+key="$1"
+if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+  echo "setenv: '$key' isn't a key name (letters, digits, underscores)." >&2; exit 2
+fi
+
+if [[ $# -eq 1 ]]; then
+  exec "$SETENV" "$key"                      # the prompt, echo off
+fi
+
+if [[ $# -gt 2 ]]; then
+  echo "setenv: one value only; quote it if it has spaces: setenv $key \"$2 $3 …\"" >&2; exit 2
+fi
+if [[ "$key" =~ (KEY|TOKEN|SECRET|PASSWORD|PASS|AUTH) ]]; then
+  echo "setenv: $key looks like a secret; a value on the command line would sit in shell history." >&2
+  echo "        run:  setenv $key      and type it at the prompt" >&2
+  exit 2
+fi
+printf '%s\n' "$2" | "$SETENV" "$key"

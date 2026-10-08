@@ -1,0 +1,7 @@
+[Unit]
+Description=The Factory: send the day's seed probes from every warming or active mailbox, then read where yesterday's landed (infra seeds; ROADMAP B144, docs/infra.md step 11)
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c '%h/.local/bin/infra seeds send --all; %h/.local/bin/infra seeds read --all'
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin

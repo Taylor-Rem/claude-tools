@@ -197,7 +197,10 @@ class Adapter:
 
     def add_txt(self, name, host, value, key):       # CONFIRM: PUT /domains/{id}/dns
         did = self._domain_id(name)
-        self._req("PUT", f"/domains/{did}/dns", body={"records": [{"type": "TXT", "host": host or "@", "value": value}]},
+        # Confirmed 2026-10-08 (the Postmaster TXT): {"records": [{"name", "type", "value"}]}, the name a full
+        # hostname as the read returns them (the apex is the domain itself, not "@").
+        fqdn = name if host in (None, "", "@") else f"{host}.{name}"
+        self._req("PUT", f"/domains/{did}/dns", body={"records": [{"type": "TXT", "name": fqdn, "value": value}]},
                   key=key)
         return {}
 

@@ -10,7 +10,7 @@ click per client; a custom domain is one API call plus two DNS lines. The
 older GitHub Pages path is still here behind `--gh-pages` / for repos made
 before 2026-09-16 and goes away once Bleu Grave has moved.
 
-  site new <name> [--template TYPE] [--tagline "…"] [--primary] [--db [--owner EMAIL]] [--no-wait] [--dry-run] [--gh-pages]
+  site new <name> [--template TYPE] [--tagline "…"] [--primary] [--db [--owner EMAIL]] [--lang es] [--no-wait] [--dry-run] [--gh-pages]
   site templates                       # the kinds of site `--template` takes, and what each is
   site checkout <name> --connected [--test] | --key-from NAME [--webhook] [--live] | --off
                                        # Stripe Checkout on a catalog site (SITE_ADMIN=1): --connected = the owner's
@@ -18,6 +18,8 @@ before 2026-09-16 and goes away once Bleu Grave has moved.
   site data <name> [--owner EMAIL] [--dry-run]   # give a site its own database + /admin (PLAYBOOK § Data)
   site publish [<name>] [--no-ping] [--dry-run]  # HEAD of ./repos/<name> -> its Pages project (must be committed + pushed)
   site shell [<name>] [--check]        # the /admin shell up to the toolbelt's (B41), commit, push, publish
+  site lang <name> [es|en] [--check]   # B126: the site's built-in form, page and /admin lines in Spanish (or back), commit, push, publish
+  site render <template> <dir> [--lang es] [--name "…"]   # B126: a template stamped into a local folder (no repo, no host) to look at or `shot check`
   site mail [<name>] [--domain D] [--check] [--dry-run]  # the site's address (B75): mailbox + Contact links, published
   site mail platform [--check]         # the Resend domain mail.patchlamp.com + the Porkbun records   (SITE_ADMIN=1)
   site mail doctor                     # the app's mail status, the DNS, this workspace's mailbox vs its links
@@ -155,6 +157,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 import tenant  # noqa: E402  (shared tenant-identity check, B80)
 import site_chat  # noqa: E402  (the site chat's script tag, B108)
 import site_hit  # noqa: E402  (the page-load count's script tag, B127)
+import site_lang  # noqa: E402  (a site's built-in strings in Spanish, B126)
 
 HERE = Path(__file__).resolve().parent.parent
 SITES_DIR = HERE / "templates" / "sites"
@@ -580,6 +583,21 @@ def use_template(kind):
     return have[kind]
 
 
+def site_code(meta, name, d=None):
+    """B126: the language a site's built-in lines are in: the registry's `lang`, else what its
+    index.html says, else English."""
+    got = (site_entry(meta, name) or {}).get("lang") if meta else None
+    return site_lang.norm(got) if got else (site_lang.detect(d) if d else "en")
+
+
+def lang_arg(code):
+    """--lang's value checked against the sets there are; English is no set."""
+    code = site_lang.norm(code or "en")
+    if code != "en" and code not in site_lang.codes():
+        die(f"no {code!r} set for the templates (have: en, {', '.join(site_lang.codes())})")
+    return code
+
+
 def cmd_templates(a):
     for kind, info in templates().items():
         extra = f" — database: {', '.join(info.get('collections') or [])}" if info.get("db") else ""
@@ -913,6 +931,7 @@ def cmd_new(a):
         die(f"repos/{name} already exists")
     kind = a.template or meta.get("template") or DEFAULT_TEMPLATE
     tinfo = use_template(kind)
+    code = lang_arg(getattr(a, "lang", None))           # B126: es = the template's built-in lines in Spanish
     if tinfo.get("db") and not a.db:
         if a.gh_pages:
             die(f"the {kind} template needs a database, which needs a Cloudflare site; drop --gh-pages")
@@ -959,11 +978,15 @@ def cmd_new(a):
         "NAME": meta["name"], "REPO": name, "URL": url, "OWNER": o,
         "SLUG": meta["slug"],                        # B108: the site chat's data-site, the project patchlamp.com keys it by
         "YEAR": str(datetime.date.today().year),
-        "TAGLINE": a.tagline or f"A short line about what {meta['name']} does.",
+        "TAGLINE": a.tagline or (f"Una línea corta sobre lo que hace {meta['name']}." if code == "es"
+                                 else f"A short line about what {meta['name']} does."),
     }
     mail = mail_for_new_site(meta["slug"])            # B75: the Contact block's address ('' = leave the line out)
     if DRY:
         say(f"  would create public repo {slug} from {TEMPLATE_DIR} (template {kind})")
+        if code != "en":
+            say(f"  would put its built-in lines in {site_lang.NAMES.get(code, code)} "
+                f"(templates/sites/_lang/{code}.json; `site render {kind} DIR --lang {code}` shows it locally)")
         say(f"  would clone it to repos/{name}, fill {', '.join(f'{{{{{k}}}}}' for k in values)}, "
             f"{{{{MAIL}}}} = {mail or '(none: the Contact line is left out)'}")
         if cloudflare:
@@ -1003,6 +1026,11 @@ def cmd_new(a):
                 unfilled.append(str(p.relative_to(dest)))
     if unfilled:
         say(f"  WARN unfilled placeholders in: {', '.join(unfilled)}")
+    if code != "en":                                 # B126: the form, page and thanks lines in the owner's language
+        done = site_lang.apply(dest, code)
+        say(f"  {site_lang.NAMES.get(code, code)}: {sum(done.values())} built-in lines in {len(done)} files")
+        if kind not in (site_lang.load(code).get("complete") or []):
+            say(f"  note: the {kind} template's {code} set covers the forms only; its other lines stay English")
 
     # 3. push
     git(dest, "init", "-q", "-b", "main")
@@ -1019,6 +1047,8 @@ def cmd_new(a):
         site_register(meta, name, name, template=kind)
         if address:
             registry_set(meta, name, address=address)
+        if code != "en":
+            registry_set(meta, name, lang=code)
         say(f"  registered {meta['slug']}/{name} -> Pages project {name}"
             + (f", free address {address} (pages.dev kept as the fallback)" if address else ""))
     else:
@@ -1044,6 +1074,8 @@ def cmd_new(a):
         for c in tinfo.get("collections") or []:
             r = subprocess.run([str(DB_BIN), "add", c, "--site", name], capture_output=True, text=True, cwd=str(ws))
             say(f"  db add {c}: " + ("ok" if r.returncode == 0 else f"FAILED {(r.stderr or r.stdout).strip()[:200]}"))
+        if code != "en":                             # B126: the shell and the collections' pages too
+            site_lang.apply(dest, code)
         git(dest, "add", "-A", "functions", "migrations")
         _, staged = git(dest, "diff", "--cached", "--name-only", check=False)
         if staged.strip():
@@ -1293,6 +1325,9 @@ def enable_data(ws, name, owner=None, dry=False):
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy(f, dest)
             written.append(str(dest.relative_to(d)))
+    code = site_code(meta, name, d)
+    if code != "en" and written and not dry:         # B126: a Spanish site's /admin in Spanish
+        site_lang.apply(d, code, files=written)
     toml = wrangler_toml(project, meta, db_name, db_id)
     if not (d / "wrangler.toml").exists() or binding_problem(d, {"d1": {"name": db_name, "id": db_id}}):
         if not dry:
@@ -1531,17 +1566,26 @@ def cmd_data(a):
 SHELL_OWN = {"functions/_admin/collections.js"}   # the site's own: which lists its /admin shows (db add writes it)
 
 
-def shell_drift(repo):
+def shell_bytes(f, code="en"):
+    """A shell file as a site in `code` has it (B126: the same pass `site lang` makes)."""
+    if code == "en" or f.suffix not in site_lang.EXTS:
+        return f.read_bytes()
+    return site_lang.translate(f.read_text(encoding="utf-8"), code)[0].encode("utf-8")
+
+
+def shell_drift(repo, code="en"):
     """The /admin shell files in repo that differ from (or are missing against)
     templates/sites/_shell/functions — the generic part: the sign-in, the list
-    and entry pages, core.js. Never the site's own views or its migrations."""
+    and entry pages, core.js. Never the site's own views or its migrations.
+    code (B126): a Spanish site is compared with the Spanish shell, so its own
+    language is never "behind"."""
     out = []
     for f in sorted((SHELL_DIR / "functions").rglob("*")):
         rel = str(f.relative_to(SHELL_DIR))
         if not f.is_file() or rel in SHELL_OWN:
             continue
         dest = repo / rel
-        if not dest.exists() or dest.read_bytes() != f.read_bytes():
+        if not dest.exists() or dest.read_bytes() != shell_bytes(f, code):
             out.append(rel)
     return out
 
@@ -1564,7 +1608,8 @@ def cmd_shell(a):
         d = repo_dir(ws, name)
         if not (d / "functions" / "_lib" / "core.js").exists():
             die(f"repos/{name} has no /admin shell yet: site data {name}")
-        drift = shell_drift(d)
+        code = site_code(meta, name, d)
+        drift = shell_drift(d, code)
         if not drift:
             say(f"repos/{name}: the /admin shell is current")
             continue
@@ -1577,14 +1622,135 @@ def cmd_shell(a):
         for rel in drift:
             if not DRY:
                 (d / rel).parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy(SHELL_DIR / rel, d / rel)
+                (d / rel).write_bytes(shell_bytes(SHELL_DIR / rel, code))
         git(d, "add", "--", *drift)
         git(d, "-c", "user.name=Patch (claude-tools site)", "-c", "user.email=noreply@anthropic.com",
             "commit", "-q", "-m", a.message or "The /admin shell from the toolbelt: search, filters, totals, CSV, sort, the phone layout")
         git(d, "push", "-q")
         cmd_publish(argparse.Namespace(name=name, dry_run=DRY))
-    if a.check and any(shell_drift(repo_dir(ws, n)) for n in names):
+    if a.check and any(shell_drift(repo_dir(ws, n), site_code(meta, n, repo_dir(ws, n))) for n in names):
         sys.exit(1)
+
+
+def cmd_lang(a):
+    """B126: a site's built-in lines (its forms and thanks lines, the booking manage page, the
+    estimate page, /admin) in another language, or back to English. The pass is the same one
+    `site new --lang` makes, so it's safe to re-run: after a `db add` on a Spanish site it puts
+    the new collection's pages in Spanish too, and with nothing to change it changes nothing.
+    The site's own words (what Patch or the owner wrote) are never touched."""
+    global DRY
+    DRY = a.dry_run
+    ws, meta = workspace()
+    name = a.name
+    d = repo_dir(ws, name)
+    have = site_code(meta, name, d)
+    code = lang_arg(a.code) if a.code else have
+    if a.check or not a.code:
+        if code == "en":
+            say(f"repos/{name}: English (the templates' own lines)")
+            return
+        rest = site_lang.left(d, code)
+        say(f"repos/{name}: {site_lang.NAMES.get(code, code)}" + (
+            f"; {len(rest)} built-in line(s) still in English: site lang {name} {code}" if rest else ", every built-in line"))
+        for rel, en in rest[:12]:
+            say(f"  {rel}: {en[:70]}")
+        if rest and a.check:
+            sys.exit(1)
+        return
+    back = code == "en"
+    src = have if back else code
+    if back and have == "en":
+        say(f"repos/{name} is already in English")
+        return
+    _, dirty = git(d, "status", "--porcelain", "--untracked-files=no", check=False)
+    if dirty.strip() and not DRY:
+        die(f"repos/{name} has uncommitted changes; commit them first, then site lang {name} {code}")
+    done = site_lang.apply(d, src, reverse=back, dry=DRY)
+    label = site_lang.NAMES.get(code, code)
+    say(f"repos/{name}: {'would change' if DRY else 'changed'} {sum(done.values())} built-in line(s) in "
+        f"{len(done)} file(s) to {label}" + (f": {', '.join(sorted(done))}" if done else ""))
+    if DRY:
+        return
+    if done:
+        git(d, "add", "--", *sorted(done))
+        git(d, "-c", "user.name=Patch (claude-tools site)", "-c", "user.email=noreply@anthropic.com",
+            "commit", "-q", "-m", a.message or f"The site's built-in lines in {label}")
+        if a.no_publish:
+            say("  committed; not pushed or published (--no-publish), so the registry still says "
+                f"{site_lang.NAMES.get(have, have)} until `site lang {name} {code}` publishes it")
+            return
+        git(d, "push", "-q")
+        cmd_publish(argparse.Namespace(name=name, dry_run=False))
+    else:                                            # an earlier run that didn't get out: finish it
+        if a.no_publish:
+            return
+        _, ahead = git(d, "rev-list", "--count", "@{u}..HEAD", check=False)
+        ahead = int(ahead) if ahead.strip().isdigit() else 0
+        if ahead:
+            say(f"  {ahead} commit(s) not pushed yet: pushing them")
+            git(d, "push", "-q")
+        if ahead or (site_entry(meta, name) or {}).get("lang") != (None if code == "en" else code):
+            cmd_publish(argparse.Namespace(name=name, dry_run=False))
+    lang_record(meta, name, code)                    # only once what's live says it
+
+
+def lang_record(meta, name, code):
+    """The registry's `lang` for a site: set for a language, gone for English (no null left behind)."""
+    if not site_entry(meta, name):
+        return
+    if code == "en":
+        reg = registry_load()
+        row = (reg.get(meta["slug"]) or {}).get(name)
+        if row and "lang" in row:
+            row.pop("lang")
+            registry_save(reg)
+    else:
+        registry_set(meta, name, lang=code)
+
+
+def cmd_render(a):
+    """B126: a template stamped into a local folder, nothing created anywhere: no repo, no
+    Cloudflare project, no registry line. For looking at a template (or its Spanish) with
+    `shot check DIR` before a real `site new`; the Functions are copied in so their text can
+    be read, but they don't run from a folder (so /admin and the booking calendar's /api/bookings
+    answer 404 there), and the site chat's tag is left out (no project on patchlamp.com answers
+    for a folder)."""
+    kind = a.template
+    tinfo = use_template(kind)
+    code = lang_arg(a.lang)
+    dest = Path(a.dir).resolve()
+    if dest.exists() and any(dest.iterdir()):
+        die(f"{dest} isn't empty; give a new folder")
+    shutil.copytree(TEMPLATE_DIR, dest, dirs_exist_ok=True, symlinks=False,
+                    ignore=lambda d, names: [n for n in names if Path(d) == TEMPLATE_DIR and n in DATA_PARTS + (TEMPLATE_META, LIBRARY)])
+    if tinfo.get("db") and not a.no_db:              # what `site data` + `db add` would bring
+        for src in [SHELL_DIR] + [HERE / "templates" / "collections" / c for c in tinfo.get("collections") or []]:
+            for part in DATA_PARTS:
+                for f in sorted((src / part).rglob("*")) if (src / part).is_dir() else []:
+                    out = dest / part / f.relative_to(src / part)
+                    if f.is_file() and not out.exists():
+                        out.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy(f, out)
+    name = a.name or "Example Business"
+    values = {"NAME": name, "REPO": "example-site", "URL": "http://localhost/", "OWNER": "example",
+              "SLUG": "example", "YEAR": str(datetime.date.today().year),
+              "TAGLINE": a.tagline or (f"Una línea corta sobre lo que hace {name}." if code == "es"
+                                       else f"A short line about what {name} does.")}
+    for p in dest.rglob("*"):
+        if p.is_file():
+            try:
+                text = p.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+            if "{{" in text:
+                text = fill_mail(fill(text, values), "")
+            if p.suffix == ".html" and site_chat.has(text):
+                text = site_chat.strip(text)         # no project on patchlamp.com answers for a local folder
+            p.write_text(text, encoding="utf-8")
+    done = site_lang.apply(dest, code)
+    say(f"site render {kind} -> {dest}" + (f" in {site_lang.NAMES.get(code, code)}: {sum(done.values())} built-in "
+                                          f"lines in {len(done)} files" if code != "en" else ""))
+    say(f"look:  shot check {dest}")
 
 
 def cmd_previews(a):
@@ -4052,6 +4218,16 @@ def cmd_doctor(a):
                 fail(f"{kind}: template.json names a collection that doesn't exist: {c}")
     if not (SHELL_DIR / "functions" / "_lib" / "core.js").exists():
         fail(f"the data layer's shell is missing at {SHELL_DIR}")
+    for code in site_lang.codes():                   # B126: a pair whose English left the templates does nothing
+        try:
+            gone = site_lang.stale(code, [SITES_DIR, HERE / "templates" / "collections"])
+            n = len(site_lang.load(code)["pairs"])
+        except (ValueError, OSError) as exc:
+            fail(f"templates/sites/_lang/{code}.json doesn't load: {exc}")
+            continue
+        say(f"  {code}: {n} built-in lines" + (f", {len(gone)} stale" if gone else ""))
+        for en in gone[:8]:
+            fail(f"{code}: this English is in no template any more (fix the pair in _lang/{code}.json): {en[:70]}")
     say(f"  client tool: {CLIENT_BIN if CLIENT_BIN.exists() else shutil.which('client') or 'MISSING'}")
     say("== cloudflare")
     tok, acct = cf_creds(required=False)
@@ -4201,6 +4377,8 @@ def main():
     n.add_argument("--gh-pages", action="store_true", help="serve from GitHub Pages instead of Cloudflare (legacy)")
     n.add_argument("--db", action="store_true", help="give it its own database and /admin (site data) before the first publish")
     n.add_argument("--owner", help="with --db: the email that signs in to /admin (default: the workspace's contact)")
+    n.add_argument("--lang", metavar="CODE", help="the template's built-in lines (forms, thanks lines, /admin) in this "
+                   "language: es (B126; the site's own words are Patch's to write in it)")
     n.set_defaults(fn=cmd_new)
     sub.add_parser("templates", help="the kinds of site --template takes").set_defaults(fn=cmd_templates)
     ck = sub.add_parser("checkout", help="(SITE_ADMIN=1) switch a site's Stripe Checkout on: --connected (the path) or --key-from (fallback), or --off")
@@ -4224,6 +4402,22 @@ def main():
     sh.add_argument("-m", "--message", help="the commit message")
     sh.add_argument("--dry-run", action="store_true")
     sh.set_defaults(fn=cmd_shell)
+    lg = sub.add_parser("lang", help="a site's built-in lines (forms, thanks lines, manage page, /admin) in es, or back to en; commit, push, publish")
+    lg.add_argument("name", help="repo name under ./repos")
+    lg.add_argument("code", nargs="?", help="es, or en to go back (none: say which it is)")
+    lg.add_argument("--check", action="store_true", help="say what's still English, change nothing (exit 1 when some is)")
+    lg.add_argument("--no-publish", action="store_true", help="commit only")
+    lg.add_argument("-m", "--message", help="the commit message")
+    lg.add_argument("--dry-run", action="store_true")
+    lg.set_defaults(fn=cmd_lang)
+    rd = sub.add_parser("render", help="a template stamped into a local folder (no repo, no host), to look at or shot check")
+    rd.add_argument("template", help="service, business, … (site templates)")
+    rd.add_argument("dir", help="a new or empty folder")
+    rd.add_argument("--lang", metavar="CODE", help="es: the built-in lines in Spanish")
+    rd.add_argument("--name", help="the business name to fill in (default Example Business)")
+    rd.add_argument("--tagline")
+    rd.add_argument("--no-db", action="store_true", help="leave out the /admin shell and the collections' Functions")
+    rd.set_defaults(fn=cmd_render)
     pb = sub.add_parser("publish", help="HEAD of ./repos/<name> -> its Cloudflare Pages project (commit + push first)")
     pb.add_argument("name", nargs="?", help="repo name under ./repos (optional when there is one)")
     pb.add_argument("--no-ping", action="store_true",

@@ -1,0 +1,1026 @@
+{
+  "lang": "es",
+  "about": "B126: the Spanish set for the site templates, the /admin shell and the collections' pages. Each pair is an exact piece of an English template file and the Spanish that replaces it when a site is made with `site new --lang es`, switched with `site lang NAME es`, or stamped locally with `site render TYPE DIR --lang es` (lib/site_lang.py does the pass). The English files stay the only source; a pair whose English is no longer in any template is stale and `site doctor` says so (tests/test_site_lang.py too). Keys carry their markup (`<label>Name <input`) so a short word never lands inside code; no Spanish piece may hold an English key or be shared by two English ones, so the pass is idempotent and `site lang NAME en` goes back exactly. Usted throughout: a business writing to a customer it hasn't met. `complete` lists the templates whose built-in lines are all here (the REPLACE-ME placeholders are Patch's to write).",
+  "complete": [
+    "service",
+    "business",
+    "nonprofit",
+    "portfolio",
+    "restaurant",
+    "store"
+  ],
+  "pairs": [
+    [
+      "<html lang=\"en\">",
+      "<html lang=\"es\">"
+    ],
+    [
+      "Intl.DateTimeFormat(\"en-US\"",
+      "Intl.DateTimeFormat(\"es-US\""
+    ],
+    [
+      "<label>Name <input",
+      "<label>Nombre <input"
+    ],
+    [
+      "<label>Email <input",
+      "<label>Correo electrónico <input"
+    ],
+    [
+      "<label>Phone <input",
+      "<label>Teléfono <input"
+    ],
+    [
+      "<label>What do you need? <textarea",
+      "<label>¿Qué necesita? <textarea"
+    ],
+    [
+      "<label>Anything we should know? <textarea",
+      "<label>¿Algo que debamos saber? <textarea"
+    ],
+    [
+      "<label>What would you like to help with? <textarea",
+      "<label>¿En qué le gustaría ayudar? <textarea"
+    ],
+    [
+      "type=\"submit\">Send</button>",
+      "type=\"submit\">Enviar</button>"
+    ],
+    [
+      "type=\"submit\">Book it</button>",
+      "type=\"submit\">Reservar</button>"
+    ],
+    [
+      "type=\"submit\">Sign me up</button>",
+      "type=\"submit\">Inscribirme</button>"
+    ],
+    [
+      ">Thanks — we've got it and we'll be in touch.<",
+      ">Gracias, lo recibimos y nos pondremos en contacto con usted.<"
+    ],
+    [
+      ">Thanks for signing up — we'll be in touch.<",
+      ">Gracias por inscribirse. Nos pondremos en contacto con usted.<"
+    ],
+    [
+      ">That didn't go through. Please try again.<",
+      ">No se pudo enviar. Por favor, inténtelo de nuevo.<"
+    ],
+    [
+      ">That didn't go through. Please try again, or call us.<",
+      ">No se pudo enviar. Por favor, inténtelo de nuevo o llámenos.<"
+    ],
+    [
+      "Got it, your request is in. We'll confirm by email or phone, and if you left an email, a copy with a link to move or cancel it is on its way.",
+      "Listo, recibimos su solicitud. Se la confirmaremos por correo o por teléfono y, si dejó su correo, le llegará una copia con un enlace para cambiarla o cancelarla."
+    ],
+    [
+      "That time was just taken or closed. Please pick another.",
+      "Ese horario se acaba de ocupar o cerrar. Por favor, elija otro."
+    ],
+    [
+      "That didn't go through: pick a time, and leave a name and an email or phone.",
+      "No se pudo enviar: elija un horario y deje su nombre y un correo o un teléfono."
+    ],
+    [
+      "<legend>Pick a time</legend>",
+      "<legend>Elija un horario</legend>"
+    ],
+    [
+      "Loading the open times…",
+      "Cargando los horarios disponibles…"
+    ],
+    [
+      "The open times show here.",
+      "Aquí aparecen los horarios disponibles."
+    ],
+    [
+      "No open times right now. Ask for a quote instead and we'll find one.",
+      "No hay horarios disponibles por ahora. Pida una cotización y le buscaremos uno."
+    ],
+    [
+      "The calendar didn't load. Please try again in a minute.",
+      "El calendario no cargó. Por favor, inténtelo de nuevo en un minuto."
+    ],
+    [
+      "\" places)\"",
+      "\" cupos)\""
+    ],
+    [
+      "This form goes live when the site is claimed.",
+      "Este formulario se activa cuando el negocio active su sitio."
+    ],
+    [
+      "This calendar goes live when the site is claimed.",
+      "Este calendario se activa cuando el negocio active su sitio."
+    ],
+    [
+      "aria-label=\"Site\"",
+      "aria-label=\"Sitio\""
+    ],
+    [
+      ">Home</a>",
+      ">Inicio</a>"
+    ],
+    [
+      ">Services</a>",
+      ">Servicios</a>"
+    ],
+    [
+      ">Book</a>",
+      ">Reservar</a>"
+    ],
+    [
+      ">Quote</a>",
+      ">Cotización</a>"
+    ],
+    [
+      ">Photos</a>",
+      ">Fotos</a>"
+    ],
+    [
+      ">Book a visit<",
+      ">Reservar una visita<"
+    ],
+    [
+      ">Ask for a quote<",
+      ">Pedir una cotización<"
+    ],
+    [
+      ">What we do<",
+      ">Lo que hacemos<"
+    ],
+    [
+      "<h3>First service</h3>",
+      "<h3>Primer servicio</h3>"
+    ],
+    [
+      "<h3>Second service</h3>",
+      "<h3>Segundo servicio</h3>"
+    ],
+    [
+      "<h3>Third service</h3>",
+      "<h3>Tercer servicio</h3>"
+    ],
+    [
+      "<h3>Fourth service</h3>",
+      "<h3>Cuarto servicio</h3>"
+    ],
+    [
+      "What it is and who it's for, in a sentence or two.",
+      "Qué es y para quién es, en una o dos frases."
+    ],
+    [
+      "Delete the cards they don't need.",
+      "Quite las tarjetas que no necesite."
+    ],
+    [
+      "<p class=\"kicker\">Book</p>",
+      "<p class=\"kicker\">Reservas</p>"
+    ],
+    [
+      "Pick an open time. We'll confirm by email or phone.",
+      "Elija un horario disponible. Se lo confirmaremos por correo o por teléfono."
+    ],
+    [
+      "<p class=\"kicker\">Quotes</p>",
+      "<p class=\"kicker\">Cotizaciones</p>"
+    ],
+    [
+      "Tell us what you need and we'll get back to you with a price.",
+      "Díganos qué necesita y le responderemos con un precio."
+    ],
+    [
+      "<p class=\"kicker\">Details</p>",
+      "<p class=\"kicker\">Detalles</p>"
+    ],
+    [
+      "<h2>Hours</h2>",
+      "<h2>Horario</h2>"
+    ],
+    [
+      "<h3>Service days</h3>",
+      "<h3>Días de servicio</h3>"
+    ],
+    [
+      "<li>Mon–Fri: 8am–5pm</li>",
+      "<li>Lun–Vie: 8 a. m.–5 p. m.</li>"
+    ],
+    [
+      "<li>Sat: 9am–1pm</li>",
+      "<li>Sáb: 9 a. m.–1 p. m.</li>"
+    ],
+    [
+      "<li>Sun: closed</li>",
+      "<li>Dom: cerrado</li>"
+    ],
+    [
+      "<h3>Where</h3>",
+      "<h3>Dónde</h3>"
+    ],
+    [
+      "<p>The area we serve.</p>",
+      "<p>La zona que atendemos.</p>"
+    ],
+    [
+      "<h3>Contact</h3>",
+      "<h3>Contacto</h3>"
+    ],
+    [
+      "<p>Book a time or ask for a quote above.</p>",
+      "<p>Reserve un horario o pida una cotización arriba.</p>"
+    ],
+    [
+      ">Owner sign-in</a>",
+      ">Acceso del dueño</a>"
+    ],
+    [
+      "<title>Page not found — ",
+      "<title>Página no encontrada — "
+    ],
+    [
+      ">Page not found<",
+      ">Página no encontrada<"
+    ],
+    [
+      "That page doesn't exist. <a href=\"index.html\">Back to the home page.</a>",
+      "Esa página no existe. <a href=\"index.html\">Volver al inicio.</a>"
+    ],
+    [
+      "<title>Photos — ",
+      "<title>Fotos — "
+    ],
+    [
+      "<h1 class=\"hero-title\">Photos</h1>",
+      "<h1 class=\"hero-title\">Fotos</h1>"
+    ],
+    [
+      "<p class=\"kicker\">Gallery</p>",
+      "<p class=\"kicker\">Galería</p>"
+    ],
+    [
+      "<h2>Recent work</h2>",
+      "<h2>Trabajos recientes</h2>"
+    ],
+    [
+      "Placeholder: a finished job",
+      "Ejemplo: un trabajo terminado"
+    ],
+    [
+      "Placeholder: before and after",
+      "Ejemplo: antes y después"
+    ],
+    [
+      "Placeholder: the team at work",
+      "Ejemplo: el equipo trabajando"
+    ],
+    [
+      ">Sign out</button>",
+      ">Cerrar sesión</button>"
+    ],
+    [
+      "${esc(site)} · admin</a>",
+      "${esc(site)} · administración</a>"
+    ],
+    [
+      "content=\"${esc(site)}'s admin page, for the owner only.\"",
+      "content=\"Página de administración de ${esc(site)}, solo para el dueño.\""
+    ],
+    [
+      "page(env, \"Sign in\", `<h1>Sign in</h1>",
+      "page(env, \"Iniciar sesión\", `<h1>Iniciar sesión</h1>"
+    ],
+    [
+      "Enter the owner's email address and we'll send a sign-in link. It works once, for 15 minutes.",
+      "Escriba el correo del dueño y le enviaremos un enlace para entrar. Sirve una sola vez, durante 15 minutos."
+    ],
+    [
+      "n === 1 ? \"entry\" : \"entries\"",
+      "n === 1 ? \"registro\" : \"registros\""
+    ],
+    [
+      "<p class=\"note\">Signed in as ${esc(data.session.email)}.</p>",
+      "<p class=\"note\">Sesión iniciada como ${esc(data.session.email)}.</p>"
+    ],
+    [
+      "`<p>Nothing to show yet.</p>`",
+      "`<p>Todavía no hay nada que mostrar.</p>`"
+    ],
+    [
+      "<p><strong>If ${esc(email || \"that\")} is the owner's address, a sign-in link is on its way.</strong>",
+      "<p><strong>Si ${esc(email || \"ese\")} es el correo del dueño, el enlace para entrar va en camino.</strong>"
+    ],
+    [
+      "Open it on this device within ${TOKEN_MINUTES} minutes.</p>",
+      "Ábralo en este dispositivo en los próximos ${TOKEN_MINUTES} minutos.</p>"
+    ],
+    [
+      "page(env, \"Link expired\", `<h1>That link has expired</h1>",
+      "page(env, \"Enlace vencido\", `<h1>Ese enlace ya venció</h1>"
+    ],
+    [
+      "<p>Sign-in links work once, for 15 minutes. <a href=\"/admin\">Ask for a new one.</a></p>",
+      "<p>Los enlaces para entrar sirven una sola vez, durante 15 minutos. <a href=\"/admin\">Pida uno nuevo.</a></p>"
+    ],
+    [
+      "page(env, \"Not set up\", `<h1>Not set up yet</h1>",
+      "page(env, \"Sin configurar\", `<h1>Todavía no está configurado</h1>"
+    ],
+    [
+      "page(env, \"Refused\", \"<h1>Refused</h1><p>That form came from another site.</p>\"",
+      "page(env, \"Rechazado\", \"<h1>Rechazado</h1><p>Ese formulario vino de otro sitio.</p>\""
+    ],
+    [
+      "page(env, \"Not found\", \"<h1>No such list</h1>\"",
+      "page(env, \"No encontrado\", \"<h1>No existe esa lista</h1>\""
+    ],
+    [
+      "page(env, \"Not found\", \"<h1>Not found</h1>\"",
+      "page(env, \"No encontrado\", \"<h1>No encontrado</h1>\""
+    ],
+    [
+      "placeholder=\"Search ${esc(plural(v))}\" aria-label=\"Search ${esc(plural(v))}\"",
+      "placeholder=\"Buscar ${esc(plural(v))}\" aria-label=\"Buscar ${esc(plural(v))}\""
+    ],
+    [
+      "<button type=\"submit\">Search</button>",
+      "<button type=\"submit\">Buscar</button>"
+    ],
+    [
+      " download>Download CSV</a>",
+      " download>Descargar CSV</a>"
+    ],
+    [
+      ">Previous 50</a>",
+      ">50 anteriores</a>"
+    ],
+    [
+      ">Next 50</a>",
+      ">50 siguientes</a>"
+    ],
+    [
+      "`<h2>Add ${esc(v.singular || \"an entry\")}</h2>",
+      "`<h2>Agregar ${esc(v.singular || \"un registro\")}</h2>"
+    ],
+    [
+      "<button type=\"submit\">Add</button>",
+      "<button type=\"submit\">Agregar</button>"
+    ],
+    [
+      "\"<p>Nothing here yet.</p>\"",
+      "\"<p>Todavía no hay nada aquí.</p>\""
+    ],
+    [
+      "<h2>Update</h2>",
+      "<h2>Actualizar</h2>"
+    ],
+    [
+      "<button type=\"submit\">Save</button>",
+      "<button type=\"submit\">Guardar</button>"
+    ],
+    [
+      "<button type=\"submit\">Mark ${esc(st)}</button>",
+      "<button type=\"submit\">Marcar ${esc(st)}</button>"
+    ],
+    [
+      "is needed</h1><p><a href=\"/admin/${esc(params.collection)}\">Back</a></p>",
+      "es obligatorio</h1><p><a href=\"/admin/${esc(params.collection)}\">Volver</a></p>"
+    ],
+    [
+      "!s.status, \"all\", t.all)",
+      "!s.status, \"todos\", t.all)"
+    ],
+    [
+      "<button type=\"submit\">Email me a link</button>",
+      "<button type=\"submit\">Enviarme un enlace</button>"
+    ],
+    [
+      "<button type=\"submit\">Sign in to the admin page</button>",
+      "<button type=\"submit\">Entrar a la página de administración</button>"
+    ],
+    [
+      "<p class=\"note\">This site's admin page is missing ${esc(missing.join(\", \"))}. Patch sets it up with <code>site data</code>.</p>",
+      "<p class=\"note\">A la página de administración de este sitio le falta ${esc(missing.join(\", \"))}. Patch la configura con <code>site data</code>.</p>"
+    ],
+    [
+      "toLocaleString(\"en-US\"",
+      "toLocaleString(\"es-US\""
+    ],
+    [
+      "const label = diff === 0 ? \"Today\" : diff === -1 ? \"Yesterday\" : diff === 1 ? \"Tomorrow\"",
+      "const label = diff === 0 ? \"Hoy\" : diff === -1 ? \"Ayer\" : diff === 1 ? \"Mañana\""
+    ],
+    [
+      "<span class=\"note\">Mark</span>",
+      "<span class=\"note\">Marcar</span>"
+    ],
+    [
+      "<label class=\"phone-only\">Sort <select",
+      "<label class=\"phone-only\">Ordenar <select"
+    ],
+    [
+      "${v.order ? \"the usual order\" : \"newest first\"}",
+      "${v.order ? \"el orden de siempre\" : \"lo más reciente primero\"}"
+    ],
+    [
+      "<option value=\"\">all</option>",
+      "<option value=\"\">todos</option>"
+    ],
+    [
+      "(v.singular || \"entry\")",
+      "(v.singular || \"registro\")"
+    ],
+    [
+      "`<a href=\"/admin/${esc(name)}\">Clear</a>`",
+      "`<a href=\"/admin/${esc(name)}\">Quitar filtros</a>`"
+    ],
+    [
+      "`<p>No ${esc(plural(v))} ${s.q ? `match “${esc(s.q)}”` : \"here\"}${s.status ? ` marked ${esc(s.status)}` : \"\"}",
+      "`<p>No hay ${esc(plural(v))} ${s.q ? `que coincidan con “${esc(s.q)}”` : \"aquí\"}${s.status ? ` con estado ${esc(s.status)}` : \"\"}"
+    ],
+    [
+      "status: { name: \"status\", label: \"Status\", type: \"select\" }",
+      "status: { name: \"status\", label: \"Estado\", type: \"select\" }"
+    ],
+    [
+      "return page(env, \"Missing\", `<h1>",
+      "return page(env, \"Falta\", `<h1>"
+    ],
+    [
+      "${v.singular || \"Entry\"} #${id}",
+      "${v.singular || \"Registro\"} #${id}"
+    ],
+    [
+      ": \"Entry\")} #${id}</h1>",
+      ": \"Registro\")} #${id}</h1>"
+    ],
+    [
+      "title: \"Bookings\"",
+      "title: \"Reservas\""
+    ],
+    [
+      "singular: \"booking\"",
+      "singular: \"reserva\""
+    ],
+    [
+      "title: \"Open times\"",
+      "title: \"Horarios disponibles\""
+    ],
+    [
+      "singular: \"time\"",
+      "singular: \"horario\""
+    ],
+    [
+      "[\"starts_at\", \"When\"]",
+      "[\"starts_at\", \"Cuándo\"]"
+    ],
+    [
+      "[\"name\", \"Name\"]",
+      "[\"name\", \"Nombre\"]"
+    ],
+    [
+      "[\"phone\", \"Phone\"]",
+      "[\"phone\", \"Teléfono\"]"
+    ],
+    [
+      "[\"email\", \"Email\"]",
+      "[\"email\", \"Correo\"]"
+    ],
+    [
+      "[\"status\", \"Status\"]",
+      "[\"status\", \"Estado\"]"
+    ],
+    [
+      "[\"created_at\", \"Booked\"]",
+      "[\"created_at\", \"Reservada\"]"
+    ],
+    [
+      "[\"starts_at\", \"Starts\"]",
+      "[\"starts_at\", \"Empieza\"]"
+    ],
+    [
+      "[\"minutes\", \"Minutes\"]",
+      "[\"minutes\", \"Minutos\"]"
+    ],
+    [
+      "[\"capacity\", \"Places\"]",
+      "[\"capacity\", \"Lugares\"]"
+    ],
+    [
+      "[\"label\", \"Label\"]",
+      "[\"label\", \"Etiqueta\"]"
+    ],
+    [
+      "label: \"Status (cancelled frees the place)\"",
+      "label: \"Estado (cancelada libera el lugar)\""
+    ],
+    [
+      "label: \"Notes (only you see these)\"",
+      "label: \"Notas (solo usted las ve)\""
+    ],
+    [
+      "{ name: \"starts_at\", label: \"Starts\", type: \"datetime-local\"",
+      "{ name: \"starts_at\", label: \"Empieza\", type: \"datetime-local\""
+    ],
+    [
+      "{ name: \"minutes\", label: \"Minutes\", type: \"number\"",
+      "{ name: \"minutes\", label: \"Minutos\", type: \"number\""
+    ],
+    [
+      "label: \"Places (how many bookings it takes)\"",
+      "label: \"Lugares (cuántas reservas acepta)\""
+    ],
+    [
+      "{ name: \"label\", label: \"Label (optional)\" }",
+      "{ name: \"label\", label: \"Etiqueta (opcional)\" }"
+    ],
+    [
+      "{ name: \"label\", label: \"Label\" }",
+      "{ name: \"label\", label: \"Etiqueta\" }"
+    ],
+    [
+      "{ name: \"capacity\", label: \"Places\", type: \"number\" }",
+      "{ name: \"capacity\", label: \"Lugares\", type: \"number\" }"
+    ],
+    [
+      "{ name: \"status\", label: \"Status\", type: \"select\" }",
+      "{ name: \"status\", label: \"Estado\", type: \"select\" }"
+    ],
+    [
+      "\"We couldn't send the email; the business has the change.\"",
+      "\"No pudimos enviar el correo; el negocio ya tiene el cambio.\""
+    ],
+    [
+      "{ requested: \"requested — not confirmed yet\", confirmed: \"confirmed\", cancelled: \"cancelled\", done: \"done\" }",
+      "{ requested: \"solicitada, todavía sin confirmar\", confirmed: \"confirmada\", cancelled: \"cancelada\", done: \"terminada\" }"
+    ],
+    [
+      "<h1>Your booking</h1>",
+      "<h1>Su reserva</h1>"
+    ],
+    [
+      "\"Your booking\", ",
+      "\"Su reserva\", "
+    ],
+    [
+      "<p>With ${site}, for ${esc(b.name)}: ${esc(state)}.</p>",
+      "<p>Con ${site}, a nombre de ${esc(b.name)}: ${esc(state)}.</p>"
+    ],
+    [
+      "<p>This booking can't be changed here any more. Reply to your booking email to reach ${site}",
+      "<p>Esta reserva ya no se puede cambiar aquí. Responda al correo de su reserva para comunicarse con ${site}"
+    ],
+    [
+      ", or <a href=\"/#book\">book another time</a>",
+      ", o <a href=\"/#book\">reserve otro horario</a>"
+    ],
+    [
+      "<h2>Move it</h2>",
+      "<h2>Cambiarla</h2>"
+    ],
+    [
+      "<legend>Pick another time</legend>",
+      "<legend>Elija otro horario</legend>"
+    ],
+    [
+      ">Move my booking</button>",
+      ">Cambiar mi reserva</button>"
+    ],
+    [
+      "There are no other open times right now. Reply to your booking email to ask ${site} for one.",
+      "No hay otros horarios disponibles por ahora. Responda al correo de su reserva para pedirle uno a ${site}."
+    ],
+    [
+      "<h2>Cancel it</h2>",
+      "<h2>Cancelarla</h2>"
+    ],
+    [
+      ">Cancel my booking</button>",
+      ">Cancelar mi reserva</button>"
+    ],
+    [
+      "\"This link isn't right, or it has run out.\"",
+      "\"Este enlace no es correcto o ya venció.\""
+    ],
+    [
+      "\"That came from another site, so nothing was changed.\"",
+      "\"Eso vino de otro sitio, así que no se cambió nada.\""
+    ],
+    [
+      "\"This link isn't right, or it has run out, so nothing was changed.\"",
+      "\"Este enlace no es correcto o ya venció, así que no se cambió nada.\""
+    ],
+    [
+      "\"This booking had already changed, so nothing was done. Here's where it stands.\"",
+      "\"Esta reserva ya había cambiado, así que no se hizo nada. Así está ahora.\""
+    ],
+    [
+      "\"Cancelled. We've let them know.\"",
+      "\"Cancelada. Ya le avisamos al negocio.\""
+    ],
+    [
+      "`Cancelled. ${NOT_SENT}`",
+      "`Cancelada. ${NOT_SENT}`"
+    ],
+    [
+      "\"Moved. We've let them know, and an email with the new time is on its way.\"",
+      "\"Cambiada. Ya le avisamos al negocio, y le llegará un correo con el nuevo horario.\""
+    ],
+    [
+      "`Moved. ${NOT_SENT}`",
+      "`Cambiada. ${NOT_SENT}`"
+    ],
+    [
+      "content=\"Your booking: move it or cancel it.\"",
+      "content=\"Su reserva: cámbiela o cancélela.\""
+    ],
+    [
+      "esc(env.SITE_NAME || \"this business\")",
+      "esc(env.SITE_NAME || \"este negocio\")"
+    ],
+    [
+      "<p>To change a booking, reply to your booking email and ${site} will sort it out, or <a href=\"/#book\">book a time</a> again.</p>",
+      "<p>Para cambiar una reserva, responda al correo de su reserva y ${site} se encargará, o <a href=\"/#book\">reserve un horario</a> de nuevo.</p>"
+    ],
+    [
+      "const notFound = () => shell(\"Estimate not found\", `<h1>Estimate not found</h1>",
+      "const notFound = () => shell(\"Cotización no encontrada\", `<h1>Cotización no encontrada</h1>"
+    ],
+    [
+      "This link doesn't open an estimate. It may have been withdrawn; the business that sent it can send it again.",
+      "Este enlace no abre ninguna cotización. Puede que la hayan retirado; el negocio que la envió puede enviarla de nuevo."
+    ],
+    [
+      "esc(row.tax_label || \"Tax\")",
+      "esc(row.tax_label || \"Impuesto\")"
+    ],
+    [
+      "<p>A deposit of <strong>${money(row.deposit_cents)}</strong> is due when you accept; ${esc(row.business || \"the business\")} invoices the rest.</p>",
+      "<p>Al aceptar se paga un depósito de <strong>${money(row.deposit_cents)}</strong>; ${esc(row.business || \"este negocio\")} le facturará el resto.</p>"
+    ],
+    [
+      "<p class=\"muted\">Good until ${esc(day(row.valid_until))}.</p>",
+      "<p class=\"muted\">Válida hasta el ${esc(day(row.valid_until))}.</p>"
+    ],
+    [
+      "<h2>Terms</h2>",
+      "<h2>Condiciones</h2>"
+    ],
+    [
+      "`Save this page; ${esc(row.business || \"the business\")} will confirm, and ${row.deposit_cents ? \"the deposit link\" : \"the invoice\"} comes from them.`",
+      "`Guarde esta página; ${esc(row.business || \"este negocio\")} se la confirmará y le enviará ${row.deposit_cents ? \"el enlace del depósito\" : \"la factura\"}.`"
+    ],
+    [
+      "`${justAccepted ? `${esc(row.business || \"The business\")} has been told; ` : \"\"}${row.deposit_cents ? \"the deposit link\" : \"the invoice\"} comes from them next.`",
+      "`${justAccepted ? `Ya le avisamos a ${esc(row.business || \"este negocio\")}; ` : \"\"}${row.deposit_cents ? \"el enlace del depósito\" : \"la factura\"} se lo enviará el negocio.`"
+    ],
+    [
+      "${justAccepted ? \"Thank you. \" : \"\"}Accepted by ${esc(row.accepted_name)} on ${esc(day(String(row.accepted_at || \"\").slice(0, 10)))}. ${next}",
+      "${justAccepted ? \"Gracias. \" : \"\"}Aceptada por ${esc(row.accepted_name)} el ${esc(day(String(row.accepted_at || \"\").slice(0, 10)))}. ${next}"
+    ],
+    [
+      "<p class=\"muted\">This estimate was declined.</p>",
+      "<p class=\"muted\">Esta cotización fue rechazada.</p>"
+    ],
+    [
+      "<p class=\"muted\">This estimate was good until ${esc(day(row.valid_until))}, so it can't be accepted here any more. Ask ${esc(row.business || \"the business\")} for a fresh one.</p>",
+      "<p class=\"muted\">Esta cotización era válida hasta el ${esc(day(row.valid_until))}, así que ya no se puede aceptar aquí. Pídale una nueva a ${esc(row.business || \"este negocio\")}.</p>"
+    ],
+    [
+      "<label for=\"name\"><strong>To accept, type your full name</strong></label>",
+      "<label for=\"name\"><strong>Para aceptar, escriba su nombre completo</strong></label>"
+    ],
+    [
+      "<p class=\"muted\">Typing your name and pressing Accept tells ${esc(row.business || \"the business\")} you accept this estimate as written. It isn't a payment; ${row.deposit_cents ? \"the deposit link\" : \"an invoice\"} comes next. The time and your connection's IP address are kept with your name as the record.</p>",
+      "<p class=\"muted\">Al escribir su nombre y pulsar Aceptar, le dice a ${esc(row.business || \"este negocio\")} que acepta esta cotización tal como está escrita. No es un pago; después llega ${row.deposit_cents ? \"el enlace del depósito\" : \"una factura\"}. La hora y la dirección IP de su conexión se guardan con su nombre como constancia.</p>"
+    ],
+    [
+      "<button type=\"submit\">Accept estimate</button>",
+      "<button type=\"submit\">Aceptar cotización</button>"
+    ],
+    [
+      "<p class=\"kicker\">${esc(row.business)} · Estimate ${esc(row.number)}</p>",
+      "<p class=\"kicker\">${esc(row.business)} · Cotización ${esc(row.number)}</p>"
+    ],
+    [
+      "<h1>For ${esc(row.customer)}</h1>",
+      "<h1>Para ${esc(row.customer)}</h1>"
+    ],
+    [
+      "return shell(`Estimate ${row.number} · ${row.business}`, body);",
+      "return shell(`Cotización ${row.number} · ${row.business}`, body);"
+    ],
+    [
+      "{ error: \"Type your full name to accept.\" }",
+      "{ error: \"Escriba su nombre completo para aceptar.\" }"
+    ],
+    [
+      "<p class=\"kicker\">About</p>",
+      "<p class=\"kicker\">Acerca de</p>"
+    ],
+    [
+      "<h2>Who we are</h2>",
+      "<h2>Quiénes somos</h2>"
+    ],
+    [
+      "<p class=\"kicker\">Who we are</p>",
+      "<p class=\"kicker\">Quiénes somos</p>"
+    ],
+    [
+      ">See photos</a>",
+      ">Ver fotos</a>"
+    ],
+    [
+      ">Find us</a>",
+      ">Cómo encontrarnos</a>"
+    ],
+    [
+      "<h2>Find us</h2>",
+      "<h2>Cómo encontrarnos</h2>"
+    ],
+    [
+      "<h3>Hours</h3>",
+      "<h3>Horario</h3>"
+    ],
+    [
+      "<li>Mon–Fri: 9am–5pm</li>",
+      "<li>Lun–Vie: 9 a. m.–5 p. m.</li>"
+    ],
+    [
+      "<li>Sat: 10am–2pm</li>",
+      "<li>Sáb: 10 a. m.–2 p. m.</li>"
+    ],
+    [
+      "<h2>Pictures</h2>",
+      "<h2>Imágenes</h2>"
+    ],
+    [
+      ">Photos coming soon.</p>",
+      ">Pronto habrá fotos.</p>"
+    ],
+    [
+      ">Events</a>",
+      ">Eventos</a>"
+    ],
+    [
+      ">Volunteer</a>",
+      ">Voluntariado</a>"
+    ],
+    [
+      ">Donate</a>",
+      ">Donar</a>"
+    ],
+    [
+      "<h1 class=\"hero-title\">Donate</h1>",
+      "<h1 class=\"hero-title\">Donar</h1>"
+    ],
+    [
+      "<p class=\"kicker\">Giving</p>",
+      "<p class=\"kicker\">Donaciones</p>"
+    ],
+    [
+      "<h2>Giving</h2>",
+      "<h2>Donaciones</h2>"
+    ],
+    [
+      ">What's on</a>",
+      ">Próximos eventos</a>"
+    ],
+    [
+      "<p class=\"kicker\">Calendar</p>",
+      "<p class=\"kicker\">Calendario</p>"
+    ],
+    [
+      "<h2>What's on</h2>",
+      "<h2>Próximos eventos</h2>"
+    ],
+    [
+      "<h3>First event</h3>",
+      "<h3>Primer evento</h3>"
+    ],
+    [
+      "<h3>Second event</h3>",
+      "<h3>Segundo evento</h3>"
+    ],
+    [
+      "<p class=\"card-meta\">Every Saturday, 9am</p>",
+      "<p class=\"card-meta\">Todos los sábados, 9 a. m.</p>"
+    ],
+    [
+      "<p class=\"card-meta\">First Tuesday of the month, 7pm</p>",
+      "<p class=\"card-meta\">El primer martes de cada mes, 7 p. m.</p>"
+    ],
+    [
+      "<p>One line about it.</p>",
+      "<p>Una línea sobre el evento.</p>"
+    ],
+    [
+      "<p class=\"kicker\">Volunteer</p>",
+      "<p class=\"kicker\">Voluntariado</p>"
+    ],
+    [
+      "<h2>Lend a hand</h2>",
+      "<h2>Échenos una mano</h2>"
+    ],
+    [
+      "Leave your name and we'll tell you about the next chance to help.",
+      "Deje su nombre y le avisaremos de la próxima oportunidad de ayudar."
+    ],
+    [
+      "<p class=\"kicker\">Donate</p>",
+      "<p class=\"kicker\">Donar</p>"
+    ],
+    [
+      "<h2>Give</h2>",
+      "<h2>Contribuya</h2>"
+    ],
+    [
+      ">Work</a>",
+      ">Trabajos</a>"
+    ],
+    [
+      ">About</a>",
+      ">Sobre mí</a>"
+    ],
+    [
+      ">Contact</a>",
+      ">Contacto</a>"
+    ],
+    [
+      ">See the work</a>",
+      ">Ver los trabajos</a>"
+    ],
+    [
+      ">Get in touch</a>",
+      ">Escríbame</a>"
+    ],
+    [
+      "<p class=\"kicker\">Work</p>",
+      "<p class=\"kicker\">Trabajos</p>"
+    ],
+    [
+      "<h2>Selected work</h2>",
+      "<h2>Trabajos seleccionados</h2>"
+    ],
+    [
+      "aria-label=\"Placeholder for a piece of work\"",
+      "aria-label=\"Espacio para un trabajo\""
+    ],
+    [
+      "<h2>About</h2>",
+      "<h2>Sobre mí</h2>"
+    ],
+    [
+      "<p class=\"kicker\">Contact</p>",
+      "<p class=\"kicker\">Contacto</p>"
+    ],
+    [
+      "<h2>Work together</h2>",
+      "<h2>Trabajemos juntos</h2>"
+    ],
+    [
+      ">Menu</a>",
+      ">Menú</a>"
+    ],
+    [
+      ">Hours</a>",
+      ">Horario</a>"
+    ],
+    [
+      ">See the menu</a>",
+      ">Ver el menú</a>"
+    ],
+    [
+      "<p class=\"kicker\">Menu</p>",
+      "<p class=\"kicker\">Menú</p>"
+    ],
+    [
+      "<h2>The menu</h2>",
+      "<h2>El menú</h2>"
+    ],
+    [
+      "<p class=\"muted\">Loading…</p>",
+      "<p class=\"muted\">Cargando…</p>"
+    ],
+    [
+      "<h3>Your order, for pickup</h3>",
+      "<h3>Su pedido, para recoger</h3>"
+    ],
+    [
+      ">Nothing in the basket yet.</p>",
+      ">Todavía no hay nada en la canasta.</p>"
+    ],
+    [
+      ": \"Nothing in the basket yet.\"",
+      ": \"Todavía no hay nada en la canasta.\""
+    ],
+    [
+      "data-pay disabled>Checkout</button>",
+      "data-pay disabled>Pagar</button>"
+    ],
+    [
+      ">Shop</a>",
+      ">Tienda</a>"
+    ],
+    [
+      ">Visit</a>",
+      ">Visítenos</a>"
+    ],
+    [
+      ">Pickup hours</a>",
+      ">Horario para recoger</a>"
+    ],
+    [
+      "<h2>What we make</h2>",
+      "<h2>Nuestros productos</h2>"
+    ],
+    [
+      "<p class=\"kicker\">Shop</p>",
+      "<p class=\"kicker\">Tienda</p>"
+    ],
+    [
+      "<h2>Order for pickup</h2>",
+      "<h2>Pida para recoger</h2>"
+    ],
+    [
+      "Pick what you'd like; pay online, pick it up in the shop.",
+      "Elija lo que quiera, pague en línea y recójalo en la tienda."
+    ],
+    [
+      "<h2>Pickup</h2>",
+      "<h2>Para recoger</h2>"
+    ],
+    [
+      "<h3>Pickup hours</h3>",
+      "<h3>Horario para recoger</h3>"
+    ],
+    [
+      "\"Closed now\"",
+      "\"Cerrado ahora\""
+    ],
+    [
+      "\"Hours coming soon.\"",
+      "\"Pronto publicaremos el horario.\""
+    ],
+    [
+      "\"Nothing here yet.\"",
+      "\"Todavía no hay nada aquí.\""
+    ],
+    [
+      "\"This didn't load. Please try again in a minute.\"",
+      "\"No se pudo cargar. Por favor, inténtelo de nuevo en un minuto.\""
+    ],
+    [
+      "\"Sold out\"",
+      "\"Agotado\""
+    ],
+    [
+      "\"Paying online isn't switched on yet.\"",
+      "\"El pago en línea todavía no está activado.\""
+    ],
+    [
+      "(d.error || \"That didn't go through.\")",
+      "(d.error || \"No se pudo enviar.\")"
+    ],
+    [
+      "\"Leave an email or a phone so we can reach you.\"",
+      "\"Deje un correo o un teléfono para poder comunicarnos con usted.\""
+    ],
+    [
+      "\"Pay and pick up\"",
+      "\"Pagar y recoger\""
+    ],
+    [
+      "\"Pay (Stripe test mode — no real charge)\"",
+      "\"Pagar (modo de prueba de Stripe, sin cobro real)\""
+    ],
+    [
+      "\"Checkout opens once Stripe is connected\"",
+      "\"El pago se activa cuando Stripe esté conectado\""
+    ],
+    [
+      "\"Payment is by Stripe Checkout.\"",
+      "\"El pago se hace con Stripe Checkout.\""
+    ],
+    [
+      "\"This is Stripe's test mode: use card 4242 4242 4242 4242, any future date, any code. Nothing is charged.\"",
+      "\"Este es el modo de prueba de Stripe: use la tarjeta 4242 4242 4242 4242, cualquier fecha futura y cualquier código. No se cobra nada.\""
+    ],
+    [
+      "\"Paying online isn't connected yet: fill a basket if you like, but nothing is charged and no order is taken until it is.\"",
+      "\"El pago en línea todavía no está conectado: puede llenar la canasta, pero no se cobra nada ni se toma ningún pedido hasta que lo esté.\""
+    ],
+    [
+      "\"That didn't go through. Please try again.\"",
+      "\"No se pudo enviar. Por favor, inténtelo de nuevo.\""
+    ],
+    [
+      "Paid — thank you. We'll have it ready for pickup; the receipt is in your email.",
+      "Pagado, gracias. Lo tendremos listo para recoger; el recibo está en su correo."
+    ],
+    [
+      "Checkout was cancelled; nothing was charged. Your basket is below.",
+      "Se canceló el pago; no se cobró nada. Su canasta está abajo."
+    ]
+  ]
+}

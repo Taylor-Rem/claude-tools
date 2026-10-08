@@ -141,6 +141,47 @@ class PressTest(unittest.TestCase):
         self.assertFalse(out["first"])                                     # a rehearsal records no press
         self.assertFalse((self.t / "site.jsonl").exists())
 
+    # -- B147: the close arm's claim token rides the same list, as a link of kind `claim` ------------
+    def claim_seqs(self, target):
+        self.seqs(("FX_B01", "Alpine Plumbing", "owner@alpineplumbing.example", "tokA1234abcd"),
+                  ("FX_B02", "Juniper Plumbing", "hi@juniperplumbing.example", "tokB1234abcd"))
+        p = self.t / "outreach" / "sequences.json"
+        rows = json.loads(p.read_text())
+        rows[0].update(claim_token="clmA1234abcd", claim_target=target)
+        rows[1].update(claim_token="clmB1234abcd", claim_target=target)
+        p.write_text(json.dumps(rows))
+        return p
+
+    def test_a_claim_token_is_listed_with_its_kind_and_target(self):
+        target = "https://start.example/start?business=Alpine+Plumbing&preview=alpine-plumbing"
+        p = self.claim_seqs(target)
+        r = self.run_leads("preview", "--press-tokens", "--json", env={"LEADS_CLAIM_START": "https://start.example/start"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        out = json.loads(r.stdout)
+        got = {x["hash"]: (x["state"], x["kind"], x["target"]) for x in out["links"]}
+        self.assertEqual({sha("tokA1234abcd"): ("active", "press", None),
+                          sha("clmA1234abcd"): ("active", "claim", target),
+                          sha("tokB1234abcd"): ("removed", "press", None),
+                          sha("clmB1234abcd"): ("removed", "claim", target)}, got)   # a no switches both off
+        self.assertEqual(str(p), out["watch"])                              # the relay re-reads when it changes
+        self.assertNotIn("clmA1234abcd", r.stdout)
+
+    def test_a_claim_target_off_the_claim_start_is_never_listed(self):
+        self.claim_seqs("https://elsewhere.example/start?business=Alpine+Plumbing")
+        r = self.run_leads("preview", "--press-tokens", "--json", env={"LEADS_CLAIM_START": "https://start.example/start"})
+        out = json.loads(r.stdout)
+        self.assertEqual({"press"}, {x["kind"] for x in out["links"]})
+        self.assertEqual({sha("clmA1234abcd"), sha("clmB1234abcd")}, {x["hash"] for x in out["skipped"]})
+
+    def test_from_press_refuses_a_claim_hash_and_builds_nothing(self):
+        self.claim_seqs("https://start.example/start")
+        for value in (sha("clmA1234abcd"), "clmA1234abcd"):
+            r, out = self.press(value)
+            self.assertEqual((r.returncode, out["state"], out["url"], out["first"]), (2, "refused", None, False))
+            self.assertIn("claim link", out["why"])
+        self.assertFalse((self.t / "site.jsonl").exists())
+        self.assertEqual([], [c for c in self.outreach_calls() if c[:1] == ["pressed"]])
+
 
 if __name__ == "__main__":
     unittest.main()

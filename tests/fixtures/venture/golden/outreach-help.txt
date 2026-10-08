@@ -1,0 +1,220 @@
+$ outreach --help
+--- stdout
+usage: outreach [-h]
+                {send,tick,postmaster,resume,inbox,replies,reply,build,pressed,suppress,status,ai-test,warmup,approve,probe,doctor} ...
+
+outreach — the email lane: the one outbound channel the machine runs end to end
+(ROADMAP B46, plan ~/projects/plans/20-email-lane.md, GROWTH § 5.3 / § 5.5 / § 8.1).
+
+  outreach send [--go] [--dry-run] [--only 1 3] [--hold 2] [--touch 0|3|10]
+                               # the day's approved emails: reads `leads kit --remote --json`,
+                               # skips no-address and suppressed picks, renders the approved
+                               # letter, sends, logs the pipeline through `leads`, one ledger row
+  outreach send --batch FILE|- [--dry-run | --go]
+                               # B90: a batch from `leads batch --json` (plan 37 § Contract).
+                               # --dry-run renders every first letter; no flag lists the names
+                               # and their two faults for Taylor's `go`; --go queues three
+                               # touches a business (day 0, 3, 10, never a fourth) and runs a tick
+  outreach tick                # sends what is due now: one letter a mailbox a tick at most,
+                               # irregular gaps across working hours, under each mailbox's cap
+  outreach postmaster 0.08 [--domain D]   # record a Google Postmaster spam-rate reading (percent)
+  outreach resume MAILBOX | --lane        # Taylor's word after a pause or a stop
+  outreach inbox [--dry-run]   # replies since the cursor: classified, the routine ones answered,
+                               # the warm ones handed to Taylor with a brief
+  outreach replies [--open|--today|--since D|NAME] [--json|--count]
+                               # B105: every reply thread across the three mailboxes, newest first:
+                               # who, which mailbox, the letter they got, what they said, the class,
+                               # and whether the machine answered, Taylor did, or it waits on him
+  outreach reply NAME "words" [--any]   # B105: Taylor's own words in that thread, from its mailbox,
+                               # with his name, phone and the postal address; no template, no AI
+  outreach build [NAME]        # B92, Taylor's word after an interested reply: `prep one` for that
+                               # business, detached; the outline comes by notify. Nothing else starts it
+  outreach suppress add hello@x.example | ChIJ…      # off the list for good, both channels
+  outreach pressed PLACE_ID [--url U]       # B91: a press on the see link stops its touches, offers build
+  outreach suppress ls [--json]            # --json: [{value, kind: address|domain|place_id}] for `leads batch`
+  outreach status              # today's sends, the caps, replies by class, bounces, complaints
+  outreach status --by variant|fault|segment|letter|prebuilt
+                               # B132: per group, one business once: delivered → preview clicks →
+                               # replies → positive replies → customers, each per hundred delivered,
+                               # and "too few to decide" below the floor (100 a group, 20 positive)
+  outreach ai-test start | stop [--keep intro|foot|none] | show
+                               # B132, plan 53: the AI-line test. Open, each batch is dealt a third each
+                               # to none / intro / foot; start and stop are Taylor's word only, as `go` is
+  outreach warmup [start DATE] # the warm-up state and the ramp; `start` records the day warm-up began
+  outreach approve             # Taylor's one command after reading templates/outreach/*.md
+  outreach doctor              # keys by name, the address, the template, the caps, the provider
+
+Why email and nothing else: CAN-SPAM has no B2B exception but permits a truthful,
+addressed, opt-out-honouring note, and it is the only cold channel where the
+machine may send, read the reply, answer and hand over (GROWTH § 8.1). A cold text
+or an AI voice call never becomes legal, so nothing here ever texts or dials.
+
+What every email carries (GROWTH § 5.3, checked, not promised): who Taylor is and
+where, the one fault from the pick's own listing, the preview link, Starter's exact
+price sentence if they want it kept, the phone and the booking link, the postal
+address, a plain line saying it is an advertisement from a local business, "reply
+'no thanks' and you won't hear from me again", and the one-line disclosure Taylor
+decided: Patch found it and drafted it, Taylor reads every one before it goes.
+
+The letters live in templates/outreach/ and Taylor approves their exact text once:
+APPROVED holds a sha256 per template and `send` refuses while one is missing or
+stale, so editing a letter un-approves it; the hash covers the price sentences a
+letter carries too (lib/prices.py), so a new price un-approves it the same way. The subjects come from the same file.
+`outreach doctor` renders a sample of each and checks the rules (four to six
+sentences, one link in the letter — the preview; the booking link, the phone and
+the address sit in the signature, which is not the pitch — the ad identification,
+the opt-out, the disclosure, and no money in a cold letter that isn't
+`{price_line}`). The one exception is `{paying}` (B71): a sentence `leads` builds from
+client-leads/vendor_prices.md in the *vendor's* published or reported price ("Your site's
+address is set up with Hibu, whose plans are reported to start at $449 a month."), never a
+guess at the lead's bill; it is empty — and the sentence gone — when the vendor is unknown.
+
+Two weeks of `go`: `send` does nothing without `--go` unless OUTREACH_AUTO=1 (the
+schedule passes `--go` on the morning Taylor replied `go`). Everything money- or
+volume-shaped is an environment number, never a sentence in a prompt:
+
+  OUTREACH_PER_DAY             sends a day. Default 0 — out of the box this tool
+                               sends nothing at all.
+  OUTREACH_MAX_REPLIES_PER_DAY machine replies a day (default 10); never more than
+                               one machine reply per thread per day, ever.
+  OUTREACH_AI_USD_PER_DAY      the classifier's daily spend (default 0.50); over it,
+                               nothing is machine-answered and everything unclear
+                               goes to Taylor.
+  OUTREACH_BOUNCE_MAX_PCT      the kill switch (default 2.0, Taylor 2026-10-01). Over it, or any spam
+                               complaint, `send` refuses, Taylor is notified and one
+                               TAYLOR-TODO §7 entry is filed.
+  OUTREACH_COMPLAINTS          complaints seen in Google Postmaster Tools (Instantly
+                               reports no complaint count of its own). Any value
+                               above zero trips the switch.
+  OUTREACH_AUTO                1 = the two weeks of `go` are over (the kit lane only: a batch
+                               always waits on `go`, because its letter says "I approve each batch").
+  OUTREACH_PREVIEW_DAYS        how long a preview stands (default 14); the day-10
+                               letter names the date it comes down.
+
+Config, by name, never printed:
+  INSTANTLY_API_KEY       ~/.config/claude-tools/env. Never Resend (its terms forbid
+                          cold mail) and never patchlamp.com's domain — a burned
+                          domain would take the product's mail with it.
+  ANTHROPIC_KEY_OUTREACH  the classifier's key, falling back to ANTHROPIC_KEY_RELAY.
+  OUTREACH_FROM           the outreach mailbox (Instantly's `eaccount`).
+  OUTREACH_PROVIDER       instantly | fake. Default: instantly once the key is set,
+                          else fake. `--dry-run` never touches the network.
+  LEADS_MAIL_ADDRESS      the postal address every commercial email must carry.
+                          Required: without it nothing sends, as in `leads`.
+  LEADS_BOOKING_URL       the booking link (Cal.com).
+  PATCHLAMP_VOICE_NUMBER  the phone line; without it the phone line is dropped.
+  PATCHLAMP_DEMO_NUMBER   the demo number people text themselves (default
+                          435-901-7141).
+  OUTREACH_STATE          state dir (default ~/.local/state/claude-tools/outreach)
+  OUTREACH_TEMPLATES      the letters (default ../templates/outreach beside this file)
+  INSTANTLY_API_BASE / ANTHROPIC_API_BASE    tests only: stand-ins for the real hosts.
+  OUTREACH_LEADS_BIN / OUTREACH_NOTIFY_BIN / OUTREACH_PREP_BIN
+                          tests only: stand-ins for `leads` / `notify` / `prep`.
+  OUTREACH_KIT_JSON       tests only: a kit file instead of running `leads`.
+
+The provider is an interface with two implementations. `fake` keeps everything in
+files under the state dir and is what the tests and `--dry-run` use. `instantly` is
+Instantly's API v2 (see the plan's § Contract for every endpoint). Instantly has no
+single-send endpoint on any plan — `/emails/send-test` never enters the Unibox and
+`/emails/reply` only replies — so a send is a campaign plus a lead: one campaign
+whose step is `{{subject_line}}` / `{{body_html}}`, and each pick a lead carrying
+its own rendered letter. Every sentence is therefore composed here, where the
+template checks run; Instantly is only the transport and the warm-up.
+
+Money: a send costs nothing of ours (the mailbox is a flat monthly bill), so its
+ledger row carries cost 0 and exists to count sends. Each classifier call is its own
+row with its real cost. Both land in ~/.local/state/claude-tools/ledger.jsonl.
+
+The pipeline is never written here: every conversation goes in through `leads log`
+and `leads sent`, so one tool owns that file.
+
+---- The batch lane (B90, plan ~/projects/plans/37-email-at-volume.md) ----------------
+
+Batches of up to fifty researched businesses from `leads batch --json`, each with an
+address and exactly two fault sentences. Taylor's `go` approves a batch (the names and
+their faults, `outreach send --batch FILE` without --go prints exactly that); --go
+queues three touches a business in state/sequences.json and the tick sends them. The
+letters are templates/outreach/batch-{first,second,third}.md, approved like the others:
+the first carries the two faults verbatim and no link at all (a reply is the
+conversation we want, and filters score every domain inside a cold first message); the
+second and third may carry one link, and only on the sending domain
+(OUTREACH_LINK_BASE), else they ask for a reply too. No letter says a site was built
+unless that business has a preview URL: `send` refuses such a letter in code.
+
+The `google` provider sends through each mailbox's own Google mail server (SMTP) and
+reads replies there (IMAP), because Instantly's Growth plan, which warms the mailboxes,
+has no API. Instantly's warm-up network writes into the same inboxes all day, so a
+message is a reply only if its In-Reply-To/References name a Message-ID we sent, or,
+failing that, it comes from an address we wrote to; everything else is never read as a
+reply, classified or answered. A reply of any kind but an automatic one stops that
+business's remaining touches. Delivery-status reports are counted per mailbox and per
+batch. Follow-ups go from the same mailbox in the same thread.
+
+Pacing, because bursts at fixed intervals are what a filter reads as a machine: one
+letter per mailbox per tick at most, the gap to the next drawn at random around the
+time left in the window divided by the letters left, never under
+OUTREACH_MIN_GAP_MINUTES, weekdays inside OUTREACH_SEND_HOURS only. Follow-ups go
+before new first letters and count toward the same cap.
+
+  OUTREACH_MAILBOXES           the sending addresses, comma-separated
+                               (e.g. taylor@trypatchlamp.com,t.remund@trypatchlamp.com,...)
+  OUTREACH_APP_PASSWORD_<ADDR> one Google app password per mailbox, the address upper-cased
+                               with every other character an underscore:
+                               OUTREACH_APP_PASSWORD_TAYLOR_TRYPATCHLAMP_COM
+  OUTREACH_MAILBOX_PER_DAY     each mailbox's daily cap. A number, or a ramp by days since
+                               the warm-up start: "14:5,21:20,28:28" = nothing before day 14,
+                               5 a day from day 14, 20 from day 21, 28 from day 28. Default 0:
+                               nothing sends. Follow-ups count toward it.
+  OUTREACH_WARMUP_START        YYYY-MM-DD the warm-up began (or `outreach warmup start DATE`,
+                               kept in the state dir; the env wins)
+  OUTREACH_SEND_HOURS          the sending window, Taylor's clock (default 8-17), weekdays only
+  OUTREACH_MIN_GAP_MINUTES     the least time between two letters from one mailbox (default 6)
+  OUTREACH_FROM_NAME           the From name (default "Taylor Remund")
+  OUTREACH_LINK_BASE           the second touch's link base, on the sending domain only
+                               (e.g. https://see.trypatchlamp.com); unset = ask for a reply
+  OUTREACH_SMTP_HOST / OUTREACH_IMAP_HOST   default smtp.gmail.com:465 / imap.gmail.com:993
+                               (tests point them at loopback servers)
+  OUTREACH_VERIFY              none | millionverifier. Every first send is checked first.
+                               With none, the first 30 days after the warm-up start send only
+                               to addresses the batch marks MX-ok on the business's own domain.
+  MILLIONVERIFIER_API_KEY      the verifier's key (about $0.004 an address); one ledger row a
+                               check. OUTREACH_VERIFY_BASE is a test stand-in for its host.
+  OUTREACH_NOW                 tests only: the clock (ISO time, Taylor's zone if naive).
+
+The stop rules (Taylor, 2026-10-01, answer 2): one angry or "this is spam" reply pauses
+that mailbox and tells Taylor; the lane stops when angry replies plus unsubscribes exceed
+OUTREACH_ANGRY_MAX_PCT (1.0) of the last OUTREACH_COMPLAINT_WINDOW (1,000) sends (the
+window counts as 1,000 until there are 1,000, so one polite "no thanks" among the first
+fifty can't stop a lane), when bounces exceed OUTREACH_BOUNCE_MAX_PCT (2.0) per mailbox or
+per batch (over at least OUTREACH_BOUNCE_MIN_SENDS, 50, sends), or when a recorded
+Postmaster spam rate is at or above OUTREACH_SPAM_RATE_MAX_PCT (0.1). A stop files a
+TAYLOR-TODO §7 entry and holds until `outreach resume --lane`; counting starts afresh then.
+
+positional arguments:
+  {send,tick,postmaster,resume,inbox,replies,reply,build,pressed,suppress,status,ai-test,warmup,approve,probe,doctor}
+    send                the day's approved emails
+    tick                send what is due now (the timer runs it)
+    postmaster          record a Postmaster spam-rate reading (percent)
+    resume              a paused mailbox, or the stopped lane, back on
+    inbox               replies: classified, the routine ones answered
+    replies             B105: every reply thread across the mailboxes, newest
+                        first (last 14 days)
+    reply               B105: Taylor's own words, in the thread, from the
+                        mailbox that owns it
+    build               Taylor's `build`: the researched site (prep one) for
+                        an interested reply
+    pressed             B91: a business pressed its letter's link; stop its
+                        touches, offer `build` (one JSON object)
+    suppress            off the list for good
+    status              today's sends, the caps, the replies, the bounce rate
+    ai-test             B132: the AI-line test — start | stop [--keep V] |
+                        show (start and stop on Taylor's word only)
+    warmup              the warm-up state and the ramp
+    approve             print each letter, then record Taylor's approval
+    probe               one plain test mail from each mailbox to an address
+                        (Taylor's ask)
+
+options:
+  -h, --help            show this help message and exit
+--- stderr
+--- exit 0

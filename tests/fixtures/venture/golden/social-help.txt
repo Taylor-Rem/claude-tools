@@ -1,0 +1,85 @@
+$ social --help
+--- stdout
+usage: social [-h] [--project PROJECT]
+              {post,queue,demo,check,connect,ls,packet,draft,facts,pick,receipt,lessons,doctor} ...
+
+social — one photo and a line on Facebook, Instagram, X and Google at once
+(ROADMAP B19, plan ~/projects/plans/10-social-posting.md).
+
+  social                                   # what's connected here, and the last posts
+  social post IMAGE "caption"              # in a client workspace: their Page + Instagram (+ Google if connected)
+  social post BRAND IMAGE "caption"        # outside one: the house brand (patchlamp) or --project SLUG
+  social post BRAND [N]                    # the oldest queued draft for that brand (or the Nth in `social queue`) — B24's "post" reply
+      --only facebook,instagram,google     # a subset (default: every one that is connected)
+      --page ID|NAME                       # when more than one Page is connected
+      --dry-run                            # prepare the image and say what would go where; post nothing
+  social queue                             # house drafts waiting for "post" (~/projects/social/queue/)
+  social queue add BRAND IMAGE "caption" [--pillar P] [--topic T] [--mood M] [--art A] [--kind K] [--hold]
+      --hold                               # a bare `social post BRAND` skips it; it goes up only by `social post BRAND N`
+  social queue drop N
+  social check N [--kind text|raccoon|data|pinned|demo]   # one fresh judge looks at draft N's picture (B112; B129 for demo/text)
+  social check --image FILE --kind K       #   or at any image; exit 0 pass, 1 fail, 3 unsure, 4 couldn't check
+  social demo --project SLUG --ask "TEXT" [--page /path] [--after DIR] [--out DIR] [--queue "caption"]
+                                           # B129: a 1080x1350 tile from a template demo's golden copy, changed by one
+                                           # Sonnet run (or by hand, --after); the ask in a bubble, the page, the change boxed
+  social packet [--date D] [--topic-line N]   # B133: today's facts quoted from their files -> social/packets/<date>.md
+  social draft [--no-codex]                # Opus and Codex each write from the packet (a caption, a ledger, three lines of why)
+  social facts [N] | --draft FILE          # code checks every number/price against its re-read line, then a fresh judge; 0 pass, 1 fail, 4 couldn't
+  social facts capture CMD ...             # keep a command's output in social/facts/<date>.md so a count from it can be cited
+  social pick [--image IMG --mood M --art A]   # the passing drafts picked blind (A/B), a splice re-checked; --image queues the winner
+  social receipt [N]                       # each claim beside its source, who wrote it, the verdicts (under 12 lines)
+  social lessons [week | propose "rule" ["rule"] | keep N | drop N | retire]   # taste lessons only on Taylor's keep
+  social connect [BRAND] [--network x]     # the signed link (24h) the account's owner opens to grant it
+      --x-text "…"                         # (post) the X version; default: the caption cut to 280, any link kept last
+  social ls [BRAND]                        # recent posts with their links
+  social doctor
+
+The Page token stays on patchlamp.com: this sends the photo (as a JPEG, at
+most 1440px, which is what Instagram takes) and the caption, and prints
+what each network answered — a link, or its own refusal, one line each.
+Google goes through `gbp post` on the project's Google connection.
+
+Meta's app is in Development mode until App Review (TAYLOR-TODO §1 "Meta
+app"): only our own Page and @patchlamp can be connected until then.
+
+Config, by name, never printed:
+  PATCHLAMP_RELAY_SHARED_SECRET   ~/.config/claude-tools/env
+  PATCHLAMP_URL                   optional; default https://patchlamp.com
+  SOCIAL_DIR                      optional; default ~/projects/social (the house queue and posted.jsonl)
+  SOCIAL_JUDGE                    optional; a stand-in command for the judge (tests), prompt on stdin
+  SOCIAL_JUDGE_MODEL              optional; default opus (never Fable, always named)
+  SOCIAL_DEMO_EDITOR              optional; a stand-in command for the demo's change run (tests), prompt on stdin, cwd the copy
+  SOCIAL_DEMO_EDITOR_MODEL        optional; default sonnet
+  SOCIAL_DEMO_TIMEOUT             optional; seconds for the change run, default 600
+  SOCIAL_CLIENTS                  optional; default ~/projects/clients (where the demos' repos are)
+  SOCIAL_DEMO_KEEP                optional; keep the temp dir and the before/after shots beside the tile
+  IMG_PATCH_REF                   optional; the portrait the raccoon is compared with
+  SOCIAL_WRITER_OPUS / SOCIAL_WRITER_CODEX / SOCIAL_FACTS_JUDGE / SOCIAL_PICKER   stand-ins for tests (prompt on stdin)
+  SOCIAL_PICKER_MODEL             optional; default opus (background jobs stay off Fable)
+  SOCIAL_LEDGER                   optional; the cost ledger (default IMG_LEDGER's, ~/.local/state/claude-tools/ledger.jsonl)
+  SOCIAL_CODEX_TIMEOUT / SOCIAL_WRITER_TIMEOUT   seconds; default 300 each
+  SOCIAL_PROJECTS, SOCIAL_MARKETING_DIR, SOCIAL_PRICES_FILE, SOCIAL_TODAY   paths and the date, for tests
+
+positional arguments:
+  {post,queue,demo,check,connect,ls,packet,draft,facts,pick,receipt,lessons,doctor}
+    demo                a demo tile: the ask in a bubble, a template demo's
+                        page after the change, the change marked (B129)
+    check               one fresh judge looks at a draft's picture: product
+                        shown? the same raccoon? (demo, text: what changed?)
+    packet              today's facts quoted from their files, the lessons and
+                        the rule sheet (B133)
+    draft               Opus and Codex each write from the packet (B133)
+    facts               the words checked: code, then a judge who never saw
+                        the writer (B133)
+    pick                the drafts that passed, picked blind; --image queues
+                        the winner (B133)
+    receipt             each claim beside its source, who wrote it, the
+                        verdicts (B133)
+    lessons             the writers' lessons; Sunday's propose / keep N / drop
+                        N (B133)
+
+options:
+  -h, --help            show this help message and exit
+  --project PROJECT     project slug, outside a client workspace
+--- stderr
+--- exit 0

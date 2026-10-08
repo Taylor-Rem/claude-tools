@@ -1,0 +1,13 @@
+$ books pl --month 2026-09
+--- stdout
+P&L 2026-09  (Stripe: (no Stripe key in the toolbelt); cash basis; Denver time)
+  gross income               $0.00
+  − Stripe fees              $0.00
+  − refunds                  $0.00
+  = net income               $0.00
+  − Porkbun                 $11.08
+  = net profit             -$11.08   (before the statement-only vendors: Anthropic, Twilio, Porkbun, Laravel Cloud, Resend…)
+  set aside 25–30%           $0.00 – $0.00
+  notional plan usage        $0.00   (Claude Max — list price of the runs; not a cash cost, never deduct)
+--- stderr
+--- exit 0

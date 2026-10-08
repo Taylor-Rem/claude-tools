@@ -1,0 +1,12 @@
+$ front 
+--- stdout
+patchlamp.com, last 7 days (since 2026-09-22): 42 page views, 17 visitor-days
+  2026-09-27     5 visitors     12 views  #####
+  2026-09-28    12 visitors     30 views  ############
+  pages:      / 30, /pricing 12
+  came from:  facebook.com 4
+
+1 lead not yet texted to Taylor:
+  #7  2026-09-28 10:15  NEW  Acme Plumbing: 555-0199 — "can you fix my hours"  (on /check)
+--- stderr
+--- exit 0

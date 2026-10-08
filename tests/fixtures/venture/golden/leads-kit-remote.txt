@@ -1,0 +1,42 @@
+$ leads kit --remote --census-only --for 2026-09-28
+--- stdout
+Remote kit — <TODAY> · services · 6 messages to send from your phone
+(census 2026-09-28 only — hours, photos and reviews aren't read)
+
+1. Mike's Pool Care — pool service · American Fork · 4.9★ (14) · website → Facebook · pool service · good
+   Message on Facebook: facebook.com/mikespoolcare
+   "Hi, I'm Taylor. A small business owner in American Fork. Looked Mike's Pool Care up on Google. 14 reviews at 4.9, but the website link on your listing goes to Facebook, not a site of your own. I can build you one in an afternoon — want to see what it'd look like?"
+   https://maps.google.com/?cid=FX_S01
+
+2. Glacier Snow Removal — snow removal · American Fork · 4.8★ (6) · website → Instagram · snow removal · weak
+   DM on Instagram: instagram.com/glaciersnowut
+   "Hi, I'm Taylor. A small business owner in American Fork. Looked you up on Google, and the website link on your listing goes to Instagram, not a site of your own. I can build you one in an afternoon — want to see what it'd look like?"
+   https://maps.google.com/?cid=FX_S08
+
+3. Lehi Lawn Bros — lawn care · Lehi · 4.3★ (12) · website → Angi · lawn care · weak
+   Message on Angi: https://www.angi.com/companylist/us/ut/lehi/lehi-lawn-bros-reviews-1.htm
+   "Hi, I'm Taylor. A small business owner in American Fork. Looked you up on Google, and the website link on your listing is your Angi page, not a site of your own. I can build you one in an afternoon — want to see what it'd look like?"
+   https://maps.google.com/?cid=FX_S12
+
+4. Timp Pressure Washing — pressure washing · American Fork · 5.0★ (9) · website → Thumbtack · pressure washing · weak
+   Message on Thumbtack: https://www.thumbtack.com/ut/american-fork/pressure-washing/timp-pressure-washing
+   "Hi, I'm Taylor. A small business owner in American Fork. Looked you up on Google, and the website link on your listing is your Thumbtack page, not a site of your own. I can build you one in an afternoon — want to see what it'd look like?"
+   https://maps.google.com/?cid=FX_S04
+
+5. Wasatch Pest Pros — pest control · Pleasant Grove · 4.7★ (22) · dead link (business.site) · pest control · strong
+   No page to message — call (801) 555-0103; the message is the opener
+   "Hi, I'm Taylor. A small business owner in American Fork. Looked you up on Google. 22 reviews at 4.7, but the website link on your listing is a business.site page, which Google shut down in 2024, so it goes nowhere. I can build you one in an afternoon — want to see what it'd look like?"
+   https://maps.google.com/?cid=FX_S03
+
+6. Blue Canyon Landscaping — landscaping · Lehi · 4.6★ (31) · no website · landscaping · good
+   No page to message — call (801) 555-0102; the message is the opener
+   "Hi, I'm Taylor. A small business owner in American Fork. Looked you up on Google. 31 reviews at 4.6, but there's no website on your listing. I can build you one in an afternoon — want to see what it'd look like?"
+   https://maps.google.com/?cid=FX_S02
+
+Email footer (every cold email, from founder@):
+— Taylor Remund · Patchlamp (Plateful LLC) · founder@patchlamp.com · PO Box 1234, American Fork, UT 84003
+If you'd rather not hear from me, reply "no thanks" and I won't write again.
+
+One fault, a question last; the link and the price are message two, when they answer (`leads today` prints it). When they answer, the close and the ladder are on `leads kit --segment services`. After sending, text "sent 1 3 4" (or "sent all").
+--- stderr
+--- exit 0

@@ -1,0 +1,7 @@
+$ front doctor
+--- stdout
+patchlamp: http://127.0.0.1:<PORT>
+  visits endpoint: ok (42 views today)
+  leads endpoint:  ok (1 not yet texted to Taylor; the relay poll should clear these within a minute)
+--- stderr
+--- exit 0

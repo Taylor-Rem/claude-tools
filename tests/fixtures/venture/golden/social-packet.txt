@@ -1,0 +1,109 @@
+$ social packet --date 2026-10-06
+--- stdout
+packet <TMP>/projects/social/packets/2026-10-06.md: a data post, 6 source line(s), topic line 2
+--- stderr
+--- exit 0
+--- packets/2026-10-06.md
+# Packet — 2026-10-06, a data post (pillar number)
+
+Built by `social packet` from the files, no model. Write only from what is quoted here.
+
+## Today's topic line
+
+topics/patchlamp.md:2: - [number] 181 businesses here still send Google's visitors to a dead link. That is 3% of the 5,865 I checked. (DATA_STORY § Services: dead 181 = 3%; link /check, else /templates)
+
+The topic line is a suggestion in someone's words, not a source. Its own claims count only where a source line below says them.
+
+## Sources (quoted verbatim, file and line; cite them by id)
+
+S1  client-leads/DATA_STORY_STATS.md:11-13 (Services census — CITABLE (2026-09-28, ROADMAP B43) › Ready-to-use lines (all true as of 2026-09-28))
+    - "We checked 5,865 independent service, creative, retail and nonprofit businesses from Ogden to Santaquin. 21% have no website of their own: 857 none at all, 181 a dead link."
+S2  client-leads/DATA_STORY_STATS.md:14-15 (Services census — CITABLE (2026-09-28, ROADMAP B43) › Ready-to-use lines (all true as of 2026-09-28))
+    - "Of the home and field services, 23% have no site of their own; for handymen it's 45%."
+S3  client-leads/DATA_STORY_STATS.md:16-17 (Services census — CITABLE (2026-09-28, ROADMAP B43) › Ready-to-use lines (all true as of 2026-09-28))
+    - "181 businesses along the Wasatch Front send Google's visitors to a dead link; most are business.site pages Google shut down in 2024."
+S4  client-leads/DATA_STORY_STATS.md:25 (Services census — CITABLE (2026-09-28, ROADMAP B43) › Headline)
+    | dead | 181 = 3% |
+S5  client-leads/DATA_STORY_STATS.md:21 (Services census — CITABLE (2026-09-28, ROADMAP B43) › Headline)
+    | businesses | n |
+S6  patchlamp/CLAIMS.md:6 (Claims)
+    | "Free · no account · nothing to sign" · "What's wrong with your Google listing?" (/check) | GET /check | true now |
+
+## The last six posts (don't repeat a shape or an opening)
+
+- 2026-10-05 [text] Can I just text it a photo? Yes.
+
+## Lessons (social/lessons.md)
+
+(no lessons yet)
+
+## The rules (social/rules.md)
+
+# rules
+- a number stands on a line in a file
+--- packets/2026-10-06.json
+{
+ "date": "2026-10-06",
+ "kind": "data",
+ "pillar": "number",
+ "topic_line": 2,
+ "topic": "- [number] 181 businesses here still send Google's visitors to a dead link. That is 3% of the 5,865 I checked. (DATA_STORY § Services: dead 181 = 3%; link /check, else /templates)",
+ "sources": {
+  "S1": {
+   "file": "client-leads/DATA_STORY_STATS.md",
+   "lines": [
+    11,
+    13
+   ],
+   "text": "- \"We checked 5,865 independent service, creative, retail and nonprofit businesses from Ogden to Santaquin. 21% have no website of their own: 857 none at all, 181 a dead link.\"",
+   "section": "Services census — CITABLE (2026-09-28, ROADMAP B43) › Ready-to-use lines (all true as of 2026-09-28)"
+  },
+  "S2": {
+   "file": "client-leads/DATA_STORY_STATS.md",
+   "lines": [
+    14,
+    15
+   ],
+   "text": "- \"Of the home and field services, 23% have no site of their own; for handymen it's 45%.\"",
+   "section": "Services census — CITABLE (2026-09-28, ROADMAP B43) › Ready-to-use lines (all true as of 2026-09-28)"
+  },
+  "S3": {
+   "file": "client-leads/DATA_STORY_STATS.md",
+   "lines": [
+    16,
+    17
+   ],
+   "text": "- \"181 businesses along the Wasatch Front send Google's visitors to a dead link; most are business.site pages Google shut down in 2024.\"",
+   "section": "Services census — CITABLE (2026-09-28, ROADMAP B43) › Ready-to-use lines (all true as of 2026-09-28)"
+  },
+  "S4": {
+   "file": "client-leads/DATA_STORY_STATS.md",
+   "lines": [
+    25,
+    25
+   ],
+   "text": "| dead | 181 = 3% |",
+   "section": "Services census — CITABLE (2026-09-28, ROADMAP B43) › Headline"
+  },
+  "S5": {
+   "file": "client-leads/DATA_STORY_STATS.md",
+   "lines": [
+    21,
+    21
+   ],
+   "text": "| businesses | n |",
+   "section": "Services census — CITABLE (2026-09-28, ROADMAP B43) › Headline"
+  },
+  "S6": {
+   "file": "patchlamp/CLAIMS.md",
+   "lines": [
+    6,
+    6
+   ],
+   "text": "| \"Free · no account · nothing to sign\" · \"What's wrong with your Google listing?\" (/check) | GET /check | true now |",
+   "section": "Claims"
+  }
+ },
+ "notes": [],
+ "built": "<NOW>"
+}

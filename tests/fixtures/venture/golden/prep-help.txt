@@ -1,0 +1,39 @@
+$ prep --help
+--- stdout
+usage: prep [-h]
+            {brief,research,facts,doctor,hook,pick,run,one,conduct,resume,status,stop,check,message,finish,publish,last,approve} ...
+
+prep — the prep run: businesses researched, built and drafted on Taylor's word (plan
+~/projects/plans/28-prep-run.md, ROADMAP B64–B67). This file is born with B65, the research half:
+
+positional arguments:
+  {brief,research,facts,doctor,hook,pick,run,one,conduct,resume,status,stop,check,message,finish,publish,last,approve}
+    brief               the packet for one business
+    research            one Sonnet session a business → facts.json
+    facts               facts lint FILE
+    doctor              the login, the models, the census, the key
+    hook                ==SUPPRESS==
+    pick                the night's businesses by fit, plus a reserve (spends
+                        nothing)
+    run                 the whole night: pick, research, build, judge, batch,
+                        finish
+    one                 one named business through the whole run (Taylor's
+                        `build`)
+    conduct             ==SUPPRESS==
+    resume              pick a stopped or killed run up where it was
+    status              every business's stage, the usage by stage, the marker
+    stop                stop the conductor and its sessions (resume carries
+                        on)
+    check               the seven gates over one business's directory →
+                        check.json
+    message             the channel, the link, the frame filled, the lint
+    finish              the gates again, the publish, the hold, the outline,
+                        notify
+    publish             retry a failed publish, then the rest of finish
+    last                reprint the outline (--html writes one page)
+    approve             Taylor's word on templates/prep/message.md
+
+options:
+  -h, --help            show this help message and exit
+--- stderr
+--- exit 0

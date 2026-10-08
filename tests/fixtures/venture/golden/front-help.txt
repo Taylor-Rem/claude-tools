@@ -1,0 +1,39 @@
+$ front --help
+--- stdout
+usage: front [-h] [--project SLUG] {visits,leads,doctor} ...
+
+front — the front door of patchlamp.com: who came, and who left a number.
+Patchlamp plan 06 (ROADMAP B2). The site counts its own page loads with no
+cookie (a beacon per load; a hash that changes daily) and stores every
+"leave your number". This reads both back, for Taylor in the terminal or
+for Patch on the global project when Taylor texts "how's the front door".
+
+  front                      # the week: visits by day, top pages, referrers, new leads
+  front visits [--days 7]    # visits by day, top pages, top referring sites
+  front leads [--all]        # the leads (new ones only unless --all)
+  front --project SLUG       # a client's own site instead (B127): page loads by day, pages, referrers
+  front doctor
+
+`--project` is Taylor's view of any client site's count (plan
+~/projects/plans/50-site-numbers.md); inside a client workspace the same
+numbers are `site stats`, which can only read that workspace's own.
+
+Talks to patchlamp.com's /internal/relay/front/* with the relay's shared
+secret. Read-only: telling Taylor about a lead is the relay's job
+(relay/front.py), which marks each one told on the site.
+
+Config, by name, never printed:
+  PATCHLAMP_RELAY_SHARED_SECRET   ~/.config/claude-tools/env
+  PATCHLAMP_URL                   optional; default https://patchlamp.com
+
+positional arguments:
+  {visits,leads,doctor}
+    visits              visits by day, top pages, top referring sites
+    leads               who left a number (new ones unless --all)
+    doctor              can this reach the site?
+
+options:
+  -h, --help            show this help message and exit
+  --project SLUG        a client's own site instead of patchlamp.com (B127)
+--- stderr
+--- exit 0

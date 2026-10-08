@@ -1,0 +1,291 @@
+$ leads --help
+--- stdout
+usage: leads [-h]
+             {kit,diagnose,candidates,log,next,sent,channel,replies,due,recheck,today,brief,cadence,strength,show,week,pipeline,preview,batch,doctor} ...
+
+leads — the restaurant pipeline by text. ROADMAP B18 (the Saturday kit),
+B25 (the remote lane), B7 (the pipeline: log, follow-ups, the week).
+
+  leads log "Whistle Wok" talked "owner Mike, wants to see the demo" --who Mike --next fri
+                               # one conversation; prints tomorrow's list back
+      outcomes: held messaged visited talked inbound interested demo later trial won lost churned
+      (held: not messaged, kept on file with a note — researching, or a weak fit)
+      (inbound is the relay's lane: they came to us — the site form, the demo line, a reply)
+      (each sets the stage and a default follow-up; --next overrides: tomorrow, fri, 3d, 2w, oct 3, none)
+      (messaged needs --channel facebook|instagram|email|text|call|form: where it went, so the
+       second touch knows where the first did; talked takes it too. B116)
+  leads sent 1 3 4             # those picks from today's remote kit / prep outline went out (or: sent all);
+                               # each gets the channel its kit planned (channel_by "kit"); --channel X overrides
+  leads channel "Max Pro" facebook --date 2026-10-02 --by cowork
+                               # backfill: the channel of a messaged/talked line logged without one (B116)
+  leads replies "Max Pro" 7/10 --newest 2026-09-20 --by cowork --evidence URL
+                               # how often the owner answers Google reviews, as a person read it (B116);
+                               # `brief` prints it. Places carries no owner replies, so nothing else can.
+  leads next [fri]             # the day's list (default tomorrow): follow-ups due, then new leads
+  leads due                    # follow-ups due today (the 8am report)
+  leads show "Whistle Wok"     # one lead's history
+  leads week [--ago 1]         # this week's numbers
+  leads week --by channel      # the Sunday review (B52): the funnel per channel + GROWTH § 2.4's rows
+  leads pipeline [--all]       # every lead by stage
+  leads pipeline --json        # counts by stage + due today, no names (B102: the owner's overview)
+  leads week --json            # this week's counts as one object (B102); `--by channel --json` is the B52 envelope
+  leads pipeline --strong      # only the strong ones, each with why (B73)
+  leads strength "Name"        # strong / good / weak and the reasons, in words (B73)
+  leads strength "Name" strong "owner asked for a call in November"
+                               # Taylor's word: always wins, survives every re-score; `auto` hands it back
+  leads week --by strength     # outcomes by strength and by reason, and the strong, silent (B73)
+
+  leads today                  # the 07:30 message (B48): today's six, each with the DM to paste (or
+                               # the call and what to say, B62), yesterday's replies, the follow-ups due,
+                               # the first call, and the `go` words only when the email lane can send
+  leads brief "Mike's Pool Care"   # one screen before the call: the fault, the preview, the history,
+                               # the segment's objection and its answer, the close, the booking link
+  leads cadence [--dry-run]    # the touches a silent lead is owed (GROWTH § 5.5), by its strength (B73):
+                               # weak 3/10 then the pool at 30; good 3/10/30, the pool at 90; strong
+                               # 3/10/30/45/60 (a call)/90, never the pool without Taylor's word — it lands
+                               # on "strong, silent" in `leads week`. Recorded as pipeline events; the DM
+                               # ones print, the email ones are `outreach send --touch 3|10`
+
+  leads kit                    # Saturday's six counters, faults and the opener (one page)
+  leads kit --for 2026-10-04   # a different Saturday
+  leads kit --last             # reprint the last kit without touching Google
+  leads kit --census-only      # no Places calls: what the census alone knows
+  leads candidates [--n 20]    # the ranked pool the kit picks from (no spend)
+  leads kit --remote           # today's six ready-to-send messages (ROADMAP B25): DM, email, faults
+  leads kit --remote --previews # the same, with a preview site built for every pick (B45)
+  leads diagnose "Name[, City]" [--group "Utah Small Business Owners"]
+                               # three lines to paste under a group post, and the lead logged
+  leads preview "Name, City"   # that lead's own website, filled from the census row (B45)
+  leads preview --kit          # one for each of today's remote-kit picks
+  leads preview ls             # every preview, how long it has left
+  leads preview sweep          # the expired ones come down (LEADS_NOW moves the clock)
+  leads preview --remove NAME  # a takedown, now
+  leads preview --claim NAME --slug mikes-pool-care   # client new + site new from the same files
+  leads batch --segment services [--category plumber] [--city Lehi] [--n 50] [--json]
+                               # the email lane's batch (B90): one trade across the corridor, each with its address
+                               # and two true specifics, a fault first; held 56 days once printed. --stats sizes it,
+                               # --last reprints, --live reads a listing one fault short (capped a day)
+  leads preview --place PLACE_ID --json   # one business's preview as one JSON object with its url (B90)
+  leads preview --from-press HASH --json  # a press on a letter's link: build or reuse, the brief on a first press (B91)
+  leads preview --press-tokens --json     # the links the see page may answer for, active or removed (B91)
+  leads doctor
+
+Preview sites (B45, plan ~/projects/plans/19-preview-sites.md): the segment's
+template filled from the listing alone — name, category → the services that
+category implies (templates/previews/categories.json, one row per category in
+client-leads/scripts/services.json), phone, city, hours, "5.0★ on Google, 88
+reviews" linking to the listing, one stock photo. Never their Google photos,
+never the text of a review, never a street address, never a price. All of them
+live in one Cloudflare Pages project at previews.patchlamp.com/<slug>/, noindex
+twice over (a robots meta and X-Robots-Tag from the project's _headers), with
+the footer that says what the page is and a 30-day expiry. Deterministic: no
+model call, so six previews cost $0.
+
+Segments (B44, VISION § Decided 2026-09-28: services first, restaurants one of five):
+  kit, kit --remote, candidates and next read the services census (B43's
+  `businesses` table in the same wasatch.db) by default once it holds a kit's
+  worth (six service businesses with a phone and no site of their own); until
+  then, and with --segment restaurant, everything below is the restaurant census
+  exactly as before. diagnose looks a name up in both.
+  --segment services|creatives|retail|nonprofit|restaurant|all   (LEADS_SEGMENT sets the default)
+  leads kit --segment services  # the six nearest American Fork with no site of their own (a call list, not
+                                # Saturday counters): presence class, the faults, the opener, the close, the ladder
+  leads kit --remote --segment creatives   # six messages greeted by the business (or the first name in it)
+  leads diagnose "Name, City"   # a name in the services census answers from the census, no Places call
+                                # (--live reads the listing too); an unknown name is still looked up live
+  The pool for a non-restaurant segment: presence none, page (Facebook, Instagram,
+  Linktree…), directory (Thumbtack, Angi…), dead (business.site, a link that
+  doesn't load) or builder (a free Wix/GoDaddy/Square… address); `own` sites are
+  left out, `unknown` is read from the website link without a fetch.
+
+The pick: marketplace-only independents from the census
+(client-leads/wasatch.db: on DoorDash/Uber/Grubhub with no ordering
+of their own), operational, with a phone, at least --min-reviews reviews,
+nearest to home first, skipping anyone kitted in the last eight weeks. Each
+candidate's Google listing is read through Place Details (Places API New) until
+six are open Saturday by 11:30 (hours unknown counts, flagged). The page lists
+them in visiting order from home with what is wrong on the listing (no hours,
+closed Saturdays, few photos, no website or a marketplace link for one, a low
+recent review, a stale listing), then the counter opener.
+
+Money: one Place Details call per candidate, cached seven days under
+~/.local/state/claude-tools/leads/details/, roughly $0.025 each at the
+Enterprise + Atmosphere SKU; each run appends one line to the toolbelt ledger
+(~/.local/state/claude-tools/ledger.jsonl) with the calls it made. Owner
+replies to reviews are not in the Places API, so "unanswered" is not claimed;
+that arrives with the Business Profile connection (B11/B12).
+
+The tool line (B40, plan ~/projects/plans/15-web-tools.md § How we sell it,
+point 3): a counter whose listing shows no way to book online (Google's
+`reservable` is unset and the website isn't on a booking host, BOOKING_HOSTS)
+is marked "No booking link" and the page ends with the tool line, which
+points at patchlamp.com/tools. In the remote kit, a service business
+(SERVICE_TYPES / SERVICE_SUFFIXES; the census is food, so it is rare there)
+with no booking link gets the second message, `tool_dm_text`. Neither names
+a price or offers ordering.
+
+Config, by name, never printed:
+  GOOGLE_MAPS_API_KEY   ~/.config/claude-tools/env (setenv.sh). Without it the
+                        kit is census-only and says so on its first line.
+  LEADS_DB              the census (default client-leads/wasatch.db)
+  LEADS_HOME            "lat,lng" of home (default American Fork)
+  LEADS_STATE           state dir (default ~/.local/state/claude-tools/leads)
+  LEADS_MAIL_ADDRESS    the postal address a cold email must carry (CAN-SPAM);
+                        not a secret, kept in the toolbelt env beside the keys.
+                        Without it every email draft says it isn't ready to send.
+  LEADS_GROUPS_LOG      the human-readable log of remote and group-thread leads
+                        (default ~/projects/social/leads-from-groups.md)
+  LEADS_PREVIEWS        the previews' state: site/ (what is uploaded) and
+                        meta/<slug>.json (never uploaded). Default
+                        ~/.local/state/claude-tools/previews
+  LEADS_PREVIEW_PROJECT the Pages project they all live in (patchlamp-previews)
+  LEADS_PREVIEW_HOST    the host to build links from, when it isn't the one the
+                        last publish reported (tests)
+  LEADS_PREVIEW_YES     =1 passes `site previews --yes`, which is what lets the
+                        very first publish create the Pages project. Until
+                        Taylor gives that word, a publish stops and says so
+                        (GROWTH § 10, TAYLOR-TODO §1 "Preview sites").
+  LEADS_NOW             an ISO date standing in for today: the previews' expiry, and the
+                        clock `today`, `cadence`, `brief` and `week` read (so a day-10
+                        touch is provable without waiting ten days). Unset in normal use.
+  LEADS_KIT_PREVIEWS    `leads today` builds a preview for every pick it makes (B45) by default once the
+                        previews project is published (project.json has a pages_host); =0 turns it
+                        off, =1 forces it on. Never with --no-save.
+  LEADS_BOOKING_URL     the booking link `leads brief` ends on (Cal.com); shared with `outreach`
+  OUTREACH_STATE        read-only here: `leads today` reads the email lane's replies.jsonl for
+                        "yesterday's replies", and never writes anything under it
+  LEADS_LIVE_READS_PER_DAY  listing reads `leads batch --live` may make a day (default 100, ~$0.025 each)
+  LEADS_CLIENTS_DIR     the client workspaces whose addresses, domains and phones a batch keeps out (~/projects/clients)
+  LEADS_OUTREACH_BIN    the `outreach` a batch asks for the suppression list (beside this file)
+  LEADS_PAGE_CHECK      =0: a batch doesn't re-read a pick's page, so an old copyright year is never said
+                        (nor a broken link, a broken image or a failing secure address: those are asked again too);
+                        LEADS_PAGE_FIXTURE a JSON {url: html}, LEADS_STATUS_FIXTURE a JSON {url: status} (tests)
+  LEADS_PIPELINE        the pipeline, one event per line (default
+                        ~/projects/private-docs/leads/pipeline.jsonl: backed up
+                        nightly, in no repo — it holds names and numbers). The
+                        census stays read-only; nothing here writes to it.
+
+The remote lane (B25, plan ~/projects/plans/09-social-strategy.md § Facebook
+groups): same census and diagnostic, delivered as messages instead of
+addresses. The census holds no owner names or email addresses; what it does
+hold is each place's top search results, which is where an Instagram handle
+or a Facebook page is found. Leads with one are picked first, and the draft
+says which channel to use. Owner names are not claimed.
+
+The kit's machine-readable seam (`leads kit --remote --json`), which
+`bin/outreach` (B46) reads. Add keys; never rename one:
+
+  {"date": "2026-09-28", "segment": "services",
+   "picks": [{"place_id", "name", "first" (the first name the business carries,
+              else the business), "category", "segment", "city", "phone",
+              "email"|null, "instagram" (handle)|null, "facebook" (url)|null,
+              "faults": [str], "preview_url"|null, "maps_url",
+              "message" (the DM draft) and "summary" beyond the agreed shape,
+              B104: "email_unconfirmed" {address, why, confidence}|null and
+              "reach_unconfirmed" [{field, value, confidence, why, label, profile}]}]}
+
+Is it their place? (B104/B107, plan ~/projects/plans/44-wrong-business-handles.md.) The
+`reach` table's columns hold only a handle or an address client-leads/scripts/reach.py tied
+to the place (`high`); the rest sit in its `evidence` with a confidence and a reason and are
+named in `unconfirmed`. The readers here use `high` only: `email`, `instagram`, `facebook`
+above are never anything else. A `low` one is said as "Instagram: unconfirmed, call-only
+(why)", an `unsure` one (research doubted it) as "Instagram @x: unconfirmed, look before
+sending (why)" with its profile link and never as the DM line, a `rejected` one as
+"Instagram refused (why)". A column value from before B104 (no confidence) reads as `low`
+until `reach.py --check` has run over it. `leads show` and `brief` say a logged handle that
+isn't high instead of printing it (the pipeline is never rewritten), `leads batch` writes to
+a `high` address only (`emails.confidence`), and `leads recheck` runs `reach.py --check`
+over the week's messaged leads. LEADS_REACH_PY points at the reach script (default
+scripts/reach.py beside the census); `doctor` says where it is.
+
+`leads kit --json` without --remote is unchanged: the picks as a plain list. Every
+remote run also saves that envelope beside its page (state/remote/<date>[-segment].json),
+which is where `leads today` reads the morning's six from instead of paying twice.
+
+Hosts (B71, `client-leads/scripts/hosts.py`, plan ~/projects/plans/32-who-hosts-it.md): when the
+census has a `hosts` table (place_id, vendor, evidence, status, checked, url, kind) the candidate
+and kit lines carry `hibu ($449+/mo, 404)` — whose platform the site is on, that vendor's public
+monthly band from client-leads/vendor_prices.md (LEADS_VENDOR_PRICES overrides the path), and
+whether it answers. `candidates --paying` puts an agency-hosted dead or parked site first; `brief`
+prints one sentence in the vendor's own public price; the remote kit's JSON gains `paying` (the
+letter's `{paying}` line, null when the vendor is unknown, free or unpriced) and `host`. Never a
+guess at the business's own bill: every sentence is about the vendor. A missing table means no
+fingerprint yet, and nothing changes. Nothing here writes to it.
+
+Language (B74, `client-leads/scripts/language.py`): when the census has a `language` table
+(place_id, language, evidence, checked, basis) a row that speaks Spanish to its customers carries a tag
+on its kit, `today` and `candidates` line — `lang: es`, `lang: es (name only)` when the name is all
+there was to read, `lang: es+en` for both; English and unknown rows carry nothing. `brief` prints the
+evidence in one line and the remote kit's JSON gains `language` ({language, basis, why, checked} or
+null) — the seam the Spanish pitch will read. A missing table means no pass yet, and nothing changes.
+
+Reach (B61, `client-leads/scripts/reach.py`): when the census has a `reach` table
+(place_id, instagram, facebook, email, source, checked, evidence) the kit's picks take
+a handle or an address from it *after* the census's own columns — the listing's own
+link and, for a restaurant, its search results, win. `leads doctor` prints the coverage,
+or says the table isn't there yet. Nothing here writes to it.
+
+The pipeline's event shape (one JSON object a line; fields are added, never renamed):
+  ts date key place_id name city outcome stage next note who email phone via reach
+  channel  where a messaged/talked touch went (facebook instagram email text call form, B116):
+           required on `messaged`; a line without one reads "channel not recorded", never a guess.
+           On a `touch_due` event it is the planned channel (dm email call). `channel_by` is "kit" when
+           `leads sent` took it from the kit (planned, not witnessed), "backfill WHO DATE" for `leads channel`.
+  source   the channel (email dm group saturday referral inbound mail), so `week --by
+           channel` can cut the funnel; `--source` sets it, else it follows --via, the
+           channel the lead is already on, or the reach the kit used
+  was      the faults named in the first message, so the day-30 read can say what changed
+  next_by  "hand" when Taylor named the date (`--next thu`): the cadence never writes over it
+  kind     "touch_due" for a cadence event, with `touch` (3|10|30|45|60|90) and `channel`;
+           "strength" for Taylor's override (`leads strength`): never a lead by itself, and it always wins
+  strength strong | good | weak as scored when the event was written (B73), and `reasons` the keys behind it
+           (client-leads/strength.md's table); `week --by strength` reads the first message's
+
+Strength (B73, plan ~/projects/plans/33-leads-by-strength.md): every candidate and lead is strong, good or weak
+from named reasons — an agency-hosted dead site (the strongest), a dead link of their own, no website, a listing
+that embarrasses them, 10–300 reviews at 4.3★+, within 10 miles, a reach with evidence, a named owner, a trade
+that quotes jobs; against: a chain, a franchise, a live builder site under $50, a rating under 4.0. The weights
+and the thresholds are client-leads/strength.md's tables (LEADS_STRENGTH overrides the path; the defaults are
+in STRENGTH_REASONS). Candidates, the kits and `leads today` put strong first and say why on every line.
+
+positional arguments:
+  {kit,diagnose,candidates,log,next,sent,channel,replies,due,recheck,today,brief,cadence,strength,show,week,pipeline,preview,batch,doctor}
+    kit                 Saturday's counters, one page
+    diagnose            three lines on a business's Google listing, for a
+                        group thread
+    candidates          the pool the kit picks from (no spend)
+    log                 log a conversation: leads log "Name[, City]" OUTCOME
+                        [note...]
+    next                the day's list: follow-ups due, then new leads
+                        (default tomorrow)
+    sent                picks from the last remote kit that went out: leads
+                        sent 1 3 4 | all
+    channel             backfill: the channel of a messaged/talked line logged
+                        without one (B116)
+    replies             how often the owner answers Google reviews, as a
+                        person read it (B116)
+    due                 follow-ups due today
+    recheck             the week's messaged leads: each logged handle or
+                        address judged again against the place (B104, reach.py
+                        --check through LEADS_REACH_PY; $0)
+    today               the 07:30 message: the six, yesterday's replies,
+                        what's due, the first call
+    brief               one screen before a call: the fault, the preview, the
+                        history, the objection, the close
+    cadence             the touches a silent lead is owed by its strength (§
+                        5.5): weak 3/10, good 3/10/30, strong 3/10/30/45/60/90
+    strength            a lead's strength and why; `strength NAME
+                        strong|good|weak "why"` is your word
+    show                one lead's history
+    week                this week's numbers
+    pipeline            every lead by stage
+    preview             a lead's own website, built from the census row (B45):
+                        NAME | --kit | ls | sweep
+    batch               the email lane's batch (B90): fifty or fewer in one
+                        trade, each with its address and two true specifics (a
+                        fault first); --stats sizes the lane
+
+options:
+  -h, --help            show this help message and exit
+--- stderr
+--- exit 0

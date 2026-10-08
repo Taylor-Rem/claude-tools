@@ -1,0 +1,33 @@
+$ leads today --census-only
+--- stdout
+Morning — Mon 28 Sep · services · 6 to send, 0 replies yesterday, 0 follow-ups due
+
+1. Mike's Pool Care · pool service · American Fork · Facebook: facebook.com/mikespoolcare · good · 14 reviews at 4.9 · 0.4 mi
+Hi, I'm Taylor. A small business owner in American Fork. Looked Mike's Pool Care up on Google. 14 reviews at 4.9, but the website link on your listing goes to Facebook, not a site of your own. I can build you one in an afternoon — want to see what it'd look like?
+(no preview built — leads preview "Mike's Pool Care")
+
+2. Glacier Snow Removal · snow removal · American Fork · Instagram: instagram.com/glaciersnowut · weak · 0.2 mi · Instagram with evidence
+Hi, I'm Taylor. A small business owner in American Fork. Looked you up on Google, and the website link on your listing goes to Instagram, not a site of your own. I can build you one in an afternoon — want to see what it'd look like?
+(no preview built — leads preview "Glacier Snow Removal")
+
+3. Lehi Lawn Bros · lawn care · Lehi · call: (801) 555-0112 · weak · 12 reviews at 4.3 · 3.5 mi
+Say: "Hi, is this Lehi Lawn Bros? This is Taylor, a small business owner in American Fork. Looked you up on Google — the website link on your listing is your Angi page, not a site of your own. I can build you one in an afternoon — could I text you what it'd look like?"
+
+4. Timp Pressure Washing · pressure washing · American Fork · call: (801) 555-0104 · weak · 0.5 mi · quotes jobs
+Say: "Hi, is this Timp Pressure Washing? This is Taylor, a small business owner in American Fork. Looked you up on Google — the website link on your listing is your Thumbtack page, not a site of your own. I can build you one in an afternoon — could I text you what it'd look like?"
+
+5. Wasatch Pest Pros · pest control · Pleasant Grove · call: (801) 555-0103 · strong · dead link (wasatch-pest-pros.business.site) · 22 reviews at 4.7
+Say: "Hi, is this Wasatch Pest Pros? This is Taylor, a small business owner in American Fork. Looked you up on Google — the website link on your listing is a business.site page, which Google shut down in 2024, so it goes nowhere. I can build you one in an afternoon — could I text you what it'd look like?"
+
+6. Blue Canyon Landscaping · landscaping · Lehi · call: (801) 555-0102 · good · no website · 31 reviews at 4.6
+Say: "Hi, is this Blue Canyon Landscaping? This is Taylor, a small business owner in American Fork. Looked you up on Google — there's no website on your listing. I can build you one in an afternoon — could I text you what it'd look like?"
+
+Yesterday: the email lane isn't running yet (`outreach doctor`), so replies are whatever came to your phone.
+
+Due today: nothing.
+
+First call: nobody warm yet — the six above are the day's work.
+
+Email is off today — the first letter isn't approved yet (`outreach approve`) — so the six are yours to send; no word needed.
+--- stderr
+--- exit 0

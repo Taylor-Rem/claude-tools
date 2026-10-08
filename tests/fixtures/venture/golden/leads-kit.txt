@@ -1,0 +1,54 @@
+$ leads kit --census-only --for 2026-09-28
+--- stdout
+Services kit — Mon 28 Sep · 6 service businesses nearest American Fork with no site of their own · call, or drop by
+(census 2026-09-28 only — hours, photos and recent reviews aren't read without a Places call)
+
+1. Wasatch Pest Pros — 3.0 mi · pest control · Pleasant Grove · (801) 555-0103
+   Presence: dead — wasatch-pest-pros.business.site
+   Strength: strong · dead link (wasatch-pest-pros.business.site) · 22 reviews at 4.7 · 3.0 mi
+   Google: 4.7★ (22) · dead link (business.site) · pest control · (census only)
+   Wrong: the website link is a business.site page, and Google shut those down in 2024: it's a dead link
+   https://maps.google.com/?cid=FX_S03
+
+2. Mike's Pool Care — 0.4 mi · pool service · American Fork · (801) 555-0101
+   Presence: page — facebook.com/mikespoolcare
+   Strength: good · 14 reviews at 4.9 · 0.4 mi · Facebook with evidence
+   Google: 4.9★ (14) · website → Facebook · pool service · (census only)
+   Wrong: the website link is a Facebook page, not a site of their own
+   https://maps.google.com/?cid=FX_S01
+
+3. Blue Canyon Landscaping — 1.6 mi · landscaping · Lehi · (801) 555-0102
+   Presence: none
+   Strength: good · no website · 31 reviews at 4.6 · 1.6 mi
+   Google: 4.6★ (31) · no website · landscaping · (census only)
+   Wrong: no website on Google
+   https://maps.google.com/?cid=FX_S02
+
+4. Canyon Air HVAC — 7.3 mi · HVAC · Orem · (801) 555-0111
+   Presence: none
+   Strength: good · no website · 40 reviews at 4.5 · 7.3 mi
+   Google: 4.5★ (40) · no website · HVAC · (census only)
+   Wrong: no website on Google
+   https://maps.google.com/?cid=FX_S11
+
+5. Dave's Handyman Services — 2.4 mi · handyman · Lehi · (801) 555-0105
+   Presence: builder — daveshandyman.wixsite.com/home
+   Strength: good · 27 reviews at 4.8 · 2.4 mi · owner Dave
+   Google: 4.8★ (27) · free Wix site · handyman · (census only)
+   Wrong: the website is a free Wix address (daveshandyman.wixsite.com)
+   https://maps.google.com/?cid=FX_S05
+
+6. Glacier Snow Removal — 0.2 mi · snow removal · American Fork · (801) 555-0108
+   Presence: page — instagram.com/glaciersnowut
+   Strength: weak · 0.2 mi · Instagram with evidence · quotes jobs
+   Google: 4.8★ (6) · website → Instagram · snow removal · (census only)
+   Wrong: the website link is an Instagram page, not a site of their own · only 6 reviews
+   https://maps.google.com/?cid=FX_S08
+
+Open with the diagnostic, not the pitch: "I looked your business up on Google and it's got <the thing above>. Here's exactly what to change; it's free, whether or not we talk again."
+The close: "If you'd rather not think about it again: text Patch and it's done. Your site, your hours, your prices, changed in a minute by a number you text. It's $99 a month and I'm on the hook for all of it."
+Then the tool, if they quote jobs: "Your site can take quote requests and bookings, and they land on a private page only you open: who asked, what for, marked new, replied or done. There's a working one on the pool-care demo at patchlamp.com/templates."
+
+Log every conversation by text: "log <name> talked|interested|… <note>" (`leads log`). Owner replies to reviews aren't in the Places API — glance at the listing for unanswered ones.
+--- stderr
+--- exit 0

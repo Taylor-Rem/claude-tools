@@ -1,0 +1,52 @@
+$ cloud --help
+--- stdout
+usage: cloud [-h] {deploys,status,wait,logs,doctor} ...
+
+cloud — what is deployed on Laravel Cloud, read from its API (ROADMAP B88).
+
+positional arguments:
+  {deploys,status,wait,logs,doctor}
+    deploys             the last deploys
+    status              the live commit against origin/main
+    wait                block until a commit's deploy finishes
+    logs                the site's logs, or one deploy's steps
+    doctor              check the key, the token and what it resolves to
+
+options:
+  -h, --help            show this help message and exit
+
+cloud — what is deployed on Laravel Cloud, read from its API (ROADMAP B88).
+
+patchlamp.com runs on Laravel Cloud and a push to `main` deploys it. Until
+this tool a session proved a deploy by probing the live site, and nobody could
+read the site's logs from here. This reads both back.
+
+  cloud deploys [-n 5]        # the last deploys: status, commit, branch, message, started, finished
+  cloud status                # the commit that is live against origin/main, and any deploy in flight
+  cloud wait [SHA]            # block until that commit's deploy succeeds or fails (default: origin/main)
+  cloud logs [--since 1h]     # the site's application/access logs (--type, --query, --errors, -n)
+  cloud logs --deploy [SHA]   # one deploy's build and deploy steps (default: the newest)
+  cloud doctor                # the key, the token, the app and environment it resolves to
+
+Options on every command: --app NAME|ID, --env NAME|ID (default: the app's
+default environment; CLOUD_APP / CLOUD_ENV in the environment or the key file
+do the same). --json on deploys/status/wait prints the same named fields as
+JSON, never the API's own response.
+
+Exit codes: 0 ok; 1 an error (bad token, unreachable, nothing to resolve);
+`status` exits 3 when the live commit is not origin/main or a deploy is in
+flight; `wait` exits 1 when the deploy failed and 2 when it timed out.
+
+Read-only by construction. Every request goes through `_get()`, which builds
+a GET and nothing else, whatever the token would allow (a test greps this file
+for any other verb). The environment object the API returns carries the
+production app's environment variables, which are the site's real secrets,
+so this tool reads fields by name, keeps nothing on disk, and on an error
+prints the HTTP status and a short reason, never the response body.
+
+Config, by name, never printed:
+  LARAVEL_CLOUD_TOKEN   ~/.config/claude-tools/env (view-only token from the Cloud UI)
+  PATCHLAMP_REPO        optional; the local clone whose `origin` is compared (default ~/projects/patchlamp)
+The key file is parsed here, never sourced by a shell: the token holds a `|`.
+--- stderr
+--- exit 0

@@ -1,0 +1,20 @@
+$ outreach status
+--- stdout
+Email lane — 2026-09-28 · provider fake
+  sends today: 0 of 6
+  replies today: 0 (0 answered by the machine, cap 10)
+  classifier spend today: $0.0000 of $0.50
+  deliverability: 0 sent, 0 bounced (0.0%, cap 2.0%), 0 spam complaint(s) per the provider
+  suppressed: 0
+  templates: first: not in APPROVED; second: not in APPROVED; third: not in APPROVED; batch-first: not in APPROVED; batch-second: not in APPROVED; batch-third: not in APPROVED; answer-price: not in APPROVED; answer-how: not in APPROVED; answer-yes: not in APPROVED
+
+Batch lane (B90)
+  warm-up start: not recorded (unset)
+  OUTREACH_MAILBOX_PER_DAY: 0 -> cap today 0 a mailbox  (0: nothing sends)
+  taylor@patchlampmail.example: 0 of 0 today
+  sequences: none
+  AI-line test: not started; every letter carries the AI sentence beside the introduction (intro) · `outreach status --by variant`
+  since the beginning: 0 sent, 0 bounced; angry 0 + no 0 over the last 0 sends; Postmaster no reading
+  stop rules: none crossed
+--- stderr
+--- exit 0

@@ -1,0 +1,315 @@
+$ outreach approve --dry-run
+--- stdout
+The text as it will go out (one rendered sample each):
+
+───── first.md ─────
+Subject: your Google listing points at a page that doesn't load
+Hi Dave,
+
+I'm Taylor Remund. I build and look after websites here in American Fork, Utah.
+Patch, my AI operator, drafted this note for my review.
+
+I looked Highland Pool & Spa up on Google: your listing's website link is a business.site page, which Google shut down in 2024, so it goes nowhere.
+
+I made you a page from your Google listing: https://preview-highland-pool.pages.dev/
+
+If you want to keep it, I'll put it on your own web address for $20 a month, no contract. A few small changes by text to Patch each month are included. Bigger changes need a bigger plan.
+
+If you don't want it, just say so and I'll take the preview down.
+
+Take a look and let me know what you think.
+
+Taylor Remund · Patchlamp
+801-555-0100
+Fifteen minutes on the phone, if that's easier: https://cal.com/taylor/15min
+PO Box 1234, American Fork, UT 84003
+
+This is a one-time note from a local business — it is an advertisement, and nobody paid me to send it. Reply "no thanks" and you won't hear from me again.
+
+
+───── second.md ─────
+Subject: the page I made for Highland Pool & Spa
+Hi Dave,
+
+I'm Taylor. I build and look after websites in American Fork.
+Patch, my AI operator, drafted this note for my review.
+
+I looked Highland Pool & Spa up on Google: your listing's website link is a business.site page, which Google shut down in 2024, so it goes nowhere.
+
+Here's a page I made for you: https://preview-highland-pool.pages.dev/
+
+Want to use it as your website?
+
+Taylor Remund · Patchlamp
+801-555-0100
+Fifteen minutes on the phone, if that's easier: https://cal.com/taylor/15min
+PO Box 1234, American Fork, UT 84003
+
+A one-time follow-up to my note; this is an advertisement from a local business. Reply "no thanks" and you won't hear from me again.
+
+
+───── third.md ─────
+Subject: the page for Highland Pool & Spa comes down 12 October
+Hi Dave,
+
+This is my last note. The page I made for Highland Pool & Spa comes down on 12 October.
+Patch, my AI operator, drafted this note for my review.
+
+Here's the preview: https://preview-highland-pool.pages.dev/
+
+Want me to keep it for you?
+
+Taylor Remund · Patchlamp
+801-555-0100
+Fifteen minutes on the phone, if that's easier: https://cal.com/taylor/15min
+PO Box 1234, American Fork, UT 84003
+
+The last of three notes from a local business; this is an advertisement. Reply "no thanks" and you won't hear from me again.
+
+
+───── batch-first.md — AI sentence intro ─────
+Subject: two things I noticed about Highland Pool & Spa
+Hi Dave,
+
+I'm Taylor Remund. I build and look after websites in American Fork, Utah.
+Patch, my AI operator, drafted this note for my approval of the batch.
+
+I looked Highland Pool & Spa up and noticed two things:
+
+- your Google listing has no hours for Saturday
+- your website has no layout for a phone, so it shows the desktop page shrunk
+
+I can build you a preview of a site for Highland Pool & Spa from your Google listing, free, nothing to sign.
+
+If you want to keep it, I'll put it on your own web address for $20 a month, no contract. A few small changes by text to Patch each month are included. Bigger changes need a bigger plan.
+
+Want to see it? Just reply.
+
+Taylor Remund · Patchlamp
+801-555-0100
+PO Box 1234, American Fork, UT 84003
+
+This is an advertisement from a local business. Reply "no thanks" and you won't hear from me again.
+
+───── batch-first.md — AI sentence foot ─────
+Subject: two things I noticed about Highland Pool & Spa
+Hi Dave,
+
+I'm Taylor Remund. I build and look after websites in American Fork, Utah.
+
+I looked Highland Pool & Spa up and noticed two things:
+
+- your Google listing has no hours for Saturday
+- your website has no layout for a phone, so it shows the desktop page shrunk
+
+I can build you a preview of a site for Highland Pool & Spa from your Google listing, free, nothing to sign.
+
+If you want to keep it, I'll put it on your own web address for $20 a month, no contract. A few small changes by text to Patch each month are included. Bigger changes need a bigger plan.
+
+Want to see it? Just reply.
+Patch, my AI operator, drafted this note for my approval of the batch.
+
+Taylor Remund · Patchlamp
+801-555-0100
+PO Box 1234, American Fork, UT 84003
+
+This is an advertisement from a local business. Reply "no thanks" and you won't hear from me again.
+
+───── batch-first.md — AI sentence none (only inside the AI-line test) ─────
+Subject: two things I noticed about Highland Pool & Spa
+Hi Dave,
+
+I'm Taylor Remund. I build and look after websites in American Fork, Utah.
+
+I looked Highland Pool & Spa up and noticed two things:
+
+- your Google listing has no hours for Saturday
+- your website has no layout for a phone, so it shows the desktop page shrunk
+
+I can build you a preview of a site for Highland Pool & Spa from your Google listing, free, nothing to sign.
+
+If you want to keep it, I'll put it on your own web address for $20 a month, no contract. A few small changes by text to Patch each month are included. Bigger changes need a bigger plan.
+
+Want to see it? Just reply.
+
+Taylor Remund · Patchlamp
+801-555-0100
+PO Box 1234, American Fork, UT 84003
+
+This is an advertisement from a local business. Reply "no thanks" and you won't hear from me again.
+
+
+───── batch-second.md — AI sentence intro ─────
+Subject: Re: two things I noticed about Highland Pool & Spa
+Hi Dave,
+
+I'm Taylor. I build and look after websites in American Fork.
+Patch, my AI operator, drafted this note for my approval of the batch.
+
+I can make a free website preview for Highland Pool & Spa from your Google listing.
+You can have one built here: https://see.trypatchlamp.example/k3Xq9
+Want to take a look?
+
+Taylor Remund · Patchlamp
+801-555-0100
+PO Box 1234, American Fork, UT 84003
+
+This is an advertisement from a local business. Reply "no thanks" and you won't hear from me again.
+
+───── batch-second.md — AI sentence foot ─────
+Subject: Re: two things I noticed about Highland Pool & Spa
+Hi Dave,
+
+I'm Taylor. I build and look after websites in American Fork.
+
+I can make a free website preview for Highland Pool & Spa from your Google listing.
+You can have one built here: https://see.trypatchlamp.example/k3Xq9
+Want to take a look?
+Patch, my AI operator, drafted this note for my approval of the batch.
+
+Taylor Remund · Patchlamp
+801-555-0100
+PO Box 1234, American Fork, UT 84003
+
+This is an advertisement from a local business. Reply "no thanks" and you won't hear from me again.
+
+───── batch-second.md — AI sentence none (only inside the AI-line test) ─────
+Subject: Re: two things I noticed about Highland Pool & Spa
+Hi Dave,
+
+I'm Taylor. I build and look after websites in American Fork.
+
+I can make a free website preview for Highland Pool & Spa from your Google listing.
+You can have one built here: https://see.trypatchlamp.example/k3Xq9
+Want to take a look?
+
+Taylor Remund · Patchlamp
+801-555-0100
+PO Box 1234, American Fork, UT 84003
+
+This is an advertisement from a local business. Reply "no thanks" and you won't hear from me again.
+
+
+───── batch-third.md — AI sentence intro ─────
+Subject: Re: two things I noticed about Highland Pool & Spa
+Hi Dave,
+
+This is my last note about a website for Highland Pool & Spa.
+Patch, my AI operator, drafted this note for my approval of the batch.
+
+You can have a free preview built from your Google listing here: https://see.trypatchlamp.example/k3Xq9
+Want to take a look?
+
+Taylor Remund · Patchlamp
+801-555-0100
+PO Box 1234, American Fork, UT 84003
+
+This is an advertisement from a local business. Reply "no thanks" and you won't hear from me again.
+
+───── batch-third.md — AI sentence foot ─────
+Subject: Re: two things I noticed about Highland Pool & Spa
+Hi Dave,
+
+This is my last note about a website for Highland Pool & Spa.
+
+You can have a free preview built from your Google listing here: https://see.trypatchlamp.example/k3Xq9
+Want to take a look?
+Patch, my AI operator, drafted this note for my approval of the batch.
+
+Taylor Remund · Patchlamp
+801-555-0100
+PO Box 1234, American Fork, UT 84003
+
+This is an advertisement from a local business. Reply "no thanks" and you won't hear from me again.
+
+───── batch-third.md — AI sentence none (only inside the AI-line test) ─────
+Subject: Re: two things I noticed about Highland Pool & Spa
+Hi Dave,
+
+This is my last note about a website for Highland Pool & Spa.
+
+You can have a free preview built from your Google listing here: https://see.trypatchlamp.example/k3Xq9
+Want to take a look?
+
+Taylor Remund · Patchlamp
+801-555-0100
+PO Box 1234, American Fork, UT 84003
+
+This is an advertisement from a local business. Reply "no thanks" and you won't hear from me again.
+
+
+───── answer-price.md ─────
+Subject: Re: what it costs
+Hi Dave,
+
+It's $20 a month, no contract, and that keeps your site up on your own web address with a few small changes by text each month; that's the Hosting plan. If you'd want changes made regularly, Starter is $99 a month and includes $100 of changes a month. The full range is $20, $50, $99, $250, $400 and $1,000 a month as the amount of work goes up; all six are on the pricing page. No setup fee, and nothing to cancel later: none of the three smallest plans has a minimum, and you cancel by text.
+
+If you'd rather see it work before deciding, text 435-901-7141 and ask it something — that's a real one running a demo business, and you can ask it whatever you like. Fifteen minutes on the phone if that's easier: https://cal.com/taylor/15min
+
+Taylor Remund · Patchlamp
+801-555-0100
+PO Box 1234, American Fork, UT 84003
+
+You wrote to me first, so this is a reply — and, like my first note, an advertisement for my own service. Reply "no thanks" and you won't hear from me again.
+Patch, my AI operator, wrote this reply; Taylor reads the ones it flags.
+
+  money in this text (check each against patchlamp.com/pricing): $99 a month and includes, $100 of changes a month
+
+───── answer-how.md ─────
+Subject: Re: how it works
+Hi Dave,
+
+The short version: you text Patch — that's the assistant that looks after your site — in plain words ("put Saturday's hours at 9 to 4", "add the new service"), and it makes the change and texts you back. There's a page you can sign in to and type instead, if you'd rather, and your texts are there to read as well.
+
+The best way to judge it is to use it: text 435-901-7141 and ask it anything. That's a real one running a demo business, so nothing you say to it breaks anything. Your own starts at $20 a month, no contract for the site and a few small changes a month; the plans that do more are on the pricing page. Fifteen minutes on the phone if that's easier: https://cal.com/taylor/15min
+
+Taylor Remund · Patchlamp
+801-555-0100
+PO Box 1234, American Fork, UT 84003
+
+You wrote to me first, so this is a reply — and, like my first note, an advertisement for my own service. Reply "no thanks" and you won't hear from me again.
+Patch, my AI operator, wrote this reply; Taylor reads the ones it flags.
+
+
+───── answer-yes.md ─────
+Subject: Re: a preview for Highland Pool & Spa
+Hi Dave,
+
+Here it is: https://preview-highland-pool.pages.dev/
+
+I built it from your Google listing alone, so it only knows what Google knows. The preview stays up for 30 days.
+
+Keeping it as your live site is $20 a month, no contract, on your own web address. If you already have one, I help connect it; if you need one, you buy it and I help connect it. Your Google listing can link to the site.
+
+A few small changes by text each month are included, like changing your hours. After that, you can wait for next month or move up a plan; a full redesign or a big new feature is quoted separately. You text Patch, my AI operator; I'm on the hook for it. Want this to be your live site?
+
+Taylor Remund · Patchlamp
+801-555-0100
+PO Box 1234, American Fork, UT 84003
+
+You wrote back to my note, so this is a reply, and it's still an advertisement for my own service. Reply "no thanks" and you won't hear from me again.
+Patch, my AI operator, sent this reply in words I approved; I'm told of every one.
+
+───── answer-yes.md — in a `none` thread of the AI-line test ─────
+Subject: Re: a preview for Highland Pool & Spa
+Hi Dave,
+
+Here it is: https://preview-highland-pool.pages.dev/
+
+I built it from your Google listing alone, so it only knows what Google knows. The preview stays up for 30 days.
+
+Keeping it as your live site is $20 a month, no contract, on your own web address. If you already have one, I help connect it; if you need one, you buy it and I help connect it. Your Google listing can link to the site.
+
+A few small changes by text each month are included, like changing your hours. After that, you can wait for next month or move up a plan; a full redesign or a big new feature is quoted separately. You text Patch, my AI operator; I'm on the hook for it. Want this to be your live site?
+
+Taylor Remund · Patchlamp
+801-555-0100
+PO Box 1234, American Fork, UT 84003
+
+You wrote back to my note, so this is a reply, and it's still an advertisement for my own service. Reply "no thanks" and you won't hear from me again.
+Patch, my AI operator, drafted my outreach and sent this reply in words I approved.
+
+
+[dry-run] APPROVED not written.
+--- stderr
+--- exit 0

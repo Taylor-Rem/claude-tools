@@ -1,0 +1,41 @@
+$ books --help
+--- stdout
+usage: books [-h] {pl,income,expenses,setaside,export,add,doctor} ...
+
+books — Taylor's own books, from where the numbers actually live
+(plans/03-books.md, ROADMAP B3; the record is private-docs/TAXES.md).
+
+  books                         # this month's P&L
+  books pl [--year Y|--month Y-M]        gross, fees, refunds, net income, cash expenses, net profit
+  books pl --json [--month Y-M]          Stripe only, integer cents, one object (B102: the owner's overview)
+  books income [--year|--month] [--all]  every Stripe balance transaction that is money in (or out), per account
+  books expenses [--year|--month]        real spend: API keys, Gemini, Resend, manual rows; the statement-only vendors
+  books setaside [--year|--month]        25-30% of net profit, the rule in TAXES.md §4
+  books export [--year] [--out DIR]      income-Y.csv, expenses-Y.csv, pl-Y.csv (default private-docs/exports/)
+  books add income|expense DATE VENDOR AMOUNT ["note"]   a cash row Stripe/the ledgers don't have; also logged in TAXES.md
+  books doctor
+
+Income is Stripe: every STRIPE_KEY_* in the toolbelt is one account (PATCHLAMP,
+PLATEFUL). Balance transactions carry gross, fee and net per payment, so the
+books show gross with Stripe's fee as an expense — the way the 1099-K is
+filed. Expenses are the relay ledger's cash rows (billed_to != plan; the
+plan rows are notional and are shown on their own line, never deducted), the
+toolbelt ledger (images, video, newsletter), and manual rows in
+private-docs/books.jsonl. Vendors with no local record (TAXES.md §3) are
+listed as statement-only reminders. Nothing here prints a key.
+
+Config, by name, never printed:  STRIPE_KEY_<ACCOUNT>   ~/.config/claude-tools/env
+
+positional arguments:
+  {pl,income,expenses,setaside,export,add,doctor}
+    pl                  the P&L
+    income              Stripe money in/out
+    expenses            real spend
+    setaside            what to put away
+    export              CSVs for the CPA
+    add                 a cash row with no other record
+
+options:
+  -h, --help            show this help message and exit
+--- stderr
+--- exit 0

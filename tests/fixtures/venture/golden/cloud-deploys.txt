@@ -1,0 +1,9 @@
+$ cloud deploys -n 3
+--- stdout
+patchlamp / production: last 3 deploys, newest first
+  deployment.succeeded 0000000  main     started 2026-10-01 11:48:14  finished 2026-10-01 11:49:03 (0m49s)  Merge pull request #83 from patchlamp/dev
+  deployment.succeeded bbbbbbb  main     started 2026-10-01 09:43:56  finished 2026-10-01 09:44:44 (0m48s)  Merge pull request #82 from patchlamp/dev
+  build.failed         ccccccc  main     started 2026-10-01 08:00:00  finished 2026-10-01 08:01:00 (1m00s)  Break the build
+      why: Step 'Running build commands' failed
+--- stderr
+--- exit 0

@@ -365,6 +365,17 @@ class OutreachAssetsTest(unittest.TestCase):
         self.assertIn("spam 0.20% (postmaster, 2026-10-18)", out)
         self.assertIn("reputation: postmaster spam rate 0.20%", out)
 
+    def test_the_api_reading_reaches_the_registry(self):
+        """B136's daily reading (lib/postmaster.py, source api) lands as a dated postmaster reading."""
+        state = self.tmp / "state"
+        state.mkdir()
+        (state / "postmaster.jsonl").write_text(json.dumps({
+            "ts": "2026-10-18T06:00:00", "source": "api", "domain": "send.example", "date": "2026-10-17",
+            "rate": 0.02, "reputation": "HIGH"}) + "\n")
+        out = self.run_it("assets").stdout
+        self.assertIn("reputation HIGH (postmaster, 2026-10-17), spam 0.02% (postmaster, 2026-10-17)", out)
+        self.assertIn("domain send.example  [active]", out)
+
     def test_dry_run_changes_nothing(self):
         self.run_it("assets", "--dry-run")
         self.assertFalse((self.tmp / "assets.db").exists())

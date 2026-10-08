@@ -18,6 +18,7 @@ outreach — the email lane: the one outbound channel the machine runs end to en
   outreach tick                # sends what is due now: one letter a mailbox a tick at most,
                                # irregular gaps across working hours, under each mailbox's cap
   outreach postmaster 0.08 [--domain D]   # record a Google Postmaster spam-rate reading (percent)
+  outreach postmaster fetch|check|grant   # B136: the reading by API, daily (lib/postmaster.py)
   outreach resume MAILBOX | --lane        # Taylor's word after a pause or a stop
   outreach inbox [--dry-run]   # replies since the cursor: classified, the routine ones answered,
                                # the warm ones handed to Taylor with a brief

@@ -6,6 +6,7 @@ Email lane — 2026-09-28 · provider fake
   replies today: 0 (0 answered by the machine, cap 10)
   classifier spend today: $0.0000 of $0.50
   deliverability: 0 sent, 0 bounced (0.0%, cap 2.0%), 0 spam complaint(s) per the provider
+  Postmaster trypatchlamp.com: no reading for yesterday (2026-09-27); not set up (POSTMASTER_CLIENT_ID, POSTMASTER_CLIENT_SECRET, POSTMASTER_REFRESH_TOKEN unset)
   suppressed: 0
   templates: first: not in APPROVED; second: not in APPROVED; third: not in APPROVED; batch-first: not in APPROVED; batch-second: not in APPROVED; batch-third: not in APPROVED; answer-price: not in APPROVED; answer-how: not in APPROVED; answer-yes: not in APPROVED
 

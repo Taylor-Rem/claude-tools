@@ -1,0 +1,10 @@
+[Unit]
+Description=Outreach: the Postmaster reading once a day, mid-morning (Google publishes a day a day or two late)
+
+[Timer]
+OnCalendar=*-*-* 10:20:00
+RandomizedDelaySec=15m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

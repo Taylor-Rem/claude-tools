@@ -244,7 +244,7 @@ def expense_rows(start, end):
         if usd == 0:
             continue
         kind = e.get("kind") or "image"
-        vendor = "Resend" if kind == "newsletter" else "Google (Gemini)"
+        vendor = e.get("vendor") or ("Resend" if kind == "newsletter" else "Google (Gemini)")   # infra names its own (B144)
         add(vendor, t.strftime("%Y-%m-%d"), usd, kind)
     manual = []
     for e in _jsonl(MANUAL):

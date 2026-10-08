@@ -1262,11 +1262,18 @@ class Google(Provider):
         self.imap = imap or toolbelt("OUTREACH_IMAP_HOST", "imap.gmail.com:993")
         self.from_name = from_name or toolbelt("OUTREACH_FROM_NAME", V.sender.from_name)
 
+    def _creds(self, mb):
+        """B144: a Factory mailbox's own login by its registry id (OUTREACH_MAILBOX_<ID>_*), else the
+        address's app password on the lane's hosts, as before (lib/outreach_mail.py credentials())."""
+        aid = mail.asset_id_of(mb, V.tenant, registry_path())
+        c = mail.credentials(mb, toolbelt, asset_id=aid, smtp_default=self.smtp, imap_default=self.imap)
+        if not c:
+            name = mail.credential_name(mb, aid)
+            raise ProviderError(f"{name} isn't set, so {mb} can't send or read (see `outreach doctor`)")
+        return c
+
     def _password(self, mb):
-        pw = toolbelt(password_name(mb))
-        if not pw:
-            raise ProviderError(f"{password_name(mb)} isn't set, so {mb} can't send or read (see `outreach doctor`)")
-        return pw
+        return self._creds(mb)["password"]
 
     def ensure_campaign(self):
         return None
@@ -1283,7 +1290,7 @@ class Google(Provider):
 
     def send(self, pick, subject, body, mailbox=None, thread=None):
         mb = (mailbox or self.pick_mailbox()).lower()
-        pw = self._password(mb)
+        c = self._creds(mb)
         mid = mail.make_message_id(mail.domain_of(mb))
         thread = thread or {}
         msg = mail.build_message(mb, self.from_name, pick.get("email"), subject, body, mid,
@@ -1293,7 +1300,7 @@ class Google(Provider):
             say(f"  [dry-run] SMTP {mb} -> {pick.get('email')}")
             return {"id": mid, "message_id": mid, "mailbox": mb, "how": "smtp"}
         try:
-            mail.smtp_send(self.smtp, mb, pw, msg)
+            mail.smtp_send(c["smtp"], c["user"], c["password"], msg)
         except mail.MailError as exc:
             raise ProviderError(str(exc)) from None
         return {"id": mid, "message_id": mid, "mailbox": mb, "how": "smtp"}
@@ -1321,7 +1328,7 @@ class Google(Provider):
         out, ignored, problems = [], 0, []
         for mb in self.boxes:
             try:
-                pw = self._password(mb)
+                c = self._creds(mb)
             except ProviderError as exc:
                 problems.append(str(exc))
                 continue
@@ -1329,7 +1336,7 @@ class Google(Provider):
             first = min((r.get("date") for r in sends if str(r.get("mailbox") or "").lower() == mb and r.get("date")),
                         default=today().isoformat())
             try:
-                uv, msgs = mail.imap_fetch_new(self.imap, mb, pw, last_uid=st.get("last_uid"),
+                uv, msgs = mail.imap_fetch_new(c["imap"], c["user"], c["password"], last_uid=st.get("last_uid"),
                                                uidvalidity=st.get("uidvalidity"),
                                                since=dt.date.fromisoformat(first))
             except mail.MailError as exc:
@@ -1419,9 +1426,9 @@ class Google(Provider):
         good, lines = True, []
         for mb in self.boxes:
             try:
-                pw = self._password(mb)
-                mail.smtp_check(self.smtp, mb, pw)
-                mail.imap_check(self.imap, mb, pw)
+                c = self._creds(mb)
+                mail.smtp_check(c["smtp"], c["user"], c["password"])
+                mail.imap_check(c["imap"], c["user"], c["password"])
                 lines.append(f"{mb} logs in to SMTP and IMAP")
             except (ProviderError, mail.MailError) as exc:
                 good = False
@@ -4142,7 +4149,19 @@ def cmd_postmaster(args):
 
 def postmaster_domains(args=None):
     d = getattr(args, "domain", None) if args else None
-    return [d.strip().lower()] if d else [x.lower() for x in V.outreach.domains]
+    if d:
+        return [d.strip().lower()]
+    return list(dict.fromkeys([x.lower() for x in V.outreach.domains] + factory_domains()))
+
+
+def factory_domains():
+    """B144: the registry's live domains beyond the venture's own (the Factory's), so the morning fetch reads
+    them too and `infra certify` can see "Postmaster verified and reading". Read-only; no registry, none."""
+    path = registry_path()
+    if not path.exists():
+        return []
+    return [r["name"] for r in assets.Registry(path).rows(V.tenant)
+            if r["kind"] == "domain" and r["state"] in assets.LIVE]
 
 
 def postmaster_status():

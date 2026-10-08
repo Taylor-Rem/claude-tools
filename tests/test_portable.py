@@ -2,8 +2,9 @@
 
     python3 -m unittest tests.test_portable   (from claude-tools/)
 
-The engine is the seven tools that find and talk to prospects and count the money (leads, outreach,
-prep, social, front, books, cloud) and every module in lib/ except the product's own (site_*, the
+The engine is the eight tools that find and talk to prospects, count the money and make the sending
+capacity (leads, outreach, prep, social, front, books, cloud, infra), the Factory's adapters in
+lib/providers/, and every module in lib/ except the product's own (site_*, the
 sandbox's tools, prices). Whatever says which business they work for lives in ventures/<name>/venture.toml;
 this test takes its needles from those files (the name, the legal name, every host and domain, the reply
 address, the from-name, the town, the demo number, the census file: `Venture.needles()`; and every dollar
@@ -31,7 +32,7 @@ from pathlib import Path  # noqa: E402
 import venture  # noqa: E402
 
 TOOLS = Path(__file__).resolve().parent.parent
-ENGINE_TOOLS = ("leads", "outreach", "prep", "social", "front", "books", "cloud")
+ENGINE_TOOLS = ("leads", "outreach", "prep", "social", "front", "books", "cloud", "infra")
 PRODUCT_LIB = ("site_", "sandbox_tools", "prices")      # the product's own modules (plan 55 § 5.12): they stay
 
 
@@ -39,6 +40,7 @@ def engine_files(root=TOOLS):
     files = [root / "bin" / t for t in ENGINE_TOOLS]
     files += sorted(p for p in (root / "lib").iterdir()
                     if p.is_file() and p.suffix in (".py", ".mjs", ".js") and not p.name.startswith(PRODUCT_LIB))
+    files += sorted((root / "lib" / "providers").glob("*.py"))     # the Factory's adapters (B144)
     return files
 
 
@@ -83,7 +85,8 @@ class PortableTest(unittest.TestCase):
                      "taylor remund", "american fork", "wasatch.db", "founder@patchlamp.com", "plateful llc"):
             self.assertIn(want, needles)
         names = {f.name for f in engine_files()}
-        self.assertTrue({"leads", "outreach", "prep", "social", "front", "books", "cloud", "venture.py"} <= names)
+        self.assertTrue({"leads", "outreach", "prep", "social", "front", "books", "cloud", "infra", "venture.py",
+                         "fake.py", "infraforge.py"} <= names)
         self.assertFalse({"prices.py", "sandbox_tools.py", "site_chat.py"} & names)
 
     def test_the_engine_names_no_business(self):
@@ -107,9 +110,9 @@ class PortableTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "bin").mkdir()
-            (root / "lib").mkdir()
+            (root / "lib" / "providers").mkdir(parents=True)
             for f in engine_files():
-                shutil.copy2(f, root / f.parent.name / f.name)
+                shutil.copy2(f, root / f.relative_to(TOOLS))
             with open(root / "bin" / "front", "a") as fh:
                 fh.write('\nPLANTED = "https://patchlamp.com/oops"\n')
             hits = scan(engine_files(root), all_needles(), all_prices())

@@ -349,3 +349,123 @@ def parse_incoming(raw):
         "dsn": _dsn(msg),
     }
 
+
+
+# ---- credentials by asset id (ROADMAP B144, plan 55 § 5.8) -------------------------
+# A mailbox the Factory (`infra provision`) made has its own login, written into the toolbelt env under
+# the registry row's id, because its host and user are the provider's and not Google's:
+#
+#   OUTREACH_MAILBOX_<ID>_PASSWORD   the password (required: without it the row has no credentials)
+#   OUTREACH_MAILBOX_<ID>_USER       the login name (default: the address)
+#   OUTREACH_MAILBOX_<ID>_SMTP       host:port to send (default: the lane's OUTREACH_SMTP_HOST)
+#   OUTREACH_MAILBOX_<ID>_IMAP       host:port to read (default: the lane's OUTREACH_IMAP_HOST)
+#
+# A mailbox with no such row (the Workspace mailboxes the lane started with) keeps its
+# OUTREACH_APP_PASSWORD_<ADDRESS> and the lane's hosts, so nothing that worked before changes.
+
+def asset_prefix(asset_id):
+    return f"OUTREACH_MAILBOX_{int(asset_id)}_"
+
+
+def app_password_name(addr):
+    """OUTREACH_APP_PASSWORD_ + the whole address, upper-cased, every other character an underscore."""
+    return "OUTREACH_APP_PASSWORD_" + re.sub(r"[^A-Z0-9]", "_", str(addr).upper())
+
+
+def asset_id_of(addr, tenant, db_path=None):
+    """The registry id of a mailbox row, or None (no registry yet, no such row). Read-only: it never
+    creates the registry file."""
+    import sqlite3
+    from pathlib import Path
+    path = Path(db_path or os.environ.get("ASSETS_DB") or Path.home() / ".local/state/claude-tools/assets.db")
+    if not tenant or not path.exists():
+        return None
+    try:
+        db = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+        try:
+            r = db.execute("SELECT id FROM assets WHERE tenant=? AND kind='mailbox' AND name=?",
+                           (tenant, str(addr).strip().lower())).fetchone()
+        finally:
+            db.close()
+    except sqlite3.Error:
+        return None
+    return int(r[0]) if r else None
+
+
+def credentials(addr, get, asset_id=None, smtp_default="smtp.gmail.com:465", imap_default="imap.gmail.com:993"):
+    """{"user", "password", "smtp", "imap", "names"} for a mailbox, or None when nothing is set.
+    `get(name)` reads one env value; `names` is which env names it came from (for a doctor line; never
+    the values). The asset's own names win; the address's app password is the fallback."""
+    if asset_id is not None:
+        p = asset_prefix(asset_id)
+        pw = get(p + "PASSWORD")
+        if pw:
+            return {"user": get(p + "USER") or addr, "password": pw, "smtp": get(p + "SMTP") or smtp_default,
+                    "imap": get(p + "IMAP") or imap_default, "names": p + "*"}
+    pw = get(app_password_name(addr))
+    if pw:
+        return {"user": addr, "password": pw, "smtp": smtp_default, "imap": imap_default,
+                "names": app_password_name(addr)}
+    return None
+
+
+def credential_name(addr, asset_id=None):
+    """The env name to set for a mailbox, for a message saying it is missing."""
+    return asset_prefix(asset_id) + "PASSWORD" if asset_id is not None else app_password_name(addr)
+
+
+SPAM_FOLDERS = ("[Gmail]/Spam", "Junk", "Junk Email", "Spam", "INBOX.Spam", "INBOX.Junk")
+
+
+def imap_find(hostspec, user, password, token, folders=("INBOX",) + SPAM_FOLDERS, timeout=30):
+    """Where a message whose Subject carries `token` landed: -> (folder or None, raw bytes or None).
+    The Factory's placement probe (B144) reads its seed inboxes with it. Read-only; a folder the server
+    doesn't have is skipped."""
+    try:
+        conn = _imap(hostspec, timeout)
+    except (OSError, imaplib.IMAP4.error) as exc:
+        raise MailError(f"IMAP {hostspec}: {type(exc).__name__}: {str(exc)[:160]}") from None
+    try:
+        try:
+            conn.login(user, password)
+        except imaplib.IMAP4.error:
+            raise MailError(f"IMAP refused the login for {user}") from None
+        for folder in folders:
+            try:
+                typ, _ = conn.select(f'"{folder}"', readonly=True)
+            except imaplib.IMAP4.error:
+                continue
+            if typ != "OK":
+                continue
+            typ, data = conn.uid("SEARCH", None, "SUBJECT", f'"{token}"')
+            uids = [x for x in (data[0] or b"").split() if x.isdigit()] if typ == "OK" else []
+            if uids:
+                typ, parts = conn.uid("FETCH", uids[-1].decode(), "(BODY.PEEK[HEADER])")
+                raw = next((p[1] for p in parts or [] if isinstance(p, tuple) and len(p) == 2), None)
+                return folder, raw
+        return None, None
+    except (OSError, imaplib.IMAP4.error) as exc:
+        raise MailError(f"IMAP {hostspec}: {type(exc).__name__}: {str(exc)[:160]}") from None
+    finally:
+        try:
+            conn.logout()
+        except (OSError, imaplib.IMAP4.error):
+            pass
+
+
+def auth_results(raw_headers):
+    """{"spf", "dkim", "dmarc"} -> pass|fail|... from a received message's Authentication-Results header
+    (the receiving server's verdict, which is what a seed inbox can tell us). Missing ones are None."""
+    out = {"spf": None, "dkim": None, "dmarc": None}
+    if not raw_headers:
+        return out
+    if isinstance(raw_headers, bytes):
+        raw_headers = raw_headers.decode("utf-8", "replace")
+    hdrs = HeaderParser(policy=email.policy.compat32).parsestr(raw_headers)
+    for value in hdrs.get_all("Authentication-Results") or []:
+        v = " ".join(str(value).split())
+        for k in out:
+            m = re.search(rf"\b{k}=([a-z]+)", v, re.I)
+            if m and out[k] is None:
+                out[k] = m.group(1).lower()
+    return out

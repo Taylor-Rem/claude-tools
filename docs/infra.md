@@ -21,6 +21,7 @@ human one is human. Read it before a live run, and correct it the day something 
 | 7 | VERIFY | machine | DNS answers from 1.1.1.1 (`dig`), an SMTP and IMAP login per mailbox | the API's "ok" is never the proof |
 | 8 | COMMIT | machine | registry rows `warming`, the commit ledger line, a HISTORY line printed for Flint | — |
 | 9 | add the domain to Google Postmaster Tools | **Taylor** (one click and a paste) | filed by the tool at commit; the TXT value goes through `infra dns-txt D VALUE` | Postmaster has no API for adding a domain, and the account is his identity |
+| 9a | the TXT write keeps the rest | machine | `infra dns-txt` reads the live set, adds the record and PUTs the lot; `infra dns-restore D` puts back the set read at purchase when one is lost | the vendor's `PUT /domains/{id}/dns` replaces the whole set: on 2026-10-08 the first TXT write left one record where MX, SPF, DKIM and DMARC had been, and the warm-up bounced for a day (Cowork, 2026-10-09) |
 | 10 | seed inboxes (once, not per domain) | **Taylor** | filed by `certify` or `seeds` when `INFRA_SEED_INBOXES` is empty | new Google and Microsoft accounts need a person (phone verification) |
 | 11 | seed sends, seven days | machine | `infra seeds send --all`, then `infra seeds read --all`, once a weekday | a schedule line Flint adds after the first commit (not built in this row) |
 | 12 | CERTIFY | machine | `infra certify D`, or the daily `infra tick` for every domain past its date: every check below, then `active` | — |

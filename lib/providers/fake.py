@@ -158,6 +158,21 @@ class Adapter:
             return {"records": recs, "dkim_selector": "fk1"}
         return self._mutate("set_auth_dns", key, fn)
 
+    def dns(self, name):
+        d = load()["domains"].get(name)
+        if not d:
+            raise ProviderError(f"{name} isn't in this account")
+        return [{"type": r["type"], "name": r["name"], "value": r["value"]} for r in d["dns"]]
+
+    def set_dns(self, name, records, key):           # the real vendor's PUT replaces the whole set; so does this
+        def fn(st):
+            d = st["domains"].get(name)
+            if not d:
+                raise ProviderError(f"{name} isn't in this account")
+            d["dns"] = [{"type": r["type"], "name": r["name"], "value": r["value"]} for r in records]
+            return {"records": d["dns"]}
+        return self._mutate("set_dns", key, fn)
+
     def add_txt(self, name, host, value, key):
         def fn(st):
             d = st["domains"].get(name)

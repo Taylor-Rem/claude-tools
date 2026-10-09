@@ -195,13 +195,31 @@ class Adapter:
         sel = next((str(r["name"]).split("._domainkey")[0] for r in recs if "_domainkey" in str(r["name"] or "")), None)
         return {"records": recs, "dkim_selector": sel}
 
-    def add_txt(self, name, host, value, key):       # CONFIRM: PUT /domains/{id}/dns
+    def dns(self, name):                             # GET /domains/{id}/dns (confirmed 2026-10-08): the live set
         did = self._domain_id(name)
+        got = self._req("GET", f"/domains/{did}/dns")
+        if isinstance(got, dict) and got.get("dry_run"):
+            return []
+        return [{"type": r.get("type"), "name": r.get("name") or r.get("host"), "value": r.get("value")}
+                for r in self._items(got)]
+
+    def set_dns(self, name, records, key):           # PUT /domains/{id}/dns REPLACES the whole set
+        # Confirmed the hard way 2026-10-08/09: the first TXT write sent one record and the vendor kept one
+        # record — MX, SPF, DKIM and DMARC gone, the warm-up bouncing for a day (Cowork read it on 10-09).
+        # So every write here carries the full set, and `infra dns-restore` puts a wiped set back.
+        did = self._domain_id(name)
+        body = {"records": [{"type": r["type"], "name": r["name"], "value": r["value"]} for r in records]}
+        self._req("PUT", f"/domains/{did}/dns", body=body, key=key)
+        return {"records": body["records"]}
+
+    def add_txt(self, name, host, value, key):
         # Confirmed 2026-10-08 (the Postmaster TXT): {"records": [{"name", "type", "value"}]}, the name a full
-        # hostname as the read returns them (the apex is the domain itself, not "@").
+        # hostname as the read returns them (the apex is the domain itself, not "@"). Read, add, write the lot.
         fqdn = name if host in (None, "", "@") else f"{host}.{name}"
-        self._req("PUT", f"/domains/{did}/dns", body={"records": [{"type": "TXT", "name": fqdn, "value": value}]},
-                  key=key)
+        current = self.dns(name)
+        if any(r.get("type") == "TXT" and r.get("name") == fqdn and r.get("value") == value for r in current):
+            return {"unchanged": True}
+        self.set_dns(name, current + [{"type": "TXT", "name": fqdn, "value": value}], key)
         return {}
 
     def remove_dns(self, name, key):

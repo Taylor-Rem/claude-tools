@@ -28,6 +28,8 @@ this tool, with its repeat key and the exact click.
   infra rollback ID               undo a provision that failed verify: release what can be released; never
                                   re-buys a domain (ID: the operation, provision-<domain>, or the domain)
   infra dns-txt D VALUE [--host H]   one TXT record through the provider (the Postmaster verification)
+  infra dns-restore D [--dry-run]  put back the mail records read after purchase (the vendor's PUT replaces
+                                  the whole set; the 2026-10-08 TXT write wiped MX/SPF/DKIM/DMARC), keeping what is live
   infra contract PROVIDER --verdict PERMITTED --clause "…" --read DATE --word "who said so, when"
                                   the provider's contract verdict, on Taylor's word only (VISION #2)
   infra halt "why" | infra resume  the global stop: no new external mutation while halted
@@ -1248,6 +1250,55 @@ def cmd_dns_txt(args):
     say(f"TXT at {fq}: set" + (" and visible in DNS" if seen else "; not visible in DNS yet (it can take an hour)"))
 
 
+def cmd_dns_restore(args):
+    """Put a Factory domain's mail records back from what the provisioning run read after purchase, keeping
+    whatever is live now (the Postmaster TXT). Why it exists: the vendor's PUT /domains/{id}/dns replaces the
+    whole set, and the first TXT write (2026-10-08) left one record where MX, SPF, DKIM and DMARC had been;
+    the warm-up bounced for a day before Cowork read it in Warmforge (2026-10-09). The adapter now merges on
+    every write; this is the repair for a set already lost."""
+    domain = args.domain.lower()
+    j = find_op(domain)
+    if not j:
+        die(f"{domain} isn't a Factory domain")
+    recorded = (((j.get("steps") or {}).get("dns") or {}).get("result") or {}).get("records") or []
+    if not recorded:
+        die(f"the provisioning run for {domain} recorded no DNS set after purchase; nothing to restore from")
+    adapter = providers.get(j["provider"], get, dry_run=args.dry_run, say=say)
+    live = [] if args.dry_run else adapter.dns(domain)
+
+    def k(r):
+        return (str(r.get("type") or "").upper(), str(r.get("name") or "").lower().rstrip("."), str(r.get("value") or ""))
+    have = {k(r) for r in live}
+    missing = [r for r in recorded if k(r) not in have]
+    if missing:
+        say(f"{domain}: {len(live)} record(s) live, {len(recorded)} read back at purchase, {len(missing)} missing: "
+            + ", ".join(f"{r['type']} {r['name']}" for r in missing))
+    else:
+        say(f"{domain}: every record read back at purchase is live ({len(live)} in all); nothing to restore")
+        if not args.force:
+            return
+    merged = {k(r): {"type": r["type"], "name": r["name"], "value": r["value"]} for r in live}
+    for r in recorded:
+        merged.setdefault(k(r), {"type": r["type"], "name": r["name"], "value": r["value"]})
+    recs = list(merged.values())
+    digest = hashlib.sha256(json.dumps(sorted(merged), default=str).encode()).hexdigest()[:10]
+    op = Op(f"dns-restore-{domain}-{digest}", adapter, dry=args.dry_run, kind="dns-restore", domain=domain,
+            provider=j["provider"])
+    op.call("restore", "set_dns", {"domain": domain, "records": len(recs)},
+            lambda key: adapter.set_dns(domain, recs, key))
+    if args.dry_run:
+        return
+    op.phase("done")
+    w = world(j["provider"])
+    sel = j.get("dkim_selector") or "default"
+    seen = {"SPF": any(v.lower().startswith("v=spf1") for v in w.txt(domain)),
+            "DMARC": any(v.lower().startswith("v=dmarc1") for v in w.txt(f"_dmarc.{domain}")),
+            "DKIM": any(v.lower().startswith("v=dkim1") for v in w.txt(f"{sel}._domainkey.{domain}"))}
+    say(f"{domain}: {len(recs)} record(s) written; in public DNS now: "
+        + ", ".join(f"{n} {'yes' if ok else 'not yet'}" for n, ok in seen.items())
+        + " (MX isn't read here; `dig MX` it; a miss can take an hour)")
+
+
 def cmd_contract(args):
     verdict = args.verdict.upper()
     if verdict == "ACCEPTED_RISK":
@@ -1828,6 +1879,11 @@ def main():
     s.add_argument("--host", default="@")
     s.add_argument("--dry-run", action="store_true")
     s.set_defaults(fn=cmd_dns_txt)
+    s = sub.add_parser("dns-restore")
+    s.add_argument("domain")
+    s.add_argument("--dry-run", action="store_true")
+    s.add_argument("--force", action="store_true", help="write the merged set even when nothing is missing")
+    s.set_defaults(fn=cmd_dns_restore)
     s = sub.add_parser("contract")
     s.add_argument("provider")
     s.add_argument("--verdict", required=True, choices=assets.VERDICTS + tuple(v.lower() for v in assets.VERDICTS))

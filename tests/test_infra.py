@@ -525,5 +525,65 @@ class WarmupTest(Base):
         self.assertEqual(self.fake().get("exports"), None)
 
 
+
+class DnsSetTest(Base):
+    """The vendor's PUT replaces the whole record set (2026-10-08: one TXT write wiped MX, SPF, DKIM and DMARC);
+    the TXT write merges, and dns-restore puts a lost set back from what the provisioning run read."""
+
+    def test_dns_txt_keeps_the_mail_set(self):
+        self.provision()
+        self.run_infra("dns-txt", D, "google-site-verification=abc")
+        recs = self.fake()["domains"][D]["dns"]
+        self.assertIn("MX", {r["type"] for r in recs})
+        self.assertTrue(any(r["value"].startswith("v=spf1") for r in recs))
+        self.assertTrue(any("_domainkey" in r["name"] for r in recs))
+        self.assertTrue(any(r["value"] == "google-site-verification=abc" for r in recs))
+
+    def test_dns_restore_puts_the_purchase_set_back(self):
+        self.provision()
+        self.run_infra("dns-txt", D, "google-site-verification=abc")
+        p = self.tmp / "infra" / "fake-provider.json"
+        st = json.loads(p.read_text())
+        st["domains"][D]["dns"] = [r for r in st["domains"][D]["dns"] if r.get("by") == "us"]   # the wipe: one TXT left
+        p.write_text(json.dumps(st))
+        r = self.run_infra("dns-restore", D)
+        self.assertIn("missing", r.stdout)
+        recs = self.fake()["domains"][D]["dns"]
+        self.assertIn(("MX", D), {(x["type"], x["name"]) for x in recs})
+        self.assertTrue(any(x["value"].startswith("v=spf1") for x in recs))
+        self.assertTrue(any("_domainkey" in x["name"] for x in recs))
+        self.assertTrue(any(x["value"] == "google-site-verification=abc" for x in recs), "the live TXT is kept")
+        r2 = self.run_infra("dns-restore", D)
+        self.assertIn("nothing to restore", r2.stdout)
+        self.assertEqual([x["call"] for x in self.intents()].count("set_dns"), 1)
+
+
+class InfraforgeTxtMergeTest(unittest.TestCase):
+    def test_add_txt_reads_then_writes_the_whole_set(self):
+        import providers.infraforge as inf
+        env = {inf.KEY: "k", inf.BASE: "https://api.invalid"}
+        a = inf.Adapter(env.get, say=lambda *_: None)
+        calls = []
+        live = [{"type": "MX", "name": "x.example", "value": "mx"},
+                {"type": "TXT", "name": "x.example", "value": "v=spf1 -all"}]
+
+        def fake_req(method, path, body=None, query=None, key=None):
+            calls.append((method, path, body))
+            if path == "/domains":
+                return {"data": [{"id": "dom_1", "sld": "x", "tld": "example"}]}
+            if path == "/domains/dom_1/dns" and method == "GET":
+                return {"data": list(live)}
+            return {}
+        a._req = fake_req
+        a.add_txt("x.example", "@", "google-site-verification=abc", "k1")
+        put = [c for c in calls if c[0] == "PUT"]
+        self.assertEqual(len(put), 1)
+        self.assertEqual([r["type"] for r in put[0][2]["records"]], ["MX", "TXT", "TXT"], "the live set rides along")
+        self.assertEqual(put[0][2]["records"][-1]["value"], "google-site-verification=abc")
+        calls.clear()
+        live.append({"type": "TXT", "name": "x.example", "value": "google-site-verification=abc"})
+        self.assertEqual(a.add_txt("x.example", "@", "google-site-verification=abc", "k2"), {"unchanged": True})
+        self.assertFalse([c for c in calls if c[0] == "PUT"], "already there: no write")
+
 if __name__ == "__main__":
     unittest.main()

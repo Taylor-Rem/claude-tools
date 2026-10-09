@@ -1,7 +1,7 @@
 $ leads --help
 --- stdout
 usage: leads [-h]
-             {kit,diagnose,candidates,log,next,sent,channel,replies,due,recheck,today,brief,cadence,strength,show,week,pipeline,preview,batch,prospects,doctor} ...
+             {kit,diagnose,candidates,log,next,sent,channel,replies,due,deck,seen,recheck,today,brief,cadence,strength,show,week,pipeline,preview,batch,prospects,doctor} ...
 
 leads — the restaurant pipeline by text. ROADMAP B18 (the Saturday kit),
 B25 (the remote lane), B7 (the pipeline: log, follow-ups, the week).
@@ -10,6 +10,7 @@ B25 (the remote lane), B7 (the pipeline: log, follow-ups, the week).
                                # one conversation; prints tomorrow's list back
       outcomes: held messaged visited talked inbound interested demo later trial won lost churned
       (held: not messaged, kept on file with a note — researching, or a weak fit)
+      (seen: a read receipt, written as `leads seen` writes it; the note is the time, "Mon 12:50". B152)
       (inbound is the relay's lane: they came to us — the site form, the demo line, a reply)
       (each sets the stage and a default follow-up; --next overrides: tomorrow, fri, 3d, 2w, oct 3, none)
       (messaged needs --channel facebook|instagram|email|text|call|form: where it went, so the
@@ -22,8 +23,14 @@ B25 (the remote lane), B7 (the pipeline: log, follow-ups, the week).
                                # how often the owner answers Google reviews, as a person read it (B116);
                                # `brief` prints it. Places carries no owner replies, so nothing else can.
   leads next [fri]             # the day's list (default tomorrow): follow-ups due, then new leads
-  leads due                    # follow-ups due today (the 8am report)
+  leads due [--json]           # follow-ups due today (the 8am report); --json for the deck (B152)
   leads show "Whistle Wok"     # one lead's history
+  leads deck [--date D] [--out FILE] [--kit] [--kit-from D] [--slugs] [--json]
+                               # the outreach deck (B152): the page Taylor's phone sends from, one card a lead,
+                               # warm first; only checked text (the day file's picked six, Steel's drafts in
+                               # private-docs/leads/drafts/<slug>.md), else "no draft yet: say 'Steel, NAME'"
+  leads seen "Frank" --at "Mon 12:50" [--channel facebook]
+                               # a read receipt (B152): no stage, no date; the deck's card and `week --by channel`
   leads week [--ago 1]         # this week's numbers
   leads week --by channel      # the Sunday review (B52): the funnel per channel + GROWTH § 2.4's rows
   leads pipeline [--all]       # every lead by stage
@@ -257,7 +264,7 @@ and the thresholds are client-leads/strength.md's tables (LEADS_STRENGTH overrid
 in STRENGTH_REASONS). Candidates, the kits and `leads today` put strong first and say why on every line.
 
 positional arguments:
-  {kit,diagnose,candidates,log,next,sent,channel,replies,due,recheck,today,brief,cadence,strength,show,week,pipeline,preview,batch,prospects,doctor}
+  {kit,diagnose,candidates,log,next,sent,channel,replies,due,deck,seen,recheck,today,brief,cadence,strength,show,week,pipeline,preview,batch,prospects,doctor}
     kit                 Saturday's counters, one page
     diagnose            three lines on a business's Google listing, for a
                         group thread
@@ -273,6 +280,10 @@ positional arguments:
     replies             how often the owner answers Google reviews, as a
                         person read it (B116)
     due                 follow-ups due today
+    deck                the outreach deck: the page Taylor's phone sends the
+                        day's DMs from (B152)
+    seen                a read receipt: Messenger's "Seen by NAME at TIME"
+                        (B152); sets no stage or date
     recheck             the week's messaged leads: each logged handle or
                         address judged again against the place (B104, reach.py
                         --check through LEADS_REACH_PY; $0)

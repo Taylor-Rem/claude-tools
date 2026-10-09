@@ -141,7 +141,7 @@ def apply_event(rec, e):
         return rec
     date = e.get("date")
     outcome = e.get("outcome")
-    if e.get("kind") == "touch_due":
+    if e.get("kind") == "touch_due" or outcome == "seen":     # B152: a read receipt is not a touch or a stage
         return rec
     if e.get("stage"):
         rec["state"]["stage"] = e["stage"]

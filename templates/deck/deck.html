@@ -1,0 +1,228 @@
+<title>{{TITLE}}</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* The outreach deck (ROADMAP B152; `leads deck` renders it, lib/deck.py fills it). One column of lead
+   cards, phone first; each card is tap the channel → paste → send → copy the log line. No doctype, html,
+   head or body: the artifact publisher wraps the page. Every string arrives as JSON (#deck-data) and is
+   put on the page with textContent, so nothing a lead or a draft says can become markup. */
+:root {
+  --bg: #f4f5f7;
+  --surface: #ffffff;
+  --fg: #1b2430;
+  --muted: #5b6676;
+  --line: #d9dee6;
+  --accent: #c0661a;
+  --accent-fg: #ffffff;
+  --accent-soft: #fbeedd;
+  --ok: #2f7d4f;
+  --ok-soft: #e3f2e8;
+  --warn: #8a6d1d;
+  --warn-soft: #fbf3d6;
+  --font-ui: "Public Sans", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12161d; --surface: #1a2029; --fg: #e8ecf2; --muted: #9aa6b5; --line: #2c3542;
+    --accent: #e8a24a; --accent-fg: #1b1206; --accent-soft: #332616;
+    --ok: #6fcf97; --ok-soft: #1c3326; --warn: #e2c05c; --warn-soft: #332c14;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12161d; --surface: #1a2029; --fg: #e8ecf2; --muted: #9aa6b5; --line: #2c3542;
+  --accent: #e8a24a; --accent-fg: #1b1206; --accent-soft: #332616;
+  --ok: #6fcf97; --ok-soft: #1c3326; --warn: #e2c05c; --warn-soft: #332c14;
+  color-scheme: dark;
+}
+html, body { margin: 0; overflow-x: hidden; }
+body { background: var(--bg); color: var(--fg); font-family: var(--font-ui); font-size: 16px; line-height: 1.5; }
+.wrap { max-width: 640px; margin: 0 auto; padding-inline: 16px; padding-block: 20px 48px; box-sizing: border-box; }
+header h1 { font-size: 1.5rem; line-height: 1.2; margin: 0 0 4px; text-wrap: balance; font-weight: 700; }
+header .sub { color: var(--muted); margin: 0 0 14px; }
+.eyebrow { font-size: 0.75rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); font-weight: 600; margin: 0 0 4px; }
+.notice { border: 1px solid var(--line); border-left: 4px solid var(--warn); background: var(--warn-soft); border-radius: 8px; padding: 12px 14px; margin: 0 0 18px; font-size: 0.95rem; overflow-wrap: anywhere; }
+.notice.ok { border-left-color: var(--ok); background: var(--ok-soft); }
+.count { display: flex; align-items: baseline; gap: 10px; margin: 0 0 16px; }
+.count strong { font-size: 1.6rem; font-variant-numeric: tabular-nums; }
+.count span { color: var(--muted); }
+section { margin-block: 26px 0; }
+section > h2 { font-size: 1.05rem; margin: 0 0 4px; }
+section > p.lead { color: var(--muted); margin: 0 0 12px; font-size: 0.95rem; }
+.cards { display: grid; gap: 14px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; display: grid; gap: 12px; min-width: 0; }
+.card.sent { border-color: var(--ok); }
+.card.ask { border-style: dashed; }
+.card .top { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
+.card .top > div:first-child { min-width: 0; }
+.card .name { font-weight: 700; font-size: 1.1rem; line-height: 1.25; overflow-wrap: anywhere; }
+.card .meta { color: var(--muted); font-size: 0.9rem; overflow-wrap: anywhere; }
+.chips { display: flex; flex-direction: column; gap: 6px; align-items: flex-end; }
+.chip { display: inline-block; font-size: 0.78rem; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); white-space: nowrap; }
+.chip.ok { background: var(--ok-soft); color: var(--ok); }
+.chip.warn { background: var(--warn-soft); color: var(--warn); }
+.warnings { display: grid; gap: 6px; }
+.warning { margin: 0; font-size: 0.88rem; color: var(--warn); background: var(--warn-soft); border-radius: 8px; padding: 6px 10px; overflow-wrap: anywhere; }
+.seen { margin: 0; font-size: 0.9rem; font-weight: 600; color: var(--warn); }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.btn { appearance: none; border: 1px solid var(--line); background: var(--surface); color: var(--fg); font: inherit; font-weight: 600; font-size: 0.95rem; padding: 10px 14px; border-radius: 10px; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; gap: 6px; min-height: 44px; box-sizing: border-box; max-width: 100%; overflow-wrap: anywhere; }
+.btn.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); flex: 1 1 auto; justify-content: center; }
+.btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.btn:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.btn.copied { background: var(--ok-soft); color: var(--ok); border-color: var(--ok); }
+.msg { border: 1px solid var(--line); border-radius: 10px; padding: 12px; background: var(--bg); white-space: pre-wrap; font-size: 0.98rem; line-height: 1.5; user-select: text; -webkit-user-select: text; min-width: 0; overflow-wrap: anywhere; }
+.msg.script { border-style: dashed; }
+.msg.ask { border-style: dashed; color: var(--muted); font-weight: 600; }
+.why { color: var(--muted); font-size: 0.9rem; margin: 0; border-left: 3px solid var(--line); padding-left: 10px; overflow-wrap: anywhere; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
+.row .left { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-width: 0; }
+label.sent { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; cursor: pointer; min-height: 44px; }
+label.sent input { width: 20px; height: 20px; accent-color: var(--ok); }
+.log { font-family: var(--font-mono); font-size: 0.82rem; color: var(--muted); overflow-wrap: anywhere; min-width: 0; }
+.hint { color: var(--muted); font-size: 0.88rem; margin: 0; overflow-wrap: anywhere; }
+.number { font-family: var(--font-mono); font-size: 1.05rem; font-weight: 500; align-self: center; }
+footer { margin-top: 30px; color: var(--muted); font-size: 0.88rem; overflow-wrap: anywhere; }
+footer p { margin: 0 0 8px; }
+footer ul { margin: 0 0 10px; padding-left: 18px; }
+footer li { margin: 0 0 6px; }
+@media (prefers-reduced-motion: no-preference) { .btn { transition: background-color 150ms, color 150ms, border-color 150ms; } }
+</style>
+
+<div class="wrap" id="deck"></div>
+<script type="application/json" id="deck-data">{{DATA}}</script>
+<script>
+(function () {
+  var D = JSON.parse(document.getElementById('deck-data').textContent);
+  var KEY = D.storage_key;
+  function loadSent() { try { return JSON.parse(localStorage.getItem(KEY) || '{}') || {}; } catch (e) { return {}; } }
+  function saveSent(s) { try { localStorage.setItem(KEY, JSON.stringify(s)); } catch (e) {} }
+  var sent = loadSent();
+
+  function el(tag, cls, text) { var n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; }
+  function link(href, label, primary) { var a = el('a', 'btn' + (primary ? ' primary' : ''), label); a.href = href; a.target = '_blank'; a.rel = 'noopener'; return a; }
+
+  function copyText(text, btn, node) {
+    btn.dataset.label = btn.dataset.label || btn.textContent;
+    var done = function () { btn.textContent = 'Copied'; btn.classList.add('copied'); setTimeout(function () { btn.textContent = btn.dataset.label; btn.classList.remove('copied'); }, 1500); };
+    var fallback = function () { try { var r = document.createRange(); r.selectNodeContents(node); var s = window.getSelection(); s.removeAllRanges(); s.addRange(r); btn.textContent = 'Selected, copy by hand'; setTimeout(function () { btn.textContent = btn.dataset.label; }, 2000); } catch (e) {} };
+    if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(text).then(done, fallback); } else { fallback(); }
+  }
+
+  function card(c) {
+    var key = c.key;
+    var box = el('div', 'card' + (c.message ? '' : ' ask')); box.dataset.key = key;
+    var top = el('div', 'top');
+    var left = el('div');
+    left.appendChild(el('div', 'name', c.name));
+    if (c.facts) left.appendChild(el('div', 'meta', c.facts));
+    top.appendChild(left);
+    var chips = el('div', 'chips');
+    if (c.channel_label) chips.appendChild(el('span', 'chip', c.channel_label));
+    if (c.when) chips.appendChild(el('span', 'chip warn', c.when));
+    if (c.strength) chips.appendChild(el('span', 'chip ok', c.strength));
+    top.appendChild(chips);
+    box.appendChild(top);
+
+    if (c.seen) box.appendChild(el('p', 'seen', c.seen));
+
+    var acts = el('div', 'actions');
+    if (c.open) acts.appendChild(link(c.open.href, c.open.label, true));
+    if (c.page) acts.appendChild(link(c.page.href, c.page.label));
+    if (c.phone) {
+      acts.appendChild(el('span', 'number', c.phone));
+      var cb = el('button', 'btn', 'Copy number'); cb.type = 'button';
+      cb.addEventListener('click', function () { copyText(c.phone, cb, cb); });
+      acts.appendChild(cb);
+    }
+    if (acts.childNodes.length) box.appendChild(acts);
+
+    if (c.warnings && c.warnings.length) {
+      var w = el('div', 'warnings');
+      c.warnings.forEach(function (t) { w.appendChild(el('p', 'warning', t)); });
+      box.appendChild(w);
+    }
+
+    var msg = el('div', 'msg' + (c.message ? (c.script ? ' script' : '') : ' ask'), c.message || c.ask);
+    box.appendChild(msg);
+    if (c.why) box.appendChild(el('p', 'why', c.why));
+    if (c.hint) box.appendChild(el('p', 'hint', c.hint));
+
+    var acts2 = el('div', 'actions');
+    var copy = el('button', 'btn primary', c.message ? (c.script ? 'Copy the opener' : 'Copy message') : 'No draft yet'); copy.type = 'button';
+    if (c.message) { copy.addEventListener('click', function () { copyText(c.message, copy, msg); }); }
+    else { copy.disabled = true; }
+    acts2.appendChild(copy);
+    if (c.preview) acts2.appendChild(link(c.preview, 'Preview site'));
+    box.appendChild(acts2);
+
+    if (c.message) {
+      var row = el('div', 'row');
+      var rl = el('div', 'left');
+      if (c.log) {
+        var logBtn = el('button', 'btn', 'Copy log line'); logBtn.type = 'button';
+        var logTxt = el('span', 'log', c.log);
+        logBtn.addEventListener('click', function () { copyText(c.log, logBtn, logTxt); });
+        rl.appendChild(logBtn); rl.appendChild(logTxt);
+      }
+      row.appendChild(rl);
+      var lab = el('label', 'sent'); var cbx = document.createElement('input'); cbx.type = 'checkbox'; cbx.checked = !!sent[key];
+      cbx.addEventListener('change', function () { sent[key] = cbx.checked; saveSent(sent); box.classList.toggle('sent', cbx.checked); updateCount(); });
+      lab.appendChild(cbx); lab.appendChild(document.createTextNode('Sent')); row.appendChild(lab);
+      box.appendChild(row);
+      if (sent[key]) box.classList.add('sent');
+    }
+    return box;
+  }
+
+  var root = document.getElementById('deck');
+  var header = el('header');
+  if (D.eyebrow) header.appendChild(el('p', 'eyebrow', D.eyebrow));
+  header.appendChild(el('h1', null, D.headline));
+  if (D.sub) header.appendChild(el('p', 'sub', D.sub));
+  (D.notices || []).forEach(function (n) { header.appendChild(el('div', 'notice' + (n.kind === 'ok' ? ' ok' : ''), n.text)); });
+  var count = el('div', 'count');
+  var sc = el('strong', null, '0'); var tc = el('span');
+  count.appendChild(sc); count.appendChild(tc); header.appendChild(count);
+  root.appendChild(header);
+
+  var keys = [];
+  (D.sections || []).forEach(function (s) {
+    if (!s.cards || !s.cards.length) return;
+    var sec = el('section'); sec.id = s.id;
+    sec.appendChild(el('h2', null, s.title));
+    if (s.lead) sec.appendChild(el('p', 'lead', s.lead));
+    var cards = el('div', 'cards');
+    s.cards.forEach(function (c) { cards.appendChild(card(c)); if (c.message) keys.push(c.key); });
+    sec.appendChild(cards);
+    root.appendChild(sec);
+  });
+
+  if (D.message_two) {
+    var sec2 = el('section'); sec2.id = 'two';
+    sec2.appendChild(el('h2', null, D.message_two.title));
+    if (D.message_two.lead) sec2.appendChild(el('p', 'lead', D.message_two.lead));
+    var c2 = el('div', 'card');
+    var m2 = el('div', 'msg', D.message_two.text); c2.appendChild(m2);
+    var a2 = el('div', 'actions'); var b2 = el('button', 'btn primary', 'Copy message two'); b2.type = 'button';
+    b2.addEventListener('click', function () { copyText(D.message_two.text, b2, m2); });
+    a2.appendChild(b2); c2.appendChild(a2);
+    if (D.message_two.hint) c2.appendChild(el('p', 'hint', D.message_two.hint));
+    sec2.appendChild(c2);
+    root.appendChild(sec2);
+  }
+
+  var foot = el('footer');
+  if (D.footer && D.footer.length) {
+    foot.appendChild(el('p', null, D.footer_title));
+    var ul = el('ul');
+    D.footer.forEach(function (f) { var li = el('li'); if (f.name) { li.appendChild(el('strong', null, f.name)); li.appendChild(document.createTextNode(': ')); } li.appendChild(document.createTextNode(f.text)); ul.appendChild(li); });
+    foot.appendChild(ul);
+  }
+  (D.footer_notes || []).forEach(function (t) { foot.appendChild(el('p', null, t)); });
+  root.appendChild(foot);
+
+  tc.textContent = 'of ' + keys.length + ' sent on this phone';
+  function updateCount() { var n = 0; keys.forEach(function (k) { if (sent[k]) n++; }); sc.textContent = String(n); }
+  updateCount();
+})();
+</script>

@@ -6,6 +6,7 @@ B25 (the remote lane), B7 (the pipeline: log, follow-ups, the week).
                                # one conversation; prints tomorrow's list back
       outcomes: held messaged visited talked inbound interested demo later trial won lost churned
       (held: not messaged, kept on file with a note — researching, or a weak fit)
+      (seen: a read receipt, written as `leads seen` writes it; the note is the time, "Mon 12:50". B152)
       (inbound is the relay's lane: they came to us — the site form, the demo line, a reply)
       (each sets the stage and a default follow-up; --next overrides: tomorrow, fri, 3d, 2w, oct 3, none)
       (messaged needs --channel facebook|instagram|email|text|call|form: where it went, so the
@@ -18,8 +19,14 @@ B25 (the remote lane), B7 (the pipeline: log, follow-ups, the week).
                                # how often the owner answers Google reviews, as a person read it (B116);
                                # `brief` prints it. Places carries no owner replies, so nothing else can.
   leads next [fri]             # the day's list (default tomorrow): follow-ups due, then new leads
-  leads due                    # follow-ups due today (the 8am report)
+  leads due [--json]           # follow-ups due today (the 8am report); --json for the deck (B152)
   leads show "Whistle Wok"     # one lead's history
+  leads deck [--date D] [--out FILE] [--kit] [--kit-from D] [--slugs] [--json]
+                               # the outreach deck (B152): the page Taylor's phone sends from, one card a lead,
+                               # warm first; only checked text (the day file's picked six, Steel's drafts in
+                               # private-docs/leads/drafts/<slug>.md), else "no draft yet: say 'Steel, NAME'"
+  leads seen "Frank" --at "Mon 12:50" [--channel facebook]
+                               # a read receipt (B152): no stage, no date; the deck's card and `week --by channel`
   leads week [--ago 1]         # this week's numbers
   leads week --by channel      # the Sunday review (B52): the funnel per channel + GROWTH § 2.4's rows
   leads pipeline [--all]       # every lead by stage
@@ -278,6 +285,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 from venture import from_argv  # noqa: E402
 import experiments as X  # noqa: E402  the funnel by business and the experiments registry (B142)
+import deck as DECK  # noqa: E402  the outreach deck's drafts, picks, links and page (B152)
 
 V = from_argv()                      # the business this works for (ventures/<name>/venture.toml, B146)
 # The plan prices and the letter hash: the venture's prices module (today lib/prices.py, via a symlink; shared with
@@ -4360,15 +4368,23 @@ def pipeline_events():
     return out
 
 
+SEEN = "seen"     # B152: a read receipt ("Seen by NAME at TIME"); not in OUTCOMES: no stage, no date (`leads seen`)
+
+
 def pipeline_state():
-    """key -> the lead as of its last event (stage, next, who, notes, the history)."""
+    """key -> the lead as of its last event (stage, next, who, notes, the history). `seen` events (B152) go to
+    `lead["seen"]`, never `history`, and change no field."""
     leads = {}
     for e in pipeline_events():
         if e.get("kind") == "strength":
             continue                      # Taylor's override (B73): read by strength_overrides(), never a lead by itself
         k = e["key"]
         lead = leads.setdefault(k, {"key": k, "place_id": e.get("place_id"), "name": e["name"], "city": e.get("city"),
-                                    "history": [], "who": None, "email": None, "phone": None, "reach": None})
+                                    "history": [], "who": None, "email": None, "phone": None, "reach": None,
+                                    "seen": []})
+        if e.get("outcome") == SEEN:
+            lead["seen"].append(e)        # B152: a read receipt sets nothing; kept out of `history` so every
+            continue                      # history[-1] reader (due, cadence, the brief) sees what it saw before
         lead["history"].append(e)
         for f in ("name", "city", "stage", "outcome", "next", "reach", "source"):
             if f in e:
@@ -4478,6 +4494,9 @@ def _census_by_id(place_id):
 def cmd_log(args):
     today = dt.datetime.now(TZ).date()
     outcome = args.outcome.lower()
+    if outcome == SEEN:                      # "log Frank seen" by text: the same event `leads seen` writes (B152)
+        return cmd_seen(argparse.Namespace(name=args.name, place=args.place, at=" ".join(args.note).strip() or None,
+                                           channel=getattr(args, "channel", None)))
     if outcome not in OUTCOMES:
         die(f"outcome is one of: {', '.join(OUTCOMES)}")
     channel = check_channel(getattr(args, "channel", None), outcome, f"log \"{' '.join(args.name)}\" {outcome} …")
@@ -4809,6 +4828,21 @@ def cmd_next(args):
 def cmd_due(args):
     today = dt.datetime.now(TZ).date()
     due = due_by(today)
+    if getattr(args, "json", False):           # B152: what the deck reads, one row a lead
+        rows = []
+        for l in due:
+            what, do = due_touch(l, today)
+            last = l["history"][-1]
+            slug = deck_slug(l)
+            rows.append({"key": l["key"], "name": l["name"], "city": l.get("city"), "stage": l.get("stage"),
+                         "next": l["next"], "late": (today - dt.date.fromisoformat(l["next"])).days,
+                         "touch": int(last["touch"]) if last.get("kind") == "touch_due" and last.get("touch") else None,
+                         "touch_channel": last.get("channel") if last.get("kind") == "touch_due" else None,
+                         "what": what, "do": do, "seen": seen_words(l), "warm": is_warm(l),
+                         "draft": str(DRAFTS / f"{slug}.md") if (DRAFTS / f"{slug}.md").exists() else None,
+                         "slug": slug})
+        print(json.dumps({"date": today.isoformat(), "due": rows}, indent=1))
+        return
     if not due:
         print("No follow-ups due today.")
         return
@@ -4833,7 +4867,11 @@ def cmd_show(args):
         if lead.get(x):
             shown = shown_reach(lead[x], judged) if x in ("email", "reach") else lead[x]
             print(f"  {x}: {shown}")
-    for e in lead["history"]:
+    for e in sorted(lead["history"] + lead.get("seen", []), key=lambda e: (e["date"], e.get("ts") or "")):
+        if e.get("outcome") == SEEN:
+            at = f" {e['at']}" if e.get("at") else ""
+            print(f"  {e['date']}  {'seen':<10} by {e.get('channel') or '?'}{at} · no stage or date changed")
+            continue
         ch = event_channel(e) or (f"by {e['channel']}" if e.get("kind") == "touch_due" and e.get("channel") else "")
         print(f"  {e['date']}  {e['outcome']:<10} {ch + ' · ' if ch else ''}{e.get('note') or ''}".rstrip())
 
@@ -5020,6 +5058,7 @@ def week_numbers(start, end):
             k = e.get("channel") if e.get("channel") in CHANNELS else NO_CHANNEL
             went.setdefault(k, {"messaged": 0, "talked": 0})[e["outcome"]] += 1
     return {"week_of": start.isoformat(), "by_channel": by, "total": total, "went_by": went,
+            "seen_no_reply": seen_no_reply(start, end, state),
             "indicators": {"messages sent": total["sent"], "previews built": len(previews),
                            "previews linked": len(linked), "replies": total["replies"],
                            "conversations": total["conversations"], "fixes / claims": total["fixes"],
@@ -5028,6 +5067,21 @@ def week_numbers(start, end):
             "pipeline": {s: sum(1 for l in state.values() if l.get("stage") == s) for s in STAGES},
             "won_total": sum(1 for l in state.values() if l.get("stage") == "won"),
             "due_now": len(due_by(now_date()))}
+
+
+def seen_no_reply(start, end, state):
+    """B152: {channel: leads} — leads with a read receipt logged this week and no conversation since it."""
+    out = {}
+    for lead in state.values():
+        seen = [e for e in lead.get("seen") or [] if start.isoformat() <= e["date"] <= end.isoformat()]
+        if not seen:
+            continue
+        last = max(seen, key=lambda e: (e["date"], e.get("ts") or ""))
+        if any(e.get("outcome") in CONVERSATION and e["date"] >= last["date"] for e in lead["history"]):
+            continue
+        ch = last.get("channel") if last.get("channel") in CHANNELS else NO_CHANNEL
+        out[ch] = out.get(ch, 0) + 1
+    return out
 
 
 def week_by_channel(w, start):
@@ -5046,6 +5100,9 @@ def week_by_channel(w, start):
         keys = sorted(went, key=lambda k: (k == NO_CHANNEL, -went[k]["messaged"], k))
         lines.append("Where they went (B116): " + " · ".join(
             f"{k} {went[k]['messaged']}" + (f" (+{went[k]['talked']} talked)" if went[k]["talked"] else "") for k in keys))
+    snr = w.get("seen_no_reply") or {}
+    if snr:
+        lines.append("Seen, no reply (B152): " + " · ".join(f"{k} {snr[k]}" for k in sorted(snr, key=lambda k: (-snr[k], k))))
     lines.append("Indicators (GROWTH § 2.4, week 1 in brackets):")
     ind = w["indicators"]
     shown = [f"{k} {v}" + (f" [{WEEK1_TARGET[k]}]" if k in WEEK1_TARGET else "")
@@ -5535,14 +5592,15 @@ def email_gate(picks):
         return f"no postal address for the footer yet ({V.sender.postal_address_env}, TAYLOR-TODO §1)", 0
     if not first_letter_approved():
         return "the first letter isn't approved yet (`outreach approve`)", 0
-    if not (env_value("INSTANTLY_API_KEY") or (env_value("OUTREACH_PROVIDER") or "").lower() == "fake"):
+    provider = (env_value("OUTREACH_PROVIDER") or ("instantly" if env_value("INSTANTLY_API_KEY") else "")).lower()
+    if not provider or (provider == "instantly" and not env_value("INSTANTLY_API_KEY")):
         return "no mailbox yet (INSTANTLY_API_KEY)", 0
     try:
         per_day = int(env_value("OUTREACH_PER_DAY") or 0)
     except ValueError:
         per_day = 0
-    if per_day <= 0:
-        return "OUTREACH_PER_DAY is 0", 0
+    if per_day <= 0:      # the real state since the mailboxes came (2026-10-09): a provider, and a cap of 0
+        return f"the {provider} mailboxes' daily cap is 0 (OUTREACH_PER_DAY is 0; `outreach status`)", 0
     with_email = [p for p in picks if p.get("email")]
     if not with_email:
         return "none of the six has an address (B61 is finding them)", 0
@@ -5700,6 +5758,395 @@ def cmd_today(args):
         print(json.dumps(dict(d, message=msg), indent=1, default=str))
         return
     print(msg, end="")
+
+
+# ---- the outreach deck (B152, plan ~/projects/plans/59-outreach-deck.md) ----------------------------------
+# The page Taylor's phone opens to send the day's DMs and follow-ups: one card a lead. It carries only text that
+# has been checked: a kit pick's picked text from the day file (§ The six, after B133's passes) or a Steel draft
+# (DRAFTS/<slug>.md, format in lib/deck.py). A lead with neither gets the ask, never words the machine made up;
+# `register_dm` (what `leads today` prints) is unchecked and never goes on it. The page sends nothing and writes
+# nothing; publishing it is Flint's.
+
+DRAFTS = Path(os.environ.get("LEADS_DRAFTS", PROJECTS / "private-docs/leads/drafts"))
+DAYS_DIR = Path(os.environ.get("LEADS_DAYS", PROJECTS / "days"))
+DECK_OUT = STATE / "deck"
+OUTBOUND = ("messaged", "talked", "visited")
+WARM_OUTCOMES = ("inbound", "interested", "demo", "trial")
+WARM_STAGES = ("interested", "negotiating", "trialing")
+IG_RULE = ("On Instagram a link in a message request isn't tappable until they reply, so the preview goes after "
+           "they answer.")
+
+
+def cmd_seen(args):
+    """`leads seen NAME [--at "Mon 12:50"] [--channel C]`: a read receipt (Messenger's "Seen by NAME at TIME").
+    One event, `outcome: "seen"`, that sets no stage and no date; the deck's card and `leads week --by channel`
+    read it. The channel defaults to the one the last message went by."""
+    key, pid, name, city, row, _ = resolve_lead(" ".join(args.name), args.place)
+    lead = pipeline_state().get(key)
+    if not lead:
+        die(f"{name} isn't in the pipeline, so there is no message to have been seen; `leads show \"{name}\"`")
+    ch = check_channel(args.channel, None, "seen") if args.channel else None
+    if not ch:
+        ch = next((e.get("channel") for e in reversed(lead["history"])
+                   if e.get("outcome") in OUTBOUND and e.get("kind") != "touch_due" and e.get("channel") in CHANNELS), None)
+    if not ch:
+        die(f"{lead['name']}'s messages carry no channel, so say where it was seen: `leads seen \"{lead['name']}\" "
+            "--channel facebook|instagram|email|text`; nothing was written")
+    at = (args.at or "").strip() or None
+    event = {"ts": dt.datetime.now(TZ).isoformat(timespec="seconds"), "date": now_date().isoformat(), "key": key,
+             "place_id": lead.get("place_id"), "name": lead["name"], "city": lead.get("city"),
+             "outcome": SEEN, "channel": ch, "at": at}
+    PIPELINE.parent.mkdir(parents=True, exist_ok=True)
+    with open(PIPELINE, "a") as f:
+        f.write(json.dumps({k: v for k, v in event.items() if v is not None}) + "\n")
+    nxt = f", follow up {dt.date.fromisoformat(lead['next']).strftime('%a %-d %b')}" if lead.get("next") else ""
+    print(f"Seen: {lead['name']} by {ch}{' at ' + at if at else ''}. Stage and date unchanged "
+          f"({lead.get('stage') or 'no stage'}{nxt}).")
+
+
+def deck_slug(lead):
+    """The drafts file's name for a lead: slugify(name + city), the preview slug's shape."""
+    return slugify(f"{clean_name(lead['name'])} {lead.get('city') or ''}")
+
+
+def lead_contacts(lead, skipped=None):
+    """(instagram handle, facebook.com/… page, email, phone) from what the pipeline recorded, read through the
+    reach table's guard when the lead has a place (a handle the table doesn't confirm is dropped, its label added
+    to `skipped`), except on a channel a message already went by: that thread exists, whatever the table says."""
+    r = lead.get("reach") or ""
+    m = re.search(r"Instagram @([A-Za-z0-9_.]+)", r) or re.search(r"instagram\.com/([A-Za-z0-9_.]+)", r)
+    ig = m.group(1) if m else None
+    m = re.search(r"(facebook\.com/[^\s·]+)", r)
+    fb = m.group(1) if m else None
+    email = lead_email(lead)
+    if lead.get("place_id"):
+        went = {e.get("channel") for e in lead.get("history") or [] if e.get("outcome") in OUTBOUND}
+        try:
+            g_ig, g_fb, said, g_email = pick_handles({"place_id": lead["place_id"], "name": lead["name"],
+                                                      "city": lead.get("city"), "instagram": ig, "facebook": fb,
+                                                      "email": email}, with_email=True)
+        except Exception:                    # noqa: BLE001  the census or the reach table missing: what was logged stands
+            g_ig, g_fb, said, g_email = ig, fb, [], email
+        ig = ig if "instagram" in went and ig else g_ig
+        fb = fb if "facebook" in went and fb else g_fb
+        email = email if "email" in went and email else g_email
+        if skipped is not None:
+            skipped.extend(said)
+    return ig, fb, email, lead.get("phone")
+
+
+def last_outbound(lead):
+    return next((e for e in reversed(lead["history"]) if e.get("outcome") in OUTBOUND and e.get("kind") != "touch_due"),
+                None)
+
+
+def seen_words(lead):
+    """'seen Mon 12:50, no reply' when the latest read receipt follows the last message and nobody answered
+    since; else None."""
+    seen = sorted(lead.get("seen") or [], key=lambda e: (e["date"], e.get("ts") or ""))
+    if not seen:
+        return None
+    s, out = seen[-1], last_outbound(lead)
+    if out and (s.get("ts") or s["date"]) < (out.get("ts") or out["date"]):
+        return None
+    if any(e.get("outcome") in CONVERSATION and e["date"] >= s["date"] for e in lead["history"]):
+        return None
+    when = s.get("at") or dt.date.fromisoformat(s["date"]).strftime("%a %-d %b")
+    return f"seen {when}{' on ' + CHANNEL_LABEL_DECK.get(s.get('channel'), s.get('channel')) if s.get('channel') else ''}, no reply"
+
+
+CHANNEL_LABEL_DECK = DECK.CHANNEL_LABEL
+
+
+def is_warm(lead):
+    return lead.get("stage") in WARM_STAGES or any(e.get("outcome") in WARM_OUTCOMES for e in lead["history"])
+
+
+def lead_preview(lead):
+    if not lead.get("place_id"):
+        return None
+    m = next((m for m in previews_all() if m.get("place_id") == lead["place_id"] and not m.get("claimed")), None)
+    return m.get("url") if m else None
+
+
+def draft_spent(draft, lead, day):
+    """True once something went out to this lead after the draft was written, on a day before the deck's."""
+    w = draft["written"] or ""
+    return any(e.get("outcome") in OUTBOUND and e.get("kind") != "touch_due" and e["date"] < day.isoformat()
+               and (e.get("ts") or e["date"])[:16] > w for e in lead["history"])
+
+
+def match_drafts(drafts, state):
+    """({lead key: draft}, [unmatched drafts]) — by `key:`, else the file name against deck_slug, else `name:`."""
+    by_slug = {}
+    for l in state.values():
+        by_slug.setdefault(deck_slug(l), l["key"])
+        by_slug.setdefault(slugify(clean_name(l["name"])), l["key"])
+    by_name = {" ".join(norm(l["name"])): l["key"] for l in state.values()}
+    out, lost = {}, []
+    for d in drafts:
+        if d["error"]:
+            lost.append(d)
+            continue
+        f = d["fields"]
+        k = f.get("key") if f.get("key") in state else None
+        k = k or by_slug.get(d["slug"]) or (by_name.get(" ".join(norm(f["name"]))) if f.get("name") else None)
+        if not k:
+            lost.append(d)
+            continue
+        if k not in out or (d["written"] or "") > (out[k]["written"] or ""):
+            out[k] = d
+    return out, lost
+
+
+def touch_channel_for(lead, touch_ch, ig, fb, email, phone):
+    """The deck's channel for a follow-up with no draft saying: the cadence's dm/email/call made concrete."""
+    out = last_outbound(lead) or {}
+    last = out.get("channel") if out.get("channel") in CHANNELS else None
+    if touch_ch == "email" and email and email_lane_open():
+        return "email"
+    if touch_ch == "email":
+        touch_ch = "dm"                       # the lane can't send today: the touch is Taylor's thumb
+    if touch_ch == "call":
+        return "call" if phone else last
+    if touch_ch == "dm" or not touch_ch:
+        if last in ("facebook", "instagram") and ((last == "facebook" and fb) or (last == "instagram" and ig)):
+            return last
+        return "facebook" if fb else "instagram" if ig else last or ("call" if phone else None)
+    return touch_ch
+
+
+_LANE_OPEN = None
+
+
+def email_lane_open():
+    """Would `outreach send --go` send a letter today (email_gate's settings, no picks needed)? Read once a run."""
+    global _LANE_OPEN
+    if _LANE_OPEN is None:
+        _LANE_OPEN = email_gate([{"email": "x", "preview_url": "x"}])[0] is None
+    return _LANE_OPEN
+
+
+def lead_facts(lead, day, touch=None):
+    bits = [lead.get("city"), lead.get("stage")]
+    out = last_outbound(lead)
+    if out:
+        ch = f" by {out['channel']}" if out.get("channel") in CHANNELS else ""
+        bits.append(f"last {out['outcome']} {dt.date.fromisoformat(out['date']).strftime('%a %-d %b')}{ch}")
+    if touch:
+        bits.append(f"day {touch} touch")
+    if lead.get("next") and lead["next"] < day.isoformat():
+        bits.append(f"{(day - dt.date.fromisoformat(lead['next'])).days}d late")
+    note = (lead["history"][-1].get("note") or "").strip()
+    if note:
+        bits.append(note if len(note) <= 160 else note[:157].rstrip() + "…")
+    return " · ".join(b for b in bits if b)
+
+
+def deck_card(section, lead, day, *, message=None, channel=None, why=None, log=None, when=None, ask=None,
+              script=False, preview=None, facts=None, followup=True):
+    ig, fb, email, phone = lead_contacts(lead) if lead.get("key") else (lead.get("instagram"), lead.get("facebook"),
+                                                                        None, lead.get("phone"))
+    ln = DECK.links(channel, instagram=ig, facebook=fb, phone=phone, email=email)
+    warnings, hint = [], None
+    if channel == "instagram":
+        hint = IG_RULE
+        if message and DECK.has_link(message):
+            warnings.append("This message carries a link: in an Instagram message request it isn't tappable until "
+                            "they reply. Send it as written only if they've answered there.")
+    if channel and not ln["open"]:
+        warnings.append(f"No {DECK.CHANNEL_LABEL.get(channel, channel)} address on record for this lead: "
+                        "open the thread by hand.")
+    if message and followup and lead.get("history") and last_outbound(lead) and \
+            re.search(rf"\b(I'm|I am|My name's|my name is) {re.escape(V.sender.first_name)}\b", message):
+        warnings.append(f"Opens with an introduction; a follow-up in the same thread opens \"{V.sender.first_name} "
+                        "again\" (playbook, 9 Oct). Steel's words stand; this is a flag, not an edit.")
+    return {"key": f"{section}-{deck_slug(lead)}", "name": lead["name"],
+            "facts": facts if facts is not None else lead_facts(lead, day),
+            "channel": channel, "channel_label": DECK.CHANNEL_LABEL.get(channel) if channel else None,
+            "when": when, "open": ln["open"], "page": ln["page"], "phone": ln["phone"],
+            "preview": preview or (lead_preview(lead) if lead.get("key") else None),
+            "message": message or None, "ask": None if message else ask, "why": why, "log": log if message else None,
+            "seen": seen_words(lead) if lead.get("key") else None, "warnings": warnings, "hint": hint, "script": script}
+
+
+def default_log(name, channel, what="follow-up sent from the deck"):
+    if channel == "call":
+        return f'log {name} talked "{what}" --channel call'
+    return f'log {name} messaged "{what}" --channel {channel or "facebook"}'
+
+
+def deck_data(day, args):
+    state = pipeline_state()
+    drafts = DECK.load_drafts(DRAFTS)
+    by_lead, lost = match_drafts(drafts, state)
+    footer, used = [], set()
+    for d in lost:
+        footer.append({"name": f"{d['slug']}.md", "text": d["error"] and f"can't be read: {d['error']}" or
+                       "matches no lead in the pipeline (name it with `name:` or `key:` in its header)"})
+    touch = {}
+    for lead in due_by(day):
+        last = lead["history"][-1]
+        if last.get("kind") == "touch_due":
+            touch[lead["key"]] = (int(last.get("touch") or 0) or None, last.get("channel"))
+    for lead, t, ch, _ in cadence_rows(day, state):       # what the 06:00 cadence will file that morning
+        touch.setdefault(lead["key"], (t, ch))
+    due_keys = [l["key"] for l in due_by(day)] + [k for k in touch if k not in {l["key"] for l in due_by(day)}]
+    live = {k: d for k, d in by_lead.items()
+            if state[k].get("stage") not in ("won", "lost", "churned") and not draft_spent(d, state[k], day)}
+    keys = list(dict.fromkeys(due_keys + sorted(live, key=lambda k: state[k]["name"])))
+    lane_open = email_lane_open()
+    warm, follow, asks = [], [], []
+    for k in keys:
+        lead = state[k]
+        if lead.get("stage") in ("won", "lost", "churned"):
+            continue
+        t, tch = touch.get(k, (None, None))
+        d = live.get(k)
+        skipped = []
+        ig, fb, email, phone = lead_contacts(lead, skipped)
+        if d and d["fields"].get("hold"):
+            footer.append({"name": lead["name"], "text": d["fields"]["hold"]})
+            used.add(k)
+            continue
+        if d:
+            f = d["fields"]
+            ch = f.get("channel") or touch_channel_for(lead, tch, ig, fb, email, phone)
+            when = f.get("when") or (dt.date.fromisoformat(f["send"]).strftime("%A %-d %b") if f.get("send") else None)
+            if not when and k in due_keys:
+                when = "Go today"
+            card = deck_card("w" if is_warm(lead) else "f", lead, day, message=d["body"], channel=ch, why=f.get("why"),
+                             log=f.get("log") or default_log(lead["name"], ch), when=when, script=ch == "call",
+                             facts=lead_facts(lead, day, t))
+            (warm if is_warm(lead) else follow).append(card)
+            used.add(k)
+            continue
+        if k not in due_keys:
+            continue
+        ch = touch_channel_for(lead, tch, ig, fb, email, phone)
+        if ch == "email" and lane_open and t:
+            footer.append({"name": lead["name"], "text": f"day {t} goes by email, the lane's (`outreach send --touch {t}`), "
+                                                         "not your thumb."})
+            used.add(k)
+            continue
+        if not (ig or fb or email) and not is_warm(lead):
+            footer.append({"name": lead["name"], "text": f"phone only{' ' + phone if phone else ''}"
+                           + (f" ({'; '.join(skipped)})" if skipped else "") + ", and no draft: your rule "
+                           "puts a call after two ignored written touches. Say \"Steel, " + lead["name"] + "\" for a call "
+                           "script, or tell " + V.mascot + " if you called."})
+            used.add(k)
+            continue
+        card = deck_card("a" if not is_warm(lead) else "w", lead, day, channel=ch, facts=lead_facts(lead, day, t),
+                         ask=f"No draft yet: say \"Steel, {lead['name']}\".",
+                         when="Due" if not t else f"Day {t}")
+        (warm if is_warm(lead) else asks).append(card)
+        used.add(k)
+
+    kit_cards, kit_from, two = [], None, None
+    if not getattr(args, "no_kit", False):
+        kit_from = dt.date.fromisoformat(args.kit_from) if getattr(args, "kit_from", None) else day
+        dayfile = DAYS_DIR / f"{kit_from.isoformat()}.md"
+        six = DECK.parse_six(dayfile.read_text()) if dayfile.exists() else {"picks": [], "message_two": None}
+        two = six["message_two"]
+        by_name = {" ".join(norm(l["name"])): l for l in state.values()}
+        names = set()
+        for p in six["picks"]:
+            lead = by_name.get(" ".join(norm(p["name"])))
+            names.add(" ".join(norm(p["name"])))
+            if lead and lead["key"] in used:
+                continue
+            ch = "instagram" if p["instagram"] else "facebook" if p["facebook"] else "call" if p["phone"] else None
+            base = dict(lead) if lead else {"name": p["name"], "history": [], "seen": [], "instagram": p["instagram"],
+                                            "facebook": p["facebook"], "phone": p["phone"]}
+            if lead:
+                base["reach"] = " · ".join(x for x in (lead.get("reach"), p["instagram"] and f"Instagram @{p['instagram']}",
+                                                     p["facebook"]) if x)
+                base["phone"] = lead.get("phone") or p["phone"]
+            sent_on = next((e["date"] for e in (lead or {}).get("history", [])
+                            if e.get("outcome") in OUTBOUND and e["date"] >= kit_from.isoformat()), None)
+            when = f"Logged sent {dt.date.fromisoformat(sent_on).strftime('%a %-d %b')}" if sent_on else None
+            what = "called, offered to text the link" if ch == "call" else "opener sent, preview offered"
+            kit_cards.append(deck_card("k", base, day, message=p["message"], channel=ch,
+                                       why=f"Receipt: {p['receipt']}" if p.get("receipt") else None,
+                                       log=default_log(p["name"], ch, what), when=when, script=ch == "call",
+                                       preview=p["preview"], facts=p["line"], followup=False,
+                                       ask="No picked text for this one in the day file."))
+        if getattr(args, "kit", False):
+            folder = STATE / "remote"
+            saved = sorted(folder.glob(f"{day.isoformat()}*.json"), key=lambda q: q.stat().st_mtime) if folder.exists() else []
+            try:
+                kit = json.loads(saved[-1].read_text()) if saved else {}
+            except ValueError:
+                kit = {}
+            for p in kit.get("picks") or []:
+                if " ".join(norm(clean_name(p.get("name") or ""))) in names:
+                    continue
+                ig, fb, _ = pick_handles(p)
+                ch = "instagram" if ig else "facebook" if fb else "call" if p.get("phone") else None
+                base = {"name": clean_name(p.get("name") or "?"), "history": [], "seen": [], "instagram": ig,
+                        "facebook": fb, "phone": p.get("phone")}
+                kit_cards.append(deck_card("k", base, day, channel=ch, preview=p.get("preview_url"),
+                                           facts=" · ".join(x for x in (p.get("city"), "; ".join((p.get("faults") or [])[:1])) if x),
+                                           ask="Not through the checked-words passes yet: the picked text comes from "
+                                               "\"regenerate the DMs\", Flint's at the terminal.", followup=False))
+    if not two:
+        two = then_text("").strip()
+    n_msg = sum(1 for c in warm + follow + kit_cards if c["message"])
+    sections = [
+        {"id": "warm", "title": "Warm first", "cards": warm,
+         "lead": "They said yes once. One step each, as Steel wrote it; a card without a draft waits for \"Steel, NAME\"."},
+        {"id": "follow", "title": "Follow-ups", "cards": follow,
+         "lead": "Due by this date, each with Steel's draft and why. The words are his as they stand."},
+        {"id": "kit", "title": "The kit" + (f", picked {kit_from.strftime('%a %-d %b')}" if kit_from else ""),
+         "cards": kit_cards,
+         "lead": "Message one is the picked text (the receipt under it). After a yes: the preview link, then message "
+                 "two. " + IG_RULE},
+        {"id": "asks", "title": "Due, no draft yet", "cards": asks,
+         "lead": "Owed a touch and nothing checked to send. Say \"Steel, NAME\" and the draft lands on the card."},
+    ]
+    notices = []
+    if not DRAFTS.is_dir():
+        notices.append({"kind": "warn", "text": f"No drafts folder yet ({DRAFTS}); every follow-up shows the ask."})
+    if not n_msg:
+        notices.append({"kind": "warn", "text": "Nothing checked to send yet."})
+    heads = [f"{len(warm)} warm" if warm else None, f"{len(follow)} follow-up{'s' if len(follow) != 1 else ''}" if follow else None,
+             f"{len(kit_cards)} from the kit" if kit_cards else None,
+             f"{len(asks)} waiting on a draft" if asks else None]
+    return {"title": f"{V.name} Outreach Deck", "date": day.isoformat(),
+            "storage_key": f"{V.slug}-deck-{day.isoformat()}-sent",
+            "eyebrow": f"{day.strftime('%A %-d %b')} · made {dt.datetime.now(TZ).strftime('%a %-d %b %H:%M')}",
+            "headline": (", ".join(h for h in heads if h) or "Nothing due") + ".",
+            "sub": (f"Tap the channel, paste the message, send it, then copy the log line and text it to {V.mascot}. "
+                    "Every message here is a picked text or a Steel draft as it stands; nothing is re-drafted."),
+            "notices": notices, "sections": sections,
+            "message_two": {"title": "Message two, after a yes", "text": two,
+                            "lead": "The decided wording. Send the preview link first, then this.",
+                            "hint": f'After a yes, text {V.mascot}: log NAME interested "said yes to the preview" --channel facebook'},
+            "footer_title": "Not on this deck:", "footer": footer,
+            "footer_notes": [f"Log lines go to {V.mascot} by text, one per send. \"hold\" on a name moves its next date; "
+                             "\"log NAME lost 'why'\" closes it. The Sent ticks live on this phone only; the log is the record."]}
+
+
+def cmd_deck(args):
+    day = parse_when(args.date, now_date()) if args.date else now_date()
+    if args.slugs:
+        state = pipeline_state()
+        by_lead, _ = match_drafts(DECK.load_drafts(DRAFTS), state)
+        for l in sorted(due_by(day) + [state[k] for k in by_lead if state[k] not in due_by(day)], key=lambda l: l["name"]):
+            d = by_lead.get(l["key"])
+            print(f"{deck_slug(l)}.md  {l['name']}  {'draft: ' + Path(d['path']).name if d else 'no draft'}")
+        return
+    data = deck_data(day, args)
+    if args.json:
+        print(json.dumps(data, indent=1, ensure_ascii=False))
+        return
+    out = Path(args.out) if args.out else DECK_OUT / f"{day.isoformat()}.html"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(DECK.render(data))
+    n = {s["id"]: len(s["cards"]) for s in data["sections"]}
+    print(f"Deck for {day.strftime('%a %-d %b')}: {n['warm']} warm, {n['follow']} follow-ups, {n['kit']} from the kit, "
+          f"{n['asks']} waiting on a draft, {len(data['footer'])} in the footer.")
+    print(out)
 
 
 def objections_for(segment, presence_class):
@@ -8150,7 +8597,22 @@ def cmd_doctor(args):
           f"postal address for cold email: {'set' if mail_address() else 'NOT set — drafts say not ready (TAYLOR-TODO §1)'}")
     ok = preview_doctor() and ok
     batch_doctor()
+    deck_doctor()
     sys.exit(0 if ok else 1)
+
+
+def deck_doctor():
+    """B152: the deck's two inputs. A warning, never a failure: without drafts every follow-up shows the ask."""
+    if not DRAFTS.is_dir():
+        print(f"deck: WARNING no drafts folder ({DRAFTS}); every follow-up on `leads deck` shows the ask "
+              "(the format is lib/deck.py's docstring)")
+    else:
+        ds = DECK.load_drafts(DRAFTS)
+        bad = [d for d in ds if d["error"]]
+        print(f"deck: drafts {DRAFTS} — {len(ds)} file(s)" + (f", {len(bad)} unreadable: " + "; ".join(
+            f"{Path(d['path']).name} ({d['error']})" for d in bad) if bad else ""))
+    print(f"  day files: {DAYS_DIR} {'ok' if DAYS_DIR.is_dir() else 'MISSING (the kit section stays empty)'}; "
+          f"template {DECK.TEMPLATE.name} {'ok' if DECK.TEMPLATE.exists() else 'MISSING'}")
 
 
 def batch_doctor():
@@ -8344,7 +8806,34 @@ def main():
     rp.set_defaults(fn=cmd_replies)
 
     du = sub.add_parser("due", help="follow-ups due today")
+    du.add_argument("--json", action="store_true", help="one row a lead: what it is owed, the channel, its drafts file (B152)")
     du.set_defaults(fn=cmd_due)
+
+    dk = sub.add_parser("deck", help="the outreach deck: the page Taylor's phone sends the day's DMs from (B152)",
+                        description="The outreach deck (B152, plan ~/projects/plans/59-outreach-deck.md): one card a lead, "
+                        "warm first, then the follow-ups due (with Steel's draft from private-docs/leads/drafts/<slug>.md, "
+                        "else the ask \"no draft yet: say 'Steel, NAME'\"), the kit's picked texts from days/<date>.md "
+                        "§ The six, message two, and a footer naming what is due but kept off and why. It carries only "
+                        "checked text, sends nothing and writes nothing but the page. <slug> is slugify(name + city), "
+                        "e.g. halo-venue-orem (`--slugs` lists them); the file's header is name/key/channel/send/when/"
+                        "why/log/hold/written between --- lines, then the message (lib/deck.py, drafts/README.md). "
+                        "Publishing the file is Flint's.")
+    dk.add_argument("--date", help="the day the deck is for (default today; 2026-10-12, mon, tomorrow)")
+    dk.add_argument("--out", help="where to write the page (default ~/.local/state/claude-tools/leads/deck/<date>.html)")
+    dk.add_argument("--kit", action="store_true", help="also the day's saved kit (never a fresh one): a pick with no "
+                    "picked text gets the ask")
+    dk.add_argument("--kit-from", help="read § The six from this day's file instead (YYYY-MM-DD)")
+    dk.add_argument("--no-kit", action="store_true", help="leave the kit off")
+    dk.add_argument("--json", action="store_true", help="the page's data instead of the page")
+    dk.add_argument("--slugs", action="store_true", help="each due lead's drafts file name, and whether it exists")
+    dk.set_defaults(fn=cmd_deck)
+
+    sn = sub.add_parser("seen", help="a read receipt: Messenger's \"Seen by NAME at TIME\" (B152); sets no stage or date")
+    sn.add_argument("name", nargs="+")
+    sn.add_argument("--at", help="the time as the app shows it: \"Mon 12:50\"")
+    sn.add_argument("--channel", help="facebook|instagram|email|text (default: where the last message went)")
+    sn.add_argument("--place")
+    sn.set_defaults(fn=cmd_seen)
 
     rk = sub.add_parser("recheck", help="the week's messaged leads: each logged handle or address judged again against "
                                         "the place (B104, reach.py --check through LEADS_REACH_PY; $0)")

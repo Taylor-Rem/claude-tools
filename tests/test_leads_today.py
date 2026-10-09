@@ -323,7 +323,7 @@ class MorningEmailTest(Base):
         cases = [({"LEADS_MAIL_ADDRESS": ""}, "no postal address"),
                  ({"OUTREACH_TEMPLATES": str(self.t)}, "the first letter isn't approved yet"),
                  ({"OUTREACH_PROVIDER": "", "INSTANTLY_API_KEY": ""}, "no mailbox yet (INSTANTLY_API_KEY)"),
-                 ({"OUTREACH_PER_DAY": "0"}, "OUTREACH_PER_DAY is 0")]
+                 ({"OUTREACH_PER_DAY": "0"}, "the fake mailboxes' daily cap is 0 (OUTREACH_PER_DAY is 0")]
         for env, why in cases:
             out = self.today(**env)
             self.assertNotIn("Needs a word", out, env)

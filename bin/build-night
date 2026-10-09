@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # build-night — the nightly build window (GROWTH.md § 19.5; VISION § Decided
 # 2026-09-28 "Selling first" #18). Files a /build request and runs it as a
+# OFF since 2026-10-08 (VISION § Decided "Paid demand steers" § 5): build-night.timer is disabled, not
+# replaced; a build runs when Flint judges a row qualifies, through /build. This script still works by hand.
 # headless Flint (Fable) with a six-hour cap (Taylor, 2026-10-07: "No builder limit.
 # 6 hour build limit … make sure it's opus 5.5 as the builders"; three hours and
 # two builders before that), only when ROADMAP.md has a
